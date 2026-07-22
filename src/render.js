@@ -615,14 +615,9 @@ function drawShip(game) {
       g2.addColorStop(1, 'transparent');
       ctx.fillStyle = g2;
       ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.1, 0, TAU); ctx.fill();
-    } else {
-      ctx.strokeStyle = 'rgba(255, 130, 110, 0.3)';
-      ctx.lineWidth = 1.5 / z;
-      for (let q = 0; q < 4; q++) {
-        const a0 = q * Math.PI / 2 + 0.4;
-        ctx.beginPath(); ctx.arc(s.x, s.y, R, a0, a0 + 0.3); ctx.stroke();
-      }
     }
+    // (Shield down = nothing drawn at all: a naked hull IS the indicator.
+    // The HUD bar's blinking SHLD label carries the alarm.)
     const charging = s.alive && sf < 1 &&
       game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY;
     if (charging) {
