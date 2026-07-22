@@ -2,8 +2,16 @@ import { CFG } from './config.js';
 import { Body, railBody } from './entities.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 
-const PLANET_COLORS = ['#c98a5a', '#5a9dc9', '#b05ac9', '#6ac95a', '#c9b45a', '#d97b6c', '#7bd9c9', '#9a8ad9'];
-const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison'];
+// Planet archetypes — each type has its own palette and its own look in the
+// renderer (lava glow, rocky continents, gas bands, ice caps) so the kinds
+// read at a glance.
+const PTYPE_COLORS = {
+  lava:  ['#e0603a', '#d4502c', '#e8784a'],
+  rocky: ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
+  gas:   ['#d9a95c', '#5a9dc9', '#b05ac9', '#7bd9c9'],
+  ice:   ['#a8cbe8', '#8fd9d0', '#9a9ad9'],
+};
+const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex'];
 
 // Circular-orbit velocity around a parent at distance r, plus the parent's own
 // velocity. Uses the SOFTENED gravity the sim actually applies, so initial
@@ -52,11 +60,13 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   const y = star.y + Math.sin(th) * orbitR;
   const dir = rng() < 0.85 ? 1 : -1;
   const v = orbitVel(star, x, y, dir);
+  const ptype = opts.ptype || 'rocky';
   const p = new Body({
     type: 'planet', x, y, vx: v.vx, vy: v.vy, mass, radius,
-    color: pick(rng, PLANET_COLORS),
+    color: pick(rng, PTYPE_COLORS[ptype]),
     name: pick(rng, PLANET_NAMES),
     ring: opts.ring || false,
+    ptype,
     parent: star,
   });
   bodies.push(p);
@@ -115,21 +125,27 @@ export function generateWorld(game, seed = 20260721) {
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   const sun = new Body({
-    type: 'star', x: 0, y: 0, mass: 8e6, radius: 1500, color: '#ffd98a',
+    type: 'star', x: 0, y: 0, mass: 1.6e7, radius: 2400, color: '#ffd98a',
   });
   bodies.push(sun);
 
+  // Inner system is scorched lava worlds, the middle is rocky with two huge
+  // ringed gas giants, and the far reaches are ice. Top-end planet radius 520.
   const layout = [
-    { r: 2400,  mass: 2e4,   radius: 55 },
-    { r: 3300,  mass: 3e4,   radius: 70 },
-    { r: 4200,  mass: 5e4,   radius: 95,  moons: 1 },
-    { r: 5200,  belt: true, spread: 400, count: 55 },
-    { r: 6600,  mass: 1e5,   radius: 150, moons: 3 },
-    { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 6 },
-    { r: 10800, mass: 1.2e5, radius: 160, moons: 2 },
-    { r: 11900, belt: true, spread: 450, count: 45 },
-    { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 5 },
-    { r: 16800, mass: 6e4,   radius: 110, moons: 3 },
+    { r: 3600,  mass: 2e4,   radius: 60,  ptype: 'lava' },
+    { r: 4700,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
+    { r: 5900,  mass: 6e4,   radius: 105, ptype: 'rocky', moons: 1 },
+    { r: 7000,  belt: true, spread: 450, count: 60 },
+    { r: 8200,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3 },
+    { r: 9800,  mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4 },
+    { r: 11800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7 },
+    { r: 14000, mass: 1.4e5, radius: 180, ptype: 'rocky', moons: 2 },
+    { r: 15400, belt: true, spread: 500, count: 50 },
+    { r: 17200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6 },
+    { r: 20000, mass: 6.5e5, radius: 520, ptype: 'gas', ring: true, moons: 8 },
+    { r: 22800, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3 },
+    { r: 24800, belt: true, spread: 600, count: 45 },
+    { r: 26200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2 },
   ];
   for (const item of layout) {
     if (item.belt) addBelt(bodies, rng, sun, item.r, item.spread, item.count);
@@ -165,7 +181,7 @@ export function generateWorld(game, seed = 20260721) {
   // Player starts in a stable orbit inside the inner asteroid belt.
   // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
   // from the rocks around it.
-  const sr = 5200;
+  const sr = 7000;
   const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * sun.mass) / sr);
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;

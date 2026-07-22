@@ -31,6 +31,7 @@ export class Body {
     this.baseRadius = o.radius;
     this.color = o.color || '#888';
     this.ring = o.ring || false;
+    this.ptype = o.ptype || '';   // planet archetype: lava | rocky | gas | ice
     this.parent = o.parent || null;   // moons orbit a planet; used for gravity weighting
     this.spin = (Math.random() - 0.5) * 0.6;
     this.rot = Math.random() * 6.28;

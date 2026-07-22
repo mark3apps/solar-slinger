@@ -5,7 +5,7 @@ export const CFG = {
   // Soft boundary radius. MUST exceed the outermost orbit reach (orbit +
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
-  WORLD_R: 18500,
+  WORLD_R: 32000,
   OORT_WARN: 1400,         // warning distance before the cloud edge
   OORT_DPS: 6,             // hull damage/s at the edge, scaling with depth
   ATTRACT_MIN: 2000,       // bodies at/above this mass exert gravity

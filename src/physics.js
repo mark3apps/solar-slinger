@@ -391,6 +391,10 @@ export function step(game, dt) {
         }
       } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 &&
                  (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet')) {
+        // Never re-rail on-screen: a flung rock snapping onto a circular
+        // orbit in front of the player reads as "it just stopped mid-flight"
+        if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) <
+            (game.viewR || 1200) * 1.15 + 300) continue;
         // Try to re-rail around the natural parent
         const parent = (b.type === 'moon' && b.parent && b.parent.alive) ? b.parent : game.homeStar;
         let clear = true;

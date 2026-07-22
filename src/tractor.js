@@ -114,18 +114,10 @@ export function releaseHeld(game, fling) {
   if (!b.alive) return;
   if (fling) {
     const v = computeFlingVelocity(game, b);
-    const dvx = v.vx - b.vx, dvy = v.vy - b.vy;
     b.vx = v.vx; b.vy = v.vy;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
     armHoming(game, b);
-    // Recoil: flinging a planet shoves you backwards
-    const s = game.ship;
-    const k = (b.mass / (b.mass + 4000)) * 0.8;
-    let rx = -dvx * k, ry = -dvy * k;
-    const rm = Math.hypot(rx, ry);
-    if (rm > 300) { rx *= 300 / rm; ry *= 300 / rm; }
-    s.vx += rx; s.vy += ry;
     sfx.sfxFling();
   } else {
     sfx.sfxDrop();
@@ -258,7 +250,9 @@ export function updateOrbit(game, dt) {
     if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;   // our own shots
     const dx = b.x - s.x, dy = b.y - s.y;
     const d = Math.hypot(dx, dy);
-    if (d > 900) continue;
+    // Tight defense perimeter — the scan reruns every substep, so a threat
+    // drifting back out of this radius releases its interceptor immediately
+    if (d > 520) continue;
     const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
     const closing = -(rvx * dx + rvy * dy) / (d || 1);
     const alienShot = b.thrownBy === 'alien' && b.thrownTimer > 0;

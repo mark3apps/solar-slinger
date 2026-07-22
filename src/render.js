@@ -111,8 +111,19 @@ function drawBody(game, b) {
     ctx.stroke();
   }
 
+  // Lava worlds glow — visible even when zoomed way out
+  if (b.ptype === 'lava') {
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.5, b.x, b.y, b.radius * 2.2);
+    g.addColorStop(0, 'rgba(255, 110, 40, 0.4)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
+  }
+
   ctx.fillStyle = b.color;
   ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+
+  if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
 
   if (b.type === 'moon') {
     ctx.strokeStyle = 'rgba(225, 235, 255, 0.85)';
@@ -169,6 +180,89 @@ function drawBody(game, b) {
     ctx.strokeStyle = 'rgba(130, 255, 200, 0.55)';
     ctx.lineWidth = 1.5 / game.cam.zoom;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / game.cam.zoom, 0, TAU); ctx.stroke();
+  }
+}
+
+// Per-archetype surface detail, drawn clipped to the planet disc. This is
+// what makes the planet TYPES readable: bands = gas, cracks+glow = lava,
+// caps = ice, continents = rocky.
+function drawPlanetDetail(b) {
+  ctx.save();
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
+  ctx.translate(b.x, b.y);
+
+  if (b.ptype === 'gas') {
+    ctx.rotate(b.id % 2 ? 0.32 : -0.26);
+    const n = 5 + (b.id % 3);
+    const bandH = (2 * b.radius) / n;
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.17)';
+      ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.72);
+    }
+    // A great storm spot
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.beginPath();
+    ctx.ellipse(b.radius * 0.34, b.radius * 0.3, b.radius * 0.2, b.radius * 0.1, 0.3, 0, TAU);
+    ctx.fill();
+  } else if (b.ptype === 'lava') {
+    ctx.strokeStyle = 'rgba(255, 150, 50, 0.75)';
+    ctx.lineWidth = Math.max(1.5, b.radius * 0.05);
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 2.3 + i * 1.7;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * b.radius * 0.15, Math.sin(a) * b.radius * 0.15);
+      ctx.quadraticCurveTo(
+        Math.cos(a + 0.8) * b.radius * 0.55, Math.sin(a + 0.8) * b.radius * 0.55,
+        Math.cos(a + 0.5) * b.radius * 0.95, Math.sin(a + 0.5) * b.radius * 0.95);
+      ctx.stroke();
+    }
+  } else if (b.ptype === 'ice') {
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
+  } else {  // rocky: mottled continents
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    const n = 4 + (b.id % 3);
+    for (let i = 0; i < n; i++) {
+      const a = b.id * 1.9 + i * 2.4;
+      const rr = b.radius * (0.25 + ((b.id + i) % 4) * 0.09);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55,
+        rr, rr * 0.65, a, 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+const PTYPE_LABELS = { lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD' };
+
+// Approach indicator: nearing a planet (or rogue) fades in its name plate and
+// a soft ring marking its domain, so you always know what you're flying into.
+function drawApproach(game) {
+  const s = game.ship;
+  if (!s.alive) return;
+  const z = game.cam.zoom;
+  for (const b of game.bodies) {
+    if (!b.alive || (b.type !== 'planet' && b.type !== 'rogue')) continue;
+    const zone = b.radius * 5 + 600;
+    const d = Math.hypot(b.x - s.x, b.y - s.y);
+    if (d > zone) continue;
+    const t = 1 - Math.max(0, (d - b.radius) / (zone - b.radius));  // 0 edge -> 1 surface
+    const a = 0.15 + 0.55 * t;
+
+    ctx.strokeStyle = `rgba(200, 220, 255, ${0.05 + 0.07 * t})`;
+    ctx.lineWidth = 1.5 / z;
+    ctx.beginPath(); ctx.arc(b.x, b.y, zone, 0, TAU); ctx.stroke();
+
+    const label = b.type === 'rogue' ? 'ROGUE PLANET'
+      : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`;
+    const fs = Math.max(13 / z, b.radius * 0.16);
+    ctx.font = `600 ${fs}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(210, 228, 255, ${a})`;
+    ctx.fillText(label, b.x, b.y - b.radius - fs * 0.9);
+    ctx.textAlign = 'left';
   }
 }
 
@@ -420,6 +514,7 @@ export function render(game) {
   drawShipRings(game);
   drawPrediction(game);
   for (const b of game.bodies) if (b.alive) drawBody(game, b);
+  drawApproach(game);
 
   // Scrap debris — glinting gold
   for (const d of game.debris) {
