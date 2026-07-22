@@ -543,6 +543,37 @@ export function step(game, dt) {
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
 
+    // INSTALLATIONS (stations, nests, fortified moons) don't wander when
+    // knocked loose — station-keeping thrusters drive them straight back
+    // toward their home orbit, and they re-rail as soon as they're close.
+    const install = b.type === 'station' || b.type === 'nest' || b.fort;
+    if (install && !b.heldBy && b.thrownTimer <= 0 && b.parent && b.parent.alive) {
+      const p = b.parent;
+      const dx = b.x - p.x, dy = b.y - p.y;
+      const r = Math.hypot(dx, dy) || 1;
+      const homeR = b.homeR || r;
+      const ux = dx / r, uy = dy / r;
+      const rvx = b.vx - p.vx, rvy = b.vy - p.vy;
+      const side = Math.sign(ux * rvy - uy * rvx) || 1;
+      const vC = Math.sqrt((CFG.G * p.mass * homeR * homeR) /
+        Math.pow(homeR * homeR + CFG.GRAV_SOFT ** 2, 1.5));
+      const desVx = p.vx + (-uy * side) * vC + ux * (homeR - r) * 1.2;
+      const desVy = p.vy + (ux * side) * vC + uy * (homeR - r) * 1.2;
+      let cx = (desVx - b.vx) * 2.5, cy = (desVy - b.vy) * 2.5;
+      const cm = Math.hypot(cx, cy);
+      if (cm > 300) { cx *= 300 / cm; cy *= 300 / cm; }
+      b.ax += cx; b.ay += cy;
+      // Snap back onto the rail once the orbit is close enough
+      const vT = ux * rvy - uy * rvx, vR = ux * rvx + uy * rvy;
+      if (b.liveT > 1.5 && Math.abs(r - homeR) < homeR * 0.08 &&
+          Math.abs(Math.abs(vT) - vC) < vC * 0.3 && Math.abs(vR) < vC * 0.3) {
+        b.vx = p.vx - uy * side * vC;
+        b.vy = p.vy + ux * side * vC;
+        railBody(b, p);
+        b.homeR = homeR;
+      }
+    }
+
     // (No mid-flight guidance and no angle adjustment: thrown rocks fly
     // straight at the cursor. The assist is the ✕ lead markers the UI
     // draws from tractor.aimSolutions — the player releases on the ✕.)

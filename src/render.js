@@ -241,7 +241,11 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 8 / game.cam.zoom, 0, TAU); ctx.stroke();
     ctx.setLineDash([]);
   } else if (b.heldBy === 'orbit') {
-    ctx.strokeStyle = 'rgba(130, 255, 200, 0.55)';
+    // Barely-there by default; brightens as the cursor approaches so you can
+    // see which orbiter a click would pull back
+    const dc = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
+    const near = Math.max(0, 1 - dc / 420);
+    ctx.strokeStyle = `rgba(130, 255, 200, ${0.12 + 0.5 * near})`;
     ctx.lineWidth = 1.5 / game.cam.zoom;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / game.cam.zoom, 0, TAU); ctx.stroke();
   }

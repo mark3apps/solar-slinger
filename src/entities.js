@@ -62,6 +62,7 @@ export function railBody(b, parent) {
   const w = (dx * (b.vy - parent.vy) - dy * (b.vx - parent.vx)) / (r * r);
   b.onRails = true;
   b.rail = { parent, r, w, ang: Math.atan2(dy, dx) };
+  b.homeR = r;   // installations use this to fly back after a knock
   b.liveT = 0;
 }
 
