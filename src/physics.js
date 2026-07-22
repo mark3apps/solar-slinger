@@ -94,6 +94,30 @@ export function shatter(game, body, credit = null) {
 // Chip damage: lose hp, shed some mass as scrap, shrink
 export function damageBody(game, body, dmg, credit = null) {
   if (body.type === 'star' || !body.alive) return;
+  // BASTION fortifications soak all damage: first the shield drains, then
+  // each solid hit pops a turret, and only when the last turret dies is the
+  // world liberated (scrap bounty; the body beneath is untouched throughout).
+  if (body.fort) {
+    const f = body.fort;
+    f.quiet = 0;
+    if (f.shield > 0) {
+      f.shield = Math.max(0, f.shield - dmg);
+      f.hitT = 0.35;
+      if (f.shield <= 0) game.fortShieldDownName = body.name || body.type;
+      return;
+    }
+    if (dmg > 8) {
+      f.turrets.pop();
+      addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 16, '#ffb35c', 200, 1);
+      sfx.sfxBoom(1);
+      if (!f.turrets.length) {
+        body.fort = null;
+        dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200);
+        game.fortLiberatedName = body.name || `the ${body.type}`;
+      }
+    }
+    return;
+  }
   derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
@@ -123,7 +147,9 @@ export function killAlien(game, alien) {
     alien.target.heldBy = null;
     alien.target.extAx = 0; alien.target.extAy = 0;
   }
-  dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3, CFG.ALIEN_SCRAP);
+  // Wrights refund everything they've eaten; golems are MADE of scrap
+  dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3,
+    CFG.ALIEN_SCRAP + (alien.hoard || 0));
   addParticles(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3, 30, '#8aff6a', 200, 1.2, 4);
   addShake(game, 6);
   sfx.sfxBoom(2);
@@ -232,6 +258,22 @@ function collideBodies(game, a, b) {
   const nx = dx / d, ny = dy / d;
   const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
   const closing = -(rvx * nx + rvy * ny);
+
+  // ICE QUENCHES EMBER: any icy rock (ring chunk, geyser pop, comet) landing
+  // on an infested planet smothers its reefs — thrown ice hits harder.
+  for (const [pl, rk] of [[a, b], [b, a]]) {
+    if (pl.type === 'planet' && pl.ember > 0 && (rk.ice || rk.comet)) {
+      const potency = (rk.mass / 6000) * (rk.thrownTimer > 0 ? 1.6 : 1);
+      pl.ember = Math.max(0, pl.ember - potency);
+      addParticles(game, rk.x, rk.y, pl.vx * 0.5, pl.vy * 0.5, 16, '#bfeffc', 170, 0.9);
+      if (pl.ember <= 0.01) {
+        pl.ember = 0;
+        pl.emberSeeded = false;
+        dropScrap(game, rk.x, rk.y, pl.vx * 0.6, pl.vy * 0.6, 150);
+        game.emberCleansedName = pl.name;
+      }
+    }
+  }
 
   // Shield rocks earn orbit XP by making contact with incoming alien throws
   if (closing > 50 &&
@@ -364,6 +406,8 @@ function collideShipBody(game, s, b) {
   if (d > s.radius + b.radius) return;
 
   if (b.type === 'star') { damageShip(game, 99999, 'You flew into a star.'); return; }
+  // Touching a live Bastion shield zaps you on top of the normal bounce
+  if (b.fort && b.fort.shield > 0) damageShip(game, 10, 'Zapped by a Bastion fortress shield.');
   if (b === game.held) return;      // held object can't crush you
   if (b.heldBy === 'orbit') return; // your own shield can't crush you either
   if (b.thrownBy === 'player' && b.thrownTimer > 0) return; // your own throws pass through you
@@ -557,6 +601,15 @@ export function step(game, dt) {
       }
     }
 
+    // Emberkin burning halos: colonized worlds scorch anything flying close
+    for (const b of attractors) {
+      if (!b.ember || b.ember <= 0.1) continue;
+      const d = Math.hypot(s.x - b.x, s.y - b.y);
+      if (d < b.radius * 2.2) {
+        damageShip(game, 9 * b.ember * dt, 'Burned away by an Emberkin halo.');
+      }
+    }
+
     // The Oort cloud grinds ships apart
     const rc = Math.hypot(s.x, s.y);
     if (rc > CFG.WORLD_R && s.invuln <= 0) {
@@ -670,7 +723,8 @@ export function step(game, dt) {
       const nx = (s.x - al.x) / (d || 1), ny = (s.y - al.y) / (d || 1);
       s.vx += nx * 180; s.vy += ny * 180;
       al.vx -= nx * 180; al.vy -= ny * 180;
-      damageShip(game, CFG.ALIEN_CONTACT_DMG, 'Rammed by an alien grabber.');
+      damageShip(game, al.contactDmg || CFG.ALIEN_CONTACT_DMG,
+        al.kind === 'golem' ? 'Crushed by a scrap-golem.' : 'Rammed by an alien grabber.');
       al.hp -= 12;
       if (al.hp <= 0) killAlien(game, al);
     }

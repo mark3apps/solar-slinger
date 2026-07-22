@@ -182,6 +182,8 @@ function drawBody(game, b) {
   }
 
   if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
+  if (b.ember > 0.01) drawEmberReef(game, b);
+  if (b.fort) drawFort(game, b);
 
   if (b.type === 'moon') {
     ctx.strokeStyle = 'rgba(225, 235, 255, 0.85)';
@@ -333,6 +335,58 @@ function drawNestSprite(game, b) {
   }
 }
 
+// Emberkin bloom: coral crust glowing on the rim + a heat halo scaling
+// with infestation depth
+function drawEmberReef(game, b) {
+  const e = b.ember;
+  const g2 = ctx.createRadialGradient(b.x, b.y, b.radius, b.x, b.y, b.radius * 2.2);
+  g2.addColorStop(0, `rgba(255, 120, 40, ${0.18 * e})`);
+  g2.addColorStop(1, 'transparent');
+  ctx.fillStyle = g2;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
+  ctx.strokeStyle = `rgba(255, 140, 60, ${0.35 + 0.55 * e})`;
+  ctx.lineWidth = Math.max(1.5, b.radius * 0.09);
+  for (let i = 0; i < 7; i++) {
+    const a0 = b.id * 1.3 + i * 0.9 + Math.sin(game.time * 0.6 + i) * 0.05;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius * 1.02, a0, a0 + 0.14 + 0.35 * e);
+    ctx.stroke();
+  }
+}
+
+// Bastion fortifications: an energy shield bubble (flashing when struck)
+// and turret blocks riding the surface
+function drawFort(game, b) {
+  const f = b.fort;
+  const z = game.cam.zoom;
+  if (f.shield > 0) {
+    const frac = f.shield / f.maxShield;
+    const flash = f.hitT > 0 ? f.hitT * 1.6 : 0;
+    ctx.strokeStyle = `rgba(120, 200, 255, ${0.25 + 0.35 * frac + flash})`;
+    ctx.lineWidth = 2.5 / z + b.radius * 0.03;
+    ctx.setLineDash([b.radius * 0.4, b.radius * 0.12]);
+    ctx.lineDashOffset = game.time * b.radius * 0.5;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.3, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = `rgba(120, 200, 255, ${0.05 + flash * 0.15})`;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.3, 0, TAU); ctx.fill();
+  }
+  ctx.fillStyle = '#3a4654';
+  ctx.strokeStyle = '#ffb35c';
+  ctx.lineWidth = Math.max(1, b.radius * 0.03);
+  for (const t of f.turrets) {
+    const a = b.rot + t.ang;
+    const tx = b.x + Math.cos(a) * b.radius, ty = b.y + Math.sin(a) * b.radius;
+    const tr = Math.max(4, b.radius * 0.13);
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.rotate(a);
+    ctx.fillRect(-tr * 0.6, -tr * 0.7, tr * 1.2, tr * 1.4);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(tr * 1.5, 0); ctx.stroke();
+    ctx.restore();
+  }
+}
+
 const PTYPE_LABELS = { lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD' };
 
 // Approach indicator: nearing a planet (or rogue) fades in its name plate and
@@ -344,9 +398,9 @@ function drawApproach(game) {
   for (const b of game.bodies) {
     if (!b.alive) continue;
     const isWorld = b.type === 'planet' || b.type === 'rogue';
-    const isPOI = b.type === 'station' || b.type === 'nest';
+    const isPOI = b.type === 'station' || b.type === 'nest' || (b.fort && b.type === 'moon');
     if (!isWorld && !isPOI) continue;
-    const zone = isPOI ? 1400 : b.radius * 5 + 600;
+    const zone = isPOI && !isWorld ? 1400 : b.radius * 5 + 600;
     const d = Math.hypot(b.x - s.x, b.y - s.y);
     if (d > zone) continue;
     const t = 1 - Math.max(0, (d - b.radius) / (zone - b.radius));  // 0 edge -> 1 surface
@@ -358,10 +412,12 @@ function drawApproach(game) {
       ctx.beginPath(); ctx.arc(b.x, b.y, zone, 0, TAU); ctx.stroke();
     }
 
-    const label = b.type === 'rogue' ? 'ROGUE PLANET'
+    const label = b.fort ? `BASTION FORTRESS${b.name ? ' — ' + b.name.toUpperCase() : ''}`
+      : b.type === 'rogue' ? 'ROGUE PLANET'
       : b.type === 'station' ? 'DERELICT STATION'
       : b.type === 'nest' ? 'ALIEN NEST'
-      : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`;
+      : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`
+        + (b.ember > 0.01 ? ' ⚠ EMBERKIN' : '');
     const fs = Math.max(13 / z, b.radius * 0.16);
     ctx.font = `600 ${fs}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
@@ -593,6 +649,57 @@ function drawShip(game) {
 }
 
 function drawAlien(game, al) {
+  // Wreckwright: spindly crane-ship with amber work-lights; beams debris
+  // in while it builds
+  if (al.kind === 'wright') {
+    ctx.save();
+    ctx.translate(al.x, al.y);
+    ctx.fillStyle = '#5a5044';
+    ctx.strokeStyle = '#ffb35c';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-al.radius, -al.radius * 0.4, al.radius * 2, al.radius * 0.8);
+    ctx.beginPath();
+    ctx.moveTo(-al.radius * 0.6, -al.radius * 0.4); ctx.lineTo(-al.radius * 1.3, -al.radius * 1.4);
+    ctx.moveTo(al.radius * 0.6, -al.radius * 0.4); ctx.lineTo(al.radius * 1.3, -al.radius * 1.4);
+    ctx.stroke();
+    const blink = Math.sin(game.time * (al.state === 'build' ? 14 : 5)) > 0;
+    ctx.fillStyle = blink ? '#ffd25a' : '#8a6a30';
+    ctx.beginPath(); ctx.arc(0, 0, 3.5, 0, TAU); ctx.fill();
+    ctx.restore();
+    if (al.state === 'build') {   // work aura while assembling
+      ctx.strokeStyle = `rgba(255, 210, 90, ${0.25 + 0.2 * Math.sin(game.time * 10)})`;
+      ctx.lineWidth = 1.5 / game.cam.zoom;
+      ctx.beginPath(); ctx.arc(al.x, al.y, al.radius + 14 / game.cam.zoom, 0, TAU); ctx.stroke();
+    }
+    return;
+  }
+  // Scrap-golem: a jagged welded mass with glowing amber seams
+  if (al.kind === 'golem') {
+    ctx.save();
+    ctx.translate(al.x, al.y);
+    ctx.rotate(game.time * 0.7 + al.id);
+    ctx.fillStyle = '#8b939c';
+    ctx.beginPath();
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * TAU;
+      const r = al.radius * (0.75 + ((al.id + i) % 3) * 0.18);
+      if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = `rgba(255, 170, 70, ${0.5 + 0.3 * Math.sin(game.time * 6)})`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const a = al.id * 1.9 + i * 2.1;
+      ctx.moveTo(Math.cos(a) * al.radius * 0.2, Math.sin(a) * al.radius * 0.2);
+      ctx.lineTo(Math.cos(a + 0.7) * al.radius * 0.85, Math.sin(a + 0.7) * al.radius * 0.85);
+    }
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
   ctx.save();
   ctx.translate(al.x, al.y);
   const bob = Math.sin(al.wobble) * 2;
@@ -668,8 +775,12 @@ function drawMinimap(game) {
       ctx.fillStyle = '#b07aff';
       ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.type === 'planet') {
-      ctx.fillStyle = b.color;
+      ctx.fillStyle = b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+      if (b.fort) { ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1; ctx.strokeRect(x - 3, y - 3, 6, 6); }
+    } else if (b.type === 'moon' && b.fort) {
+      ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1;
+      ctx.strokeRect(x - 2.5, y - 2.5, 5, 5);
     } else if (b.type === 'nest') {
       ctx.fillStyle = '#7ec95f';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
@@ -791,6 +902,23 @@ export function render(game) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Bastion turret bolts — hot tracer rounds
+  if (game.bolts && game.bolts.length) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const bo of game.bolts) {
+      const bm = Math.hypot(bo.vx, bo.vy) || 1;
+      ctx.strokeStyle = 'rgba(255, 170, 80, 0.7)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(bo.x, bo.y);
+      ctx.lineTo(bo.x - (bo.vx / bm) * 26, bo.y - (bo.vy / bm) * 26);
+      ctx.stroke();
+      ctx.fillStyle = '#ffe0a8';
+      ctx.beginPath(); ctx.arc(bo.x, bo.y, 3.2, 0, TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
   for (const al of game.aliens) if (al.alive) drawAlien(game, al);
   drawShip(game);
 
@@ -807,8 +935,8 @@ export function render(game) {
       if (d < hovD) { hov = b; hovD = d; }
     }
     if (hov && hov !== game.held) {
-      const canOrbit = hov.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters;
-      const canGrab = hov.mass <= st.capacity;
+      const canOrbit = hov.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters && !hov.fort;
+      const canGrab = hov.mass <= st.capacity && !hov.fort;
       const inRange = Math.hypot(hov.x - game.ship.x, hov.y - game.ship.y) <= st.range + hov.radius;
       const pulse = 1 + Math.sin(game.time * 6) * 0.18;
       const alpha = (inRange ? 0.85 : 0.3) * (0.7 + 0.3 * Math.sin(game.time * 6));

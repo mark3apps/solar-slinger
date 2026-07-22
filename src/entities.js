@@ -88,19 +88,31 @@ export class Ship {
 }
 
 export class Alien {
-  constructor(x, y) {
+  constructor(x, y, kind = 'grabber') {
     this.id = NEXT_ID++;
+    this.kind = kind;        // 'grabber' | 'wright' | 'golem'
     this.x = x; this.y = y;
     this.vx = 0; this.vy = 0;
     this.angle = 0;
     this.radius = CFG.ALIEN_RADIUS;
     this.hp = CFG.ALIEN_HP;
     this.alive = true;
-    this.state = 'seek';     // seek -> fetch -> carry -> cooldown
+    this.state = 'seek';     // grabber: seek -> fetch -> carry -> cooldown
     this.target = null;      // rock being fetched/carried
     this.cool = 0;
     this.thrustX = 0; this.thrustY = 0;
     this.wobble = Math.random() * 6.28;
+    if (kind === 'wright') {         // necro-mechanic: harvests debris, builds golems
+      this.radius = 17; this.hp = 70;
+      this.state = 'approach';
+      this.anchor = null;            // debris field it descends on
+      this.hoard = 0;                // scrap value consumed (refunded on kill)
+      this.buildT = 0;
+    } else if (kind === 'golem') {   // welded from your leftovers; only rams
+      this.radius = 21; this.hp = 150;
+      this.contactDmg = 40;
+      this.hoard = 0;
+    }
   }
 }
 

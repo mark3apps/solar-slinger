@@ -114,8 +114,8 @@ export function tryGrab(game) {
   const st = game.st;
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
-    // Nests are a siege target, not cargo — never beamable
-    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy === 'orbit') continue;
+    // Nests are a siege target, not cargo, and Bastion forts repel the beam
+    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.heldBy === 'orbit') continue;
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
     if (dCursor > b.radius + st.grabSlack) continue;

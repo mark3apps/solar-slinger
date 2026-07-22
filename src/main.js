@@ -19,6 +19,7 @@ const game = {
   debris: [],
   particles: [],
   flares: [],              // solar plasma in flight
+  bolts: [],               // Bastion turret fire in flight
   scrap: 0,
   prog: newProgress(),     // upgrades are automatic — this is the ship's growth
   st: null,
@@ -291,6 +292,41 @@ function update(dtReal) {
     if (game.nestKilled) {
       game.nestKilled = false;
       hud.message('ALIEN NEST DESTROYED — this region of space is quiet now.', 6);
+    }
+    if (game.wrightWarn) {
+      game.wrightWarn = false;
+      hud.message(game.tut.wright
+        ? 'WRECKWRIGHT descending on the debris field!'
+        : 'WRECKWRIGHT — a scavenger is harvesting your battle debris. Kill it before it finishes building.',
+      game.tut.wright ? 3 : 5.5);
+      game.tut.wright = true;
+    }
+    if (game.golemWarn) {
+      game.golemWarn = false;
+      hud.message('SCRAP-GOLEM assembled — your leftovers are hunting you.', 4.5);
+    }
+    if (game.fortShieldDownName) {
+      hud.message(`FORTRESS SHIELD DOWN at ${game.fortShieldDownName} — smash the turrets!`, 4);
+      game.fortShieldDownName = null;
+    }
+    if (game.fortLiberatedName) {
+      hud.message(`${game.fortLiberatedName.toUpperCase()} LIBERATED — the Bastion fort is destroyed. Salvage is yours.`, 5);
+      game.fortLiberatedName = null;
+    }
+    if (game.emberWarn) {
+      game.emberWarn = false;
+      if (!game.tut.ember) {
+        game.tut.ember = true;
+        hud.message('EMBERKIN ARTILLERY — this world is colonized. Icy rocks smother the reefs.', 5.5);
+      }
+    }
+    if (game.emberSeededName) {
+      hud.message(`The Emberkin have seeded ${game.emberSeededName} — the bloom is spreading.`, 5.5);
+      game.emberSeededName = null;
+    }
+    if (game.emberCleansedName) {
+      hud.message(`${game.emberCleansedName} cleansed — the Emberkin bloom is extinguished.`, 5);
+      game.emberCleansedName = null;
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;

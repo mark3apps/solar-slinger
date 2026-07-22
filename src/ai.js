@@ -1,5 +1,6 @@
 import { CFG } from './config.js';
 import { Alien, derail } from './entities.js';
+import { damageShip, damageBody, addParticles } from './physics.js';
 import { TAU, clamp } from './util.js';
 
 // Steering: accelerate toward a desired velocity (auto-fights gravity)
@@ -42,12 +43,62 @@ function nearestRock(game, al) {
   return best;
 }
 
+// Wreckwright: descends on a debris field, eats the scrap, and welds a golem
+// from it. Defenseless the whole time — killing it refunds its hoard.
+function updateWright(game, al, dt) {
+  const s = game.ship;
+  if (al.state === 'approach') {
+    if (!al.anchor) { al.alive = false; return; }
+    steer(al, al.anchor.x, al.anchor.y, CFG.ALIEN_SPEED * 0.7);
+    if (Math.hypot(al.anchor.x - al.x, al.anchor.y - al.y) < 140) al.state = 'build';
+  } else if (al.state === 'build') {
+    steer(al, al.x, al.y, 0);           // hold position and work
+    al.buildT += dt;
+    al.eatT = (al.eatT ?? 0) - dt;
+    if (al.eatT <= 0) {
+      al.eatT = 0.35;
+      let best = null, bd = 1100;       // slurp the nearest chunk in reach
+      for (const d of game.debris) {
+        const dd = Math.hypot(d.x - al.x, d.y - al.y);
+        if (dd < bd) { bd = dd; best = d; }
+      }
+      if (best) {
+        al.hoard += best.value;
+        best.life = 0;
+        addParticles(game, best.x, best.y, (al.x - best.x) * 2, (al.y - best.y) * 2, 3, '#ffd25a', 60, 0.4);
+      }
+    }
+    if (al.buildT > 8) {
+      const gol = new Alien(al.x, al.y, 'golem');
+      gol.hoard = Math.round(al.hoard * 0.8);   // the golem IS the scrap
+      game.aliens.push(gol);
+      game.golemWarn = true;
+      al.hoard = 0;
+      al.state = 'flee';
+    }
+  } else {   // flee: job done, leave the sector
+    const away = s.alive ? Math.atan2(al.y - s.y, al.x - s.x) : 0;
+    steer(al, al.x + Math.cos(away) * 600, al.y + Math.sin(away) * 600, CFG.ALIEN_SPEED);
+    if (!s.alive || Math.hypot(al.x - s.x, al.y - s.y) > 6000) al.alive = false;
+  }
+  avoidStars(game, al);
+}
+
 function updateAlien(game, al, dt) {
   const s = game.ship;
   al.wobble += dt * 3;
   al.thrustX = 0; al.thrustY = 0;
   const distShip = s.alive ? Math.hypot(s.x - al.x, s.y - al.y) : Infinity;
   al.angle = s.alive ? Math.atan2(s.y - al.y, s.x - al.x) : al.angle;
+
+  // Non-grabber kinds have their own simple minds
+  if (al.kind === 'wright') { updateWright(game, al, dt); return; }
+  if (al.kind === 'golem') {
+    // Relentless: your leftovers hunt you until one of you is gone
+    if (s.alive) steer(al, s.x + s.vx * 0.3, s.y + s.vy * 0.3, CFG.ALIEN_SPEED * 0.85);
+    avoidStars(game, al);
+    return;
+  }
 
   // TERRITORIAL: an alien belongs to its nest and never abandons that turf.
   // If it has strayed past the territory, or the player has fled the nest's
@@ -153,8 +204,97 @@ function updateAlien(game, al, dt) {
   avoidStars(game, al);
 }
 
+// BASTION fortresses: shield upkeep, turret fire, and bolt flight/impacts
+function updateForts(game, dt) {
+  const s = game.ship;
+  for (const b of game.bodies) {
+    if (!b.alive || !b.fort) continue;
+    const f = b.fort;
+    if (f.hitT > 0) f.hitT -= dt;
+    f.quiet = (f.quiet ?? 0) + dt;
+    // The shield only regenerates while turrets survive to project it
+    if (f.quiet > 8 && f.shield < f.maxShield && f.turrets.length) {
+      f.shield = Math.min(f.maxShield, f.shield + 6 * dt);
+    }
+    if (!s.alive) continue;
+    const d = Math.hypot(s.x - b.x, s.y - b.y);
+    if (d > 1900) continue;
+    for (const t of f.turrets) {
+      t.cool -= dt;
+      if (t.cool > 0) continue;
+      t.cool = 2 + Math.random() * 0.9;
+      const wx = b.x + Math.cos(b.rot + t.ang) * b.radius;
+      const wy = b.y + Math.sin(b.rot + t.ang) * b.radius;
+      const tt = d / 620;
+      const ang = Math.atan2(s.y + s.vy * tt - wy, s.x + s.vx * tt - wx);
+      game.bolts.push({
+        x: wx, y: wy,
+        vx: Math.cos(ang) * 620 + b.vx, vy: Math.sin(ang) * 620 + b.vy,
+        life: 3.2,
+      });
+    }
+  }
+  if (game.bolts.length) {
+    const keep = [];
+    for (const bo of game.bolts) {
+      bo.x += bo.vx * dt; bo.y += bo.vy * dt;
+      bo.life -= dt;
+      let dead = bo.life <= 0;
+      if (!dead && s.alive && Math.hypot(bo.x - s.x, bo.y - s.y) < s.radius + 6) {
+        damageShip(game, 9, 'Shot down by a Bastion turret.');
+        dead = true;
+      }
+      if (!dead) {
+        // Any rock blocks a bolt — your orbit shield is real cover here
+        for (const b of game.bodies) {
+          if (!b.alive || b.fort) continue;
+          if (Math.abs(b.x - bo.x) > b.radius + 6) continue;
+          if (Math.hypot(b.x - bo.x, b.y - bo.y) < b.radius + 6) {
+            damageBody(game, b, 5);
+            dead = true;
+            break;
+          }
+        }
+      }
+      if (!dead) keep.push(bo);
+    }
+    game.bolts = keep;
+  }
+}
+
 export function updateAliens(game, dt) {
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
+  updateForts(game, dt);
+
+  // WRECKWRIGHTS lurk beyond your battles and descend on rich debris fields.
+  // Collect your scrap or lose it to a golem.
+  game.wrightTimer = (game.wrightTimer ?? 40) - dt;
+  if (game.wrightTimer <= 0) {
+    game.wrightTimer = 25;
+    const s2 = game.ship;
+    const wrightAlive = game.aliens.some((a) => a.alive && a.kind === 'wright');
+    const golems = game.aliens.reduce((n, a) => n + (a.alive && a.kind === 'golem' ? 1 : 0), 0);
+    if (game.time > 90 && s2.alive && !wrightAlive && golems < 2) {
+      let best = null;
+      for (const d of game.debris) {
+        if (Math.hypot(d.x - s2.x, d.y - s2.y) > 7000) continue;
+        if (!best || d.value > best.value) best = d;
+      }
+      if (best) {
+        let field = 0;
+        for (const d of game.debris) {
+          if (Math.hypot(d.x - best.x, d.y - best.y) < 1200) field += d.value;
+        }
+        if (field >= 60) {
+          const th = Math.random() * TAU;
+          const w = new Alien(s2.x + Math.cos(th) * 3800, s2.y + Math.sin(th) * 3800, 'wright');
+          w.anchor = { x: best.x, y: best.y };
+          game.aliens.push(w);
+          game.wrightWarn = true;
+        }
+      }
+    }
+  }
 
   // NESTS are the alien homeland: each living nest sustains a local patrol
   // while the player is in its region. No nest nearby = peaceful space, and

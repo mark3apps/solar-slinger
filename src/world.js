@@ -270,6 +270,26 @@ export function generateWorld(game, seed = 20260721) {
   // (No map-wide free asteroid field — the view-local spawner in
   // replenishWorld keeps rocks available wherever the player actually is.)
 
+  // THE BASTION: a mech race has fortified select worlds — energy shields
+  // plus surface turret batteries. The world itself becomes a weapon until
+  // you drain the shield and smash every turret (liberation pays 200 scrap).
+  const fortify = (body, shield, nTurrets) => {
+    if (!body) return;
+    body.fort = {
+      shield, maxShield: shield, hitT: 0, quiet: 9,
+      turrets: Array.from({ length: nTurrets }, (_, i) => ({ ang: (i / nTurrets) * TAU, cool: 1 + i * 0.7 })),
+    };
+  };
+  const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
+  fortify(planetAtR(10800), 450, 3);
+  fortify(planetAtR(18600), 450, 3);
+  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28).slice(0, 3);
+  for (const m of bigMoons) fortify(m, 260, 2);
+
+  // THE EMBERKIN: living plasma already blooming on the innermost lava world.
+  // It deepens over time and, at full bloom, seeds the next planet outward.
+  planets[0].ember = 0.55;
+
   // Rogue planets — wanderers that stir up (but can't shred) the system
   const rogues = [
     { mass: 2.5e5, radius: 95 },
@@ -404,25 +424,46 @@ export function replenishWorld(game, dt) {
     game.cometWarn = true;
   }
 
+  // Emberkin creep: infestations deepen over time, and at full bloom seed
+  // the next planet outward — untreated, they take the whole system
+  for (const p of game.bodies) {
+    if (!p.alive || p.type !== 'planet' || !p.ember) continue;
+    p.ember = Math.min(1, p.ember + 0.0011 * dt);
+    if (p.ember >= 1 && !p.emberSeeded) {
+      p.emberSeeded = true;
+      let next = null, bd = Infinity;
+      const pr = Math.hypot(p.x, p.y);
+      for (const q of game.bodies) {
+        if (!q.alive || q.type !== 'planet' || q.ember) continue;
+        const qr = Math.hypot(q.x, q.y);
+        if (qr > pr && qr - pr < bd) { bd = qr - pr; next = q; }
+      }
+      if (next) { next.ember = 0.08; game.emberSeededName = next.name; }
+    }
+  }
+
   // ---- planet-type hazards & gifts (only fire while the player is close) ----
   for (const p of game.bodies) {
     if (!p.alive || p.type !== 'planet' || !s.alive) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);
     if (d > 4200) { continue; }
-    if (p.ptype === 'lava') {
-      // Magma bombardment: molten rock lobbed loosely your way. Dangerous
-      // while glowing; cools into a dense dark rock — great fling ammo.
+    if (p.ptype === 'lava' || p.ember > 0.01) {
+      // Magma bombardment. Wild lava worlds lob loosely; EMBERKIN-colonized
+      // worlds fire AIMED artillery, faster the deeper the infestation.
+      const infested = p.ember > 0.01;
       p.hazT = (p.hazT ?? 4) - dt;
       if (p.hazT <= 0) {
-        p.hazT = 7 + rng() * 6;
-        const ang = Math.atan2(s.y - p.y, s.x - p.x) + (rng() - 0.5) * 0.6;
-        const sp = 300 + rng() * 150;
+        p.hazT = infested ? 8.5 - 5 * p.ember + rng() * 3 : 7 + rng() * 6;
+        const sp = infested ? 400 + rng() * 90 : 300 + rng() * 150;
+        const lead = infested ? d / sp : 0;
+        const tx = s.x + s.vx * lead, ty = s.y + s.vy * lead;
+        const ang = Math.atan2(ty - p.y, tx - p.x) + (rng() - 0.5) * (infested ? 0.12 : 0.6);
         const m = spawnAsteroid(game.bodies,
           p.x + Math.cos(ang) * (p.radius + 30), p.y + Math.sin(ang) * (p.radius + 30),
           p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
           700 + rng() * 1200);
         m.magma = 7; m.color = '#ff8040';
-        game.magmaWarn = true;
+        if (infested) game.emberWarn = true; else game.magmaWarn = true;
       }
     } else if (p.ptype === 'ice') {
       // Cryo-geysers pop free ice chunks into low orbit — shield restock
