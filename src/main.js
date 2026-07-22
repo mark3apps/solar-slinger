@@ -6,7 +6,7 @@ import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllF
 import { updateAliens } from './ai.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
-import { initInput, readControls, mouseWorld, zoomBy } from './input.js';
+import { initInput, readControls, mouseWorld } from './input.js';
 import { setThrust } from './sfx.js';
 import { lerp } from './util.js';
 
@@ -18,6 +18,7 @@ const game = {
   aliens: [],
   debris: [],
   particles: [],
+  flares: [],              // solar plasma in flight
   scrap: 0,
   prog: newProgress(),     // upgrades are automatic — this is the ship's growth
   st: null,
@@ -27,7 +28,7 @@ const game = {
   aim: { x: 0, y: 0 },
   controls: { f: 0, b: 0 },
   cam: { x: 0, y: 0, zoom: 1.15 },
-  userZoom: 1.15,
+  zoomCur: 1.15,           // animated camera zoom (no manual control)
   shake: 0,
   predict: true,
   deathCause: '',
@@ -97,7 +98,6 @@ initInput(canvas, {
     if (game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => { game.volleyCharging = false; },
-  onZoom: (dy) => zoomBy(game, dy),
   onTogglePause: () => {
     game.paused = !game.paused;
     hud.setPauseVisible(game.paused);
@@ -130,7 +130,11 @@ function update(dtReal) {
     // and the camera pulls back so the system shrinks as you level.
     game.st = shipStats(game.prog);
     game.ship.radius = game.st.radius;
-    game.cam.zoom = Math.min(2.4, Math.max(0.04, game.userZoom / game.st.zoomOut));
+    // Cinematic zoom: ease toward the level-driven target instead of
+    // snapping — leveling up feels like slowly zooming out of the universe
+    const zoomTarget = 1.15 / game.st.zoomOut;
+    game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
+    game.cam.zoom = game.zoomCur;
     if (game.st.tier > game.lastTier) {
       game.lastTier = game.st.tier;
       const orbitNote = ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
@@ -213,6 +217,13 @@ function update(dtReal) {
     if (game.rogueIncoming) {
       game.rogueIncoming = 0;
       hud.message('SENSOR ALERT: a rogue planet has entered the sector.', 4.5);
+    }
+    if (game.flareWarn) {
+      game.flareWarn = false;
+      hud.message(game.tut.flare
+        ? 'SOLAR FLARE INBOUND!'
+        : 'SOLAR FLARE — the sun is erupting at you. MOVE!', game.tut.flare ? 2.5 : 4.5);
+      game.tut.flare = true;
     }
     if (game.magmaWarn) {
       game.magmaWarn = false;

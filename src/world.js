@@ -277,7 +277,7 @@ export function generateWorld(game, seed = 20260721) {
   // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
   // from the rocks around it.
   const sr = 7000;
-  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * sun.mass) / sr);
+  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
@@ -338,8 +338,32 @@ export function replenishWorld(game, dt) {
     }
   }
 
-  // ---- planet-type hazards & gifts (only fire while the player is close) ----
+  // ---- solar flares: the sun erupts plasma at ships that fly too close ----
   const s = game.ship;
+  game.flareTimer = (game.flareTimer ?? 14) - dt;
+  if (game.flareTimer <= 0 && s.alive) {
+    game.flareTimer = 16 + rng() * 14;
+    const sun = game.homeStar;
+    const d = Math.hypot(s.x - sun.x, s.y - sun.y);
+    if (d < CFG.FLARE_RANGE) {
+      // Lead the ship a little, then loose a tight fan of plasma
+      const t = d / CFG.FLARE_SPEED;
+      const ang = Math.atan2(s.y + s.vy * t - sun.y, s.x + s.vx * t - sun.x);
+      for (let i = 0; i < 5; i++) {
+        const a = ang + (i - 2) * 0.055 + (rng() - 0.5) * 0.03;
+        const sp = CFG.FLARE_SPEED * (0.9 + rng() * 0.25);
+        game.flares.push({
+          x: sun.x + Math.cos(a) * (sun.radius + 80),
+          y: sun.y + Math.sin(a) * (sun.radius + 80),
+          vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+          life: 16, radius: 26 + rng() * 18,
+        });
+      }
+      game.flareWarn = true;
+    }
+  }
+
+  // ---- planet-type hazards & gifts (only fire while the player is close) ----
   for (const p of game.bodies) {
     if (!p.alive || p.type !== 'planet' || !s.alive) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);

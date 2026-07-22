@@ -391,6 +391,39 @@ function drawShip(game) {
   const lv = game.st.levels;
   const r = s.radius;
 
+  // GRAVITY-SHIP stages: as it grows the ship becomes ever more a flying
+  // gravity engine — rotating field rings, then a singularity core, then
+  // orbiting field nodes at the top end.
+  const stage = game.st.totalLevel >= 16 ? 3 : game.st.totalLevel >= 9 ? 2 : game.st.totalLevel >= 4 ? 1 : 0;
+  if (stage >= 1) {
+    ctx.strokeStyle = 'rgba(140, 170, 255, 0.5)';
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([r * 0.5, r * 0.35]);
+    ctx.lineDashOffset = -game.time * r * 1.6;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 1.55, 0, TAU); ctx.stroke();
+  }
+  if (stage >= 2) {
+    ctx.strokeStyle = 'rgba(190, 140, 255, 0.42)';
+    ctx.setLineDash([r * 0.32, r * 0.26]);
+    ctx.lineDashOffset = game.time * r * 2.1;   // counter-rotating
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 2.0, 0, TAU); ctx.stroke();
+  }
+  if (stage >= 3) {
+    ctx.strokeStyle = 'rgba(120, 230, 255, 0.35)';
+    ctx.setLineDash([r * 0.2, r * 0.42]);
+    ctx.lineDashOffset = -game.time * r * 2.8;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 2.5, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#9fd0ff';
+    for (let i = 0; i < 3; i++) {
+      const a = game.time * 1.4 + (i * TAU) / 3;
+      ctx.beginPath();
+      ctx.arc(s.x + Math.cos(a) * r * 2.5, s.y + Math.sin(a) * r * 2.5, Math.max(2, r * 0.12), 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.setLineDash([]);
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.angle);
@@ -438,6 +471,17 @@ function drawShip(game) {
     ctx.closePath(); ctx.stroke();
   }
 
+  // Field-vane fins fill out the silhouette once the gravity drive matures
+  if (stage >= 1) {
+    ctx.fillStyle = '#b8cee6';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.2, -r * 0.6); ctx.lineTo(-r * 1.15, -r * 1.05); ctx.lineTo(-r * 0.75, -r * 0.35);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.2, r * 0.6); ctx.lineTo(-r * 1.15, r * 1.05); ctx.lineTo(-r * 0.75, r * 0.35);
+    ctx.closePath(); ctx.fill();
+  }
+
   // Main hull
   ctx.fillStyle = '#dce8f8';
   ctx.strokeStyle = '#6aa8e8';
@@ -449,6 +493,16 @@ function drawShip(game) {
   ctx.lineTo(-r * 0.75, r * 0.7);
   ctx.closePath();
   ctx.fill(); ctx.stroke();
+
+  // Singularity core: the drive's captive gravity well, dark with a violet rim
+  if (stage >= 2) {
+    const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.55);
+    cg.addColorStop(0, 'rgba(10, 6, 24, 0.95)');
+    cg.addColorStop(0.7, 'rgba(120, 80, 220, 0.5)');
+    cg.addColorStop(1, 'transparent');
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, TAU); ctx.fill();
+  }
 
   // FLING DRIVE augment: amber accelerator coils across the body
   if (lv.fling >= 1) {
@@ -628,6 +682,30 @@ export function render(game) {
   }
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
+
+  // Solar flares — searing plasma blobs with trailing streaks
+  if (game.flares && game.flares.length) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of game.flares) {
+      const sm = Math.hypot(f.vx, f.vy) || 1;
+      const tx = f.x - (f.vx / sm) * f.radius * 6, ty = f.y - (f.vy / sm) * f.radius * 6;
+      const streak = ctx.createLinearGradient(f.x, f.y, tx, ty);
+      streak.addColorStop(0, 'rgba(255, 190, 90, 0.55)');
+      streak.addColorStop(1, 'transparent');
+      ctx.strokeStyle = streak;
+      ctx.lineWidth = f.radius * 0.9;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.lineCap = 'butt';
+      const g2 = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.radius * 2.2);
+      g2.addColorStop(0, 'rgba(255, 245, 220, 0.95)');
+      g2.addColorStop(0.35, 'rgba(255, 170, 70, 0.6)');
+      g2.addColorStop(1, 'transparent');
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.radius * 2.2, 0, TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
 
   for (const al of game.aliens) if (al.alive) drawAlien(game, al);
   drawShip(game);

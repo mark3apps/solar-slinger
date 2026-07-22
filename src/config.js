@@ -13,6 +13,14 @@ export const CFG = {
   // The ship feels amplified gravity from everything — big suns and planets
   // should really pull on YOU (thrown objects and NPCs use normal G).
   SHIP_GRAV: 1.45,
+  // ...and the SUN doubly so: stars pull on the ship this much harder still
+  // (total star pull on the ship = SHIP_GRAV * STAR_GRAV_SHIP)
+  STAR_GRAV_SHIP: 1.6,
+
+  // Solar flares: the sun periodically erupts plasma at nearby ships
+  FLARE_RANGE: 10000,      // only fires while the ship is this close to the sun
+  FLARE_SPEED: 750,
+  FLARE_DMG: 26,
 
   // Celestial bodies feel full gravity from stars and their parent planet, but
   // only this fraction from other planets/moons/rogues. The ship, aliens,
@@ -159,10 +167,12 @@ export function shipStats(prog) {
     orbitLvl,
     levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
     fracs,
-    // Start tiny; the top end stays where it was
-    radius: Math.min(32, 9 + totalLevel * 0.9),
-    // Camera pulls back as you grow — the system shrinks around you (gently)
-    zoomOut: Math.min(1.5, 1 + totalLevel * 0.022),
+    // The ship GROWS with you — paired with the deep auto zoom-out below,
+    // leveling reads as you outgrowing the universe
+    radius: Math.min(64, 9 + totalLevel * 2.0),
+    // Camera pulls way back as you grow (animated in main.js, no manual
+    // zoom) — the system visibly shrinks around your ever-bigger ship
+    zoomOut: Math.min(3.4, 1 + totalLevel * 0.11),
     totalLevel,
   };
 }

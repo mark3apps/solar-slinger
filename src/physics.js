@@ -153,12 +153,13 @@ export function damageShip(game, dmg, cause) {
 
 // Full acceleration from all attractors at point (x,y) — used for the ship,
 // aliens, and debris, which always feel everything.
-function gravityAt(attractors, x, y) {
+function gravityAt(attractors, x, y, starMul = 1) {
   let ax = 0, ay = 0;
   for (const b of attractors) {
+    const w = b.type === 'star' ? starMul : 1;
     const dx = b.x - x, dy = b.y - y;
     const d2 = dx * dx + dy * dy + CFG.GRAV_SOFT * CFG.GRAV_SOFT;
-    const inv = (CFG.G * b.mass) / (d2 * Math.sqrt(d2));
+    const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
     ax += dx * inv; ay += dy * inv;
   }
   return { ax, ay };
@@ -528,8 +529,9 @@ export function step(game, dt) {
         GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
     }
 
-    // The ship feels amplified gravity — big bodies really grab at you
-    const g = gravityAt(attractors, s.x, s.y);
+    // The ship feels amplified gravity — big bodies really grab at you,
+    // and the sun hardest of all
+    const g = gravityAt(attractors, s.x, s.y, CFG.STAR_GRAV_SHIP);
     shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
@@ -689,6 +691,39 @@ export function step(game, dt) {
     game.debris = keep;
   }
 
+  // Solar flares: plasma blobs racing out from the sun. They scorch the
+  // ship, vaporize small rocks in their path, and shove bigger ones.
+  if (game.flares && game.flares.length) {
+    const keep = [];
+    for (const f of game.flares) {
+      f.x += f.vx * dt; f.y += f.vy * dt;
+      f.life -= dt;
+      if (s.alive && Math.hypot(f.x - s.x, f.y - s.y) < f.radius + s.radius) {
+        damageShip(game, CFG.FLARE_DMG, 'Scorched by a solar flare.');
+        s.vx += f.vx * 0.18; s.vy += f.vy * 0.18;
+        addParticles(game, s.x, s.y, f.vx * 0.3, f.vy * 0.3, 18, '#ffb35c', 220, 1, 4);
+        f.life = 0;
+      }
+      if (f.life > 0) {
+        for (const b of bodies) {
+          if (!b.alive || b.type === 'star') continue;
+          if (Math.abs(b.x - f.x) > f.radius + b.radius) continue;
+          if (Math.hypot(b.x - f.x, b.y - f.y) > f.radius + b.radius) continue;
+          if (b.mass < 500 && !b.heldBy) {
+            shatter(game, b);
+            f.life = 0;
+          } else {
+            derail(b);
+            b.vx += f.vx * 0.06 * dt * 60; b.vy += f.vy * 0.06 * dt * 60;
+          }
+          break;
+        }
+      }
+      if (f.life > 0 && Math.hypot(f.x, f.y) < CFG.WORLD_R * 1.2) keep.push(f);
+    }
+    game.flares = keep;
+  }
+
   // Particles
   for (const p of game.particles) {
     p.x += p.vx * dt; p.y += p.vy * dt;
@@ -751,12 +786,13 @@ export function predictPaths(game) {
   const dt = CFG.PREDICT_DT;
   const soft2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
 
-  const accelAt = (x, y) => {
+  const accelAt = (x, y, starMul = 1) => {
     let ax = 0, ay = 0;
     for (const b of atr) {
+      const w = b.star ? starMul : 1;
       const dx = b.x - x, dy = b.y - y;
       const d2 = dx * dx + dy * dy + soft2;
-      const inv = (CFG.G * b.mass) / (d2 * Math.sqrt(d2));
+      const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
       ax += dx * inv; ay += dy * inv;
     }
     return [ax, ay];
@@ -793,7 +829,7 @@ export function predictPaths(game) {
     }
 
     if (ship && !shipHit) {
-      let [ax, ay] = accelAt(ship.x, ship.y);
+      let [ax, ay] = accelAt(ship.x, ship.y, CFG.STAR_GRAV_SHIP);
       ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
       ship.vx += ax * dt; ship.vy += ay * dt;
       // Mirror the speed governor so the predicted path stays honest

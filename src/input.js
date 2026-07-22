@@ -1,4 +1,3 @@
-import { clamp } from './util.js';
 import { initAudio } from './sfx.js';
 
 export const input = {
@@ -40,10 +39,8 @@ export function initInput(canvas, handlers) {
     if (e.button === 2) handlers.onRmbUp();
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  canvas.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    handlers.onZoom(e.deltaY);
-  }, { passive: false });
+  // No manual zoom: the camera is cinematic-only, pulling back as you level
+  canvas.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
 }
 
 // W = thrust forward, S = thrust backward. The mouse steers the nose.
@@ -62,8 +59,3 @@ export function mouseWorld(game, vw, vh) {
   };
 }
 
-// The wheel adjusts the player's preferred zoom; the effective camera zoom
-// also pulls back automatically as the ship levels up (see main.js).
-export function zoomBy(game, deltaY) {
-  game.userZoom = clamp(game.userZoom * Math.exp(-deltaY * 0.0011), 0.15, 3);
-}
