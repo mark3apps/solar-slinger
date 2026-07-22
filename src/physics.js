@@ -180,8 +180,16 @@ export function killAlien(game, alien) {
 export function damageShip(game, dmg, cause) {
   const s = game.ship;
   if (!s.alive || s.invuln > 0) return;
-  s.hull -= dmg;
   game.lastDamage = game.time;
+  // The shield eats damage first; only the overflow bites the hull
+  let rem = dmg;
+  if (s.shield > 0 && rem > 0) {
+    const absorbed = Math.min(s.shield, rem);
+    s.shield -= absorbed;
+    rem -= absorbed;
+    s.shieldHitT = 0.35;
+  }
+  s.hull -= rem;
   if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
     addShake(game, Math.min(18, dmg * 0.5));
     sfx.sfxHit();
@@ -794,7 +802,7 @@ export function step(game, dt) {
         game.scrap += d.value;
         game.prog.scrapCollected += d.value;
         game.prog.maxHull = Math.min(GROWTH.HULL_MAX, game.prog.maxHull + d.value * GROWTH.TOUGH_RATE);
-        s.hull = Math.min(game.prog.maxHull, s.hull + d.value);
+        s.hull = Math.min(game.st.hullMax, s.hull + d.value);   // scrap is the ONLY hull heal
         sfx.sfxCollect();
         continue;
       }

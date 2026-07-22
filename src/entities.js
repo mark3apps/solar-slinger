@@ -83,7 +83,9 @@ export class Ship {
     this.angle = 0;
     this.radius = 9;         // grows with progression (see shipStats)
     this.mass = 10;
-    this.hull = 100;
+    this.hull = 67;
+    this.shield = 33;        // recharging layer; absorbs damage before the hull
+    this.shieldHitT = 0;
     this.alive = true;
     this.invuln = 0;
     this.thrusting = false;

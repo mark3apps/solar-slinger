@@ -205,10 +205,11 @@ function update(dtReal) {
       game.sling = null;
     }
 
-    // Hull regen after a quiet spell
-    if (s.alive && game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY && s.hull < game.st.maxHull) {
-      s.hull = Math.min(game.st.maxHull, s.hull + CFG.SHIP_REGEN * dtReal);
+    // Shield recharges after a quiet spell; the hull only heals from scrap
+    if (s.alive && game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY && s.shield < game.st.shieldMax) {
+      s.shield = Math.min(game.st.shieldMax, s.shield + CFG.SHIP_REGEN * dtReal);
     }
+    if (s.shieldHitT > 0) s.shieldHitT -= dtReal;
 
     replenishWorld(game, dtReal);
 

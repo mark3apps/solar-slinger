@@ -592,6 +592,21 @@ function drawShip(game) {
   }
   ctx.setLineDash([]);
 
+  // Personal shield: a faint cyan bubble while any charge remains — it
+  // flashes bright on absorbed hits and dims as the shield drains
+  if (s.shield > 0 && game.st.shieldMax > 0) {
+    const sf = s.shield / game.st.shieldMax;
+    const flash = Math.max(0, s.shieldHitT || 0) * 2.2;
+    const sr2 = r * 1.32 + 5 / game.cam.zoom;
+    ctx.strokeStyle = `rgba(120, 220, 255, ${0.14 + 0.3 * sf + flash})`;
+    ctx.lineWidth = 2 / game.cam.zoom;
+    ctx.beginPath(); ctx.arc(s.x, s.y, sr2, 0, TAU); ctx.stroke();
+    if (flash > 0) {
+      ctx.fillStyle = `rgba(140, 220, 255, ${Math.min(0.35, flash * 0.12)})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, sr2, 0, TAU); ctx.fill();
+    }
+  }
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.angle);
@@ -1114,7 +1129,7 @@ export function render(game) {
 
   // Low-hull vignette
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const hullFrac = game.ship.hull / game.st.maxHull;
+  const hullFrac = game.ship.hull / game.st.hullMax;
   if (game.ship.alive && hullFrac < 0.35) {
     const a = (0.35 - hullFrac) * 1.4 * (0.7 + Math.sin(game.time * 5) * 0.3);
     const g = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.35, vw / 2, vh / 2, vh * 0.75);

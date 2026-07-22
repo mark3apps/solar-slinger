@@ -334,7 +334,8 @@ export function respawnShip(game) {
   const s = game.ship;
   s.x = game.spawn.x; s.y = game.spawn.y;
   s.vx = game.spawn.vx; s.vy = game.spawn.vy;
-  s.hull = game.st.maxHull;
+  s.hull = game.st.hullMax;
+  s.shield = game.st.shieldMax;
   s.alive = true;
   s.invuln = 4;
   game.deathCause = '';

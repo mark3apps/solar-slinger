@@ -54,8 +54,9 @@ export const CFG = {
   RESTITUTION: 0.35,
 
   SHIP_TURN: 9,            // rad/s — the nose tracks the mouse
-  SHIP_REGEN: 2.5,         // hull/s after quiet period
-  SHIP_REGEN_DELAY: 8,
+  // The SHIELD recharges after a quiet spell; the hull only heals from scrap
+  SHIP_REGEN: 9,           // shield/s once recharging
+  SHIP_REGEN_DELAY: 5,     // seconds without damage before recharge starts
 
   PICKUP_MAGNET: 620,      // scrap starts homing inside this range
   DEBRIS_LIFE: 150,
@@ -170,6 +171,9 @@ export function shipStats(prog) {
     fling: prog.fling,
     thrust: prog.thrust,
     maxHull: Math.round(prog.maxHull),
+    // The pool splits ~2/3 hull (scrap-heal only) / 1/3 shield (recharges)
+    hullMax: Math.round(prog.maxHull * (2 / 3)),
+    shieldMax: Math.round(prog.maxHull) - Math.round(prog.maxHull * (2 / 3)),
     // Generous size rule: anything up to ~45% of beam capacity fits the orbit,
     // so a chunky asteroid your beam handles easily is never "too big".
     // The orbit works from the very start (small rocks only at tier 0).

@@ -12,7 +12,7 @@ const TRACKS = [
 ];
 
 export function initHud(game) {
-  for (const id of ['hullFill', 'hullText', 'scrapText', 'tracks', 'msg',
+  for (const id of ['hullFill', 'shieldFill', 'hullText', 'scrapText', 'tracks', 'msg',
     'deathScreen', 'deathCause', 'pauseScreen']) {
     el[id] = document.getElementById(id);
   }
@@ -50,10 +50,13 @@ export function setDeathVisible(v, cause = '') {
 export function updateHud(game) {
   const s = game.ship;
   const st = game.st;
-  const frac = Math.max(0, s.hull / st.maxHull);
-  el.hullFill.style.width = `${frac * 100}%`;
-  el.hullFill.classList.toggle('low', frac < 0.35);
-  el.hullText.textContent = `HULL ${Math.max(0, Math.ceil(s.hull))}/${st.maxHull}`;
+  const hullFrac = Math.max(0, s.hull / st.hullMax);
+  const shieldFrac = Math.max(0, (s.shield || 0) / st.shieldMax);
+  el.hullFill.style.width = `${hullFrac * 66.7}%`;
+  el.shieldFill.style.width = `${shieldFrac * 33.3}%`;
+  el.hullFill.classList.toggle('low', hullFrac < 0.35);
+  el.hullText.textContent =
+    `HULL ${Math.max(0, Math.ceil(s.hull))}/${st.hullMax} ⛨ ${Math.max(0, Math.ceil(s.shield || 0))}/${st.shieldMax}`;
   el.scrapText.textContent = Math.floor(game.scrap);
 
   // Rebuild pips only when a level actually changes
