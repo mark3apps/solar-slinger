@@ -64,7 +64,7 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   const p = new Body({
     type: 'planet', x, y, vx: v.vx, vy: v.vy, mass, radius,
     color: pick(rng, PTYPE_COLORS[ptype]),
-    name: pick(rng, PLANET_NAMES),
+    name: opts.name || pick(rng, PLANET_NAMES),
     ring: opts.ring || false,
     ptype,
     parent: star,
@@ -85,6 +85,40 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
     }
   }
   return p;
+}
+
+// A derelict station in orbit: light enough to steal, tough enough that the
+// jackpot takes a real hit. Shattering one drops salvage modules (physics.js).
+function addStation(bodies, rng, planet) {
+  const r = planet.radius * 2.6 + 60;
+  const th = rng() * TAU;
+  const x = planet.x + Math.cos(th) * r, y = planet.y + Math.sin(th) * r;
+  const v = orbitVel(planet, x, y, 1);
+  const st = new Body({
+    type: 'station', x, y, vx: v.vx, vy: v.vy,
+    mass: 1900, radius: 26, hp: 130,
+    color: '#8fa3b8', name: 'Derelict Station', parent: planet,
+  });
+  bodies.push(st);
+  railBody(st, planet);
+  return st;
+}
+
+// An alien nest: the grabber waves come FROM these. Destroy it and its
+// region goes quiet. High hp — cracking one is a siege, not a drive-by.
+function addNest(bodies, rng, planet) {
+  const r = planet.radius * 3.4 + 120;
+  const th = rng() * TAU;
+  const x = planet.x + Math.cos(th) * r, y = planet.y + Math.sin(th) * r;
+  const v = orbitVel(planet, x, y, 1);
+  const n = new Body({
+    type: 'nest', x, y, vx: v.vx, vy: v.vy,
+    mass: 1800, radius: 30, hp: 520,
+    color: '#69a24e', name: 'Alien Nest', parent: planet,
+  });
+  bodies.push(n);
+  railBody(n, planet);
+  return n;
 }
 
 function asteroidRadius(mass) { return 1.6 + Math.cbrt(mass) * 0.78; }
@@ -129,27 +163,88 @@ export function generateWorld(game, seed = 20260721) {
   });
   bodies.push(sun);
 
-  // Inner system is scorched lava worlds, the middle is rocky with two huge
+  // Inner system is scorched lava worlds, the middle is rocky with huge
   // ringed gas giants, and the far reaches are ice. Top-end planet radius 520.
+  // Each planet is an ECOSYSTEM: stations, nests, trojans, ring fields, junk
+  // satellites, and type hazards all hang off these anchor worlds.
   const layout = [
     { r: 3600,  mass: 2e4,   radius: 60,  ptype: 'lava' },
     { r: 4700,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
     { r: 5900,  mass: 6e4,   radius: 105, ptype: 'rocky', moons: 1 },
     { r: 7000,  belt: true, spread: 450, count: 60 },
-    { r: 8200,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3 },
-    { r: 9800,  mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4 },
-    { r: 11800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7 },
+    { r: 8200,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3, nest: true },
+    { r: 9800,  mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4, station: true },
+    { r: 10800, mass: 1.3e5, radius: 170, ptype: 'rocky', moons: 2 },
+    { r: 11800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7, nest: true },
     { r: 14000, mass: 1.4e5, radius: 180, ptype: 'rocky', moons: 2 },
     { r: 15400, belt: true, spread: 500, count: 50 },
-    { r: 17200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6 },
+    { r: 17200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6, station: true },
+    { r: 18600, mass: 1.8e5, radius: 205, ptype: 'rocky', ring: true, moons: 3 },
     { r: 20000, mass: 6.5e5, radius: 520, ptype: 'gas', ring: true, moons: 8 },
-    { r: 22800, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3 },
+    { r: 22800, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3, nest: true },
     { r: 24800, belt: true, spread: 600, count: 45 },
-    { r: 26200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2 },
+    { r: 26200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2, station: true },
+    { r: 28400, mass: 4e4,   radius: 95,  ptype: 'ice', moons: 1 },
   ];
+  const planets = [];
+  let nameIdx = 0;
   for (const item of layout) {
-    if (item.belt) addBelt(bodies, rng, sun, item.r, item.spread, item.count);
-    else addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
+    if (item.belt) { addBelt(bodies, rng, sun, item.r, item.spread, item.count); continue; }
+    item.name = PLANET_NAMES[nameIdx++ % PLANET_NAMES.length];
+    const p = addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
+    planets.push(p);
+    if (item.station) addStation(bodies, rng, p);
+    if (item.nest) addNest(bodies, rng, p);
+  }
+
+  // TROJAN CLUSTERS: heavyweight planets carry dense rock pockets 60° ahead
+  // and behind on their own orbit (L4/L5) — natural ammo depots that travel
+  // with the planet (same rail radius = same angular speed; the small radial
+  // jitter makes the cluster shear apart slowly, which keeps it organic).
+  for (const p of planets) {
+    if (p.mass < 3e5) continue;
+    const dir = Math.sign(p.rail.w) || 1;
+    const pr = Math.hypot(p.x - sun.x, p.y - sun.y);
+    const pAng = Math.atan2(p.y - sun.y, p.x - sun.x);
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 10; i++) {
+        const a = pAng + side * (Math.PI / 3) + rand(rng, -0.05, 0.05);
+        const tr = pr + rand(rng, -380, 380);
+        const x = sun.x + Math.cos(a) * tr, y = sun.y + Math.sin(a) * tr;
+        const v = orbitVel(sun, x, y, dir);
+        const t = spawnAsteroid(bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+        railBody(t, sun);
+      }
+    }
+  }
+
+  // RING FIELDS: gas-giant rings are made of actual grabbable ice chunks
+  for (const p of planets) {
+    if (p.ptype !== 'gas') continue;
+    for (let i = 0; i < 14; i++) {
+      const a = rng() * TAU;
+      const cr = p.radius * rand(rng, 1.55, 2.15);
+      const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
+      const v = orbitVel(p, x, y, 1);
+      const c = spawnAsteroid(bodies, x, y, v.vx, v.vy, rand(rng, 60, 480));
+      c.color = '#cfe6f2'; c.ice = true;
+      railBody(c, p);
+    }
+  }
+
+  // SATELLITE JUNK: rocky worlds are littered with dead probes — triple scrap
+  for (const p of planets) {
+    if (p.ptype !== 'rocky') continue;
+    const n = 3 + Math.floor(rng() * 2);
+    for (let i = 0; i < n; i++) {
+      const a = rng() * TAU;
+      const jr = p.radius + rand(rng, 80, 300);
+      const x = p.x + Math.cos(a) * jr, y = p.y + Math.sin(a) * jr;
+      const v = orbitVel(p, x, y, 1);
+      const j = spawnAsteroid(bodies, x, y, v.vx, v.vy, rand(rng, 60, 350));
+      j.color = '#9fb0c2'; j.junk = true;
+      railBody(j, p);
+    }
   }
 
   // (No map-wide free asteroid field — the view-local spawner in
@@ -243,6 +338,55 @@ export function replenishWorld(game, dt) {
     }
   }
 
+  // ---- planet-type hazards & gifts (only fire while the player is close) ----
+  const s = game.ship;
+  for (const p of game.bodies) {
+    if (!p.alive || p.type !== 'planet' || !s.alive) continue;
+    const d = Math.hypot(s.x - p.x, s.y - p.y);
+    if (d > 4200) { continue; }
+    if (p.ptype === 'lava') {
+      // Magma bombardment: molten rock lobbed loosely your way. Dangerous
+      // while glowing; cools into a dense dark rock — great fling ammo.
+      p.hazT = (p.hazT ?? 4) - dt;
+      if (p.hazT <= 0) {
+        p.hazT = 7 + rng() * 6;
+        const ang = Math.atan2(s.y - p.y, s.x - p.x) + (rng() - 0.5) * 0.6;
+        const sp = 300 + rng() * 150;
+        const m = spawnAsteroid(game.bodies,
+          p.x + Math.cos(ang) * (p.radius + 30), p.y + Math.sin(ang) * (p.radius + 30),
+          p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
+          700 + rng() * 1200);
+        m.magma = 7; m.color = '#ff8040';
+        game.magmaWarn = true;
+      }
+    } else if (p.ptype === 'ice') {
+      // Cryo-geysers pop free ice chunks into low orbit — shield restock
+      p.hazT = (p.hazT ?? 5) - dt;
+      if (p.hazT <= 0) {
+        p.hazT = 9 + rng() * 6;
+        let n = 0;
+        for (const b of game.bodies) {
+          if (b.alive && b.iceOf === p && !b.heldBy &&
+              Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 700) n++;
+        }
+        if (n < 6) {
+          const a = rng() * TAU;
+          const cr = p.radius + 140 + rng() * 280;
+          const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
+          const v = orbitVel(p, x, y, 1);
+          const c = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, 120 + rng() * 330);
+          c.color = '#bfe3f2'; c.ice = true; c.iceOf = p;
+          railBody(c, p);
+          game.geyserWarn = true;
+        }
+      }
+    }
+  }
+  // Magma cools into dense dark rock
+  for (const b of game.bodies) {
+    if (b.magma > 0) { b.magma -= dt; if (b.magma <= 0) b.color = '#6e5a50'; }
+  }
+
   // View-local asteroid field: rocks only need to exist a threshold outside
   // the current view. Keep a slowly-drifting target count in a ring just
   // beyond the camera edge, and cull local rocks left far behind.
@@ -265,7 +409,8 @@ export function replenishWorld(game, dt) {
   const target = Math.round(30 + 22 * (0.5 + 0.5 * Math.sin(game.time * 0.02)));
   const locals = game.bodies.reduce((n, b) => n + (b.alive && b.local ? 1 : 0), 0);
   const total = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  if (locals >= target || total >= 220) return;
+  // Global cap leaves room for the permanent trojan/ring/junk populations
+  if (locals >= target || total >= 380) return;
   for (let i = 0; i < Math.min(3, target - locals); i++) {
     const th = rng() * TAU;
     const d = viewR + 250 + rng() * 1100;

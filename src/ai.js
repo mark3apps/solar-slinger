@@ -33,6 +33,7 @@ function nearestRock(game, al) {
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
     if (!b.alive || b.type === 'star') continue;
+    if (b.type === 'nest' || b.type === 'station') continue;   // never throw home
     if (b.mass > CFG.ALIEN_CAPACITY) continue;
     if (b.heldBy) continue;
     const d = Math.hypot(b.x - al.x, b.y - al.y);
@@ -129,18 +130,27 @@ function updateAlien(game, al, dt) {
 export function updateAliens(game, dt) {
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
 
-  // Wave spawner — scales with how upgraded the player is
+  // NESTS are the alien homeland: each living nest sustains a local patrol
+  // while the player is in its region. No nest nearby = peaceful space, and
+  // destroying a nest silences its territory for good.
   if (game.time < CFG.ALIEN_FIRST_WAVE) return;
   game.alienTimer -= dt;
   if (game.alienTimer > 0) return;
-  game.alienTimer = CFG.ALIEN_WAVE_EVERY;
+  game.alienTimer = 8;   // per-scan pacing: patrols trickle out, not swarm
 
+  const s = game.ship;
+  if (!s.alive) return;
   const cap = 1 + Math.min(3, Math.floor(game.st.totalLevel / 4));
-  const toSpawn = Math.min(cap - game.aliens.length, 2);
-  for (let i = 0; i < toSpawn; i++) {
+  for (const nest of game.bodies) {
+    if (!nest.alive || nest.type !== 'nest') continue;
+    if (Math.hypot(nest.x - s.x, nest.y - s.y) > 5500) continue;
+    const local = game.aliens.reduce((n, a) => n + (a.alive && a.nest === nest ? 1 : 0), 0);
+    if (local >= cap) continue;
     const th = Math.random() * TAU;
-    const d = 2400 + Math.random() * 600;
-    game.aliens.push(new Alien(game.ship.x + Math.cos(th) * d, game.ship.y + Math.sin(th) * d));
+    const al = new Alien(nest.x + Math.cos(th) * 250, nest.y + Math.sin(th) * 250);
+    al.nest = nest;
+    game.aliens.push(al);
+    game.alienWarn = 3;
+    break;   // one per scan — pressure ramps instead of spiking
   }
-  if (toSpawn > 0) game.alienWarn = 3;
 }

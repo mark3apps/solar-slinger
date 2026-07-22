@@ -145,10 +145,23 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
+  // Hot magma bombs glow until they cool
+  if (b.magma > 0) {
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.4, b.x, b.y, b.radius * 2.6);
+    g.addColorStop(0, 'rgba(255, 140, 50, 0.55)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.6, 0, TAU); ctx.fill();
+  }
+
   ctx.fillStyle = b.color;
   if (b.type === 'asteroid') {
     traceAsteroid(b);
     ctx.fill();
+  } else if (b.type === 'station') {
+    drawStationSprite(b);
+  } else if (b.type === 'nest') {
+    drawNestSprite(game, b);
   } else {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
   }
@@ -179,7 +192,7 @@ function drawBody(game, b) {
 
   // Day/night shading away from the nearest star
   const st = nearestStar(game, b.x, b.y);
-  if (st && b.type !== 'asteroid') {
+  if (st && b.type !== 'asteroid' && b.type !== 'station' && b.type !== 'nest') {
     const ang = Math.atan2(b.y - st.y, b.x - st.x);
     ctx.save();
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
@@ -269,6 +282,42 @@ function drawPlanetDetail(b) {
   ctx.restore();
 }
 
+// Derelict station: tumbling hub ring with dead solar panels
+function drawStationSprite(b) {
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  ctx.fillStyle = '#3d5a78';
+  ctx.fillRect(-b.radius * 2.4, -b.radius * 0.32, b.radius * 1.5, b.radius * 0.64);
+  ctx.fillRect(b.radius * 0.9, -b.radius * 0.32, b.radius * 1.5, b.radius * 0.64);
+  ctx.strokeStyle = b.color;
+  ctx.lineWidth = b.radius * 0.28;
+  ctx.beginPath(); ctx.arc(0, 0, b.radius * 0.72, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#c9d6e4';
+  ctx.beginPath(); ctx.arc(0, 0, b.radius * 0.4, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+// Alien nest: pulsing organic mass ringed with green pods
+function drawNestSprite(game, b) {
+  const pulse = 1 + Math.sin(game.time * 2 + b.id) * 0.08;
+  const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.3, b.x, b.y, b.radius * 2.4);
+  g.addColorStop(0, 'rgba(120, 220, 90, 0.3)');
+  g.addColorStop(1, 'transparent');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.4, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#3f5e36';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * pulse, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#7ec95f';
+  for (let i = 0; i < 6; i++) {
+    const a = b.rot + (i / 6) * TAU;
+    ctx.beginPath();
+    ctx.arc(b.x + Math.cos(a) * b.radius * 0.75, b.y + Math.sin(a) * b.radius * 0.75,
+      b.radius * 0.28 * pulse, 0, TAU);
+    ctx.fill();
+  }
+}
+
 const PTYPE_LABELS = { lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD' };
 
 // Approach indicator: nearing a planet (or rogue) fades in its name plate and
@@ -278,18 +327,25 @@ function drawApproach(game) {
   if (!s.alive) return;
   const z = game.cam.zoom;
   for (const b of game.bodies) {
-    if (!b.alive || (b.type !== 'planet' && b.type !== 'rogue')) continue;
-    const zone = b.radius * 5 + 600;
+    if (!b.alive) continue;
+    const isWorld = b.type === 'planet' || b.type === 'rogue';
+    const isPOI = b.type === 'station' || b.type === 'nest';
+    if (!isWorld && !isPOI) continue;
+    const zone = isPOI ? 1400 : b.radius * 5 + 600;
     const d = Math.hypot(b.x - s.x, b.y - s.y);
     if (d > zone) continue;
     const t = 1 - Math.max(0, (d - b.radius) / (zone - b.radius));  // 0 edge -> 1 surface
     const a = 0.15 + 0.55 * t;
 
-    ctx.strokeStyle = `rgba(200, 220, 255, ${0.05 + 0.07 * t})`;
-    ctx.lineWidth = 1.5 / z;
-    ctx.beginPath(); ctx.arc(b.x, b.y, zone, 0, TAU); ctx.stroke();
+    if (isWorld) {
+      ctx.strokeStyle = `rgba(200, 220, 255, ${0.05 + 0.07 * t})`;
+      ctx.lineWidth = 1.5 / z;
+      ctx.beginPath(); ctx.arc(b.x, b.y, zone, 0, TAU); ctx.stroke();
+    }
 
     const label = b.type === 'rogue' ? 'ROGUE PLANET'
+      : b.type === 'station' ? 'DERELICT STATION'
+      : b.type === 'nest' ? 'ALIEN NEST'
       : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`;
     const fs = Math.max(13 / z, b.radius * 0.16);
     ctx.font = `600 ${fs}px system-ui, sans-serif`;
@@ -502,6 +558,12 @@ function drawMinimap(game) {
       ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.type === 'planet') {
       ctx.fillStyle = b.color;
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    } else if (b.type === 'nest') {
+      ctx.fillStyle = '#7ec95f';
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    } else if (b.type === 'station') {
+      ctx.fillStyle = '#c9d6e4';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   }

@@ -64,6 +64,20 @@ export function shatter(game, body, credit = null) {
     }
   }
 
+  // Derelict stations break into salvage modules — metallic, triple-scrap
+  if (body.type === 'station') {
+    for (let i = 0; i < 4; i++) {
+      const th = (i / 4) * TAU + Math.random();
+      const sp = 60 + Math.random() * 90;
+      const frag = spawnAsteroid(game.bodies,
+        body.x + Math.cos(th) * body.radius, body.y + Math.sin(th) * body.radius,
+        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp,
+        300 + Math.random() * 400);
+      frag.color = '#9fb0c2'; frag.junk = true;
+    }
+  }
+  if (body.type === 'nest') game.nestKilled = true;   // main.js announces it
+
   dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, scrapValue(body));
   addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3,
     isBig ? 50 : 16, body.color, isBig ? 260 : 140, isBig ? 1.6 : 0.9, isBig ? 5 : 3);
@@ -229,7 +243,8 @@ function collideBodies(game, a, b) {
   if (closing >= 0 && closing < 70) {
     const big = a.mass >= b.mass ? a : b;
     const small = big === a ? b : a;
-    if (big.mass >= small.mass * 15 && !small.heldBy && small.type !== 'rogue') {
+    if (big.mass >= small.mass * 15 && !small.heldBy && small.type !== 'rogue' &&
+        small.type !== 'station' && small.type !== 'nest') {   // artificial structures don't melt into planets
       small.alive = false;
       if (small === game.held) game.held = null;
       if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'absorbed', type: small.type, mass: Math.round(small.mass) });
@@ -390,13 +405,15 @@ export function step(game, dt) {
           if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { derail(b); break; }
         }
       } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 &&
-                 (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet')) {
+                 (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet' ||
+                  b.type === 'station' || b.type === 'nest')) {
         // Never re-rail on-screen: a flung rock snapping onto a circular
         // orbit in front of the player reads as "it just stopped mid-flight"
         if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) <
             (game.viewR || 1200) * 1.15 + 300) continue;
         // Try to re-rail around the natural parent
-        const parent = (b.type === 'moon' && b.parent && b.parent.alive) ? b.parent : game.homeStar;
+        const parent = (b.type !== 'asteroid' && b.type !== 'planet' && b.parent && b.parent.alive)
+          ? b.parent : game.homeStar;   // moons/stations/nests re-rail around their planet
         let clear = true;
         for (const d of disturbers) {
           if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { clear = false; break; }
@@ -487,6 +504,24 @@ export function step(game, dt) {
     shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
+
+    // CLOUD SKIMMING: a low pass over a gas giant's cloud tops slings you
+    // forward — free delta-v if you're brave. Dip too deep and the heat bites.
+    game.skimT = Math.max(0, (game.skimT || 0) - dt);
+    for (const b of attractors) {
+      if (b.ptype !== 'gas' || !b.alive) continue;
+      const d = Math.hypot(s.x - b.x, s.y - b.y);
+      if (d > b.radius * 1.05 && d < b.radius * 1.5) {
+        const depth = 1 - (d - b.radius * 1.05) / (b.radius * 0.45);
+        const sp = Math.hypot(s.vx, s.vy) || 1;
+        const boost = 260 * depth;
+        shipAx += (s.vx / sp) * boost; shipAy += (s.vy / sp) * boost;
+        game.skimT = 0.25;
+        addParticles(game, s.x - s.vx * 0.04, s.y - s.vy * 0.04, s.vx * 0.5, s.vy * 0.5,
+          1, '#ffc276', 60, 0.5, 2.5);
+        if (d < b.radius * 1.16) damageShip(game, 9 * dt, 'Burned up in the cloud tops of a gas giant.');
+      }
+    }
 
     // The Oort cloud grinds ships apart
     const rc = Math.hypot(s.x, s.y);

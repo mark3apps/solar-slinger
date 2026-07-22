@@ -7,10 +7,12 @@ export function massToHp(mass) { return Math.max(4, mass * 0.012); }
 // Scrap payout for fully destroying a body
 export function scrapValue(body) {
   switch (body.type) {
-    case 'asteroid': return 6 + body.mass * 0.006;
+    case 'asteroid': return (6 + body.mass * 0.006) * (body.junk ? 3 : 1);
     case 'moon':     return 30 + body.mass * 0.004;
     case 'planet':   return 90 + body.mass * 0.0012;
     case 'rogue':    return 400;
+    case 'station':  return 350;   // derelict salvage jackpot
+    case 'nest':     return 500;   // hard to crack, well worth it
     default:         return 5;
   }
 }
@@ -36,7 +38,8 @@ export class Body {
     this.spin = (Math.random() - 0.5) * 0.6;
     this.rot = Math.random() * 6.28;
     this.attractor = this.type === 'star' || o.mass >= CFG.ATTRACT_MIN;
-    this.maxHp = this.type === 'star' ? Infinity : massToHp(o.mass);
+    // Stations/nests override hp: light enough to grab, tough enough to matter
+    this.maxHp = this.type === 'star' ? Infinity : (o.hp || massToHp(o.mass));
     this.hp = this.maxHp;
     this.alive = true;
     this.heldBy = null;      // 'player' | 'orbit' | alien ref | null

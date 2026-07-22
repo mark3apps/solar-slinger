@@ -213,6 +213,28 @@ function update(dtReal) {
       game.rogueIncoming = 0;
       hud.message('SENSOR ALERT: a rogue planet has entered the sector.', 4.5);
     }
+    if (game.magmaWarn) {
+      game.magmaWarn = false;
+      if (!game.tut.magma) {
+        game.tut.magma = true;
+        hud.message('MAGMA EJECTION — lava worlds hurl molten rock. It cools into dense fling ammo.', 5);
+      }
+    }
+    if (game.geyserWarn) {
+      game.geyserWarn = false;
+      if (!game.tut.geyser) {
+        game.tut.geyser = true;
+        hud.message('Cryo-geyser! Ice worlds pop free shield ammo into low orbit.', 5);
+      }
+    }
+    if (game.skimT > 0 && !game.tut.skim) {
+      game.tut.skim = true;
+      hud.message("CLOUD SKIMMING — the cloud tops sling you forward. Don't dip too deep.", 5);
+    }
+    if (game.nestKilled) {
+      game.nestKilled = false;
+      hud.message('ALIEN NEST DESTROYED — this region of space is quiet now.', 6);
+    }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
       hud.setDeathVisible(true, game.deathCause);
