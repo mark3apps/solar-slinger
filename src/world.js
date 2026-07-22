@@ -122,11 +122,11 @@ export function generateWorld(game, seed = 20260721) {
     { r: 2400,  mass: 2e4,   radius: 55 },
     { r: 3300,  mass: 3e4,   radius: 70 },
     { r: 4200,  mass: 5e4,   radius: 95,  moons: 1 },
-    { r: 5200,  belt: true, spread: 400, count: 60 },
+    { r: 5200,  belt: true, spread: 400, count: 90 },
     { r: 6600,  mass: 1e5,   radius: 150, moons: 3 },
     { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 6 },
     { r: 10800, mass: 1.2e5, radius: 160, moons: 2 },
-    { r: 11900, belt: true, spread: 450, count: 50 },
+    { r: 11900, belt: true, spread: 450, count: 65 },
     { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 5 },
     { r: 16800, mass: 6e4,   radius: 110, moons: 3 },
   ];
@@ -136,7 +136,7 @@ export function generateWorld(game, seed = 20260721) {
   }
 
   // Free-floating asteroids — the space between orbits shouldn't feel empty
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 160; i++) {
     const th = rng() * TAU;
     const r = rand(rng, 3600, CFG.WORLD_R * 0.94);
     const v = orbitVel(sun, Math.cos(th) * r, Math.sin(th) * r, rng() < 0.9 ? 1 : -1);
@@ -237,8 +237,8 @@ export function replenishWorld(game, dt) {
   if (game.asteroidTimer > 0) return;
   game.asteroidTimer = 3;
   const count = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  if (count >= 170) return;
-  const spawnN = count < 110 ? 3 : 1;
+  if (count >= 230) return;
+  const spawnN = count < 160 ? 3 : 1;
   for (let i = 0; i < spawnN; i++) {
     const th = rng() * TAU;
     const d = 2400 + rng() * 1400;

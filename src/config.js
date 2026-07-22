@@ -64,8 +64,10 @@ export const CFG = {
   ALIEN_WAVE_EVERY: 42,
   ALIEN_SCRAP: 28,
 
-  PREDICT_STEPS: 200,      // trajectory forecast resolution
+  PREDICT_STEPS: 200,      // trajectory forecast resolution (ship path)
   PREDICT_DT: 1 / 30,
+  HELD_STEPS: 60,          // the throw line is short (~2s of flight)...
+  LOCK_T: 1.8,             // ...and lock-on only works within throw-line reach
 };
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your
@@ -91,8 +93,8 @@ export const GROWTH = {
   HULL_MAX: 800,
   THRUST_BASE: 100,        // slow start — leveling up opens the system to you
   THRUST_MAX: 1100,
-  THRUST_SCALE: 62,        // thrust = base + scale * sqrt(deltaV / THRUST_DIV)
-  THRUST_DIV: 4500,        // bigger = slower engine leveling
+  THRUST_SCALE: 80,        // thrust = base + scale * sqrt(deltaV / THRUST_DIV)
+  THRUST_DIV: 2500,        // bigger = slower engine leveling
 };
 
 export function newProgress() {

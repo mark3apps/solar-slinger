@@ -735,7 +735,7 @@ export function predictPaths(game) {
         if (Math.hypot(b.x - ship.x, b.y - ship.y) < b.radius + ship.r) { shipHit = { x: ship.x, y: ship.y }; break; }
       }
     }
-    if (held && !heldHit) {
+    if (held && !heldHit && i < CFG.HELD_STEPS) {
       let ax, ay;
       if (held.weighted) {
         ax = 0; ay = 0;

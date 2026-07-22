@@ -496,22 +496,7 @@ export function render(game) {
     ctx.stroke();
   }
 
-  // Lock-on reticle
-  if (game.lockTarget && game.lockTarget.alive) {
-    const t = game.lockTarget;
-    const r = t.radius + 12 / game.cam.zoom;
-    const rot = game.time * 2;
-    ctx.strokeStyle = 'rgba(255, 90, 90, 0.9)';
-    ctx.lineWidth = 2 / game.cam.zoom;
-    ctx.save();
-    ctx.translate(t.x, t.y);
-    ctx.rotate(rot);
-    ctx.beginPath();
-    ctx.moveTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.lineTo(0, -r);
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-  }
+  // (No lock reticle — lock-on shows itself as the throw line shifting.)
 
   // "Too heavy" indicator on a failed grab
   if (game.tooHeavyT > 0 && game.tooHeavy) {

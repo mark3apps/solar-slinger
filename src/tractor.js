@@ -12,18 +12,24 @@ function holdPoint(game, body) {
   return { x: s.x + Math.cos(ang) * d, y: s.y + Math.sin(ang) * d };
 }
 
-// Lock-on aim assist: if an alien sits within the (level-scaled) cone around
-// where you're aiming, snap the throw onto an intercept course.
+// Lock-on aim assist: ANY entity (rock, moon, planet, rogue, alien) inside the
+// (level-scaled) cone and within throw-line reach pulls the throw onto an
+// intercept course. UI-wise this is just the throw line shifting slightly.
 export function lockOn(game, baseAng, speed) {
   const s = game.ship;
+  const maxD = Math.min(2600, speed * CFG.LOCK_T);
   let best = null, bestD = Infinity;
-  for (const al of game.aliens) {
-    if (!al.alive) continue;
-    const d = Math.hypot(al.x - s.x, al.y - s.y);
-    if (d > 2400) continue;
-    const ang = Math.atan2(al.y - s.y, al.x - s.x);
-    if (Math.abs(angDiff(baseAng, ang)) > game.st.lockCone) continue;
-    if (d < bestD) { best = al; bestD = d; }
+  const consider = (e) => {
+    const d = Math.hypot(e.x - s.x, e.y - s.y);
+    if (d > maxD) return;
+    const ang = Math.atan2(e.y - s.y, e.x - s.x);
+    if (Math.abs(angDiff(baseAng, ang)) > game.st.lockCone) return;
+    if (d < bestD) { best = e; bestD = d; }
+  };
+  for (const al of game.aliens) if (al.alive) consider(al);
+  for (const b of game.bodies) {
+    if (!b.alive || b.type === 'star' || b === game.held || b.heldBy) continue;
+    consider(b);
   }
   if (!best) return { ang: baseAng, target: null };
   // Lead the target: aim where it will be when the rock arrives
