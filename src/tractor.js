@@ -15,7 +15,7 @@ function holdPoint(game, body) {
 // Lock-on aim assist: ANY entity (rock, moon, planet, rogue, alien) inside the
 // (level-scaled) cone and within throw-line reach pulls the throw onto an
 // intercept course. UI-wise this is just the throw line shifting slightly.
-export function lockOn(game, baseAng, speed) {
+export function lockOn(game, baseAng, speed, exclude = null) {
   const s = game.ship;
   const maxD = Math.min(2600, speed * CFG.LOCK_T);
   let best = null, bestD = Infinity;
@@ -28,7 +28,9 @@ export function lockOn(game, baseAng, speed) {
   };
   for (const al of game.aliens) if (al.alive) consider(al);
   for (const b of game.bodies) {
-    if (!b.alive || b.type === 'star' || b === game.held || b.heldBy) continue;
+    // `exclude` is the rock being thrown RIGHT NOW: releaseHeld clears
+    // game.held before aiming, so without this the throw locks onto itself
+    if (!b.alive || b.type === 'star' || b === game.held || b === exclude || b.heldBy) continue;
     consider(b);
   }
   if (!best) return { ang: baseAng, target: null };
@@ -41,12 +43,14 @@ export function lockOn(game, baseAng, speed) {
 
 // Locked throws briefly steer toward the target after launch — the aliens
 // dodge anything purely ballistic, so this is what makes lock-on real.
-// Guidance authority grows with level.
+// Guidance authority grows with level. ONLY aliens get chased: rocks and
+// moons don't dodge (the launch angle already leads them), and mid-flight
+// curving toward an incidental lock target reads as the throw going rogue.
 function armHoming(game, b) {
   const s = game.ship;
   const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const { target } = lockOn(game, baseAng, game.st.fling);
-  if (target) {
+  const { target } = lockOn(game, baseAng, game.st.fling, b);
+  if (target && game.aliens.includes(target)) {
     b.homing = { target, t: 1.3, acc: 340 + 70 * game.st.totalLevel };
   }
 }
@@ -58,7 +62,7 @@ export function computeFlingVelocity(game, body) {
   const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
   const speed = st.fling * massFactor;
   const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const { ang } = lockOn(game, baseAng, speed);
+  const { ang } = lockOn(game, baseAng, speed, body);
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
