@@ -185,6 +185,25 @@ export function addToOrbit(game) {
   return true;
 }
 
+// LMB with nothing under the cursor: take the orbiter nearest your aim back
+// into the beam — held and individually throwable again.
+export function retrieveFromOrbit(game) {
+  if (!game.orbit.length || !game.ship.alive || game.held) return false;
+  const s = game.ship;
+  const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  let best = 0, bd = Infinity;
+  game.orbit.forEach((b, i) => {
+    const d = Math.abs(angDiff(Math.atan2(b.y - s.y, b.x - s.x), aimAng));
+    if (d < bd) { bd = d; best = i; }
+  });
+  const b = game.orbit.splice(best, 1)[0];
+  b.heldBy = 'player';
+  game.held = b;
+  sfx.sfxGrab();
+  sfx.setBeam(true);
+  return true;
+}
+
 // VOLLEY: hold RMB for VOLLEY_TIME, then every rock in your orbit launches at
 // the cursor in a tight spread (lock-on adjusts the center line).
 export function flingAllFromOrbit(game) {

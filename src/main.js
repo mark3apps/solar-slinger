@@ -2,7 +2,7 @@ import { CFG, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
-import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, lockOn } from './tractor.js';
+import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, lockOn } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
@@ -71,6 +71,11 @@ initInput(canvas, {
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
         hud.message('Got it! RELEASE to FLING it toward the cursor. Every catch strengthens your beam.', 5);
+      }
+    } else if (retrieveFromOrbit(game)) {
+      if (!game.tut.retrieved) {
+        game.tut.retrieved = true;
+        hud.message('Rock pulled back from your orbit — release to fling it.', 4);
       }
     }
   },
