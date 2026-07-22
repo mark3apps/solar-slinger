@@ -31,13 +31,16 @@ function spawnMoon(bodies, rng, planet, mr) {
   const mx = planet.x + Math.cos(mth) * mr;
   const my = planet.y + Math.sin(mth) * mr;
   const mv = orbitVel(planet, mx, my, rng() < 0.85 ? 1 : -1);
-  // Moons stay below ATTRACT_MIN on purpose: as test particles they exert no
-  // force, so packed multi-moon systems can't pump each other (or their
-  // planet) into chaos — these mass ratios physically can't support
-  // mutually-gravitating moons at game scale. Bonus: aliens can throw them.
+  // Moons run the gamut now — some are proper little worlds, and at these
+  // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
+  // rule predates rails: it only ever mattered for LIVE moons, and rails
+  // hold their orbits exact regardless.) Heavier moons also gate the beam:
+  // most need tier 2+ capacity to grab, so mooncatching is earned.
+  const t = rng();
   const m = new Body({
     type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
-    mass: rand(rng, 1400, 1900), radius: rand(rng, 16, 22),
+    mass: 3000 + t * 8000,
+    radius: 18 + t * 16 + rand(rng, -2, 2),
     color: '#d3d9ec', parent: planet,   // pale ice — clearly not an asteroid
   });
   bodies.push(m);

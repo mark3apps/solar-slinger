@@ -153,10 +153,11 @@ export function damageShip(game, dmg, cause) {
 
 // Full acceleration from all attractors at point (x,y) — used for the ship,
 // aliens, and debris, which always feel everything.
-function gravityAt(attractors, x, y, starMul = 1) {
+function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
   let ax = 0, ay = 0;
   for (const b of attractors) {
-    const w = b.type === 'star' ? starMul : 1;
+    const w = b.type === 'star' ? starMul
+      : (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue') ? heavyMul : 1;
     const dx = b.x - x, dy = b.y - y;
     const d2 = dx * dx + dy * dy + CFG.GRAV_SOFT * CFG.GRAV_SOFT;
     const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
@@ -532,8 +533,8 @@ export function step(game, dt) {
     }
 
     // The ship feels amplified gravity — big bodies really grab at you,
-    // and the sun hardest of all
-    const g = gravityAt(attractors, s.x, s.y, CFG.STAR_GRAV_SHIP);
+    // worlds doubly so and the sun hardest of all
+    const g = gravityAt(attractors, s.x, s.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
     shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
@@ -788,10 +789,10 @@ export function predictPaths(game) {
   const dt = CFG.PREDICT_DT;
   const soft2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
 
-  const accelAt = (x, y, starMul = 1) => {
+  const accelAt = (x, y, starMul = 1, heavyMul = 1) => {
     let ax = 0, ay = 0;
     for (const b of atr) {
-      const w = b.star ? starMul : 1;
+      const w = b.star ? starMul : b.weighted ? heavyMul : 1;
       const dx = b.x - x, dy = b.y - y;
       const d2 = dx * dx + dy * dy + soft2;
       const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
@@ -831,7 +832,7 @@ export function predictPaths(game) {
     }
 
     if (ship && !shipHit) {
-      let [ax, ay] = accelAt(ship.x, ship.y, CFG.STAR_GRAV_SHIP);
+      let [ax, ay] = accelAt(ship.x, ship.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
       ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
       ship.vx += ax * dt; ship.vy += ay * dt;
       // Mirror the speed governor so the predicted path stays honest

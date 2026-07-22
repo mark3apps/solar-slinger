@@ -701,6 +701,28 @@ export function render(game) {
   ctx.fillStyle = '#04060d';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // Nearby-planet ambience: inside a planet's domain, space itself blushes
+  // faintly toward the planet's color — you can FEEL that a world is close
+  {
+    let tint = null, tintT = 0;
+    const s = game.ship;
+    for (const b of game.bodies) {
+      if (!b.alive || b.type !== 'planet') continue;
+      const zone = b.radius * 5 + 600;
+      const d = Math.hypot(b.x - s.x, b.y - s.y);
+      if (d > zone) continue;
+      const t = 1 - Math.max(0, (d - b.radius) / (zone - b.radius));
+      if (t > tintT) { tintT = t; tint = b; }
+    }
+    if (tint) {
+      const rr = parseInt(tint.color.slice(1, 3), 16);
+      const gg = parseInt(tint.color.slice(3, 5), 16);
+      const bb = parseInt(tint.color.slice(5, 7), 16);
+      ctx.fillStyle = `rgba(${rr}, ${gg}, ${bb}, ${0.05 + 0.08 * tintT})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
   drawStarfield(game);
 
   const shakeX = (Math.random() - 0.5) * game.shake;
