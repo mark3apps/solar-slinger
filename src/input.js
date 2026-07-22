@@ -43,7 +43,7 @@ export function initInput(canvas, handlers) {
   }, { passive: false });
 }
 
-// Translate WASD into ship-relative thrust each frame
+// W = thrust forward, S = brake, A/D = turn. Mouse aims the beam only.
 export function readControls(game) {
   const k = input.keys;
   game.controls.f = k.has('KeyW') ? 1 : 0;

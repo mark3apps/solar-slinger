@@ -42,7 +42,16 @@ html, body {
 }
 
 #scrapRow { color: #ffd76a; text-shadow: 0 0 8px rgba(255, 190, 60, .7); }
-#tierRow  { color: #8fd0ff; }
+#beamRow, #orbitRow, #statRow { color: #8fd0ff; font-size: 12px; }
+#orbitRow { color: #8fffc9; }
+
+.pips { margin-left: 8px; }
+.pip {
+  display: inline-block; width: 9px; height: 9px; margin-right: 3px;
+  border: 1px solid rgba(120, 200, 255, .45); border-radius: 2px;
+  vertical-align: middle;
+}
+.pip.lit { background: #5ac8ff; box-shadow: 0 0 6px rgba(90, 200, 255, .8); }
 
 #hint {
   position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);

@@ -38,9 +38,10 @@ export class Body {
     this.maxHp = this.type === 'star' ? Infinity : massToHp(o.mass);
     this.hp = this.maxHp;
     this.alive = true;
-    this.heldBy = null;      // 'player' | alien ref | null
+    this.heldBy = null;      // 'player' | 'orbit' | alien ref | null
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;
+    this.catchCount = 0;     // repeat catches of the same rock grow the beam less
   }
 }
 
@@ -49,12 +50,13 @@ export class Ship {
     this.x = 0; this.y = 0;
     this.vx = 0; this.vy = 0;
     this.angle = 0;
-    this.radius = CFG.SHIP_RADIUS;
+    this.radius = 14;        // grows with progression (see shipStats)
     this.mass = 10;
     this.hull = 100;
     this.alive = true;
     this.invuln = 0;
     this.thrusting = false;
+    this.braking = false;
   }
 }
 

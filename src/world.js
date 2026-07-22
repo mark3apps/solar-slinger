@@ -34,14 +34,18 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   bodies.push(p);
 
   for (let i = 0; i < (opts.moons || 0); i++) {
-    const mr = radius + 65 + i * 55 + rand(rng, 0, 25);
+    const mr = radius + 80 + i * 70 + rand(rng, 0, 25);
     const mth = rng() * TAU;
     const mx = x + Math.cos(mth) * mr;
     const my = y + Math.sin(mth) * mr;
     const mv = orbitVel(p, mx, my, 1);
+    // Moons stay below ATTRACT_MIN on purpose: as test particles they exert no
+    // force, so packed multi-moon systems can't pump each other (or their
+    // planet) into chaos — these mass ratios physically can't support
+    // mutually-gravitating moons at game scale. Bonus: aliens can throw them.
     bodies.push(new Body({
       type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
-      mass: rand(rng, 2200, 5200), radius: rand(rng, 10, 14),
+      mass: rand(rng, 1400, 1900), radius: rand(rng, 16, 22),
       color: '#a8a8b8', parent: p,
     }));
   }
@@ -91,34 +95,36 @@ export function generateWorld(game, seed = 20260721) {
   const rng = mulberry32(seed);
   const bodies = game.bodies;
 
-  // Home system — center of the map
-  const home = addSystem(bodies, rng, 0, 0, 5e6, 170, '#ffd98a', [
-    { r: 900,  mass: 2.5e4, radius: 26 },
-    { r: 1500, mass: 5e4,   radius: 34, moons: 1 },
-    { r: 2100, belt: true, spread: 170, count: 30 },
-    { r: 2900, mass: 8e4,   radius: 44, moons: 1 },
-    { r: 4300, mass: 2e5,   radius: 72, ring: true, moons: 2 },
-    { r: 5600, mass: 6e4,   radius: 38 },
+  // Home system — center of the map. Stars dwarf planets; planets dwarf rocks.
+  const home = addSystem(bodies, rng, 0, 0, 5e6, 340, '#ffd98a', [
+    { r: 1100, mass: 2.5e4, radius: 42 },
+    { r: 1700, mass: 5e4,   radius: 55 },
+    { r: 2300, belt: true, spread: 260, count: 45 },
+    { r: 3000, mass: 8e4,   radius: 68, moons: 1 },
+    { r: 4300, mass: 2e5,   radius: 115, ring: true, moons: 3 },
+    { r: 5600, mass: 6e4,   radius: 60, moons: 1 },
   ]);
 
   // Binary neighbor — smaller, denser
-  addSystem(bodies, rng, 9500, -6500, 3.5e6, 145, '#8ab8ff', [
-    { r: 800,  mass: 3e4,   radius: 30 },
-    { r: 1500, belt: true, spread: 140, count: 20 },
-    { r: 2400, mass: 1.6e5, radius: 62, moons: 2, ring: true },
-    { r: 3400, mass: 4e4,   radius: 32 },
+  addSystem(bodies, rng, 9500, -6500, 3.5e6, 300, '#8ab8ff', [
+    { r: 1000, mass: 3e4,   radius: 48 },
+    { r: 1600, belt: true, spread: 200, count: 30 },
+    { r: 2400, mass: 1.6e5, radius: 100, moons: 2, ring: true },
+    { r: 3400, mass: 4e4,   radius: 52, moons: 1 },
+    { r: 4400, mass: 9e4,   radius: 66 },
   ]);
 
   // Red giant system — big and dangerous
-  addSystem(bodies, rng, -9000, 7000, 6e6, 210, '#ff9a6a', [
-    { r: 1100, mass: 3e4,   radius: 28 },
-    { r: 1900, mass: 1e5,   radius: 52, moons: 1 },
-    { r: 2700, belt: true, spread: 200, count: 26 },
-    { r: 4000, mass: 2.2e5, radius: 78, ring: true, moons: 1 },
+  addSystem(bodies, rng, -9000, 7000, 6e6, 420, '#ff9a6a', [
+    { r: 1400, mass: 3e4,   radius: 46 },
+    { r: 2100, mass: 1e5,   radius: 82, moons: 1 },
+    { r: 2900, belt: true, spread: 240, count: 40 },
+    { r: 4000, mass: 2.2e5, radius: 120, ring: true, moons: 2 },
+    { r: 5200, mass: 5e4,   radius: 56 },
   ]);
 
-  // Free-floating asteroids between systems
-  for (let i = 0; i < 36; i++) {
+  // Free-floating asteroids between systems — the void shouldn't feel empty
+  for (let i = 0; i < 80; i++) {
     const th = rng() * TAU;
     const r = rand(rng, 4000, CFG.WORLD_R * 0.9);
     spawnAsteroid(
@@ -131,15 +137,17 @@ export function generateWorld(game, seed = 20260721) {
 
   // Rogue planets — wanderers that stir up (but can't shred) the systems
   const rogues = [
-    { mass: 2.5e5, radius: 62 },
-    { mass: 3.5e5, radius: 74 },
-    { mass: 4.5e5, radius: 86 },
+    { mass: 2.5e5, radius: 95 },
+    { mass: 3e5, radius: 105 },
+    { mass: 3.5e5, radius: 112 },
+    { mass: 4.5e5, radius: 125 },
   ];
   for (const rg of rogues) {
     const th = rng() * TAU;
     const d = CFG.WORLD_R * 0.95;
-    const aimTh = th + Math.PI + rand(rng, -0.5, 0.5);
-    const sp = rand(rng, 18, 34);
+    // Oblique entry: sweep through the map rather than beelining into a star
+    const aimTh = th + Math.PI + (rng() < 0.5 ? -1 : 1) * rand(rng, 0.85, 1.25);
+    const sp = rand(rng, 24, 44);
     bodies.push(new Body({
       type: 'rogue',
       x: Math.cos(th) * d, y: Math.sin(th) * d,
@@ -151,7 +159,7 @@ export function generateWorld(game, seed = 20260721) {
   }
 
   // Player starts in a stable orbit inside the home asteroid belt
-  const sr = 2100;
+  const sr = 2300;
   const sv = Math.sqrt((CFG.G * home.mass) / sr);
   game.spawn = { x: home.x, y: home.y - sr, vx: sv, vy: 0 };
   game.homeStar = home;
@@ -168,13 +176,33 @@ export function respawnShip(game) {
   game.deathCause = '';
 }
 
-// Keep loose asteroids topped up so the player always has ammo nearby.
+// Keep loose asteroids topped up so the player always has ammo nearby, and
+// send in a fresh rogue planet now and then (they eventually dive into stars).
 export function replenishAsteroids(game, dt) {
+  game.rogueTimer = (game.rogueTimer ?? 150) - dt;
+  if (game.rogueTimer <= 0) {
+    game.rogueTimer = 150;
+    const rogues = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'rogue' ? 1 : 0), 0);
+    if (rogues < 3) {
+      const th = Math.random() * TAU;
+      const aimTh = th + Math.PI + (Math.random() < 0.5 ? -1 : 1) * (0.85 + Math.random() * 0.4);
+      const sp = 24 + Math.random() * 20;
+      game.bodies.push(new Body({
+        type: 'rogue',
+        x: Math.cos(th) * CFG.WORLD_R * 0.95, y: Math.sin(th) * CFG.WORLD_R * 0.95,
+        vx: Math.cos(aimTh) * sp, vy: Math.sin(aimTh) * sp,
+        mass: 2.5e5 + Math.random() * 2e5, radius: 95 + Math.random() * 30,
+        color: '#7a4ad9', name: 'Rogue',
+      }));
+      game.rogueIncoming = 3;   // main shows a warning message
+    }
+  }
+
   game.asteroidTimer -= dt;
   if (game.asteroidTimer > 0) return;
-  game.asteroidTimer = 6;
+  game.asteroidTimer = 4;
   const count = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  if (count >= 55) return;
+  if (count >= 150) return;
   const th = Math.random() * TAU;
   const d = 2400 + Math.random() * 1200;
   const x = game.ship.x + Math.cos(th) * d;

@@ -1,8 +1,8 @@
-import { CFG } from './config.js';
+import { CFG, GROWTH } from './config.js';
 import { makeScrap, scrapValue, massToHp } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
-import { TAU, clamp, angDiff } from './util.js';
+import { TAU, clamp } from './util.js';
 import * as sfx from './sfx.js';
 
 // ---------- particles / effects ----------
@@ -70,8 +70,10 @@ export function shatter(game, body, credit = null) {
   addShake(game, isBig ? 14 : 4);
   sfx.sfxBoom(isBig ? 3 : 1);
 
-  if (credit === 'player' && body.type !== 'asteroid') {
-    game.kills = (game.kills || 0) + 1;
+  // AUTO-UPGRADE: smashing things (with your own throws) speeds up the fling
+  if (credit === 'player') {
+    game.prog.fling = Math.min(GROWTH.FLING_MAX, game.prog.fling * (1 + GROWTH.SMASH_RATE * (isBig ? 2 : 1)));
+    game.prog.smashes++;
   }
 }
 
@@ -167,7 +169,7 @@ function gravityOnBody(attractors, body) {
     if (b === body) continue;
     let w;
     if (b === body.parent || b.parent === body) w = 1;
-    else if (b.type === 'star') w = (!anchor || b === anchor) ? 1 : CFG.CROSS_GRAV;
+    else if (b.type === 'star') w = (!anchor || b === anchor) ? 1 : CFG.CROSS_STAR;
     else w = CFG.CROSS_GRAV;
     const dx = b.x - body.x, dy = b.y - body.y;
     const d2 = dx * dx + dy * dy + CFG.GRAV_SOFT * CFG.GRAV_SOFT;
@@ -189,6 +191,8 @@ function boundaryAccel(x, y) {
 // ---------- collisions ----------
 
 function collideBodies(game, a, b) {
+  // Orbiting shield rocks don't grind against each other
+  if (a.heldBy === 'orbit' && b.heldBy === 'orbit') return;
   const dx = b.x - a.x, dy = b.y - a.y;
   const d = Math.hypot(dx, dy) || 0.001;
   const overlap = a.radius + b.radius - d;
@@ -216,11 +220,18 @@ function collideBodies(game, a, b) {
   if (bMoves) { const p = overlap * (aMoves ? a.mass / total : 1); b.x += nx * p; b.y += ny * p; }
 
   if (closing > 0) {
-    // Impulse with restitution (immovable side treated as infinite mass)
+    // Impulse with restitution (immovable side treated as infinite mass).
+    // Natural celestial-vs-celestial bounces are damped — a rogue drive-by
+    // must shove a planet, not launch it out of orbit into its star. Thrown
+    // bodies keep full impulse so planet billiards stay glorious.
     const e = CFG.RESTITUTION;
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
-    const j = ((1 + e) * closing) / (invA + invB || 1);
+    let j = ((1 + e) * closing) / (invA + invB || 1);
+    const celestial = (t) => t === 'planet' || t === 'moon' || t === 'rogue';
+    if (a.thrownTimer <= 0 && b.thrownTimer <= 0 && celestial(a.type) && celestial(b.type)) {
+      j *= 0.25;
+    }
     a.vx -= j * invA * nx; a.vy -= j * invA * ny;
     b.vx += j * invB * nx; b.vy += j * invB * ny;
 
@@ -255,7 +266,8 @@ function collideShipBody(game, s, b) {
   if (d > s.radius + b.radius) return;
 
   if (b.type === 'star') { damageShip(game, 99999, 'You flew into a star.'); return; }
-  if (b === game.held) return;   // held object can't crush you
+  if (b === game.held) return;      // held object can't crush you
+  if (b.heldBy === 'orbit') return; // your own shield can't crush you either
 
   const nx = dx / d, ny = dy / d;
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
@@ -269,7 +281,9 @@ function collideShipBody(game, s, b) {
     // Ship bounces away from the body
     s.vx -= nx * closing * 1.3; s.vy -= ny * closing * 1.3;
     const thrown = b.thrownTimer > 0 && b.thrownBy === 'alien' ? 1.25 : 1;
-    const dmg = CFG.DMG_SHIP * closing * Math.min(b.mass, 4e5) * thrown;
+    // A single impact never quite one-shots you from full health
+    const dmg = Math.min(CFG.DMG_SHIP * closing * Math.min(b.mass, 4e5) * thrown,
+      game.st.maxHull * 0.65);
     if (dmg > 1.5 && closing > 25) {
       damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
@@ -292,13 +306,20 @@ function collideAlienBody(game, al, b) {
   al.x -= nx * overlap; al.y -= ny * overlap;
   if (closing > 0) {
     al.vx -= nx * closing * 1.2; al.vy -= ny * closing * 1.2;
-    const bonus = b.thrownTimer > 0 && b.thrownBy === 'player' ? 2.5 : 1;
+    const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
+    const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
     const dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
     if (dmg > 1) {
       al.hp -= dmg;
       addParticles(game, al.x, al.y, 0, 0, 6, '#8aff6a', 100, 0.5);
-      if (al.hp <= 0) killAlien(game, al);
+      if (al.hp <= 0) {
+        killAlien(game, al);
+        if (playerRock) {   // alien kills count as smashes too
+          game.prog.fling = Math.min(GROWTH.FLING_MAX, game.prog.fling * (1 + GROWTH.SMASH_RATE));
+          game.prog.smashes++;
+        }
+      }
     }
   }
 }
@@ -319,27 +340,45 @@ export function step(game, dt) {
     const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue';
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
-    const bnd = boundaryAccel(b.x, b.y);
-    if (bnd) { b.ax += bnd.ax; b.ay += bnd.ay; }
+    // Star-anchored bodies are held by their sun, never the map edge — the
+    // boundary force would deorbit outer planets of off-center systems.
+    if (!(b.parent && (b.type === 'planet' || b.type === 'moon'))) {
+      const bnd = boundaryAccel(b.x, b.y);
+      if (bnd) { b.ax += bnd.ax; b.ay += bnd.ay; }
+    }
   }
 
   const s = game.ship;
   let shipAx = 0, shipAy = 0;
   if (s.alive) {
-    // Face the mouse
-    const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
-
+    // Tank controls: A/D rotate, W thrusts along the nose, S brakes against
+    // the current velocity. The mouse only aims the tractor beam.
     const th = game.st.thrust;
     const c = game.controls;
-    let tx = (c.f - c.b) * Math.cos(s.angle) + (c.r - c.l) * -Math.sin(s.angle);
-    let ty = (c.f - c.b) * Math.sin(s.angle) + (c.r - c.l) * Math.cos(s.angle);
-    const tm = Math.hypot(tx, ty);
-    s.thrusting = tm > 0.01;
-    if (tm > 1) { tx /= tm; ty /= tm; }
+    s.angle += (c.r - c.l) * CFG.SHIP_TURN * dt;
+
+    let tx = 0, ty = 0;
+    s.thrusting = c.f > 0;
+    s.braking = false;
+    if (c.f) { tx += Math.cos(s.angle) * th; ty += Math.sin(s.angle) * th; }
+    if (c.b) {
+      const sp = Math.hypot(s.vx, s.vy);
+      if (sp > 4) {
+        const dec = th * 0.9;
+        tx -= (s.vx / sp) * dec; ty -= (s.vy / sp) * dec;
+        s.braking = true;
+      }
+    }
+
+    // AUTO-UPGRADE: spent delta-v grows the engines
+    if (s.thrusting || s.braking) {
+      game.prog.dv += th * dt;
+      game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
+        GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / 1000));
+    }
 
     const g = gravityAt(attractors, s.x, s.y);
-    shipAx = g.ax + tx * th; shipAy = g.ay + ty * th;
+    shipAx = g.ax + tx; shipAy = g.ay + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
   }
@@ -351,15 +390,18 @@ export function step(game, dt) {
   }
 
   for (const d of game.debris) {
-    const g = gravityAt(attractors, d.x, d.y);
-    d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
-    if (s.alive) {
-      const dx = s.x - d.x, dy = s.y - d.y;
-      const dd = Math.hypot(dx, dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
-      if (dd < CFG.PICKUP_MAGNET) {
-        const pull = 900 * (1 - dd / CFG.PICKUP_MAGNET) + 150;
-        d.ax += (dx / dd) * pull; d.ay += (dy / dd) * pull;
-      }
+    const dx = s.x - d.x, dy = s.y - d.y;
+    const dd = Math.hypot(dx, dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
+    if (s.alive && dd < CFG.PICKUP_MAGNET) {
+      // Spring-steer toward the ship (matching its velocity) rather than pure
+      // acceleration — otherwise chunks whip into little orbits around you.
+      const t = 1 - dd / CFG.PICKUP_MAGNET;
+      const spd = 260 + 700 * t;
+      const desVx = (dx / dd) * spd + s.vx, desVy = (dy / dd) * spd + s.vy;
+      d.ax = (desVx - d.vx) * 4; d.ay = (desVy - d.vy) * 4;
+    } else {
+      const g = gravityAt(attractors, d.x, d.y);
+      d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
     }
   }
 
@@ -430,9 +472,12 @@ export function step(game, dt) {
   if (game.debris.length) {
     const keep = [];
     for (const d of game.debris) {
-      if (s.alive && Math.hypot(d.x - s.x, d.y - s.y) < s.radius + d.radius + 6) {
+      if (s.alive && Math.hypot(d.x - s.x, d.y - s.y) < s.radius + d.radius + 8) {
+        // AUTO-UPGRADE: scrap heals you and toughens the hull
         game.scrap += d.value;
-        game.collected = (game.collected || 0) + d.value;
+        game.prog.scrapCollected += d.value;
+        game.prog.maxHull = Math.min(GROWTH.HULL_MAX, game.prog.maxHull + d.value * GROWTH.TOUGH_RATE);
+        s.hull = Math.min(game.prog.maxHull, s.hull + d.value);
         sfx.sfxCollect();
         continue;
       }
@@ -521,7 +566,7 @@ export function predictPaths(game) {
         if (o === b) continue;
         let w = 1;
         if (b.weighted && b.parentIdx !== k && o.parentIdx !== bi) {
-          if (o.star) w = (b.anchorIdx === -1 || b.anchorIdx === k) ? 1 : CFG.CROSS_GRAV;
+          if (o.star) w = (b.anchorIdx === -1 || b.anchorIdx === k) ? 1 : CFG.CROSS_STAR;
           else w = CFG.CROSS_GRAV;
         }
         const dx = o.x - b.x, dy = o.y - b.y;
@@ -549,7 +594,7 @@ export function predictPaths(game) {
         for (const o of atr) {
           let w;
           if (o === held.parentGhost) w = 1;
-          else if (o.star) w = (!held.anchorGhost || o === held.anchorGhost) ? 1 : CFG.CROSS_GRAV;
+          else if (o.star) w = (!held.anchorGhost || o === held.anchorGhost) ? 1 : CFG.CROSS_STAR;
           else w = CFG.CROSS_GRAV;
           const dx = o.x - held.x, dy = o.y - held.y;
           const d2 = dx * dx + dy * dy + soft2;

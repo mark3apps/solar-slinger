@@ -1,15 +1,15 @@
-import { UPGRADES, shipStats } from './config.js';
-import { sfxUpgrade, sfxDenied } from './sfx.js';
+import { GROWTH, TIERS } from './config.js';
 
 const el = {};
 let msgTimer = null;
 
 export function initHud(game) {
-  for (const id of ['hullFill', 'hullText', 'scrapText', 'tierText', 'msg',
-    'upgradePanel', 'upList', 'deathScreen', 'deathCause', 'pauseScreen']) {
+  for (const id of ['hullFill', 'hullText', 'scrapText', 'beamText', 'orbitText',
+    'flingText', 'thrustText', 'msg', 'upgradePanel', 'upList',
+    'deathScreen', 'deathCause', 'pauseScreen']) {
     el[id] = document.getElementById(id);
   }
-  buildUpgradeList(game);
+  void game;
 }
 
 export function message(text, dur = 3.5) {
@@ -23,70 +23,47 @@ export function message(text, dur = 3.5) {
   msgTimer = setTimeout(() => el.msg.classList.add('hidden'), dur * 1000);
 }
 
-function buildUpgradeList(game) {
-  el.upList.innerHTML = '';
-  for (const key of Object.keys(UPGRADES)) {
-    const row = document.createElement('div');
-    row.className = 'uprow';
-    row.innerHTML = `
-      <div class="upinfo">
-        <div class="upname"></div>
-        <div class="updesc"></div>
-        <div class="uplevel"></div>
-      </div>
-      <button class="upbtn"></button>`;
-    row.querySelector('.upbtn').addEventListener('click', () => buyUpgrade(game, key));
-    row.dataset.key = key;
-    el.upList.appendChild(row);
-  }
-  refreshUpgrades(game);
+// Read-only ship systems view (upgrades are automatic — this shows progress)
+function trackRow(name, level, value, how) {
+  const pips = Array.from({ length: 6 }, (_, i) =>
+    `<span class="pip${i <= level ? ' lit' : ''}"></span>`).join('');
+  return `<div class="uprow">
+    <div class="upinfo">
+      <div class="upname">${name} <span class="pips">${pips}</span></div>
+      <div class="uplevel">${value}</div>
+      <div class="updesc">${how}</div>
+    </div>
+  </div>`;
 }
 
-export function refreshUpgrades(game) {
-  for (const row of el.upList.children) {
-    const key = row.dataset.key;
-    const u = UPGRADES[key];
-    const lvl = game.up[key];
-    const maxed = lvl >= u.levels.length - 1;
-    row.querySelector('.upname').textContent = u.name;
-    row.querySelector('.updesc').textContent = u.desc;
-    const cur = key === 'capacity' ? u.labels[lvl] : u.levels[lvl];
-    const next = maxed ? '' : (key === 'capacity' ? u.labels[lvl + 1] : u.levels[lvl + 1]);
-    row.querySelector('.uplevel').textContent =
-      `Lv ${lvl + 1}/${u.levels.length} — ${cur}` + (maxed ? '' : `  →  ${next}`);
-    const btn = row.querySelector('.upbtn');
-    if (maxed) {
-      btn.textContent = 'MAXED';
-      btn.disabled = true;
-      btn.classList.add('maxed');
-    } else {
-      const cost = u.costs[lvl + 1];
-      btn.textContent = `⬡ ${cost}`;
-      btn.disabled = game.scrap < cost;
-      btn.classList.remove('maxed');
-    }
-  }
-}
-
-function buyUpgrade(game, key) {
-  const u = UPGRADES[key];
-  const lvl = game.up[key];
-  if (lvl >= u.levels.length - 1) return;
-  const cost = u.costs[lvl + 1];
-  if (game.scrap < cost) { sfxDenied(); return; }
-  game.scrap -= cost;
-  game.up[key]++;
-  game.st = shipStats(game.up);
-  if (key === 'hull') game.ship.hull = game.st.maxHull;
-  sfxUpgrade();
-  refreshUpgrades(game);
-  if (key === 'capacity') message(`Tractor upgraded: can now grab ${game.st.capacityLabel.toUpperCase()}`, 4);
+export function refreshStats(game) {
+  const st = game.st, p = game.prog;
+  const nextCap = st.tier < TIERS.caps.length - 1
+    ? ` — next tier at ${Math.round(TIERS.caps[st.tier + 1] / 1000)}k` : ' — MAX';
+  el.upList.innerHTML =
+    trackRow('TRACTOR BEAM', st.levels.beam,
+      `grabs ${st.label.toLowerCase()} (${Math.round(st.capacity / 100) / 10}k capacity${nextCap})`,
+      `${p.catches} catches — grows every time you tractor something; heavy catches grow it faster`) +
+    trackRow('ORBIT SHIELD', Math.max(-1, st.levels.beam - 1),
+      st.orbitCap > 0
+        ? `holds ${st.maxOrbiters} × ${st.orbitLabel.toLowerCase()} (right-click while holding)`
+        : 'locked — strengthen the beam to unlock',
+      'orbiting rocks block incoming fire; left-click empty space to fling one') +
+    trackRow('FLING DRIVE', st.levels.fling,
+      `launch speed ${Math.round(st.fling)}`,
+      `${p.smashes} smashes — grows every time one of your throws destroys something`) +
+    trackRow('HULL', st.levels.hull,
+      `max integrity ${st.maxHull}`,
+      `${Math.round(p.scrapCollected)} scrap absorbed — collecting scrap heals and toughens you`) +
+    trackRow('ENGINES', st.levels.thrust,
+      `thrust ${Math.round(st.thrust)}`,
+      `${Math.round(p.dv / 1000)}k delta-v spent — flying hard makes you faster`);
 }
 
 export function toggleUpgrades(game) {
   game.upOpen = !game.upOpen;
   el.upgradePanel.classList.toggle('hidden', !game.upOpen);
-  if (game.upOpen) refreshUpgrades(game);
+  if (game.upOpen) refreshStats(game);
 }
 
 export function setPauseVisible(v) { el.pauseScreen.classList.toggle('hidden', !v); }
@@ -98,14 +75,17 @@ export function setDeathVisible(v, cause = '') {
 
 export function updateHud(game) {
   const s = game.ship;
-  const frac = Math.max(0, s.hull / game.st.maxHull);
+  const st = game.st;
+  const frac = Math.max(0, s.hull / st.maxHull);
   el.hullFill.style.width = `${frac * 100}%`;
   el.hullFill.classList.toggle('low', frac < 0.35);
-  el.hullText.textContent = `HULL ${Math.max(0, Math.ceil(s.hull))}/${game.st.maxHull}`;
+  el.hullText.textContent = `HULL ${Math.max(0, Math.ceil(s.hull))}/${st.maxHull}`;
   el.scrapText.textContent = Math.floor(game.scrap);
-  el.tierText.textContent = game.st.capacityLabel;
-  if (game.upOpen && game._scrapDirty !== Math.floor(game.scrap)) {
-    game._scrapDirty = Math.floor(game.scrap);
-    refreshUpgrades(game);
-  }
+  el.beamText.textContent = st.label;
+  el.orbitText.textContent = st.orbitCap > 0
+    ? `${game.orbit.length}/${st.maxOrbiters} (${st.orbitLabel.toLowerCase()})`
+    : 'locked';
+  el.flingText.textContent = Math.round(st.fling);
+  el.thrustText.textContent = Math.round(st.thrust);
+  if (game.upOpen) refreshStats(game);
 }

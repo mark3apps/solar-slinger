@@ -1,5 +1,6 @@
 import { CFG } from './config.js';
 import { predictPaths } from './physics.js';
+import { orbitRadius } from './tractor.js';
 import { TAU, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
@@ -126,14 +127,40 @@ function drawBody(game, b) {
     ctx.stroke();
   }
 
-  // Held highlight
+  // Held / orbiting highlights
   if (b.heldBy === 'player') {
     ctx.strokeStyle = 'rgba(120, 220, 255, 0.8)';
     ctx.lineWidth = 2 / game.cam.zoom;
     ctx.setLineDash([6 / game.cam.zoom, 5 / game.cam.zoom]);
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 8 / game.cam.zoom, 0, TAU); ctx.stroke();
     ctx.setLineDash([]);
+  } else if (b.heldBy === 'orbit') {
+    ctx.strokeStyle = 'rgba(130, 255, 200, 0.55)';
+    ctx.lineWidth = 1.5 / game.cam.zoom;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / game.cam.zoom, 0, TAU); ctx.stroke();
   }
+}
+
+// Faint hints: beam reach (blue) and the shield-orbit ring (green)
+function drawShipRings(game) {
+  const s = game.ship;
+  if (!s.alive) return;
+  const z = game.cam.zoom;
+
+  ctx.strokeStyle = 'rgba(90, 180, 255, 0.14)';
+  ctx.lineWidth = 1.5 / z;
+  ctx.setLineDash([5 / z, 11 / z]);
+  ctx.beginPath(); ctx.arc(s.x, s.y, game.st.range, 0, TAU); ctx.stroke();
+
+  if (game.st.orbitCap > 0) {
+    ctx.strokeStyle = 'rgba(120, 255, 200, 0.22)';
+    ctx.lineWidth = 1.5 / z;
+    ctx.setLineDash([3 / z, 8 / z]);
+    ctx.lineDashOffset = -game.time * 24;
+    ctx.beginPath(); ctx.arc(s.x, s.y, orbitRadius(game), 0, TAU); ctx.stroke();
+    ctx.lineDashOffset = 0;
+  }
+  ctx.setLineDash([]);
 }
 
 function drawBeam(game, fromX, fromY, obj, color) {
@@ -154,38 +181,97 @@ function drawShip(game) {
   if (!s.alive) return;
   if (s.invuln > 0 && Math.floor(game.time * 10) % 2 === 0) return;  // respawn blink
 
+  const lv = game.st.levels;
+  const r = s.radius;
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.angle);
 
   if (s.thrusting) {
-    const f = 1 + Math.sin(game.time * 40) * 0.3;
-    const g = ctx.createLinearGradient(-s.radius, 0, -s.radius * 2.6 * f, 0);
+    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15);
+    const g = ctx.createLinearGradient(-r, 0, -r * 2.6 * f, 0);
     g.addColorStop(0, 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.moveTo(-s.radius * 0.7, -5);
-    ctx.lineTo(-s.radius * 2.6 * f, 0);
-    ctx.lineTo(-s.radius * 0.7, 5);
+    ctx.moveTo(-r * 0.7, -5 - lv.thrust);
+    ctx.lineTo(-r * 2.6 * f, 0);
+    ctx.lineTo(-r * 0.7, 5 + lv.thrust);
+    ctx.closePath(); ctx.fill();
+  }
+  if (s.braking) {
+    // Retro puffs firing forward
+    ctx.fillStyle = 'rgba(255, 190, 120, 0.7)';
+    const f = 1 + Math.sin(game.time * 50) * 0.4;
+    ctx.beginPath();
+    ctx.moveTo(r * 0.9, -4);
+    ctx.lineTo(r * (1.5 + 0.4 * f), 0);
+    ctx.lineTo(r * 0.9, 4);
     ctx.closePath(); ctx.fill();
   }
 
+  // ENGINES augment: side pods, bigger with level
+  if (lv.thrust >= 1) {
+    const pr = 2 + lv.thrust * 0.8;
+    ctx.fillStyle = '#8aa8c8';
+    ctx.beginPath(); ctx.arc(-r * 0.55, -r * 0.62, pr, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(-r * 0.55, r * 0.62, pr, 0, TAU); ctx.fill();
+  }
+
+  // HULL augment: armor shell outline, thicker with level
+  if (lv.hull >= 1) {
+    ctx.strokeStyle = 'rgba(160, 190, 220, 0.55)';
+    ctx.lineWidth = 1.5 + lv.hull * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(r * 1.12, 0);
+    ctx.lineTo(-r * 0.9, -r * 0.85);
+    ctx.lineTo(-r * 0.5, 0);
+    ctx.lineTo(-r * 0.9, r * 0.85);
+    ctx.closePath(); ctx.stroke();
+  }
+
+  // Main hull
   ctx.fillStyle = '#dce8f8';
   ctx.strokeStyle = '#6aa8e8';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(s.radius, 0);
-  ctx.lineTo(-s.radius * 0.75, -s.radius * 0.7);
-  ctx.lineTo(-s.radius * 0.35, 0);
-  ctx.lineTo(-s.radius * 0.75, s.radius * 0.7);
+  ctx.moveTo(r, 0);
+  ctx.lineTo(-r * 0.75, -r * 0.7);
+  ctx.lineTo(-r * 0.35, 0);
+  ctx.lineTo(-r * 0.75, r * 0.7);
   ctx.closePath();
   ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#2c6ac8';
-  ctx.beginPath(); ctx.arc(s.radius * 0.25, 0, 3.5, 0, TAU); ctx.fill();
+
+  // FLING DRIVE augment: amber accelerator coils across the body
+  if (lv.fling >= 1) {
+    ctx.strokeStyle = 'rgba(255, 200, 90, 0.75)';
+    ctx.lineWidth = 1.4;
+    for (let i = 0; i < Math.min(3, lv.fling); i++) {
+      const cx = r * (0.15 - i * 0.28);
+      ctx.beginPath(); ctx.arc(cx, 0, r * (0.34 - i * 0.05), -1.9, 1.9); ctx.stroke();
+    }
+  }
+
+  // BEAM augment: emitter prongs on the nose, glowing with tier
+  if (lv.beam >= 1) {
+    ctx.strokeStyle = '#5ac8ff';
+    ctx.lineWidth = 1.6;
+    const pl = r * (0.3 + lv.beam * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.7, -r * 0.28); ctx.lineTo(r * 0.7 + pl, -r * 0.34);
+    ctx.moveTo(r * 0.7, r * 0.28); ctx.lineTo(r * 0.7 + pl, r * 0.34);
+    ctx.stroke();
+  }
+  ctx.fillStyle = lv.beam >= 1 ? '#7adcff' : '#2c6ac8';
+  ctx.beginPath(); ctx.arc(r * 0.25, 0, 3.5 + lv.beam * 0.5, 0, TAU); ctx.fill();
+
   ctx.restore();
 
-  if (game.held) drawBeam(game, s.x + Math.cos(s.angle) * s.radius, s.y + Math.sin(s.angle) * s.radius, game.held, '#5ac8ff');
+  if (game.held) {
+    const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+    drawBeam(game, s.x + Math.cos(ang) * r, s.y + Math.sin(ang) * r, game.held, '#5ac8ff');
+  }
 }
 
 function drawAlien(game, al) {
@@ -299,6 +385,7 @@ export function render(game) {
   ctx.lineWidth = 30;
   ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R, 0, TAU); ctx.stroke();
 
+  drawShipRings(game);
   drawPrediction(game);
   for (const b of game.bodies) if (b.alive) drawBody(game, b);
 

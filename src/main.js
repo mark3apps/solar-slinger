@@ -1,12 +1,12 @@
-import { CFG, shipStats } from './config.js';
+import { CFG, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishAsteroids } from './world.js';
 import { step } from './physics.js';
-import { updateTractor, tryGrab, releaseHeld } from './tractor.js';
+import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingFromOrbit } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
-import { input, initInput, readControls, mouseWorld, zoomBy } from './input.js';
+import { initInput, readControls, mouseWorld, zoomBy } from './input.js';
 import { setThrust } from './sfx.js';
 import { lerp } from './util.js';
 
@@ -19,12 +19,14 @@ const game = {
   debris: [],
   particles: [],
   scrap: 0,
-  up: { capacity: 0, power: 0, engine: 0, hull: 0 },
+  prog: newProgress(),     // upgrades are automatic — this is the ship's growth
   st: null,
   held: null,
+  orbit: [],               // bodies circling the ship as a shield
+  orbitAngle: 0,
   aim: { x: 0, y: 0 },
   controls: { f: 0, b: 0, l: 0, r: 0 },
-  cam: { x: 0, y: 0, zoom: 0.7 },
+  cam: { x: 0, y: 0, zoom: 0.55 },
   shake: 0,
   predict: true,
   deathCause: '',
@@ -38,10 +40,11 @@ const game = {
   upOpen: false,
   tooHeavy: null,
   tooHeavyT: 0,
-  tut: { grabbed: false, flung: false, upgraded: false, alienSeen: false },
+  lastTier: 0,
+  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false },
 };
 
-game.st = shipStats(game.up);
+game.st = shipStats(game.prog);
 generateWorld(game);
 game.cam.x = game.ship.x; game.cam.y = game.ship.y;
 
@@ -52,9 +55,13 @@ hud.initHud(game);
 initInput(canvas, {
   onGrab: () => {
     if (game.paused || !game.ship.alive) return;
-    if (tryGrab(game) && !game.tut.grabbed) {
-      game.tut.grabbed = true;
-      hud.message('Got it! RELEASE the mouse button to FLING it, right-click to drop gently.', 5);
+    if (tryGrab(game)) {
+      if (!game.tut.grabbed) {
+        game.tut.grabbed = true;
+        hud.message('Got it! RELEASE to FLING it toward the cursor. Every catch strengthens your beam.', 5);
+      }
+    } else if (flingFromOrbit(game) && !game.tut.flung) {
+      game.tut.flung = true;
     }
   },
   onFling: () => {
@@ -62,11 +69,22 @@ initInput(canvas, {
       releaseHeld(game, true);
       if (!game.tut.flung) {
         game.tut.flung = true;
-        hud.message('Smash things together to break them into golden scrap — fly close to collect it.', 5);
+        hud.message('Smash things to break them into golden scrap — it heals and toughens you.', 5);
       }
     }
   },
-  onDrop: () => releaseHeld(game, false),
+  onDrop: () => {
+    if (!game.held) return;
+    if (addToOrbit(game)) {
+      if (!game.tut.orbited) {
+        game.tut.orbited = true;
+        hud.message('Added to your orbit! It shields you — left-click empty space to fling it.', 5);
+      }
+    } else {
+      releaseHeld(game, false);
+      if (game.st.orbitCap > 0) hud.message('Too big for your orbit — dropped it instead.', 2.5);
+    }
+  },
   onZoom: (dy) => zoomBy(game, dy),
   onToggleUpgrades: () => hud.toggleUpgrades(game),
   onTogglePause: () => {
@@ -75,7 +93,9 @@ initInput(canvas, {
   },
   onRespawn: () => {
     if (!game.ship.alive) {
-      game.scrap = Math.floor(game.scrap * 0.75);
+      // Death penalty: some toughness is lost with the wreck
+      game.prog.maxHull = Math.max(100, game.prog.maxHull * 0.8);
+      game.st = shipStats(game.prog);
       respawnShip(game);
       hud.setDeathVisible(false);
     }
@@ -84,7 +104,7 @@ initInput(canvas, {
 });
 
 // Opening guidance
-setTimeout(() => hud.message('You are in orbit. W A S D to fly, mouse to aim. The dotted line is your future path.', 6), 800);
+setTimeout(() => hud.message('You are in orbit inside the belt. W thrust, S brake, A/D turn. Mouse aims the beam.', 6), 800);
 setTimeout(() => {
   if (!game.tut.grabbed) hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
 }, 9000);
@@ -94,6 +114,17 @@ let acc = 0;
 
 function update(dtReal) {
     game.time += dtReal;
+
+    // Derived stats track progression continuously; the hull grows with you
+    game.st = shipStats(game.prog);
+    game.ship.radius = game.st.radius;
+    if (game.st.tier > game.lastTier) {
+      game.lastTier = game.st.tier;
+      const orbitNote = game.st.tier === 1
+        ? ' ORBIT SHIELD UNLOCKED — right-click while holding to add.'
+        : ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
+      hud.message(`BEAM STRENGTHENED: you can now grab ${game.st.label.toUpperCase()}.${orbitNote}`, 6);
+    }
 
     // Per-frame inputs & AI
     readControls(game);
@@ -105,6 +136,7 @@ function update(dtReal) {
     acc += dtReal;
     while (acc >= CFG.DT) {
       updateTractor(game, CFG.DT);
+      updateOrbit(game, CFG.DT);
       step(game, CFG.DT);
       acc -= CFG.DT;
     }
@@ -122,13 +154,13 @@ function update(dtReal) {
     if (game.alienWarn > 0) {
       if (!game.tut.alienSeen) {
         game.tut.alienSeen = true;
-        hud.message('WARNING: alien grabbers inbound — they throw rocks. Throw back harder.', 5);
+        hud.message('WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5);
       }
       game.alienWarn = 0;
     }
-    if (!game.tut.upgraded && game.scrap >= 50) {
-      game.tut.upgraded = true;
-      hud.message('Press E to open SHIP UPGRADES — bigger tractors grab moons, then planets.', 5);
+    if (game.rogueIncoming) {
+      game.rogueIncoming = 0;
+      hud.message('SENSOR ALERT: a rogue planet has entered the sector.', 4.5);
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
@@ -136,7 +168,7 @@ function update(dtReal) {
     }
     if (s.alive && game.deathShown) game.deathShown = false;
 
-    setThrust(s.alive && s.thrusting);
+    setThrust(s.alive && (s.thrusting || s.braking));
 
     // Camera follows ship
     game.cam.x = lerp(game.cam.x, s.x, 1 - Math.exp(-6 * dtReal));

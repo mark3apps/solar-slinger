@@ -133,8 +133,7 @@ export function updateAliens(game, dt) {
   if (game.alienTimer > 0) return;
   game.alienTimer = CFG.ALIEN_WAVE_EVERY;
 
-  const ups = Object.values(game.up).reduce((a, b) => a + b, 0);
-  const cap = 1 + Math.min(3, Math.floor(ups / 3));
+  const cap = 1 + Math.min(3, Math.floor(game.st.totalLevel / 4));
   const toSpawn = Math.min(cap - game.aliens.length, 2);
   for (let i = 0; i < toSpawn; i++) {
     const th = Math.random() * TAU;
