@@ -2,7 +2,7 @@ import { CFG, GROWTH } from './config.js';
 import { makeScrap, scrapValue, massToHp } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
-import { TAU, clamp } from './util.js';
+import { TAU, clamp, angDiff } from './util.js';
 import * as sfx from './sfx.js';
 
 // ---------- particles / effects ----------
@@ -120,8 +120,10 @@ export function damageShip(game, dmg, cause) {
   if (!s.alive || s.invuln > 0) return;
   s.hull -= dmg;
   game.lastDamage = game.time;
-  addShake(game, Math.min(18, dmg * 0.5));
-  sfx.sfxHit();
+  if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
+    addShake(game, Math.min(18, dmg * 0.5));
+    sfx.sfxHit();
+  }
   if (s.hull <= 0) {
     s.alive = false;
     game.held = null;
@@ -209,6 +211,28 @@ function collideBodies(game, a, b) {
   const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
   const closing = -(rvx * nx + rvy * ny);
 
+  // Shield rocks earn orbit XP by making contact with incoming alien throws
+  if (closing > 50 &&
+      ((a.heldBy === 'orbit' && b.thrownBy === 'alien' && b.thrownTimer > 0) ||
+       (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
+    game.prog.orbitXp += 3;
+  }
+
+  // No surface-hugging: a small body drifting gently onto a much bigger one
+  // is absorbed (either you're in orbit, or you're part of the planet now).
+  if (closing >= 0 && closing < 70) {
+    const big = a.mass >= b.mass ? a : b;
+    const small = big === a ? b : a;
+    if (big.mass >= small.mass * 15 && !small.heldBy && small.type !== 'rogue') {
+      small.alive = false;
+      if (small === game.held) game.held = null;
+      if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'absorbed', type: small.type, mass: Math.round(small.mass) });
+      dropScrap(game, small.x, small.y, big.vx * 0.6, big.vy * 0.6, scrapValue(small) * 0.3);
+      addParticles(game, small.x, small.y, big.vx * 0.5, big.vy * 0.5, 10, small.color, 90, 0.7);
+      return;
+    }
+  }
+
   // In very lopsided collisions the heavy body is immovable — otherwise the
   // constant rain of ambient asteroid bumps random-walks planet orbits.
   const aMoves = a.mass < b.mass * 20;
@@ -278,8 +302,11 @@ function collideShipBody(game, s, b) {
   s.x -= nx * overlap; s.y -= ny * overlap;
 
   if (closing > 0) {
-    // Ship bounces away from the body
-    s.vx -= nx * closing * 1.3; s.vy -= ny * closing * 1.3;
+    // Ship bounces away, scaled by the impactor's mass and hard-capped — a
+    // flat closing*1.3 kick let alien-thrown rocks launch the ship at 900+.
+    const mEff = Math.min(b.mass, 4e5);
+    const kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
+    s.vx -= nx * kick; s.vy -= ny * kick;
     const thrown = b.thrownTimer > 0 && b.thrownBy === 'alien' ? 1.25 : 1;
     // A single impact never quite one-shots you from full health
     const dmg = Math.min(CFG.DMG_SHIP * closing * Math.min(b.mass, 4e5) * thrown,
@@ -305,7 +332,9 @@ function collideAlienBody(game, al, b) {
   const overlap = al.radius + b.radius - d;
   al.x -= nx * overlap; al.y -= ny * overlap;
   if (closing > 0) {
-    al.vx -= nx * closing * 1.2; al.vy -= ny * closing * 1.2;
+    const mEffA = Math.min(b.mass, 4e5);
+    const kickA = Math.min(380, closing * 1.2 * (mEffA / (mEffA + 500)));
+    al.vx -= nx * kickA; al.vy -= ny * kickA;
     const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
     const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
@@ -351,27 +380,20 @@ export function step(game, dt) {
   const s = game.ship;
   let shipAx = 0, shipAy = 0;
   if (s.alive) {
-    // Tank controls: A/D rotate, W thrusts along the nose, S brakes against
-    // the current velocity. The mouse only aims the tractor beam.
+    // The nose tracks the mouse; W thrusts forward, S thrusts backward.
+    const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+    s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
+
     const th = game.st.thrust;
     const c = game.controls;
-    s.angle += (c.r - c.l) * CFG.SHIP_TURN * dt;
-
-    let tx = 0, ty = 0;
-    s.thrusting = c.f > 0;
-    s.braking = false;
-    if (c.f) { tx += Math.cos(s.angle) * th; ty += Math.sin(s.angle) * th; }
-    if (c.b) {
-      const sp = Math.hypot(s.vx, s.vy);
-      if (sp > 4) {
-        const dec = th * 0.9;
-        tx -= (s.vx / sp) * dec; ty -= (s.vy / sp) * dec;
-        s.braking = true;
-      }
-    }
+    const throttle = c.f - c.b;
+    s.thrusting = throttle > 0;
+    s.braking = throttle < 0;
+    const tx = Math.cos(s.angle) * th * throttle;
+    const ty = Math.sin(s.angle) * th * throttle;
 
     // AUTO-UPGRADE: spent delta-v grows the engines
-    if (s.thrusting || s.braking) {
+    if (throttle !== 0) {
       game.prog.dv += th * dt;
       game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
         GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / 1000));
@@ -381,6 +403,13 @@ export function step(game, dt) {
     shipAx = g.ax + tx; shipAy = g.ay + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
+
+    // The Oort cloud grinds ships apart
+    const rc = Math.hypot(s.x, s.y);
+    if (rc > CFG.WORLD_R && s.invuln <= 0) {
+      const dps = CFG.OORT_DPS * (1 + (rc - CFG.WORLD_R) / 900);
+      damageShip(game, dps * dt, 'Shredded by the Oort cloud.');
+    }
   }
 
   for (const al of game.aliens) {

@@ -18,6 +18,30 @@ function orbitVel(parent, x, y, dir = 1) {
   return { vx: parent.vx - Math.sin(th) * s, vy: parent.vy + Math.cos(th) * s };
 }
 
+function spawnMoon(bodies, rng, planet, mr) {
+  const mth = rng() * TAU;
+  const mx = planet.x + Math.cos(mth) * mr;
+  const my = planet.y + Math.sin(mth) * mr;
+  const mv = orbitVel(planet, mx, my, rng() < 0.85 ? 1 : -1);
+  // Moons stay below ATTRACT_MIN on purpose: as test particles they exert no
+  // force, so packed multi-moon systems can't pump each other (or their
+  // planet) into chaos — these mass ratios physically can't support
+  // mutually-gravitating moons at game scale. Bonus: aliens can throw them.
+  const m = new Body({
+    type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
+    mass: rand(rng, 1400, 1900), radius: rand(rng, 16, 22),
+    color: '#a8a8b8', parent: planet,
+  });
+  bodies.push(m);
+  return m;
+}
+
+// How far out this planet can hold a moon against the sun's tide
+function moonZone(star, planet, orbitR) {
+  const hill = orbitR * Math.cbrt(planet.mass / (3 * star.mass));
+  return { minR: planet.radius + 110, maxR: hill * 0.45 };
+}
+
 function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   const th = rng() * TAU;
   const x = star.x + Math.cos(th) * orbitR;
@@ -33,26 +57,25 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   });
   bodies.push(p);
 
-  for (let i = 0; i < (opts.moons || 0); i++) {
-    const mr = radius + 80 + i * 70 + rand(rng, 0, 25);
-    const mth = rng() * TAU;
-    const mx = x + Math.cos(mth) * mr;
-    const my = y + Math.sin(mth) * mr;
-    const mv = orbitVel(p, mx, my, 1);
-    // Moons stay below ATTRACT_MIN on purpose: as test particles they exert no
-    // force, so packed multi-moon systems can't pump each other (or their
-    // planet) into chaos — these mass ratios physically can't support
-    // mutually-gravitating moons at game scale. Bonus: aliens can throw them.
-    bodies.push(new Body({
-      type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
-      mass: rand(rng, 1400, 1900), radius: rand(rng, 16, 22),
-      color: '#a8a8b8', parent: p,
-    }));
+  // Moons spread across the whole stable zone — big outer planets get wide,
+  // varied moon families instead of a tight string of pearls.
+  const count = opts.moons || 0;
+  if (count > 0) {
+    const { minR, maxR } = moonZone(star, p, orbitR);
+    if (maxR > minR + 50) {
+      for (let i = 0; i < count; i++) {
+        const t = (i + rand(rng, 0.1, 0.85)) / count;
+        spawnMoon(bodies, rng, p, minR + (maxR - minR) * t);
+      }
+    }
   }
   return p;
 }
 
-function asteroidRadius(mass) { return 4 + Math.cbrt(mass) / 2; }
+function asteroidRadius(mass) { return 3 + Math.cbrt(mass) * 0.9; }
+
+// Skewed small, occasionally chunky
+function asteroidMass(rng) { return 60 + Math.pow(rng(), 2.2) * 2540; }
 
 export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
   const a = new Body({
@@ -74,68 +97,50 @@ function addBelt(bodies, rng, star, beltR, spread, count) {
     spawnAsteroid(
       bodies, x, y,
       v.vx + rand(rng, -8, 8), v.vy + rand(rng, -8, 8),
-      rand(rng, 180, 850),
+      asteroidMass(rng),
     );
   }
-}
-
-function addSystem(bodies, rng, cx, cy, starMass, starRadius, starColor, layout) {
-  const star = new Body({
-    type: 'star', x: cx, y: cy, mass: starMass, radius: starRadius, color: starColor,
-  });
-  bodies.push(star);
-  for (const item of layout) {
-    if (item.belt) addBelt(bodies, rng, star, item.r, item.spread, item.count);
-    else addPlanet(bodies, rng, star, item.r, item.mass, item.radius, item);
-  }
-  return star;
 }
 
 export function generateWorld(game, seed = 20260721) {
   const rng = mulberry32(seed);
   const bodies = game.bodies;
 
-  // Home system — center of the map. Stars dwarf planets; planets dwarf rocks.
-  const home = addSystem(bodies, rng, 0, 0, 5e6, 340, '#ffd98a', [
-    { r: 1100, mass: 2.5e4, radius: 42 },
-    { r: 1700, mass: 5e4,   radius: 55 },
-    { r: 2300, belt: true, spread: 260, count: 45 },
-    { r: 3000, mass: 8e4,   radius: 68, moons: 1 },
-    { r: 4300, mass: 2e5,   radius: 115, ring: true, moons: 3 },
-    { r: 5600, mass: 6e4,   radius: 60, moons: 1 },
-  ]);
+  // ONE sun, vast and dangerous, with the whole map as its system.
+  const sun = new Body({
+    type: 'star', x: 0, y: 0, mass: 8e6, radius: 1500, color: '#ffd98a',
+  });
+  bodies.push(sun);
 
-  // Binary neighbor — smaller, denser
-  addSystem(bodies, rng, 9500, -6500, 3.5e6, 300, '#8ab8ff', [
-    { r: 1000, mass: 3e4,   radius: 48 },
-    { r: 1600, belt: true, spread: 200, count: 30 },
-    { r: 2400, mass: 1.6e5, radius: 100, moons: 2, ring: true },
-    { r: 3400, mass: 4e4,   radius: 52, moons: 1 },
-    { r: 4400, mass: 9e4,   radius: 66 },
-  ]);
+  const layout = [
+    { r: 3200,  mass: 3e4,   radius: 70 },
+    { r: 4200,  mass: 5e4,   radius: 95,  moons: 1 },
+    { r: 5200,  belt: true, spread: 400, count: 60 },
+    { r: 6600,  mass: 1e5,   radius: 150, moons: 2 },
+    { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 4 },
+    { r: 11400, belt: true, spread: 550, count: 50 },
+    { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 3 },
+    { r: 16800, mass: 6e4,   radius: 110, moons: 2 },
+  ];
+  for (const item of layout) {
+    if (item.belt) addBelt(bodies, rng, sun, item.r, item.spread, item.count);
+    else addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
+  }
 
-  // Red giant system — big and dangerous
-  addSystem(bodies, rng, -9000, 7000, 6e6, 420, '#ff9a6a', [
-    { r: 1400, mass: 3e4,   radius: 46 },
-    { r: 2100, mass: 1e5,   radius: 82, moons: 1 },
-    { r: 2900, belt: true, spread: 240, count: 40 },
-    { r: 4000, mass: 2.2e5, radius: 120, ring: true, moons: 2 },
-    { r: 5200, mass: 5e4,   radius: 56 },
-  ]);
-
-  // Free-floating asteroids between systems — the void shouldn't feel empty
-  for (let i = 0; i < 80; i++) {
+  // Free-floating asteroids — the space between orbits shouldn't feel empty
+  for (let i = 0; i < 120; i++) {
     const th = rng() * TAU;
-    const r = rand(rng, 4000, CFG.WORLD_R * 0.9);
+    const r = rand(rng, 3600, CFG.WORLD_R * 0.94);
+    const v = orbitVel(sun, Math.cos(th) * r, Math.sin(th) * r, rng() < 0.9 ? 1 : -1);
     spawnAsteroid(
       bodies,
       Math.cos(th) * r, Math.sin(th) * r,
-      rand(rng, -22, 22), rand(rng, -22, 22),
-      rand(rng, 180, 900),
+      v.vx + rand(rng, -20, 20), v.vy + rand(rng, -20, 20),
+      asteroidMass(rng),
     );
   }
 
-  // Rogue planets — wanderers that stir up (but can't shred) the systems
+  // Rogue planets — wanderers that stir up (but can't shred) the system
   const rogues = [
     { mass: 2.5e5, radius: 95 },
     { mass: 3e5, radius: 105 },
@@ -144,8 +149,8 @@ export function generateWorld(game, seed = 20260721) {
   ];
   for (const rg of rogues) {
     const th = rng() * TAU;
-    const d = CFG.WORLD_R * 0.95;
-    // Oblique entry: sweep through the map rather than beelining into a star
+    const d = CFG.WORLD_R * 0.92;
+    // Oblique entry: sweep through the map rather than beelining into the sun
     const aimTh = th + Math.PI + (rng() < 0.5 ? -1 : 1) * rand(rng, 0.85, 1.25);
     const sp = rand(rng, 24, 44);
     bodies.push(new Body({
@@ -158,11 +163,12 @@ export function generateWorld(game, seed = 20260721) {
     }));
   }
 
-  // Player starts in a stable orbit inside the home asteroid belt
-  const sr = 2300;
-  const sv = Math.sqrt((CFG.G * home.mass) / sr);
-  game.spawn = { x: home.x, y: home.y - sr, vx: sv, vy: 0 };
-  game.homeStar = home;
+  // Player starts in a stable orbit inside the inner asteroid belt
+  const sr = 5200;
+  const sv = Math.sqrt((CFG.G * sun.mass) / sr);
+  game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
+  game.homeStar = sun;
+  game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   respawnShip(game);
 }
 
@@ -176,41 +182,69 @@ export function respawnShip(game) {
   game.deathCause = '';
 }
 
-// Keep loose asteroids topped up so the player always has ammo nearby, and
-// send in a fresh rogue planet now and then (they eventually dive into stars).
-export function replenishAsteroids(game, dt) {
+// The world refills itself: asteroids near the player, fresh rogues at the
+// rim, and new moons captured by lonely planets.
+export function replenishWorld(game, dt) {
+  const rng = Math.random;
+
+  // Rogues
   game.rogueTimer = (game.rogueTimer ?? 150) - dt;
   if (game.rogueTimer <= 0) {
     game.rogueTimer = 150;
     const rogues = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'rogue' ? 1 : 0), 0);
     if (rogues < 3) {
-      const th = Math.random() * TAU;
-      const aimTh = th + Math.PI + (Math.random() < 0.5 ? -1 : 1) * (0.85 + Math.random() * 0.4);
-      const sp = 24 + Math.random() * 20;
+      const th = rng() * TAU;
+      const aimTh = th + Math.PI + (rng() < 0.5 ? -1 : 1) * (0.85 + rng() * 0.4);
+      const sp = 24 + rng() * 20;
       game.bodies.push(new Body({
         type: 'rogue',
-        x: Math.cos(th) * CFG.WORLD_R * 0.95, y: Math.sin(th) * CFG.WORLD_R * 0.95,
+        x: Math.cos(th) * CFG.WORLD_R * 0.92, y: Math.sin(th) * CFG.WORLD_R * 0.92,
         vx: Math.cos(aimTh) * sp, vy: Math.sin(aimTh) * sp,
-        mass: 2.5e5 + Math.random() * 2e5, radius: 95 + Math.random() * 30,
+        mass: 2.5e5 + rng() * 2e5, radius: 95 + rng() * 30,
         color: '#7a4ad9', name: 'Rogue',
       }));
-      game.rogueIncoming = 3;   // main shows a warning message
+      game.rogueIncoming = 3;
     }
   }
 
+  // Moons — destroyed ones are eventually replaced around big planets
+  game.moonTimer = (game.moonTimer ?? 90) - dt;
+  if (game.moonTimer <= 0) {
+    game.moonTimer = 90;
+    const moons = game.bodies.filter((b) => b.alive && b.type === 'moon').length;
+    if (moons < game.moonBaseline) {
+      const hosts = game.bodies.filter((b) => b.alive && b.type === 'planet' && b.mass >= 5e4);
+      if (hosts.length) {
+        const p = hosts[Math.floor(rng() * hosts.length)];
+        const orbitR = Math.hypot(p.x - game.homeStar.x, p.y - game.homeStar.y);
+        const { minR, maxR } = moonZone(game.homeStar, p, orbitR);
+        if (maxR > minR + 50) {
+          const fakeRng = () => rng();
+          spawnMoon(game.bodies, fakeRng, p, minR + (maxR - minR) * rng());
+        }
+      }
+    }
+  }
+
+  // Asteroids near the player — faster refill when the field is depleted
   game.asteroidTimer -= dt;
   if (game.asteroidTimer > 0) return;
-  game.asteroidTimer = 4;
+  game.asteroidTimer = 3;
   const count = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  if (count >= 150) return;
-  const th = Math.random() * TAU;
-  const d = 2400 + Math.random() * 1200;
-  const x = game.ship.x + Math.cos(th) * d;
-  const y = game.ship.y + Math.sin(th) * d;
-  if (Math.hypot(x, y) > CFG.WORLD_R) return;
-  spawnAsteroid(
-    game.bodies, x, y,
-    (Math.random() - 0.5) * 40, (Math.random() - 0.5) * 40,
-    180 + Math.random() * 700,
-  );
+  if (count >= 170) return;
+  const spawnN = count < 110 ? 3 : 1;
+  for (let i = 0; i < spawnN; i++) {
+    const th = rng() * TAU;
+    const d = 2400 + rng() * 1400;
+    const x = game.ship.x + Math.cos(th) * d;
+    const y = game.ship.y + Math.sin(th) * d;
+    const fromSun = Math.hypot(x - game.homeStar.x, y - game.homeStar.y);
+    if (Math.hypot(x, y) > CFG.WORLD_R || fromSun < game.homeStar.radius + 900) continue;
+    const v = orbitVel(game.homeStar, x, y, 1);
+    spawnAsteroid(
+      game.bodies, x, y,
+      v.vx + (rng() - 0.5) * 40, v.vy + (rng() - 0.5) * 40,
+      asteroidMass(rng),
+    );
+  }
 }

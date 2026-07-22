@@ -12,11 +12,10 @@ export function initInput(canvas, handlers) {
     if (e.repeat) return;
     initAudio();
     input.keys.add(e.code);
-    if (e.code === 'KeyE') handlers.onToggleUpgrades();
     if (e.code === 'KeyP') handlers.onTogglePause();
     if (e.code === 'KeyR') handlers.onRespawn();
     if (e.code === 'KeyT') handlers.onTogglePredict();
-    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(e.code)) e.preventDefault();
+    if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));
   window.addEventListener('blur', () => input.keys.clear());
@@ -43,13 +42,11 @@ export function initInput(canvas, handlers) {
   }, { passive: false });
 }
 
-// W = thrust forward, S = brake, A/D = turn. Mouse aims the beam only.
+// W = thrust forward, S = thrust backward. The mouse steers the nose.
 export function readControls(game) {
   const k = input.keys;
   game.controls.f = k.has('KeyW') ? 1 : 0;
   game.controls.b = k.has('KeyS') ? 1 : 0;
-  game.controls.l = k.has('KeyA') ? 1 : 0;
-  game.controls.r = k.has('KeyD') ? 1 : 0;
 }
 
 // Mouse position in world coordinates given the current camera
@@ -61,6 +58,8 @@ export function mouseWorld(game, vw, vh) {
   };
 }
 
+// The wheel adjusts the player's preferred zoom; the effective camera zoom
+// also pulls back automatically as the ship levels up (see main.js).
 export function zoomBy(game, deltaY) {
-  game.cam.zoom = clamp(game.cam.zoom * Math.exp(-deltaY * 0.0011), 0.12, 2.2);
+  game.userZoom = clamp(game.userZoom * Math.exp(-deltaY * 0.0011), 0.15, 3);
 }

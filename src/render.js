@@ -5,6 +5,7 @@ import { TAU, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 const starLayers = [];   // parallax background stars
+const oortSpecks = [];   // icy debris ring marking the world edge
 
 export function initRender(cv) {
   canvas = cv;
@@ -24,6 +25,11 @@ export function initRender(cv) {
       pts.push({ x: rng() * 4000, y: rng() * 4000, b: 0.25 + rng() * 0.75, s: size * (0.5 + rng()) });
     }
     starLayers.push({ parallax, pts });
+  }
+  for (let i = 0; i < 420; i++) {
+    const th = rng() * TAU;
+    const r = CFG.WORLD_R + 150 + rng() * rng() * 3200;
+    oortSpecks.push({ x: Math.cos(th) * r, y: Math.sin(th) * r, s: 2 + rng() * 7, b: 0.25 + rng() * 0.5 });
   }
   return { getView: () => ({ vw, vh }) };
 }
@@ -380,10 +386,19 @@ export function render(game) {
   const shakeY = (Math.random() - 0.5) * game.shake;
   worldTransform(game, shakeX, shakeY);
 
-  // World boundary hint
-  ctx.strokeStyle = 'rgba(160, 80, 80, 0.25)';
-  ctx.lineWidth = 30;
+  // Oort cloud: icy fog band + speck field beyond the world edge
+  ctx.strokeStyle = 'rgba(150, 190, 255, 0.05)';
+  ctx.lineWidth = 3400;
+  ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R + 1750, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(170, 120, 120, 0.22)';
+  ctx.lineWidth = 26;
   ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R, 0, TAU); ctx.stroke();
+  ctx.fillStyle = 'rgba(190, 215, 255, 0.5)';
+  for (const p of oortSpecks) {
+    ctx.globalAlpha = p.b;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
   drawShipRings(game);
   drawPrediction(game);

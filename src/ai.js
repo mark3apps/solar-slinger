@@ -13,13 +13,14 @@ function steer(al, tx, ty, speed) {
   al.thrustY = clamp((desVy - al.vy) * 2.2, -CFG.ALIEN_ACCEL, CFG.ALIEN_ACCEL);
 }
 
-// Stay clear of stars — survival overrides everything
+// Stay clear of the sun — survival overrides everything. (Tight margin: with
+// a giant sun, radius*3 would lock aliens out of the whole inner system.)
 function avoidStars(game, al) {
   for (const b of game.bodies) {
     if (b.type !== 'star') continue;
     const dx = al.x - b.x, dy = al.y - b.y;
     const d = Math.hypot(dx, dy);
-    if (d < b.radius * 3.2) {
+    if (d < b.radius * 1.6 + 400) {
       al.thrustX += (dx / d) * CFG.ALIEN_ACCEL * 1.6;
       al.thrustY += (dy / d) * CFG.ALIEN_ACCEL * 1.6;
       return true;

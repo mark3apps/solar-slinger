@@ -1,6 +1,6 @@
 import { CFG, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
-import { generateWorld, respawnShip, replenishAsteroids } from './world.js';
+import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
 import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingFromOrbit } from './tractor.js';
 import { updateAliens } from './ai.js';
@@ -25,8 +25,9 @@ const game = {
   orbit: [],               // bodies circling the ship as a shield
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
-  controls: { f: 0, b: 0, l: 0, r: 0 },
-  cam: { x: 0, y: 0, zoom: 0.55 },
+  controls: { f: 0, b: 0 },
+  cam: { x: 0, y: 0, zoom: 0.8 },
+  userZoom: 0.8,
   shake: 0,
   predict: true,
   deathCause: '',
@@ -37,10 +38,10 @@ const game = {
   asteroidTimer: 10,
   alienKills: 0,
   lastDamage: -99,
-  upOpen: false,
   tooHeavy: null,
   tooHeavyT: 0,
   lastTier: 0,
+  oortWarnT: 0,
   tut: { grabbed: false, flung: false, orbited: false, alienSeen: false },
 };
 
@@ -86,7 +87,6 @@ initInput(canvas, {
     }
   },
   onZoom: (dy) => zoomBy(game, dy),
-  onToggleUpgrades: () => hud.toggleUpgrades(game),
   onTogglePause: () => {
     game.paused = !game.paused;
     hud.setPauseVisible(game.paused);
@@ -104,7 +104,7 @@ initInput(canvas, {
 });
 
 // Opening guidance
-setTimeout(() => hud.message('You are in orbit inside the belt. W thrust, S brake, A/D turn. Mouse aims the beam.', 6), 800);
+setTimeout(() => hud.message('You are in orbit inside the belt. The ship follows your mouse — W forward, S reverse.', 6), 800);
 setTimeout(() => {
   if (!game.tut.grabbed) hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
 }, 9000);
@@ -115,9 +115,11 @@ let acc = 0;
 function update(dtReal) {
     game.time += dtReal;
 
-    // Derived stats track progression continuously; the hull grows with you
+    // Derived stats track progression continuously; the hull grows with you,
+    // and the camera pulls back so the system shrinks as you level.
     game.st = shipStats(game.prog);
     game.ship.radius = game.st.radius;
+    game.cam.zoom = Math.min(2.4, Math.max(0.04, game.userZoom / game.st.zoomOut));
     if (game.st.tier > game.lastTier) {
       game.lastTier = game.st.tier;
       const orbitNote = game.st.tier === 1
@@ -147,7 +149,19 @@ function update(dtReal) {
       s.hull = Math.min(game.st.maxHull, s.hull + CFG.SHIP_REGEN * dtReal);
     }
 
-    replenishAsteroids(game, dtReal);
+    replenishWorld(game, dtReal);
+
+    // Oort cloud proximity warning
+    if (game.oortWarnT > 0) game.oortWarnT -= dtReal;
+    if (s.alive) {
+      const rc = Math.hypot(s.x, s.y);
+      if (rc > CFG.WORLD_R - CFG.OORT_WARN && game.oortWarnT <= 0) {
+        game.oortWarnT = 12;
+        hud.message(rc > CFG.WORLD_R
+          ? 'HULL GRINDING — you are inside the Oort cloud. Turn back!'
+          : 'WARNING: Oort cloud ahead — it will tear your ship apart.', 4.5);
+      }
+    }
 
     // Timers & one-shot messages
     if (game.tooHeavyT > 0) game.tooHeavyT -= dtReal;
@@ -181,7 +195,7 @@ function frame(now) {
   const dtReal = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  if (!game.paused && !game.upOpen) update(dtReal);
+  if (!game.paused) update(dtReal);
   else setThrust(false);
 
   render(game);

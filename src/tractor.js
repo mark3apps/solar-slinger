@@ -123,7 +123,7 @@ export function updateTractor(game, dt) {
 export function orbitRadius(game) {
   let maxR = 10;
   for (const b of game.orbit) maxR = Math.max(maxR, b.radius);
-  return game.ship.radius + 34 + maxR;
+  return game.ship.radius + 55 + maxR + 12 * game.st.orbitLvl;
 }
 
 // Move the held object into your defensive orbit (if it's small enough).
@@ -136,6 +136,7 @@ export function addToOrbit(game) {
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
   game.orbit.push(b);
+  game.prog.orbitXp += 1;   // AUTO-UPGRADE: using the orbit grows the orbit
   sfx.setBeam(false);
   sfx.sfxCollect();
   return true;
@@ -205,9 +206,13 @@ export function updateOrbit(game, dt) {
 
   for (let i = 0; i < n; i++) {
     const b = game.orbit[i];
-    const ang = game.orbitAngle + (i / n) * TAU;
-    let tx = s.x + Math.cos(ang) * R;
-    let ty = s.y + Math.sin(ang) * R;
+    // Loose, organic slots: each rock breathes in and out and drifts around
+    // its nominal position instead of sitting pinned on a rail.
+    const phase = b.id * 1.73;
+    const Ri = R * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
+    const ang = game.orbitAngle + (i / n) * TAU + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
+    let tx = s.x + Math.cos(ang) * Ri;
+    let ty = s.y + Math.sin(ang) * Ri;
     if (i === interceptorIdx) {   // lunge at the incoming rock (slight lead)
       tx = threat.x + threat.vx * 0.12;
       ty = threat.y + threat.vy * 0.12;
@@ -217,11 +222,11 @@ export function updateOrbit(game, dt) {
     // Interceptors are allowed to move much faster.
     const intercepting = i === interceptorIdx;
     const maxApproach = intercepting ? 950 : 380;
-    let dvx = (tx - b.x) * 8, dvy = (ty - b.y) * 8;
+    let dvx = (tx - b.x) * 4.5, dvy = (ty - b.y) * 4.5;
     const dm = Math.hypot(dvx, dvy);
     if (dm > maxApproach) { dvx *= maxApproach / dm; dvy *= maxApproach / dm; }
     const desVx = dvx + s.vx, desVy = dvy + s.vy;
-    let ax = (desVx - b.vx) * (intercepting ? 10 : 6), ay = (desVy - b.vy) * (intercepting ? 10 : 6);
+    let ax = (desVx - b.vx) * (intercepting ? 10 : 3.5), ay = (desVy - b.vy) * (intercepting ? 10 : 3.5);
     const cap = intercepting ? 2400
       : Math.min(900, Math.max(120, (game.st.force * 1.5) / b.mass));
     const am = Math.hypot(ax, ay);

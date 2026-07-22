@@ -1,6 +1,6 @@
 # Solar Slinger
 
-A top-down 2D space game about **gravity**. Fly a ship through hand-built solar systems where every planet, moon, and asteroid moves under real N-body gravitational physics — then grab them with your tractor beam and fling them at things.
+A top-down 2D space game about **gravity**. Fly a ship through a vast single-sun system where every planet, moon, and asteroid moves under real N-body gravitational physics — then grab them with your tractor beam and fling them at things. Beyond the system's edge waits the Oort cloud, which will grind your hull to dust.
 
 ![genre](https://img.shields.io/badge/genre-gravity%20sandbox-blueviolet)
 ![engine](https://img.shields.io/badge/engine-vanilla%20JS%20%2B%20canvas-orange)
@@ -18,18 +18,18 @@ A top-down 2D space game about **gravity**. Fly a ship through hand-built solar 
 
 | Input | Action |
 |---|---|
-| `W` / `S` | Thrust forward / brake |
-| `A` / `D` | Turn the ship |
-| Mouse | Aims the tractor beam (independent of the nose) |
+| Mouse | Steer — the ship's nose follows the cursor, and the beam aims there too |
+| `W` / `S` | Thrust forward / thrust backward |
 | Hold **Left mouse** | Tractor-grab an object near the cursor |
 | Release **Left mouse** | **Fling** it toward the cursor |
 | **Left mouse** on empty space | Fling a rock **from your orbit** toward the cursor |
 | **Right mouse** (while holding) | Add to your orbit shield (or drop if too big) |
-| Mouse wheel | Zoom |
-| `E` | Ship systems (progress readout) |
+| Mouse wheel | Zoom (the camera also pulls back on its own as you level) |
 | `T` | Toggle trajectory prediction |
 | `P` | Pause |
 | `R` | Respawn after death |
+
+All five progression tracks (beam, orbit, fling, hull, engines) live on the HUD with level pips — no menus.
 
 Your orbit holds objects **one size tier below** what your beam can grab — grow the beam from asteroids → moons → minor planets → planets → gas giants and the shield tier follows.
 

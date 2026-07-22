@@ -1,13 +1,29 @@
-import { GROWTH, TIERS } from './config.js';
-
 const el = {};
 let msgTimer = null;
+let pipSig = '';
+
+// [levels key, label, current-value getter]
+const TRACKS = [
+  ['beam',   'BEAM',   (g) => g.st.label],
+  ['orbit',  'ORBIT',  (g) => g.st.orbitCap > 0 ? `${g.orbit.length}/${g.st.maxOrbiters} ${g.st.orbitLabel.toLowerCase()}` : 'locked'],
+  ['fling',  'FLING',  (g) => Math.round(g.st.fling)],
+  ['hull',   'HULL',   (g) => `max ${g.st.maxHull}`],
+  ['thrust', 'ENGINE', (g) => Math.round(g.st.thrust)],
+];
 
 export function initHud(game) {
-  for (const id of ['hullFill', 'hullText', 'scrapText', 'beamText', 'orbitText',
-    'flingText', 'thrustText', 'msg', 'upgradePanel', 'upList',
+  for (const id of ['hullFill', 'hullText', 'scrapText', 'tracks', 'msg',
     'deathScreen', 'deathCause', 'pauseScreen']) {
     el[id] = document.getElementById(id);
+  }
+  // Build one row per progression track — levels live on screen, always
+  el.tracks.innerHTML = '';
+  for (const [key, label] of TRACKS) {
+    const row = document.createElement('div');
+    row.className = 'track';
+    row.dataset.key = key;
+    row.innerHTML = `<span class="tlabel">${label}</span><span class="pips"></span><span class="tval"></span>`;
+    el.tracks.appendChild(row);
   }
   void game;
 }
@@ -21,49 +37,6 @@ export function message(text, dur = 3.5) {
   el.msg.style.animation = '';
   clearTimeout(msgTimer);
   msgTimer = setTimeout(() => el.msg.classList.add('hidden'), dur * 1000);
-}
-
-// Read-only ship systems view (upgrades are automatic — this shows progress)
-function trackRow(name, level, value, how) {
-  const pips = Array.from({ length: 6 }, (_, i) =>
-    `<span class="pip${i <= level ? ' lit' : ''}"></span>`).join('');
-  return `<div class="uprow">
-    <div class="upinfo">
-      <div class="upname">${name} <span class="pips">${pips}</span></div>
-      <div class="uplevel">${value}</div>
-      <div class="updesc">${how}</div>
-    </div>
-  </div>`;
-}
-
-export function refreshStats(game) {
-  const st = game.st, p = game.prog;
-  const nextCap = st.tier < TIERS.caps.length - 1
-    ? ` — next tier at ${Math.round(TIERS.caps[st.tier + 1] / 1000)}k` : ' — MAX';
-  el.upList.innerHTML =
-    trackRow('TRACTOR BEAM', st.levels.beam,
-      `grabs ${st.label.toLowerCase()} (${Math.round(st.capacity / 100) / 10}k capacity${nextCap})`,
-      `${p.catches} catches — grows every time you tractor something; heavy catches grow it faster`) +
-    trackRow('ORBIT SHIELD', Math.max(-1, st.levels.beam - 1),
-      st.orbitCap > 0
-        ? `holds ${st.maxOrbiters} × ${st.orbitLabel.toLowerCase()} (right-click while holding)`
-        : 'locked — strengthen the beam to unlock',
-      'orbiting rocks block incoming fire; left-click empty space to fling one') +
-    trackRow('FLING DRIVE', st.levels.fling,
-      `launch speed ${Math.round(st.fling)}`,
-      `${p.smashes} smashes — grows every time one of your throws destroys something`) +
-    trackRow('HULL', st.levels.hull,
-      `max integrity ${st.maxHull}`,
-      `${Math.round(p.scrapCollected)} scrap absorbed — collecting scrap heals and toughens you`) +
-    trackRow('ENGINES', st.levels.thrust,
-      `thrust ${Math.round(st.thrust)}`,
-      `${Math.round(p.dv / 1000)}k delta-v spent — flying hard makes you faster`);
-}
-
-export function toggleUpgrades(game) {
-  game.upOpen = !game.upOpen;
-  el.upgradePanel.classList.toggle('hidden', !game.upOpen);
-  if (game.upOpen) refreshStats(game);
 }
 
 export function setPauseVisible(v) { el.pauseScreen.classList.toggle('hidden', !v); }
@@ -81,11 +54,19 @@ export function updateHud(game) {
   el.hullFill.classList.toggle('low', frac < 0.35);
   el.hullText.textContent = `HULL ${Math.max(0, Math.ceil(s.hull))}/${st.maxHull}`;
   el.scrapText.textContent = Math.floor(game.scrap);
-  el.beamText.textContent = st.label;
-  el.orbitText.textContent = st.orbitCap > 0
-    ? `${game.orbit.length}/${st.maxOrbiters} (${st.orbitLabel.toLowerCase()})`
-    : 'locked';
-  el.flingText.textContent = Math.round(st.fling);
-  el.thrustText.textContent = Math.round(st.thrust);
-  if (game.upOpen) refreshStats(game);
+
+  // Rebuild pips only when a level actually changes
+  const sig = TRACKS.map(([key]) => st.levels[key]).join(',');
+  if (sig !== pipSig) {
+    pipSig = sig;
+    for (const row of el.tracks.children) {
+      const lvl = st.levels[row.dataset.key];
+      row.querySelector('.pips').innerHTML = Array.from({ length: 6 }, (_, i) =>
+        `<span class="pip${i <= lvl ? ' lit' : ''}"></span>`).join('');
+    }
+  }
+  for (const row of el.tracks.children) {
+    const track = TRACKS.find(([key]) => key === row.dataset.key);
+    row.querySelector('.tval').textContent = track[2](game);
+  }
 }
