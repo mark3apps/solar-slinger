@@ -258,15 +258,26 @@ export function retrieveFromOrbit(game) {
   return true;
 }
 
-// VOLLEY: hold RMB for VOLLEY_TIME, then every rock in your orbit launches at
-// the cursor in a tight spread (lock-on adjusts the center line).
-export function flingAllFromOrbit(game) {
+// Which orbiters leave first when the shotgun fires: the ones best lined up
+// with the aim direction. Render uses this too, to highlight the armed set.
+export function volleyPick(game, count) {
+  const s = game.ship;
+  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  return [...game.orbit].sort((x, y) =>
+    Math.abs(angDiff(Math.atan2(x.y - s.y, x.x - s.x), ang)) -
+    Math.abs(angDiff(Math.atan2(y.y - s.y, y.x - s.x), ang)))
+    .slice(0, Math.min(count, game.orbit.length));
+}
+
+// SHOTGUN: fire `count` orbiters (default: everything) at the cursor in a
+// tight spread. Holding RMB arms more of them; release pulls the trigger.
+export function flingAllFromOrbit(game, count = Infinity) {
   if (!game.orbit.length || !game.ship.alive) return 0;
   const s = game.ship;
   const st = game.st;
   const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);   // straight at the cursor
-  const rocks = game.orbit;
-  game.orbit = [];
+  const rocks = volleyPick(game, count);
+  game.orbit = game.orbit.filter((b) => !rocks.includes(b));
   const n = rocks.length;
   rocks.forEach((b, i) => {
     b.heldBy = null;

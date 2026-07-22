@@ -45,6 +45,7 @@ const game = {
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
+  volleySel: 0,            // how many orbiters the shotgun charge has armed
   volleyCharging: false,
   lockTarget: null,
   tut: { grabbed: false, flung: false, orbited: false, alienSeen: false },
@@ -58,6 +59,15 @@ const canvas = document.getElementById('game');
 const view = initRender(canvas);
 hud.initHud(game);
 
+// Fire the shotgun: launches however many orbiters the charge has armed
+function fireVolley() {
+  const n = flingAllFromOrbit(game, game.volleySel || game.orbit.length);
+  if (n) hud.message(`SHOTGUN — ${n} rock${n > 1 ? 's' : ''} away!`, 2);
+  game.volleyT = 0;
+  game.volleySel = 0;
+  game.volleyCharging = false;
+}
+
 initInput(canvas, {
   onGrab: () => {
     if (game.paused || !game.ship.alive) return;
@@ -68,7 +78,7 @@ initInput(canvas, {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
-          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE 3s to volley everything.', 5);
+          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
         }
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
@@ -98,7 +108,11 @@ initInput(canvas, {
     }
     if (game.orbit.length) game.volleyCharging = true;
   },
-  onRmbUp: () => { game.volleyCharging = false; },
+  onRmbUp: () => {
+    // Release fires whatever the hold has armed (a tap = 1 rock)
+    if (game.volleyCharging && game.orbit.length && game.ship.alive) fireVolley();
+    game.volleyCharging = false;
+  },
   onTogglePause: () => {
     game.paused = !game.paused;
     hud.setPauseVisible(game.paused);
@@ -210,17 +224,16 @@ function update(dtReal) {
       }
     }
 
-    // Volley charge: hold RMB for VOLLEY_TIME to unleash the whole orbit
+    // Shotgun charge: the hold progressively ARMS orbiters (1 at a tap, all
+    // at full charge); reaching full charge pulls the trigger automatically
     if (game.volleyCharging && game.orbit.length && s.alive) {
       game.volleyT += dtReal;
-      if (game.volleyT >= CFG.VOLLEY_TIME) {
-        const n = flingAllFromOrbit(game);
-        if (n) hud.message(`VOLLEY — ${n} rock${n > 1 ? 's' : ''} away!`, 2.5);
-        game.volleyT = 0;
-        game.volleyCharging = false;
-      }
+      game.volleySel = Math.max(1, Math.min(game.orbit.length,
+        Math.ceil((game.volleyT / CFG.VOLLEY_TIME) * game.orbit.length)));
+      if (game.volleyT >= CFG.VOLLEY_TIME) fireVolley();
     } else {
-      game.volleyT = Math.max(0, game.volleyT - dtReal * 4);
+      game.volleyT = 0;
+      game.volleySel = 0;
       if (!game.orbit.length) game.volleyCharging = false;
     }
 

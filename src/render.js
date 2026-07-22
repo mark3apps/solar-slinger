@@ -1,8 +1,10 @@
 import { CFG } from './config.js';
 import { predictPaths } from './physics.js';
+import { volleyPick } from './tractor.js';
 import { TAU, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
+let armedSet = null;   // orbiters the shotgun charge has armed this frame
 const starLayers = [];   // parallax background stars
 const oortSpecks = [];   // icy debris ring marking the world edge
 
@@ -241,13 +243,21 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 8 / game.cam.zoom, 0, TAU); ctx.stroke();
     ctx.setLineDash([]);
   } else if (b.heldBy === 'orbit') {
-    // Barely-there by default; brightens as the cursor approaches so you can
-    // see which orbiter a click would pull back
-    const dc = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
-    const near = Math.max(0, 1 - dc / 420);
-    ctx.strokeStyle = `rgba(130, 255, 200, ${0.12 + 0.5 * near})`;
-    ctx.lineWidth = 1.5 / game.cam.zoom;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / game.cam.zoom, 0, TAU); ctx.stroke();
+    if (armedSet && armedSet.has(b)) {
+      // Armed for the shotgun: hot amber, pulsing
+      const pulse = 0.6 + 0.4 * Math.sin(game.time * 9);
+      ctx.strokeStyle = `rgba(255, 200, 90, ${0.5 + 0.4 * pulse})`;
+      ctx.lineWidth = 2 / game.cam.zoom;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 6 / game.cam.zoom, 0, TAU); ctx.stroke();
+    } else {
+      // Barely-there by default; brightens as the cursor approaches so you
+      // can see which orbiter a click would pull back
+      const dc = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
+      const near = Math.max(0, 1 - dc / 420);
+      ctx.strokeStyle = `rgba(130, 255, 200, ${0.12 + 0.5 * near})`;
+      ctx.lineWidth = 1.5 / game.cam.zoom;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / game.cam.zoom, 0, TAU); ctx.stroke();
+    }
   }
 }
 
@@ -926,6 +936,9 @@ export function render(game) {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, TAU); ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  armedSet = (game.volleyCharging && game.volleySel > 0)
+    ? new Set(volleyPick(game, game.volleySel)) : null;
 
   drawShipRings(game);
   drawPrediction(game);

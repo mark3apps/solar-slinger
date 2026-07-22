@@ -57,7 +57,10 @@ export const CFG = {
   DEBRIS_LIFE: 150,
 
   ORBIT_OMEGA: 1.5,        // rad/s — how fast the shield orbit spins
-  VOLLEY_TIME: 3,          // hold RMB this long to fling the whole orbit
+  // SHOTGUN volley: holding RMB arms orbiters progressively over this many
+  // seconds (1 at a tap -> all at full charge); release fires what's armed,
+  // and hitting full charge fires automatically
+  VOLLEY_TIME: 2,
 
   // Rails: celestial bodies ride precomputed orbits until something disturbs
   // them (impulse, grab, or a heavy wanderer inside this range).
