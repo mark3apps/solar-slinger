@@ -91,30 +91,51 @@ export function shatter(game, body, credit = null) {
   }
 }
 
-// Chip damage: lose hp, shed some mass as scrap, shrink
-export function damageBody(game, body, dmg, credit = null) {
+// Chip damage: lose hp, shed some mass as scrap, shrink. hx/hy is the impact
+// position when the caller knows it (fort turret targeting reads it).
+export function damageBody(game, body, dmg, credit = null, hx, hy) {
   if (body.type === 'star' || !body.alive) return;
-  // BASTION fortifications soak all damage: first the shield drains, then
-  // each solid hit pops a turret, and only when the last turret dies is the
-  // world liberated (scrap bounty; the body beneath is untouched throughout).
+  // BASTION fortifications break down progressively, not all-or-nothing:
+  // a hit landing ON a turret chews through THAT turret (the emitters poke
+  // through their own bubble — 60% leaks in while shielded), anywhere else
+  // drains the shield. With the shield down every hit finds a turret. The
+  // last turret's death liberates the world; the body beneath is untouched.
   if (body.fort) {
     const f = body.fort;
     f.quiet = 0;
-    if (f.shield > 0) {
-      f.shield = Math.max(0, f.shield - dmg);
-      f.hitT = 0.35;
-      if (f.shield <= 0) game.fortShieldDownName = body.name || body.type;
-      return;
-    }
-    if (dmg > 8) {
-      f.turrets.pop();
-      addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 16, '#ffb35c', 200, 1);
-      sfx.sfxBoom(1);
-      if (!f.turrets.length) {
-        body.fort = null;
-        dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200);
-        game.fortLiberatedName = body.name || `the ${body.type}`;
+    f.hitT = 0.35;
+    let tur = null;
+    if (hx !== undefined && f.turrets.length) {
+      const ia = Math.atan2(hy - body.y, hx - body.x);
+      let bd = Infinity;
+      for (const t of f.turrets) {
+        const da = Math.abs(angDiff(ia, body.rot + t.ang));
+        if (da < bd) { bd = da; tur = t; }
       }
+      if (f.shield > 0 && bd > 0.55) tur = null;   // shielded + wide miss = shield's problem
+    }
+    if (!tur && f.shield <= 0 && f.turrets.length) tur = f.turrets[0];
+    if (tur) {
+      const through = f.shield > 0 ? 0.6 : 1;
+      tur.hp -= dmg * through;
+      if (f.shield > 0) f.shield = Math.max(0, f.shield - dmg * 0.4);
+      if (tur.hp <= 0) {
+        f.turrets.splice(f.turrets.indexOf(tur), 1);
+        addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 16, '#ffb35c', 200, 1);
+        sfx.sfxBoom(1);
+        if (!f.turrets.length) {
+          body.fort = null;
+          dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200);
+          game.fortLiberatedName = body.name || `the ${body.type}`;
+          return;
+        }
+      }
+    } else if (f.shield > 0) {
+      f.shield = Math.max(0, f.shield - dmg);
+    }
+    if (f.shield <= 0 && !f.shieldDownSaid) {
+      f.shieldDownSaid = true;
+      game.fortShieldDownName = body.name || body.type;
     }
     return;
   }
@@ -367,8 +388,8 @@ function collideBodies(game, a, b) {
         dmgToA: Math.round(dmgToA * 10) / 10, dmgToB: Math.round(dmgToB * 10) / 10,
       });
     }
-    if (dmgToA > 0.5) damageBody(game, a, dmgToA, creditA);
-    if (dmgToB > 0.5) damageBody(game, b, dmgToB, creditB);
+    if (dmgToA > 0.5) damageBody(game, a, dmgToA, creditA, b.x, b.y);
+    if (dmgToB > 0.5) damageBody(game, b, dmgToB, creditB, a.x, a.y);
     if (closing > 60 && (a.mass > 1e4 || b.mass > 1e4)) addShake(game, 3);
 
     // SPALL: a violent hit that BOTH bodies survive still crunches — small

@@ -277,14 +277,16 @@ export function generateWorld(game, seed = 20260721) {
     if (!body) return;
     body.fort = {
       shield, maxShield: shield, hitT: 0, quiet: 9,
-      turrets: Array.from({ length: nTurrets }, (_, i) => ({ ang: (i / nTurrets) * TAU, cool: 1 + i * 0.7 })),
+      turrets: Array.from({ length: nTurrets }, (_, i) => ({
+        ang: (i / nTurrets) * TAU, cool: 1 + i * 0.7, hp: 45, maxHp: 45,
+      })),
     };
   };
   const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
-  fortify(planetAtR(10800), 450, 3);
-  fortify(planetAtR(18600), 450, 3);
+  fortify(planetAtR(10800), 260, 3);
+  fortify(planetAtR(18600), 260, 3);
   const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28).slice(0, 3);
-  for (const m of bigMoons) fortify(m, 260, 2);
+  for (const m of bigMoons) fortify(m, 150, 2);
 
   // THE EMBERKIN: living plasma already blooming on the innermost lava world.
   // It deepens over time and, at full bloom, seeds the next planet outward.

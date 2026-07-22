@@ -18,7 +18,7 @@ export const CFG = {
   STAR_GRAV_SHIP: 1.6,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this)
-  PLANET_GRAV_SHIP: 2.2,
+  PLANET_GRAV_SHIP: 3.0,
 
   // Solar flares: the sun occasionally erupts plasma at ships that fly CLOSE
   FLARE_RANGE: 5500,       // only fires while the ship is this close to the sun

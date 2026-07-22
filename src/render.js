@@ -419,6 +419,13 @@ function drawFort(game, b) {
       ctx.fillStyle = `rgba(255, 220, 140, ${t.fireT * 6})`;
       ctx.beginPath(); ctx.arc(tr * 1.85, 0, tr * 0.55, 0, TAU); ctx.fill();
     }
+    // Breaking down: damaged turrets spark and gutter
+    if (t.maxHp && t.hp < t.maxHp * 0.6 && Math.sin(game.time * 17 + t.ang * 9) > 0.2) {
+      ctx.fillStyle = 'rgba(255, 120, 60, 0.85)';
+      ctx.beginPath();
+      ctx.arc(tr * (0.3 + Math.sin(game.time * 23) * 0.4), -tr * 0.3, tr * 0.22, 0, TAU);
+      ctx.fill();
+    }
     ctx.restore();
   }
 

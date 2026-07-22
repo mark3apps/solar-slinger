@@ -214,27 +214,35 @@ function updateForts(game, dt) {
     f.quiet = (f.quiet ?? 0) + dt;
     // The shield only regenerates while turrets survive to project it
     if (f.quiet > 8 && f.shield < f.maxShield && f.turrets.length) {
-      f.shield = Math.min(f.maxShield, f.shield + 6 * dt);
+      f.shield = Math.min(f.maxShield, f.shield + 5 * dt);
+      if (f.shield > 0) f.shieldDownSaid = false;
     }
     if (!s.alive) continue;
     const d = Math.hypot(s.x - b.x, s.y - b.y);
-    if (d > 1900) continue;
+    if (d > 1500) continue;
     for (const t of f.turrets) {
       t.cool -= dt;
       if (t.fireT > 0) t.fireT -= dt;
       if (t.cool > 0) continue;
-      // GATLING: fast cyclic rate, slow heavy shells — a stream you dodge
-      // by strafing, not by luck
-      t.cool = 0.38 + Math.random() * 0.16;
-      t.fireT = 0.12;
+      // BARRAGE RHYTHM: an angry ~8-shell burst at true gatling rate, then
+      // a real pause to cycle — slow shells make the stream a wall you
+      // weave through, and the breaks are your window to strike.
+      if ((t.burst ?? 0) <= 0) {
+        t.burst = 6 + Math.floor(Math.random() * 4);
+        t.cool = 2.6 + Math.random() * 1.6;
+        continue;
+      }
+      t.burst--;
+      t.cool = 0.13;
+      t.fireT = 0.1;
       const wx = b.x + Math.cos(b.rot + t.ang) * b.radius;
       const wy = b.y + Math.sin(b.rot + t.ang) * b.radius;
-      const tt = d / 380;
+      const tt = d / 260;
       const ang = Math.atan2(s.y + s.vy * tt - wy, s.x + s.vx * tt - wx);
       game.bolts.push({
         x: wx, y: wy,
-        vx: Math.cos(ang) * 380 + b.vx, vy: Math.sin(ang) * 380 + b.vy,
-        life: 3.6,
+        vx: Math.cos(ang) * 260 + b.vx, vy: Math.sin(ang) * 260 + b.vy,
+        life: 5.5,
       });
     }
   }
@@ -254,7 +262,7 @@ function updateForts(game, dt) {
           if (!b.alive || b.fort) continue;
           if (Math.abs(b.x - bo.x) > b.radius + 6) continue;
           if (Math.hypot(b.x - bo.x, b.y - bo.y) < b.radius + 6) {
-            damageBody(game, b, 5);
+            damageBody(game, b, 5, null, bo.x, bo.y);
             dead = true;
             break;
           }

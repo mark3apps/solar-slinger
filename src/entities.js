@@ -38,8 +38,11 @@ export class Body {
     this.spin = (Math.random() - 0.5) * 0.6;
     this.rot = Math.random() * 6.28;
     this.attractor = this.type === 'star' || o.mass >= CFG.ATTRACT_MIN;
-    // Stations/nests override hp: light enough to grab, tough enough to matter
-    this.maxHp = this.type === 'star' ? Infinity : (o.hp || massToHp(o.mass));
+    // Stations/nests override hp: light enough to grab, tough enough to matter.
+    // Planets get a 0.4x factor — their bulk already throttles incoming damage
+    // via mass dominance, so full mass-scaled hp made them nigh unkillable.
+    this.maxHp = this.type === 'star' ? Infinity
+      : (o.hp || massToHp(o.mass) * (this.type === 'planet' ? 0.4 : 1));
     this.hp = this.maxHp;
     this.alive = true;
     this.heldBy = null;      // 'player' | 'orbit' | alien ref | null
