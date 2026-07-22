@@ -5,7 +5,7 @@ export const CFG = {
   // Soft boundary radius. MUST exceed the outermost orbit reach (orbit +
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
-  WORLD_R: 32000,
+  WORLD_R: 42000,
   OORT_WARN: 1400,         // warning distance before the cloud edge
   OORT_DPS: 6,             // hull damage/s at the edge, scaling with depth
   ATTRACT_MIN: 2000,       // bodies at/above this mass exert gravity
@@ -46,7 +46,11 @@ export const CFG = {
   DMG_THRESH: 240,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
   DMG_THROWN_MULT: 2,
-  DMG_SHIP: 4.4e-4,        // impact damage to ship: relSpeed * mass * K
+  // Ship impact damage: closing * DMG_SHIP * massSat, where massSat is the
+  // impactor's mass saturating at 1 (m/(m+1500)) — so a planet bump stings
+  // instead of near-one-shotting, and pebbles barely tickle. Capped at 45%
+  // of max hull per hit in collideShipBody.
+  DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
   SHIP_TURN: 9,            // rad/s — the nose tracks the mouse

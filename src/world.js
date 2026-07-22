@@ -170,24 +170,29 @@ export function generateWorld(game, seed = 20260721) {
   // ringed gas giants, and the far reaches are ice. Top-end planet radius 520.
   // Each planet is an ECOSYSTEM: stations, nests, trojans, ring fields, junk
   // satellites, and type hazards all hang off these anchor worlds.
+  // Spread wide: plenty of open flying and unoccupied worlds between the
+  // occupied ones (2 nests, 1 fortified planet + 1 fortified moon, 1 ember
+  // bloom — everything else is free space and salvage).
   const layout = [
     { r: 3600,  mass: 2e4,   radius: 60,  ptype: 'lava' },
-    { r: 4700,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
-    { r: 5900,  mass: 6e4,   radius: 105, ptype: 'rocky', moons: 1 },
-    { r: 7000,  belt: true, spread: 450, count: 60 },
-    { r: 8200,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3, nest: true },
-    { r: 9800,  mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4, station: true },
-    { r: 10800, mass: 1.3e5, radius: 170, ptype: 'rocky', moons: 2 },
-    { r: 11800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7, nest: true },
-    { r: 14000, mass: 2.2e5, radius: 220, ptype: 'rocky', binary: true },
-    { r: 15400, belt: true, spread: 500, count: 50 },
-    { r: 17200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6, station: true },
-    { r: 18600, mass: 1.8e5, radius: 205, ptype: 'rocky', ring: true, moons: 3 },
-    { r: 20000, mass: 6.5e5, radius: 520, ptype: 'gas', ring: true, moons: 8 },
-    { r: 22800, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3, nest: true },
-    { r: 24800, belt: true, spread: 600, count: 45 },
-    { r: 26200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2, station: true },
-    { r: 28400, mass: 4e4,   radius: 95,  ptype: 'ice', moons: 1 },
+    { r: 5000,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
+    { r: 6600,  mass: 6e4,   radius: 105, ptype: 'rocky', moons: 1 },
+    { r: 8000,  belt: true, spread: 450, count: 60 },
+    { r: 9500,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3, nest: true },
+    { r: 11200, mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4, station: true },
+    { r: 13000, mass: 1.3e5, radius: 170, ptype: 'rocky', moons: 2 },
+    { r: 14800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7 },
+    { r: 16800, mass: 2.2e5, radius: 220, ptype: 'rocky', binary: true },
+    { r: 18400, belt: true, spread: 500, count: 50 },
+    { r: 20200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6, station: true },
+    { r: 22000, mass: 1.8e5, radius: 205, ptype: 'rocky', ring: true, moons: 3 },
+    { r: 24000, mass: 6.5e5, radius: 520, ptype: 'gas', ring: true, moons: 8 },
+    { r: 26500, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3, nest: true },
+    { r: 28500, belt: true, spread: 600, count: 45 },
+    { r: 30200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2, station: true },
+    { r: 32500, mass: 4e4,   radius: 95,  ptype: 'ice', moons: 1 },
+    { r: 34500, mass: 1.1e5, radius: 150, ptype: 'rocky', moons: 2 },
+    { r: 36800, mass: 5e4,   radius: 120, ptype: 'ice', moons: 1 },
   ];
   const planets = [];
   let nameIdx = 0;
@@ -278,14 +283,13 @@ export function generateWorld(game, seed = 20260721) {
     body.fort = {
       shield, maxShield: shield, hitT: 0, quiet: 9,
       turrets: Array.from({ length: nTurrets }, (_, i) => ({
-        ang: (i / nTurrets) * TAU, cool: 1 + i * 0.7, hp: 45, maxHp: 45,
+        ang: (i / nTurrets) * TAU, cool: 1 + i * 0.7, hp: 35, maxHp: 35,
       })),
     };
   };
   const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
-  fortify(planetAtR(10800), 260, 3);
-  fortify(planetAtR(18600), 260, 3);
-  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28).slice(0, 3);
+  fortify(planetAtR(13000), 260, 3);
+  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28).slice(0, 1);
   for (const m of bigMoons) fortify(m, 150, 2);
 
   // THE EMBERKIN: living plasma already blooming on the innermost lava world.
@@ -318,7 +322,7 @@ export function generateWorld(game, seed = 20260721) {
   // Player starts in a stable orbit inside the inner asteroid belt.
   // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
   // from the rocks around it.
-  const sr = 7000;
+  const sr = 8000;
   const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;

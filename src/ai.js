@@ -219,17 +219,17 @@ function updateForts(game, dt) {
     }
     if (!s.alive) continue;
     const d = Math.hypot(s.x - b.x, s.y - b.y);
-    if (d > 1500) continue;
+    if (d > 1300) continue;
     for (const t of f.turrets) {
       t.cool -= dt;
       if (t.fireT > 0) t.fireT -= dt;
       if (t.cool > 0) continue;
-      // BARRAGE RHYTHM: an angry ~8-shell burst at true gatling rate, then
-      // a real pause to cycle — slow shells make the stream a wall you
-      // weave through, and the breaks are your window to strike.
+      // BARRAGE RHYTHM: a short angry burst at true gatling rate, then a
+      // long pause to cycle — slow shells make the stream a wall you weave
+      // through, and the breaks are your window to strike.
       if ((t.burst ?? 0) <= 0) {
-        t.burst = 6 + Math.floor(Math.random() * 4);
-        t.cool = 2.6 + Math.random() * 1.6;
+        t.burst = 4 + Math.floor(Math.random() * 3);
+        t.cool = 3.5 + Math.random() * 1.5;
         continue;
       }
       t.burst--;
@@ -253,7 +253,7 @@ function updateForts(game, dt) {
       bo.life -= dt;
       let dead = bo.life <= 0;
       if (!dead && s.alive && Math.hypot(bo.x - s.x, bo.y - s.y) < s.radius + 6) {
-        damageShip(game, 16, 'Shot down by a Bastion gatling battery.');
+        damageShip(game, 10, 'Shot down by a Bastion gatling battery.');
         dead = true;
       }
       if (!dead) {

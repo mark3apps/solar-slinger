@@ -448,9 +448,12 @@ function collideShipBody(game, s, b) {
     const kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
     s.vx -= nx * kick; s.vy -= ny * kick;
     const thrown = b.thrownTimer > 0 && b.thrownBy === 'alien' ? 1.25 : 1;
-    // A single impact never quite one-shots you from full health
-    const dmg = Math.min(CFG.DMG_SHIP * closing * Math.min(b.mass, 4e5) * thrown,
-      game.st.maxHull * 0.65);
+    // Graded, not binary: damage scales with closing speed and a SATURATING
+    // mass factor, so a planet bump stings (~25) and a planet slam hurts
+    // (~70) without instantly gutting the hull. Capped at 45% per hit.
+    const massSat = b.mass / (b.mass + 1500);
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown,
+      game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
       damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
