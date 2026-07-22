@@ -27,12 +27,17 @@ export function aimSolutions(game) {
     ? st.fling * clamp(Math.pow(st.capacity / (held.mass * 4), 0.25), 0.3, 1)
     : st.fling;
   const heldR = held ? held.radius : 6;
-  const cursorAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  // CRITICAL FRAME CHOICE: the rock launches from ITS OWN position (the hold
+  // point, ~70 out from the ship, plus any spring lag) — not from the ship.
+  // Solving from the ship puts the ✕ on a parallel-offset line and the shot
+  // misses by the full offset. Origin = the actual launch point.
+  const o = held || s;
+  const cursorAng = Math.atan2(game.aim.y - o.y, game.aim.x - o.x);
   const reach = Math.min(2600, speed * CFG.LOCK_T);
   const sols = [];
   let hot = null;
   const consider = (e) => {
-    const rx = e.x - s.x, ry = e.y - s.y;
+    const rx = e.x - o.x, ry = e.y - o.y;
     if (Math.hypot(rx, ry) > reach + 400) return;
     const vx = e.vx - s.vx, vy = e.vy - s.vy;
     const a = vx * vx + vy * vy - speed * speed;
@@ -50,9 +55,9 @@ export function aimSolutions(game) {
       t = -c / bq;
     } else return;
     if (t > CFG.LOCK_T * 1.4) return;             // meets beyond the throw line
-    // Lead point: where the cursor must sit for this angle (ship frame, so
-    // it stays correct even while the ship itself is moving)
-    const mx = s.x + rx + vx * t, my = s.y + ry + vy * t;
+    // Lead point: where the cursor must sit for this angle (launch frame,
+    // so it stays correct even while the ship itself is moving)
+    const mx = o.x + rx + vx * t, my = o.y + ry + vy * t;
     const ang = Math.atan2(ry + vy * t, rx + vx * t);
     const tol = Math.max(0.004, (e.radius + heldR * 0.8) / (speed * t));
     const sol = {
@@ -72,14 +77,19 @@ export function aimSolutions(game) {
   return { sols: sols.slice(0, 6), hot };
 }
 
-// Heavier objects fling slower; ship velocity is inherited. The angle is the
-// cursor's, PERIOD — see aimSolutions for why.
+// Heavier objects fling slower; ship velocity is inherited. The rock flies
+// from ITS OWN position straight through the cursor point — matching the
+// frame aimSolutions solves in, so releasing on a ✕ really connects. (If
+// the cursor sits basically on the rock, fall back to the ship-nose angle.)
 export function computeFlingVelocity(game, body) {
   const s = game.ship;
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
   const speed = st.fling * massFactor;
-  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const dx = game.aim.x - body.x, dy = game.aim.y - body.y;
+  const ang = Math.hypot(dx, dy) > 25
+    ? Math.atan2(dy, dx)
+    : Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
