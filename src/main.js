@@ -2,7 +2,7 @@ import { CFG, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
-import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, lockOn } from './tractor.js';
+import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
@@ -192,12 +192,12 @@ function update(dtReal) {
       if (!game.orbit.length) game.volleyCharging = false;
     }
 
-    // Lock-on solve (for the UI; the actual throw re-solves at release).
-    // Hovering the cursor over an entity while holding ammo locks it: the
-    // release angle will be shifted onto a ballistic intercept course.
+    // Lead-point solve for the UI. The throw itself always goes at the
+    // cursor — these are the ✕ markers showing where a release WOULD hit
+    // each nearby mover, plus which one the current aim already satisfies.
     if (s.alive && (game.held || game.volleyCharging)) {
-      game.lock = lockOn(game, game.st.fling, game.held);
-      game.lockTarget = game.lock.target;
+      game.lock = aimSolutions(game);
+      game.lockTarget = game.lock.hot ? game.lock.hot.target : null;
     } else {
       game.lock = null;
       game.lockTarget = null;

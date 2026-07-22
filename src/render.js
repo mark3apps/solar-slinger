@@ -678,39 +678,51 @@ export function render(game) {
     ctx.stroke();
   }
 
-  // Lock-on display: rotating brackets on the hovered target, a faint line
-  // showing where IT is drifting, and an X where the trajectories will meet.
-  // The yellow throw line bends to the same point — release and they collide.
-  if ((game.held || game.volleyCharging) && game.lock && game.lock.target) {
-    const L = game.lock, tg = L.target;
+  // Lead-point markers: while holding ammo, every nearby mover shows a ✕ at
+  // the spot you'd have to RELEASE toward for the paths to collide. The
+  // throw always goes straight at the cursor — put the cursor on a ✕ to
+  // hit. Markers fade in as the cursor nears them; the "hot" one (current
+  // aim already hits) locks bright with brackets on its source target.
+  if ((game.held || game.volleyCharging) && game.lock) {
     const z = game.cam.zoom;
     const pulse = 0.65 + 0.35 * Math.sin(game.time * 7);
-    const rr = tg.radius + 9 / z;
-    ctx.strokeStyle = `rgba(255, 214, 100, ${0.45 + 0.4 * pulse})`;
-    ctx.lineWidth = 2 / z;
-    ctx.beginPath();
-    for (let q = 0; q < 4; q++) {
-      const a0 = q * Math.PI / 2 + game.time * 1.2;
-      ctx.moveTo(tg.x + Math.cos(a0) * rr, tg.y + Math.sin(a0) * rr);
-      ctx.arc(tg.x, tg.y, rr, a0, a0 + 0.55);
-    }
-    ctx.stroke();
-    // Where will it be when the rock arrives?
-    if (L.t > 0.08 && Math.hypot(L.px - tg.x, L.py - tg.y) > tg.radius * 0.5) {
-      ctx.setLineDash([4 / z, 6 / z]);
-      ctx.strokeStyle = 'rgba(255, 214, 100, 0.35)';
-      ctx.lineWidth = 1.5 / z;
-      ctx.beginPath(); ctx.moveTo(tg.x, tg.y); ctx.lineTo(L.px, L.py); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (L.t > 0.08) {
-      const xr = 7 / z;
-      ctx.strokeStyle = `rgba(255, 214, 100, ${0.45 + 0.4 * pulse})`;
-      ctx.lineWidth = 2 / z;
-      ctx.beginPath();
-      ctx.moveTo(L.px - xr, L.py - xr); ctx.lineTo(L.px + xr, L.py + xr);
-      ctx.moveTo(L.px + xr, L.py - xr); ctx.lineTo(L.px - xr, L.py + xr);
-      ctx.stroke();
+    const fadeR = 520;
+    for (const sol of game.lock.sols) {
+      const hot = sol === game.lock.hot;
+      if (!hot && sol.cursorD > fadeR) continue;
+      const tg = sol.target;
+      const lead = Math.hypot(sol.mx - tg.x, sol.my - tg.y);
+      const a = hot ? 0.55 + 0.4 * pulse : 0.5 * (1 - sol.cursorD / fadeR);
+      // The ✕ (skip when the lead point sits on the target itself — aiming
+      // straight at a near-stationary thing needs no marker)
+      if (lead > tg.radius * 0.6) {
+        const xr = (hot ? 8 : 6) / z;
+        ctx.strokeStyle = `rgba(255, 214, 100, ${a})`;
+        ctx.lineWidth = (hot ? 2.5 : 1.5) / z;
+        ctx.beginPath();
+        ctx.moveTo(sol.mx - xr, sol.my - xr); ctx.lineTo(sol.mx + xr, sol.my + xr);
+        ctx.moveTo(sol.mx + xr, sol.my - xr); ctx.lineTo(sol.mx - xr, sol.my + xr);
+        ctx.stroke();
+        // Faint tie back to the rock it belongs to
+        ctx.setLineDash([3 / z, 7 / z]);
+        ctx.strokeStyle = `rgba(255, 214, 100, ${a * 0.5})`;
+        ctx.lineWidth = 1.2 / z;
+        ctx.beginPath(); ctx.moveTo(tg.x, tg.y); ctx.lineTo(sol.mx, sol.my); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      // Hot lock: rotating brackets on the target that will be hit
+      if (hot) {
+        const rr = tg.radius + 9 / z;
+        ctx.strokeStyle = `rgba(140, 255, 170, ${0.5 + 0.4 * pulse})`;
+        ctx.lineWidth = 2 / z;
+        ctx.beginPath();
+        for (let q = 0; q < 4; q++) {
+          const a0 = q * Math.PI / 2 + game.time * 1.2;
+          ctx.moveTo(tg.x + Math.cos(a0) * rr, tg.y + Math.sin(a0) * rr);
+          ctx.arc(tg.x, tg.y, rr, a0, a0 + 0.55);
+        }
+        ctx.stroke();
+      }
     }
   }
 

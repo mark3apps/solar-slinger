@@ -12,66 +12,74 @@ function holdPoint(game, body) {
   return { x: s.x + Math.cos(ang) * d, y: s.y + Math.sin(ang) * d };
 }
 
-// Aim assist: HOVER the cursor over any entity within throw reach to lock it.
-// Throws NEVER steer mid-flight — instead the release angle is solved so the
-// straight-line trajectories collide (classic ballistic intercept). Returns
-// the solved angle plus the target and predicted meeting point for the UI.
-export function lockOn(game, speed, exclude = null) {
+// AIM ASSIST, inverted: the rock ALWAYS flies exactly at the cursor — the
+// game never adjusts your angle. Instead it solves, for every entity in
+// throw reach, WHERE you'd have to release for the straight-line paths to
+// collide (|R + Vt| = speed*t, ship-relative), and hands those lead points
+// to the UI as ✕ markers. The player's job is to let go on the ✕, not on
+// the target. A solution whose angle the cursor currently satisfies (within
+// the real angular width of the target) is "hot" — that release will hit.
+export function aimSolutions(game) {
   const s = game.ship;
-  const maxD = Math.min(2600, speed * CFG.LOCK_T);
-  const slack = game.st.lockSlack;
-  let best = null, bestD = Infinity;
+  const st = game.st;
+  const held = game.held;
+  const speed = held
+    ? st.fling * clamp(Math.pow(st.capacity / (held.mass * 4), 0.25), 0.3, 1)
+    : st.fling;
+  const heldR = held ? held.radius : 6;
+  const cursorAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const reach = Math.min(2600, speed * CFG.LOCK_T);
+  const sols = [];
+  let hot = null;
   const consider = (e) => {
-    const dc = Math.hypot(e.x - game.aim.x, e.y - game.aim.y);
-    if (dc > e.radius + slack) return;                       // must be hovered
-    if (Math.hypot(e.x - s.x, e.y - s.y) > maxD) return;     // must be in reach
-    if (dc < bestD) { best = e; bestD = dc; }
+    const rx = e.x - s.x, ry = e.y - s.y;
+    if (Math.hypot(rx, ry) > reach + 400) return;
+    const vx = e.vx - s.vx, vy = e.vy - s.vy;
+    const a = vx * vx + vy * vy - speed * speed;
+    const bq = 2 * (rx * vx + ry * vy);
+    const c = rx * rx + ry * ry;
+    let t = 0;
+    if (Math.abs(a) > 1e-6) {
+      const disc = bq * bq - 4 * a * c;
+      if (disc < 0) return;                       // target outruns the throw
+      const sq = Math.sqrt(disc);
+      const ts = [(-bq - sq) / (2 * a), (-bq + sq) / (2 * a)].filter((x) => x > 0.02);
+      if (!ts.length) return;
+      t = Math.min(...ts);
+    } else if (bq < -1e-6) {
+      t = -c / bq;
+    } else return;
+    if (t > CFG.LOCK_T * 1.4) return;             // meets beyond the throw line
+    // Lead point: where the cursor must sit for this angle (ship frame, so
+    // it stays correct even while the ship itself is moving)
+    const mx = s.x + rx + vx * t, my = s.y + ry + vy * t;
+    const ang = Math.atan2(ry + vy * t, rx + vx * t);
+    const tol = Math.max(0.004, (e.radius + heldR * 0.8) / (speed * t));
+    const sol = {
+      target: e, t, mx, my,
+      onLine: Math.abs(angDiff(cursorAng, ang)) <= tol,
+      cursorD: Math.hypot(mx - game.aim.x, my - game.aim.y),
+    };
+    sols.push(sol);
+    if (sol.onLine && (!hot || t < hot.t)) hot = sol;
   };
   for (const al of game.aliens) if (al.alive) consider(al);
   for (const b of game.bodies) {
-    // `exclude` is the rock being thrown RIGHT NOW: releaseHeld clears
-    // game.held before aiming, so without this the throw locks onto itself
-    if (!b.alive || b.type === 'star' || b === game.held || b === exclude || b.heldBy) continue;
+    if (!b.alive || b.type === 'star' || b === held || b.heldBy) continue;
     consider(b);
   }
-  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  if (!best) return { ang: baseAng, target: null, t: 0, px: 0, py: 0 };
-
-  // Solve |R + V t| = speed * t for the earliest positive t, where R/V are
-  // the target's position/velocity relative to the ship (the rock inherits
-  // ship velocity, so `speed` is ship-relative).
-  const rx = best.x - s.x, ry = best.y - s.y;
-  const vx = best.vx - s.vx, vy = best.vy - s.vy;
-  const a = vx * vx + vy * vy - speed * speed;
-  const bq = 2 * (rx * vx + ry * vy);
-  const c = rx * rx + ry * ry;
-  let t = 0;
-  if (Math.abs(a) > 1e-6) {
-    const disc = bq * bq - 4 * a * c;
-    if (disc >= 0) {
-      const sq = Math.sqrt(disc);
-      const ts = [(-bq - sq) / (2 * a), (-bq + sq) / (2 * a)].filter((x) => x > 0.01);
-      if (ts.length) t = Math.min(...ts);
-    }
-  } else if (bq < -1e-6) {
-    t = -c / bq;
-  }
-  if (!t || !isFinite(t)) t = Math.sqrt(c) / Math.max(120, speed);   // fallback: current distance
-  t = Math.min(t, 3.5);
-  return {
-    ang: Math.atan2(ry + vy * t, rx + vx * t),
-    target: best, t,
-    px: best.x + best.vx * t, py: best.y + best.vy * t,
-  };
+  sols.sort((x, y) => x.cursorD - y.cursorD);
+  return { sols: sols.slice(0, 6), hot };
 }
 
-// Heavier objects fling slower; ship velocity is inherited.
+// Heavier objects fling slower; ship velocity is inherited. The angle is the
+// cursor's, PERIOD — see aimSolutions for why.
 export function computeFlingVelocity(game, body) {
   const s = game.ship;
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
   const speed = st.fling * massFactor;
-  const { ang } = lockOn(game, speed, body);
+  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
@@ -213,7 +221,7 @@ export function flingAllFromOrbit(game) {
   if (!game.orbit.length || !game.ship.alive) return 0;
   const s = game.ship;
   const st = game.st;
-  const { ang } = lockOn(game, st.fling);
+  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);   // straight at the cursor
   const rocks = game.orbit;
   game.orbit = [];
   const n = rocks.length;

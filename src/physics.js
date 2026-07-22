@@ -449,8 +449,9 @@ export function step(game, dt) {
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
 
-    // (No mid-flight guidance: thrown rocks are pure ballistics. The aim
-    // assist lives entirely in the release angle — see tractor.lockOn.)
+    // (No mid-flight guidance and no angle adjustment: thrown rocks fly
+    // straight at the cursor. The assist is the ✕ lead markers the UI
+    // draws from tractor.aimSolutions — the player releases on the ✕.)
     // Star-anchored bodies are held by their sun, never the map edge — the
     // boundary force would deorbit outer planets of off-center systems.
     if (!(b.parent && (b.type === 'planet' || b.type === 'moon'))) {
