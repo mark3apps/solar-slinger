@@ -309,9 +309,16 @@ export function updateOrbit(game, dt) {
   }
   let interceptorIdx = -1;
   if (threat) {
+    // Best blocker = the orbiter already nearest the threat's incoming LINE
+    // (not nearest the rock itself) — with only a small allowed shift, a
+    // defender on the wrong side of the formation can never reach the path.
     let bd = Infinity;
+    const tvm = Math.hypot(threat.vx - s.vx, threat.vy - s.vy) || 1;
+    const ux = (threat.vx - s.vx) / tvm, uy = (threat.vy - s.vy) / tvm;
     for (let i = 0; i < n; i++) {
-      const d = Math.hypot(game.orbit[i].x - threat.x, game.orbit[i].y - threat.y);
+      const px = game.orbit[i].x - threat.x, py = game.orbit[i].y - threat.y;
+      const ahead = px * ux + py * uy > 0;
+      const d = ahead ? Math.abs(px * uy - py * ux) : Math.hypot(px, py);
       if (d < bd) { bd = d; interceptorIdx = i; }
     }
   }
@@ -330,15 +337,22 @@ export function updateOrbit(game, dt) {
     const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;
     let ty = s.y + Math.sin(ang) * Ri;
-    if (i === interceptorIdx) {   // lunge at the incoming rock (slight lead)
-      tx = threat.x + threat.vx * 0.12;
-      ty = threat.y + threat.vy * 0.12;
+    if (i === interceptorIdx) {
+      // BLOCK, don't chase: the defender only shifts a bounded distance
+      // from its own slot toward the threat's incoming line — a shield
+      // wall bracing, not a hunter leaving formation.
+      const lx = threat.x + threat.vx * 0.12 - tx;
+      const ly = threat.y + threat.vy * 0.12 - ty;
+      const lm = Math.hypot(lx, ly) || 1;
+      const lim = Math.min(lm, 80 + 25 * game.st.orbitLvl);
+      tx += (lx / lm) * lim;
+      ty += (ly / lm) * lim;
     }
     // Cap the approach speed — an uncapped spring slings new orbiters through
     // the belt at 1000+ u/s and they shatter on bystanders before settling.
     // Interceptors are allowed to move much faster.
     const intercepting = i === interceptorIdx;
-    const maxApproach = intercepting ? 950 : 380;
+    const maxApproach = intercepting ? 600 : 380;
     let dvx = (tx - b.x) * 4.5, dvy = (ty - b.y) * 4.5;
     const dm = Math.hypot(dvx, dvy);
     if (dm > maxApproach) { dvx *= maxApproach / dm; dvy *= maxApproach / dm; }
@@ -347,7 +361,7 @@ export function updateOrbit(game, dt) {
     // Holding a circle takes real centripetal authority (v²/R) on top of
     // formation-keeping — the floor must cover it or heavy rocks lag into
     // a trailing pursuit circle far inside their assigned ring.
-    const cap = intercepting ? 2400
+    const cap = intercepting ? 1600
       : Math.min(900, Math.max(260, (game.st.force * 1.5) / b.mass));
     const am = Math.hypot(ax, ay);
     if (am > cap) { ax *= cap / am; ay *= cap / am; }
