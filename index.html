@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Solar Slinger</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="topleft">
+    <div class="barwrap">
+      <div class="bar"><div id="hullFill"></div></div>
+      <span id="hullText" class="bartext">HULL 100</span>
+    </div>
+    <div id="scrapRow">&#x2B21; <span id="scrapText">0</span> SCRAP</div>
+    <div id="tierRow">TRACTOR: <span id="tierText">Asteroids</span></div>
+  </div>
+  <div id="hint">W A S D fly &nbsp;&bull;&nbsp; MOUSE aim &nbsp;&bull;&nbsp; HOLD LMB grab &nbsp;&bull;&nbsp; RELEASE fling &nbsp;&bull;&nbsp; RMB drop &nbsp;&bull;&nbsp; E upgrades &nbsp;&bull;&nbsp; WHEEL zoom &nbsp;&bull;&nbsp; T trajectory &nbsp;&bull;&nbsp; P pause</div>
+  <div id="msg" class="hidden"></div>
+</div>
+
+<div id="upgradePanel" class="panel hidden">
+  <h2>SHIP UPGRADES</h2>
+  <div id="upList"></div>
+  <p class="small">Press E to close &mdash; destroy things and collect gold scrap to afford upgrades</p>
+</div>
+
+<div id="deathScreen" class="panel hidden">
+  <h1>SHIP DESTROYED</h1>
+  <p id="deathCause"></p>
+  <p class="small">25% of scrap lost &mdash; press R to respawn</p>
+</div>
+
+<div id="pauseScreen" class="panel hidden">
+  <h1>PAUSED</h1>
+  <p class="small">Press P to resume</p>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
