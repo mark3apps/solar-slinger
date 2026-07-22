@@ -75,6 +75,8 @@ export const CFG = {
   ALIEN_FIRST_WAVE: 55,    // seconds of peace at the start
   ALIEN_WAVE_EVERY: 42,
   ALIEN_SCRAP: 28,
+  ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
+  ALIEN_BURST: 4,          // a nest can scramble up to this many at once
 
   PREDICT_STEPS: 200,      // trajectory forecast resolution (ship path)
   PREDICT_DT: 1 / 30,

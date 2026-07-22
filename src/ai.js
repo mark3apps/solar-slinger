@@ -49,6 +49,32 @@ function updateAlien(game, al, dt) {
   const distShip = s.alive ? Math.hypot(s.x - al.x, s.y - al.y) : Infinity;
   al.angle = s.alive ? Math.atan2(s.y - al.y, s.x - al.x) : al.angle;
 
+  // TERRITORIAL: an alien belongs to its nest and never abandons that turf.
+  // If it has strayed past the territory, or the player has fled the nest's
+  // region, it drops everything and returns home to patrol until the player
+  // comes back. (A destroyed nest leaves orphans that hunt freely 'til dead.)
+  const home = (al.nest && al.nest.alive) ? al.nest : null;
+  const homeDist = home ? Math.hypot(home.x - al.x, home.y - al.y) : 0;
+  const playerHome = home
+    ? (s.alive && Math.hypot(s.x - home.x, s.y - home.y) < CFG.ALIEN_TERRITORY)
+    : true;
+  if (home && (homeDist > CFG.ALIEN_TERRITORY || !playerHome)) {
+    if (al.target && al.target.heldBy === al) {
+      al.target.heldBy = null; al.target.extAx = 0; al.target.extAy = 0;
+    }
+    al.target = null;
+    if (homeDist > 700) {
+      steer(al, home.x, home.y, CFG.ALIEN_SPEED);        // race back to the nest
+    } else {                                             // patrol the nest yard
+      const around = Math.atan2(al.y - home.y, al.x - home.x) + 0.7;
+      steer(al, home.x + Math.cos(around) * 480, home.y + Math.sin(around) * 480,
+        CFG.ALIEN_SPEED * 0.55);
+    }
+    al.state = 'seek';   // ready to re-engage the instant the player returns
+    avoidStars(game, al);
+    return;
+  }
+
   switch (al.state) {
     case 'seek': {
       // Drift toward the player, then look for ammo
@@ -136,21 +162,27 @@ export function updateAliens(game, dt) {
   if (game.time < CFG.ALIEN_FIRST_WAVE) return;
   game.alienTimer -= dt;
   if (game.alienTimer > 0) return;
-  game.alienTimer = 8;   // per-scan pacing: patrols trickle out, not swarm
+  game.alienTimer = 12;   // seconds between eruptions
 
   const s = game.ship;
   if (!s.alive) return;
-  const cap = 1 + Math.min(3, Math.floor(game.st.totalLevel / 4));
+  // A nest holds a garrison scaling gently with level, and scrambles a whole
+  // burst (up to ALIEN_BURST) at once when the player enters its territory.
+  const cap = CFG.ALIEN_BURST + Math.min(3, Math.floor(game.st.totalLevel / 5));
   for (const nest of game.bodies) {
     if (!nest.alive || nest.type !== 'nest') continue;
     if (Math.hypot(nest.x - s.x, nest.y - s.y) > 5500) continue;
     const local = game.aliens.reduce((n, a) => n + (a.alive && a.nest === nest ? 1 : 0), 0);
-    if (local >= cap) continue;
-    const th = Math.random() * TAU;
-    const al = new Alien(nest.x + Math.cos(th) * 250, nest.y + Math.sin(th) * 250);
-    al.nest = nest;
-    game.aliens.push(al);
+    const burst = Math.min(CFG.ALIEN_BURST, cap - local);
+    if (burst <= 0) continue;
+    for (let i = 0; i < burst; i++) {
+      const th = Math.random() * TAU;
+      const r = 200 + Math.random() * 140;
+      const al = new Alien(nest.x + Math.cos(th) * r, nest.y + Math.sin(th) * r);
+      al.nest = nest;
+      game.aliens.push(al);
+    }
     game.alienWarn = 3;
-    break;   // one per scan — pressure ramps instead of spiking
+    break;   // one nest erupts per cycle
   }
 }
