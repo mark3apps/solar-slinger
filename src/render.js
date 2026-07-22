@@ -146,6 +146,20 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
+  // Comets stream an icy tail behind them
+  if (b.comet) {
+    const vm = Math.hypot(b.vx, b.vy) || 1;
+    const tx = b.x - (b.vx / vm) * b.radius * 9, ty = b.y - (b.vy / vm) * b.radius * 9;
+    const tg = ctx.createLinearGradient(b.x, b.y, tx, ty);
+    tg.addColorStop(0, 'rgba(170, 235, 255, 0.55)');
+    tg.addColorStop(1, 'transparent');
+    ctx.strokeStyle = tg;
+    ctx.lineWidth = b.radius * 1.4;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
   // Hot magma bombs glow until they cool
   if (b.magma > 0) {
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.4, b.x, b.y, b.radius * 2.6);
@@ -661,6 +675,9 @@ function drawMinimap(game) {
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     } else if (b.type === 'station') {
       ctx.fillStyle = '#c9d6e4';
+      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    } else if (b.comet) {
+      ctx.fillStyle = '#8fe8ff';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   }

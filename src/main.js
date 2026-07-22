@@ -1,4 +1,4 @@
-import { CFG, newProgress, shipStats } from './config.js';
+import { CFG, GROWTH, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
@@ -160,8 +160,37 @@ function update(dtReal) {
       acc -= CFG.DT;
     }
 
-    // Hull regen after a quiet spell
     const s = game.ship;
+
+    // SLINGSHOT: pass through a planet's well without touching the throttle
+    // and leave faster than you entered — clean flying feeds the engines.
+    if (s.alive) {
+      let inWell = null;
+      for (const b of game.bodies) {
+        if (!b.alive || b.type !== 'planet') continue;
+        if (Math.hypot(b.x - s.x, b.y - s.y) < b.radius * 5 + 600) { inWell = b; break; }
+      }
+      const sp = Math.hypot(s.vx, s.vy);
+      if (inWell) {
+        if (!game.sling || game.sling.planet !== inWell) {
+          game.sling = { planet: inWell, entry: sp, thrusted: false };
+        }
+        if (game.controls.f || game.controls.b) game.sling.thrusted = true;
+      } else if (game.sling) {
+        const gain = Math.round(sp - game.sling.entry);
+        if (!game.sling.thrusted && gain > 50) {
+          game.prog.dv += gain * 8;   // counts as delta-v earned, not spent
+          game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
+            GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
+          hud.message(`SLINGSHOT! +${gain} speed — the gravity assist feeds your engines.`, 3);
+        }
+        game.sling = null;
+      }
+    } else {
+      game.sling = null;
+    }
+
+    // Hull regen after a quiet spell
     if (s.alive && game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY && s.hull < game.st.maxHull) {
       s.hull = Math.min(game.st.maxHull, s.hull + CFG.SHIP_REGEN * dtReal);
     }
@@ -217,6 +246,22 @@ function update(dtReal) {
     if (game.rogueIncoming) {
       game.rogueIncoming = 0;
       hud.message('SENSOR ALERT: a rogue planet has entered the sector.', 4.5);
+    }
+    if (game.tetherShow) {
+      hud.message(game.tut.tether
+        ? `TETHER THROW! ×${game.tetherShow.toFixed(2)}`
+        : `TETHER THROW ×${game.tetherShow.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`,
+      game.tut.tether ? 1.8 : 4.5);
+      game.tut.tether = true;
+      game.tetherShow = 0;
+    }
+    if (game.cometWarn) {
+      game.cometWarn = false;
+      hud.message(game.tut.comet
+        ? 'COMET SHOWER inbound!'
+        : 'COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.',
+      game.tut.comet ? 3 : 5.5);
+      game.tut.comet = true;
     }
     if (game.flareWarn) {
       game.flareWarn = false;

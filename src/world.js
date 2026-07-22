@@ -176,7 +176,7 @@ export function generateWorld(game, seed = 20260721) {
     { r: 9800,  mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4, station: true },
     { r: 10800, mass: 1.3e5, radius: 170, ptype: 'rocky', moons: 2 },
     { r: 11800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7, nest: true },
-    { r: 14000, mass: 1.4e5, radius: 180, ptype: 'rocky', moons: 2 },
+    { r: 14000, mass: 2.2e5, radius: 220, ptype: 'rocky', binary: true },
     { r: 15400, belt: true, spread: 500, count: 50 },
     { r: 17200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6, station: true },
     { r: 18600, mass: 1.8e5, radius: 205, ptype: 'rocky', ring: true, moons: 3 },
@@ -195,6 +195,23 @@ export function generateWorld(game, seed = 20260721) {
     planets.push(p);
     if (item.station) addStation(bodies, rng, p);
     if (item.nest) addNest(bodies, rng, p);
+    // BINARY PAIR: a near-equal companion circling the primary — the chaotic
+    // double-well between them is a playground, and it guards good salvage.
+    if (item.binary) {
+      const th2 = rng() * TAU;
+      const cx = p.x + Math.cos(th2) * 1500, cy = p.y + Math.sin(th2) * 1500;
+      const cv = orbitVel(p, cx, cy, 1);
+      const comp = new Body({
+        type: 'planet', x: cx, y: cy, vx: cv.vx, vy: cv.vy,
+        mass: item.mass * 0.75, radius: item.radius * 0.85,
+        color: pick(rng, PTYPE_COLORS[item.ptype]),
+        name: p.name + ' B', ptype: item.ptype, parent: p,
+      });
+      bodies.push(comp);
+      railBody(comp, p);
+      planets.push(comp);
+      addStation(bodies, rng, comp);
+    }
   }
 
   // TROJAN CLUSTERS: heavyweight planets carry dense rock pockets 60° ahead
@@ -363,6 +380,27 @@ export function replenishWorld(game, dt) {
     }
   }
 
+  // ---- comet showers: streams of fast ice sweeping past the player ----
+  game.cometTimer = (game.cometTimer ?? 75) - dt;
+  if (game.cometTimer <= 0 && s.alive) {
+    game.cometTimer = 90 + rng() * 60;
+    const th = rng() * TAU;
+    const ex = Math.cos(th) * CFG.WORLD_R * 0.95, ey = Math.sin(th) * CFG.WORLD_R * 0.95;
+    const aimAng = Math.atan2(s.y - ey, s.x - ex) + (rng() - 0.5) * 0.12;
+    const n = 4 + Math.floor(rng() * 4);
+    for (let i = 0; i < n; i++) {
+      const lag = i * (420 + rng() * 240);
+      const perp = (rng() - 0.5) * 1000;
+      const px = ex - Math.cos(aimAng) * lag - Math.sin(aimAng) * perp;
+      const py = ey - Math.sin(aimAng) * lag + Math.cos(aimAng) * perp;
+      const sp = 520 + rng() * 180;
+      const c = spawnAsteroid(game.bodies, px, py,
+        Math.cos(aimAng) * sp, Math.sin(aimAng) * sp, 350 + rng() * 400);
+      c.comet = true; c.cometT = 90; c.color = '#bfeffc';
+    }
+    game.cometWarn = true;
+  }
+
   // ---- planet-type hazards & gifts (only fire while the player is close) ----
   for (const p of game.bodies) {
     if (!p.alive || p.type !== 'planet' || !s.alive) continue;
@@ -406,9 +444,15 @@ export function replenishWorld(game, dt) {
       }
     }
   }
-  // Magma cools into dense dark rock
+  // Magma cools into dense dark rock; spent comets fade away off-screen
+  // (captured ones are keepers)
   for (const b of game.bodies) {
     if (b.magma > 0) { b.magma -= dt; if (b.magma <= 0) b.color = '#6e5a50'; }
+    if (b.comet && b.alive) {
+      b.cometT -= dt;
+      if (b.cometT <= 0 && !b.heldBy &&
+          Math.hypot(b.x - s.x, b.y - s.y) > (game.viewR || 1000) * 2) b.alive = false;
+    }
   }
 
   // View-local asteroid field: rocks only need to exist a threshold outside

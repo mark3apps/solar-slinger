@@ -7,7 +7,7 @@ export function massToHp(mass) { return Math.max(4, mass * 0.012); }
 // Scrap payout for fully destroying a body
 export function scrapValue(body) {
   switch (body.type) {
-    case 'asteroid': return (6 + body.mass * 0.006) * (body.junk ? 3 : 1);
+    case 'asteroid': return (6 + body.mass * 0.006) * (body.junk ? 3 : body.comet ? 4 : 1);
     case 'moon':     return 30 + body.mass * 0.004;
     case 'planet':   return 90 + body.mass * 0.0012;
     case 'rogue':    return 400;

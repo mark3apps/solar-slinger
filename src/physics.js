@@ -459,8 +459,10 @@ export function step(game, dt) {
         if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) <
             (game.viewR || 1200) * 1.15 + 300) continue;
         // Try to re-rail around the natural parent
-        const parent = (b.type !== 'asteroid' && b.type !== 'planet' && b.parent && b.parent.alive)
-          ? b.parent : game.homeStar;   // moons/stations/nests re-rail around their planet
+        // Re-rail around the natural parent: moons/stations/nests around
+        // their planet, a binary companion around its primary, everything
+        // else (and orphans) around the sun
+        const parent = (b.parent && b.parent.alive) ? b.parent : game.homeStar;
         let clear = true;
         for (const d of disturbers) {
           if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { clear = false; break; }

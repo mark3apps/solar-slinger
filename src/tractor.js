@@ -23,9 +23,7 @@ export function aimSolutions(game) {
   const s = game.ship;
   const st = game.st;
   const held = game.held;
-  const speed = held
-    ? st.fling * clamp(Math.pow(st.capacity / (held.mass * 4), 0.25), 0.3, 1)
-    : st.fling;
+  const speed = flingSpeedFor(game, held ? held.mass : 600);
   const heldR = held ? held.radius : 6;
   // CRITICAL FRAME CHOICE: the rock launches from ITS OWN position (the hold
   // point, ~70 out from the ship, plus any spring lag) — not from the ship.
@@ -77,15 +75,32 @@ export function aimSolutions(game) {
   return { sols: sols.slice(0, 6), hot };
 }
 
-// Heavier objects fling slower; ship velocity is inherited. The rock flies
-// from ITS OWN position straight through the cursor point — matching the
-// frame aimSolutions solves in, so releasing on a ✕ really connects. (If
-// the cursor sits basically on the rock, fall back to the ship-nose angle.)
+// Fling speed for a given mass — heavier objects fling slower. TETHER THROW:
+// at beam tier 2+, flinging while under forward thrust whip-cracks the rock
+// with the ship's own momentum (up to +60% at high speed). The multiplier is
+// stashed on game.tetherMul so releaseHeld can announce big cracks, and the
+// same helper feeds the lead-marker solver so the ✕ stays honest.
+function flingSpeedFor(game, mass) {
+  const st = game.st;
+  const massFactor = clamp(Math.pow(st.capacity / (mass * 4), 0.25), 0.3, 1);
+  let speed = st.fling * massFactor;
+  game.tetherMul = 1;
+  if (st.tier >= 2 && game.controls.f > 0 && game.ship.alive) {
+    const sp = Math.hypot(game.ship.vx, game.ship.vy);
+    const mul = 1 + Math.min(0.6, sp / 900);
+    speed *= mul;
+    game.tetherMul = mul;
+  }
+  return speed;
+}
+
+// The rock flies from ITS OWN position straight through the cursor point —
+// matching the frame aimSolutions solves in, so releasing on a ✕ really
+// connects. (If the cursor sits basically on the rock, fall back to the
+// ship-nose angle.)
 export function computeFlingVelocity(game, body) {
   const s = game.ship;
-  const st = game.st;
-  const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
-  const speed = st.fling * massFactor;
+  const speed = flingSpeedFor(game, body.mass);
   const dx = game.aim.x - body.x, dy = game.aim.y - body.y;
   const ang = Math.hypot(dx, dy) > 25
     ? Math.atan2(dy, dx)
@@ -148,6 +163,7 @@ export function releaseHeld(game, fling) {
     b.vx = v.vx; b.vy = v.vy;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    if (game.tetherMul > 1.15) game.tetherShow = game.tetherMul;   // main.js announces
     sfx.sfxFling();
   } else {
     sfx.sfxDrop();
@@ -255,8 +271,7 @@ export function flingAllFromOrbit(game) {
     b.heldBy = null;
     b.orbitAng = undefined;
     b.extAx = 0; b.extAy = 0;
-    const massFactor = clamp(Math.pow(st.capacity / (b.mass * 4), 0.25), 0.3, 1);
-    const speed = st.fling * massFactor;
+    const speed = flingSpeedFor(game, b.mass);
     const a = ang + (i - (n - 1) / 2) * 0.07;
     b.vx = s.vx + Math.cos(a) * speed;
     b.vy = s.vy + Math.sin(a) * speed;
