@@ -71,13 +71,24 @@ function nearestStar(game, x, y) {
 }
 
 function drawBody(game, b) {
-  // Moons announce themselves: a faint orbit circle around their planet and a
-  // bright icy outline — no more confusing them with asteroids.
+  // Moons announce themselves: a whisper-faint orbit circle around their
+  // planet and a bright icy outline — no more confusing them with asteroids.
   if (b.type === 'moon' && b.parent && b.parent.alive) {
     const orbR = b.onRails ? b.rail.r : Math.hypot(b.x - b.parent.x, b.y - b.parent.y);
-    ctx.strokeStyle = 'rgba(180, 200, 255, 0.09)';
+    ctx.strokeStyle = 'rgba(180, 200, 255, 0.045)';
     ctx.lineWidth = 1.5 / game.cam.zoom;
     ctx.beginPath(); ctx.arc(b.parent.x, b.parent.y, orbR, 0, TAU); ctx.stroke();
+  }
+
+  // Planets show a short stretch of their orbital path around the sun
+  if (b.type === 'planet' && b.onRails) {
+    const rl = b.rail;
+    ctx.strokeStyle = 'rgba(190, 210, 255, 0.06)';
+    ctx.lineWidth = 1.5 / game.cam.zoom;
+    const span = 0.22;
+    ctx.beginPath();
+    ctx.arc(rl.parent.x, rl.parent.y, rl.r, rl.ang - span, rl.ang + span);
+    ctx.stroke();
   }
 
   if (b.type === 'star') {
@@ -438,6 +449,41 @@ export function render(game) {
 
   for (const al of game.aliens) if (al.alive) drawAlien(game, al);
   drawShip(game);
+
+  // Hover hint: what would happen if you grabbed the thing under the cursor?
+  // green = auto-orbits, cyan = holdable, red = too heavy. Dim when out of
+  // beam range.
+  if (game.ship.alive) {
+    const st = game.st;
+    let hov = null, hovD = Infinity;
+    for (const b of game.bodies) {
+      if (!b.alive || b.type === 'star' || b.heldBy) continue;
+      const d = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
+      if (d > b.radius + st.grabSlack) continue;
+      if (d < hovD) { hov = b; hovD = d; }
+    }
+    if (hov && hov !== game.held) {
+      const canOrbit = hov.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters;
+      const canGrab = hov.mass <= st.capacity;
+      const inRange = Math.hypot(hov.x - game.ship.x, hov.y - game.ship.y) <= st.range + hov.radius;
+      const pulse = 1 + Math.sin(game.time * 6) * 0.18;
+      const alpha = (inRange ? 0.85 : 0.3) * (0.7 + 0.3 * Math.sin(game.time * 6));
+      const rr = hov.radius + (7 + 4 * pulse) / game.cam.zoom;
+      ctx.lineWidth = 2 / game.cam.zoom;
+      if (canOrbit) ctx.strokeStyle = `rgba(120, 255, 180, ${alpha})`;
+      else if (canGrab) ctx.strokeStyle = `rgba(90, 200, 255, ${alpha})`;
+      else ctx.strokeStyle = `rgba(255, 95, 80, ${alpha})`;
+      ctx.setLineDash(canGrab ? [] : [5 / game.cam.zoom, 5 / game.cam.zoom]);
+      ctx.beginPath(); ctx.arc(hov.x, hov.y, rr, 0, TAU); ctx.stroke();
+      ctx.setLineDash([]);
+      if (!canGrab) {   // slash it: clearly beyond the beam
+        ctx.beginPath();
+        ctx.moveTo(hov.x - rr * 0.7, hov.y + rr * 0.7);
+        ctx.lineTo(hov.x + rr * 0.7, hov.y - rr * 0.7);
+        ctx.stroke();
+      }
+    }
+  }
 
   // Volley charge arc around the ship
   if (game.volleyT > 0 && game.ship.alive) {

@@ -37,11 +37,13 @@ function spawnMoon(bodies, rng, planet, mr) {
   return m;
 }
 
-// How far out this planet can hold a moon against the sun's tide. Rails make
-// even the outer edge safe, so the zone is wider than raw Hill stability.
+// How far out this planet can hold a moon. Rails hold moons on their orbits
+// regardless of the sun's tide, so the zone extends far beyond raw Hill
+// stability — wide, majestic moon systems. (A derailed outer moon may drift
+// off and re-rail around the sun; that's fine and rare.)
 function moonZone(star, planet, orbitR) {
   const hill = orbitR * Math.cbrt(planet.mass / (3 * star.mass));
-  return { minR: planet.radius + 90, maxR: hill * 0.5 };
+  return { minR: planet.radius + 90, maxR: hill * 1.5 };
 }
 
 function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
@@ -75,16 +77,20 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   return p;
 }
 
-function asteroidRadius(mass) { return 3 + Math.cbrt(mass) * 0.9; }
+function asteroidRadius(mass) { return 2 + Math.cbrt(mass) * 0.8; }
 
-// Skewed small, occasionally chunky
-function asteroidMass(rng) { return 60 + Math.pow(rng(), 2.2) * 2540; }
+// Skewed small, occasionally chunky — and ~12% are BOULDERS, a class between
+// common rocks and moons that keeps the size ladder readable.
+function asteroidMass(rng) {
+  if (rng() < 0.12) return 2600 + rng() * 3400;   // boulder: 2600-6000
+  return 40 + Math.pow(rng(), 2.2) * 2560;
+}
 
 export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
   const a = new Body({
     type: 'asteroid', x, y, vx, vy, mass,
     radius: asteroidRadius(mass),
-    color: '#8d8577',
+    color: mass >= 2600 ? '#a3765c' : '#8d8577',   // boulders read rusty
   });
   bodies.push(a);
   return a;

@@ -72,7 +72,7 @@ export class Ship {
     this.x = 0; this.y = 0;
     this.vx = 0; this.vy = 0;
     this.angle = 0;
-    this.radius = 14;        // grows with progression (see shipStats)
+    this.radius = 9;         // grows with progression (see shipStats)
     this.mass = 10;
     this.hull = 100;
     this.alive = true;

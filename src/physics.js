@@ -539,6 +539,13 @@ export function step(game, dt) {
 
   if (s.alive) {
     s.vx += shipAx * dt; s.vy += shipAy * dt;
+    // Speed governor: above this level's ceiling, velocity bleeds back down
+    const sp = Math.hypot(s.vx, s.vy);
+    if (sp > game.st.maxSpeed) {
+      const brake = (sp - game.st.maxSpeed) * 0.8 * dt;
+      const f = Math.max(0, (sp - brake) / sp);
+      s.vx *= f; s.vy *= f;
+    }
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.invuln > 0) s.invuln -= dt;
   }
@@ -716,6 +723,12 @@ export function predictPaths(game) {
       let [ax, ay] = accelAt(ship.x, ship.y);
       ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
       ship.vx += ax * dt; ship.vy += ay * dt;
+      // Mirror the speed governor so the predicted path stays honest
+      const psp = Math.hypot(ship.vx, ship.vy);
+      if (psp > game.st.maxSpeed) {
+        const f = Math.max(0, (psp - (psp - game.st.maxSpeed) * 0.8 * dt) / psp);
+        ship.vx *= f; ship.vy *= f;
+      }
       ship.x += ship.vx * dt; ship.y += ship.vy * dt;
       if (i % 2 === 0) shipPts.push({ x: ship.x, y: ship.y });
       for (const b of atr) {

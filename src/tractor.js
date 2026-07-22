@@ -65,7 +65,7 @@ export function tryGrab(game) {
     if (!b.alive || b.type === 'star' || b.heldBy === 'orbit') continue;
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
-    if (dCursor > b.radius + 70) continue;
+    if (dCursor > b.radius + st.grabSlack) continue;
     if (dShip > st.range + b.radius) continue;
     if (dCursor < bestD) { best = b; bestD = dCursor; }
   }

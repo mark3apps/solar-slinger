@@ -18,7 +18,10 @@ export function initInput(canvas, handlers) {
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));
+  // Missed keyups (focus loss, tab switches, replayed events) must never
+  // leave a control stuck on
   window.addEventListener('blur', () => input.keys.clear());
+  document.addEventListener('visibilitychange', () => input.keys.clear());
 
   canvas.addEventListener('mousemove', (e) => {
     input.mouseX = e.clientX;

@@ -89,8 +89,8 @@ export const GROWTH = {
   TOUGH_RATE: 0.35,        // maxHull += scrapValue * rate
   HULL_BASE: 100,
   HULL_MAX: 800,
-  THRUST_BASE: 130,        // slow start — leveling up opens the system to you
-  THRUST_MAX: 850,
+  THRUST_BASE: 100,        // slow start — leveling up opens the system to you
+  THRUST_MAX: 1100,
   THRUST_SCALE: 62,        // thrust = base + scale * sqrt(deltaV / THRUST_DIV)
   THRUST_DIV: 4500,        // bigger = slower engine leveling
 };
@@ -115,7 +115,7 @@ export function shipStats(prog) {
   while (tier < TIERS.caps.length - 1 && prog.capacity >= TIERS.caps[tier + 1]) tier++;
   const flingLvl = Math.min(5, Math.floor((prog.fling - GROWTH.FLING_BASE) / 300));
   const hullLvl = Math.min(5, Math.floor((prog.maxHull - GROWTH.HULL_BASE) / 120));
-  const thrustLvl = Math.min(5, Math.floor((prog.thrust - GROWTH.THRUST_BASE) / 130));
+  const thrustLvl = Math.min(5, Math.floor((prog.thrust - GROWTH.THRUST_BASE) / 180));
   const orbitLvl = Math.min(5, Math.floor(Math.sqrt(prog.orbitXp / 4)));
   const totalLevel = tier + flingLvl + hullLvl + thrustLvl + orbitLvl;
 
@@ -127,7 +127,7 @@ export function shipStats(prog) {
       : frac01((prog.capacity - TIERS.caps[tier]) / (TIERS.caps[tier + 1] - TIERS.caps[tier])),
     fling: flingLvl >= 5 ? 1 : frac01(((prog.fling - GROWTH.FLING_BASE) - flingLvl * 300) / 300),
     hull: hullLvl >= 5 ? 1 : frac01(((prog.maxHull - GROWTH.HULL_BASE) - hullLvl * 120) / 120),
-    thrust: thrustLvl >= 5 ? 1 : frac01(((prog.thrust - GROWTH.THRUST_BASE) - thrustLvl * 130) / 130),
+    thrust: thrustLvl >= 5 ? 1 : frac01(((prog.thrust - GROWTH.THRUST_BASE) - thrustLvl * 180) / 180),
     orbit: orbitLvl >= 5 ? 1
       : frac01((prog.orbitXp - 4 * orbitLvl * orbitLvl) / (4 * (orbitLvl + 1) ** 2 - 4 * orbitLvl * orbitLvl)),
   };
@@ -136,8 +136,14 @@ export function shipStats(prog) {
     capacity: prog.capacity,
     tier,
     label: TIERS.labels[tier],
-    range: 280 + 70 * tier,
+    // Orbit level extends how far the beam reaches and how forgiving the
+    // cursor is about being near a target
+    range: 280 + 70 * tier + 45 * orbitLvl,
+    grabSlack: 70 + 28 * orbitLvl,
     force: prog.capacity * 55 * (0.6 + 0.12 * tier),
+    // Speed governor: each engine level raises the ceiling; exceeding it
+    // (slingshots, knockbacks) bleeds off gradually
+    maxSpeed: 280 + 135 * thrustLvl,
     fling: prog.fling,
     thrust: prog.thrust,
     maxHull: Math.round(prog.maxHull),
@@ -151,7 +157,8 @@ export function shipStats(prog) {
     fracs,
     // Lock-on aim assist cone widens as you level
     lockCone: 0.05 + 0.022 * totalLevel,
-    radius: Math.min(32, 14 + totalLevel * 0.75),
+    // Start tiny; the top end stays where it was
+    radius: Math.min(32, 9 + totalLevel * 0.9),
     // Camera pulls back as you grow — the system shrinks around you (gently)
     zoomOut: Math.min(1.5, 1 + totalLevel * 0.022),
     totalLevel,
