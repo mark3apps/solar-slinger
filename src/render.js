@@ -97,11 +97,12 @@ function nearestStar(game, x, y) {
 function drawBody(game, b) {
   // Moons announce themselves: a whisper-faint orbit circle around their
   // planet and a bright icy outline — no more confusing them with asteroids.
-  if (b.type === 'moon' && b.parent && b.parent.alive) {
-    const orbR = b.onRails ? b.rail.r : Math.hypot(b.x - b.parent.x, b.y - b.parent.y);
+  // Only while actually riding the rail: a captured or knocked-loose moon
+  // isn't following that circle anymore, so it gets no ring.
+  if (b.type === 'moon' && b.onRails && b.parent && b.parent.alive) {
     ctx.strokeStyle = 'rgba(180, 200, 255, 0.045)';
     ctx.lineWidth = 1.5 / game.cam.zoom;
-    ctx.beginPath(); ctx.arc(b.parent.x, b.parent.y, orbR, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.arc(b.parent.x, b.parent.y, b.rail.r, 0, TAU); ctx.stroke();
   }
 
   // Planets show a short stretch of their orbital path around the sun
@@ -391,36 +392,50 @@ function drawShip(game) {
   const lv = game.st.levels;
   const r = s.radius;
 
-  // GRAVITY-SHIP stages: as it grows the ship becomes ever more a flying
-  // gravity engine — rotating field rings, then a singularity core, then
-  // orbiting field nodes at the top end.
+  // GRAVITY-SHIP: four stages, each projecting a bigger sense of scale.
+  //   0 SCOUT       (lvl <4):  bare wedge — a speck among the rocks
+  //   1 CRUISER     (4-8):     field ring + swept vanes
+  //   2 DREADNOUGHT (9-15):    counter-rotating rings, singularity core,
+  //                            and a dark gravity-well halo around the hull
+  //   3 TITAN       (16+):     third ring, five orbiting field nodes,
+  //                            lensing arcs — space itself bends around you
   const stage = game.st.totalLevel >= 16 ? 3 : game.st.totalLevel >= 9 ? 2 : game.st.totalLevel >= 4 ? 1 : 0;
-  if (stage >= 1) {
-    ctx.strokeStyle = 'rgba(140, 170, 255, 0.5)';
+  const drawRing = (R, dash, gap, speed, color) => {
+    ctx.strokeStyle = color;
     ctx.lineWidth = 1.6;
-    ctx.setLineDash([r * 0.5, r * 0.35]);
-    ctx.lineDashOffset = -game.time * r * 1.6;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 1.55, 0, TAU); ctx.stroke();
-  }
-  if (stage >= 2) {
-    ctx.strokeStyle = 'rgba(190, 140, 255, 0.42)';
-    ctx.setLineDash([r * 0.32, r * 0.26]);
-    ctx.lineDashOffset = game.time * r * 2.1;   // counter-rotating
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 2.0, 0, TAU); ctx.stroke();
-  }
+    ctx.setLineDash([r * dash, r * gap]);
+    ctx.lineDashOffset = game.time * r * speed;
+    ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.stroke();
+  };
+  const drawHalo = (R, strength) => {
+    // The drive's captive well dims space around the ship
+    const hg = ctx.createRadialGradient(s.x, s.y, R * 0.25, s.x, s.y, R);
+    hg.addColorStop(0, `rgba(4, 2, 16, ${strength})`);
+    hg.addColorStop(0.75, `rgba(30, 20, 70, ${strength * 0.4})`);
+    hg.addColorStop(1, 'transparent');
+    ctx.fillStyle = hg;
+    ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
+  };
+  if (stage >= 2) drawHalo(r * (stage >= 3 ? 3.8 : 2.8), stage >= 3 ? 0.5 : 0.35);
+  if (stage >= 1) drawRing(r * 1.6, 0.5, 0.35, -1.6, 'rgba(140, 170, 255, 0.5)');
+  if (stage >= 2) drawRing(r * 2.25, 0.32, 0.26, 2.1, 'rgba(190, 140, 255, 0.42)');
   if (stage >= 3) {
-    ctx.strokeStyle = 'rgba(120, 230, 255, 0.35)';
-    ctx.setLineDash([r * 0.2, r * 0.42]);
-    ctx.lineDashOffset = -game.time * r * 2.8;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 2.5, 0, TAU); ctx.stroke();
+    drawRing(r * 3.1, 0.2, 0.42, -2.8, 'rgba(120, 230, 255, 0.38)');
     ctx.setLineDash([]);
+    // Five field nodes riding the outermost ring
     ctx.fillStyle = '#9fd0ff';
-    for (let i = 0; i < 3; i++) {
-      const a = game.time * 1.4 + (i * TAU) / 3;
+    for (let i = 0; i < 5; i++) {
+      const a = game.time * 1.2 + (i * TAU) / 5;
       ctx.beginPath();
-      ctx.arc(s.x + Math.cos(a) * r * 2.5, s.y + Math.sin(a) * r * 2.5, Math.max(2, r * 0.12), 0, TAU);
+      ctx.arc(s.x + Math.cos(a) * r * 3.1, s.y + Math.sin(a) * r * 3.1, Math.max(2, r * 0.11), 0, TAU);
       ctx.fill();
     }
+    // Gravitational lensing: two bright thin arcs where light slips past
+    ctx.strokeStyle = 'rgba(210, 230, 255, 0.3)';
+    ctx.lineWidth = 1.2;
+    const la = game.time * 0.35;
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.55, la, la + 0.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.55, la + Math.PI, la + Math.PI + 0.9); ctx.stroke();
   }
   ctx.setLineDash([]);
 
@@ -481,6 +496,26 @@ function drawShip(game) {
     ctx.moveTo(-r * 0.2, r * 0.6); ctx.lineTo(-r * 1.15, r * 1.05); ctx.lineTo(-r * 0.75, r * 0.35);
     ctx.closePath(); ctx.fill();
   }
+  // Dreadnought-class rear vanes: a second, broader pair behind the first
+  if (stage >= 2) {
+    ctx.fillStyle = '#93aecb';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.5, -r * 0.45); ctx.lineTo(-r * 1.6, -r * 0.75); ctx.lineTo(-r * 1.05, -r * 0.15);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.5, r * 0.45); ctx.lineTo(-r * 1.6, r * 0.75); ctx.lineTo(-r * 1.05, r * 0.15);
+    ctx.closePath(); ctx.fill();
+  }
+  // Titan crown: forward prongs bracketing the nose
+  if (stage >= 3) {
+    ctx.strokeStyle = '#cfe0f4';
+    ctx.lineWidth = Math.max(1.5, r * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(r * 0.55, -r * 0.5); ctx.lineTo(r * 1.45, -r * 0.72);
+    ctx.moveTo(r * 0.55, r * 0.5); ctx.lineTo(r * 1.45, r * 0.72);
+    ctx.moveTo(r * 0.9, 0); ctx.lineTo(r * 1.7, 0);
+    ctx.stroke();
+  }
 
   // Main hull
   ctx.fillStyle = '#dce8f8';
@@ -502,6 +537,14 @@ function drawShip(game) {
     cg.addColorStop(1, 'transparent');
     ctx.fillStyle = cg;
     ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, TAU); ctx.fill();
+  }
+  // Titan accretion ring: matter spiraling into the core, glowing warm
+  if (stage >= 3) {
+    ctx.strokeStyle = 'rgba(255, 190, 110, 0.65)';
+    ctx.lineWidth = Math.max(1.2, r * 0.06);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.62, r * 0.24, game.time * 0.9, 0, TAU);
+    ctx.stroke();
   }
 
   // FLING DRIVE augment: amber accelerator coils across the body
