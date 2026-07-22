@@ -274,7 +274,10 @@ function collideBodies(game, a, b) {
     // Natural celestial-vs-celestial bounces are damped — a rogue drive-by
     // must shove a planet, not launch it out of orbit into its star. Thrown
     // bodies keep full impulse so planet billiards stay glorious.
-    const e = CFG.RESTITUTION;
+    // Lopsided impacts bounce HARDER: the more dominant the heavy body, the
+    // livelier the light one is flung away (e: 0.35 equal -> ~0.75 extreme).
+    const dom = Math.max(a.mass, b.mass) / (a.mass + b.mass);
+    const e = CFG.RESTITUTION * (1 + (dom - 0.5) * 2.3);
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
     let j = ((1 + e) * closing) / (invA + invB || 1);
@@ -292,8 +295,24 @@ function collideBodies(game, a, b) {
     const thrown = a.thrownTimer > 0 || b.thrownTimer > 0;
     const eff = Math.max(0, closing - (thrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
     const mult = thrown ? CFG.DMG_THROWN_MULT : 1;
-    const dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult;
-    const dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult;
+    // Mass dominance decides who hurts whom: the heavier side deals up to
+    // ~2x its base damage while taking almost none from the lighter side.
+    // Equal masses keep the old numbers (both factors are 1 at 50/50).
+    // Natural (un-thrown) impacts are damped so hard ambient hits usually
+    // CRUNCH (survive + spall fragments) rather than kill — deliberate
+    // throws keep full lethality on top of their own threshold/multiplier.
+    const domA = b.mass / (a.mass + b.mass);   // how dominant the OTHER body is
+    const natural = thrown ? 1 : 0.55;
+    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domA;
+    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * (1 - domA);
+    // Comparable-mass natural hits never one-shot: cap at 70% of remaining
+    // hp so they crunch (and spall, below) instead of vanishing. Truly
+    // lopsided impacts (8x+) keep their insta-crush — big IS stronger.
+    const ratio = Math.max(a.mass, b.mass) / Math.min(a.mass, b.mass);
+    if (!thrown && ratio < 8) {
+      dmgToA = Math.min(dmgToA, a.hp * 0.7);
+      dmgToB = Math.min(dmgToB, b.hp * 0.7);
+    }
     // Debug tap: set game.collisionLog = [] from devtools to record impacts
     if (game.collisionLog && (dmgToA > 2 || dmgToB > 2)) {
       game.collisionLog.push({
@@ -307,6 +326,33 @@ function collideBodies(game, a, b) {
     if (dmgToA > 0.5) damageBody(game, a, dmgToA, creditA);
     if (dmgToB > 0.5) damageBody(game, b, dmgToB, creditB);
     if (closing > 60 && (a.mass > 1e4 || b.mass > 1e4)) addShake(game, 3);
+
+    // SPALL: a violent hit that BOTH bodies survive still crunches — small
+    // rocks spray sideways out of the impact, chipped off the lighter body.
+    if (eff > 40 && a.alive && b.alive && game.bodies.length < 450) {
+      const small = a.mass <= b.mass ? a : b;
+      if (small.mass > 120 && small.type !== 'station' && small.type !== 'nest' &&
+          Math.random() < 0.75) {
+        const cx = a.x + nx * a.radius, cy = a.y + ny * a.radius;   // contact point
+        const cvx = (a.vx + b.vx) / 2, cvy = (a.vy + b.vy) / 2;
+        const nFrag = 1 + Math.floor(Math.random() * 3);
+        for (let k = 0; k < nFrag; k++) {
+          const m = Math.min(400, Math.max(15, small.mass * (0.015 + Math.random() * 0.03)));
+          // spray perpendicular to the impact normal, either side
+          const th = Math.atan2(ny, nx) + (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2)
+            + (Math.random() - 0.5) * 1.2;
+          const sp = 80 + Math.random() * 160 + eff * 0.4;
+          const f = spawnAsteroid(game.bodies,
+            cx + Math.cos(th) * (small.radius * 0.8 + 6),
+            cy + Math.sin(th) * (small.radius * 0.8 + 6),
+            cvx + Math.cos(th) * sp, cvy + Math.sin(th) * sp, m);
+          f.color = small.color;
+        }
+        small.mass = Math.max(small.baseMass * 0.25, small.mass * 0.96);
+        small.radius = small.baseRadius * Math.cbrt(small.mass / small.baseMass);
+        addParticles(game, cx, cy, cvx, cvy, 6, small.color, 120, 0.6);
+      }
+    }
   }
 }
 
