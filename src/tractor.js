@@ -175,9 +175,21 @@ export function updateTractor(game, dt) {
 
 // ---------- orbit shield ----------
 
-// Bigger captured rocks ride farther out; orbit level widens the whole ring.
-function orbiterRadius(game, b) {
-  return game.ship.radius + 40 + 12 * game.st.orbitLvl + b.radius * 2.6;
+// Ring assignment for the whole formation: orbiters are sorted by size and
+// packed outward — smallest hugging the ship, largest patrolling the far
+// edge. Each ring clears the previous rock's bulk, so a full orbit of mixed
+// sizes stacks out to roughly 3x the old single-ring distance.
+function orbiterRings(game) {
+  const rings = new Map();
+  const base = game.ship.radius + 40 + 12 * game.st.orbitLvl;
+  let R = base;
+  const sorted = [...game.orbit].sort((a, b) => a.radius - b.radius);
+  for (const b of sorted) {
+    R += b.radius * 1.6 + 14;
+    rings.set(b, Math.min(R, base + 400));   // soft cap keeps the far edge sane
+    R += b.radius;
+  }
+  return rings;
 }
 
 // Move the held object into your defensive orbit (if it's small enough).
@@ -209,6 +221,7 @@ export function retrieveFromOrbit(game) {
   });
   const b = game.orbit.splice(best, 1)[0];
   b.heldBy = 'player';
+  b.orbitAng = undefined;
   game.held = b;
   sfx.sfxGrab();
   sfx.setBeam(true);
@@ -227,6 +240,7 @@ export function flingAllFromOrbit(game) {
   const n = rocks.length;
   rocks.forEach((b, i) => {
     b.heldBy = null;
+    b.orbitAng = undefined;
     b.extAx = 0; b.extAy = 0;
     const massFactor = clamp(Math.pow(st.capacity / (b.mass * 4), 0.25), 0.3, 1);
     const speed = st.fling * massFactor;
@@ -249,13 +263,14 @@ export function updateOrbit(game, dt) {
     game.orbit = game.orbit.filter((b) => {
       if (b.alive && b.heldBy === 'orbit' && s.alive) return true;
       if (b.heldBy === 'orbit') { b.heldBy = null; b.extAx = 0; b.extAy = 0; }
+      b.orbitAng = undefined;
       return false;
     });
   }
   if (!game.orbit.length) return;
 
-  game.orbitAngle += CFG.ORBIT_OMEGA * dt;
   const n = game.orbit.length;
+  const rings = orbiterRings(game);
 
   // Active interception: ANY loose rock closing on the ship gets met by the
   // nearest shield rock, which breaks formation and lunges. Alien throws are
@@ -296,8 +311,13 @@ export function updateOrbit(game, dt) {
     // Loose, organic slots: each rock breathes in and out and drifts around
     // its nominal position instead of sitting pinned on a rail.
     const phase = b.id * 1.73;
-    const Ri = orbiterRadius(game, b) * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
-    const ang = game.orbitAngle + (i / n) * TAU + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
+    const Ri = rings.get(b) * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
+    // Each ring spins at its own rate so the SLOT's linear speed stays
+    // constant — a shared angular speed makes outer slots move faster than
+    // the approach cap and big rocks can never catch them.
+    const w = CFG.ORBIT_OMEGA * Math.min(1, 80 / Ri);
+    b.orbitAng = (b.orbitAng ?? Math.atan2(b.y - s.y, b.x - s.x)) + w * dt;
+    const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;
     let ty = s.y + Math.sin(ang) * Ri;
     if (i === interceptorIdx) {   // lunge at the incoming rock (slight lead)
@@ -314,8 +334,11 @@ export function updateOrbit(game, dt) {
     if (dm > maxApproach) { dvx *= maxApproach / dm; dvy *= maxApproach / dm; }
     const desVx = dvx + s.vx, desVy = dvy + s.vy;
     let ax = (desVx - b.vx) * (intercepting ? 10 : 3.5), ay = (desVy - b.vy) * (intercepting ? 10 : 3.5);
+    // Holding a circle takes real centripetal authority (v²/R) on top of
+    // formation-keeping — the floor must cover it or heavy rocks lag into
+    // a trailing pursuit circle far inside their assigned ring.
     const cap = intercepting ? 2400
-      : Math.min(900, Math.max(120, (game.st.force * 1.5) / b.mass));
+      : Math.min(900, Math.max(260, (game.st.force * 1.5) / b.mass));
     const am = Math.hypot(ax, ay);
     if (am > cap) { ax *= cap / am; ay *= cap / am; }
     b.extAx = ax; b.extAy = ay;

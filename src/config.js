@@ -153,7 +153,7 @@ export function shipStats(prog) {
     // so a chunky asteroid your beam handles easily is never "too big".
     orbitCap: tier >= 1 ? Math.max(TIERS.caps[tier - 1], prog.capacity * 0.45) : 0,
     orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'locked',
-    maxOrbiters: Math.min(9, 2 + tier + Math.floor(orbitLvl / 2)),
+    maxOrbiters: Math.min(24, 4 + 2 * tier + 2 * orbitLvl),
     orbitLvl,
     levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
     fracs,
