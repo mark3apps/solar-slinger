@@ -163,10 +163,9 @@ export function updateTractor(game, dt) {
 
 // ---------- orbit shield ----------
 
-export function orbitRadius(game) {
-  let maxR = 10;
-  for (const b of game.orbit) maxR = Math.max(maxR, b.radius);
-  return game.ship.radius + 55 + maxR + 12 * game.st.orbitLvl;
+// Bigger captured rocks ride farther out; orbit level widens the whole ring.
+function orbiterRadius(game, b) {
+  return game.ship.radius + 40 + 12 * game.st.orbitLvl + b.radius * 2.6;
 }
 
 // Move the held object into your defensive orbit (if it's small enough).
@@ -246,20 +245,30 @@ export function updateOrbit(game, dt) {
   if (!game.orbit.length) return;
 
   game.orbitAngle += CFG.ORBIT_OMEGA * dt;
-  const R = orbitRadius(game);
   const n = game.orbit.length;
 
-  // Active interception: hostile thrown rocks closing on the ship get met by
-  // the nearest shield rock, which breaks formation and lunges. The block
-  // usually costs the orbiter — ammo doubling as armor.
-  let threat = null, threatD = Infinity;
+  // Active interception: ANY loose rock closing on the ship gets met by the
+  // nearest shield rock, which breaks formation and lunges. Alien throws are
+  // engaged the moment they're closing; neutral rocks only when they're
+  // coming in fast enough to matter (belt drift is harmless).
+  let threat = null, bestTti = Infinity;
   for (const b of game.bodies) {
-    if (b.thrownBy !== 'alien' || b.thrownTimer <= 0 || !b.alive) continue;
+    if (!b.alive || b.heldBy) continue;
+    if (b.type === 'star' || b.type === 'planet' || b.type === 'rogue' || b.mass > 9000) continue;
+    if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;   // our own shots
     const dx = b.x - s.x, dy = b.y - s.y;
     const d = Math.hypot(dx, dy);
-    if (d > 900) continue;   // spot threats basically at launch
-    if ((b.vx - s.vx) * dx + (b.vy - s.vy) * dy >= 0) continue;   // not closing
-    if (d < threatD) { threat = b; threatD = d; }
+    if (d > 900) continue;
+    const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
+    const closing = -(rvx * dx + rvy * dy) / (d || 1);
+    const alienShot = b.thrownBy === 'alien' && b.thrownTimer > 0;
+    if (closing < (alienShot ? 40 : 140)) continue;
+    // Neutral rocks must actually be on a collision course, not just fast —
+    // otherwise the shield spends all day chasing belt traffic that would miss
+    const miss = Math.abs(dx * rvy - dy * rvx) / (Math.hypot(rvx, rvy) || 1);
+    if (!alienShot && miss > 130) continue;
+    const tti = d / closing;   // engage whatever hits soonest
+    if (tti < bestTti) { threat = b; bestTti = tti; }
   }
   let interceptorIdx = -1;
   if (threat) {
@@ -275,7 +284,7 @@ export function updateOrbit(game, dt) {
     // Loose, organic slots: each rock breathes in and out and drifts around
     // its nominal position instead of sitting pinned on a rail.
     const phase = b.id * 1.73;
-    const Ri = R * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
+    const Ri = orbiterRadius(game, b) * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
     const ang = game.orbitAngle + (i / n) * TAU + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;
     let ty = s.y + Math.sin(ang) * Ri;

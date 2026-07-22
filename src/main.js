@@ -89,7 +89,11 @@ initInput(canvas, {
     }
   },
   onRmbDown: () => {
-    if (game.held) { releaseHeld(game, false); return; }
+    if (game.held) {
+      // Send the held rock (back) into your orbit; too big -> gentle drop
+      if (!addToOrbit(game)) releaseHeld(game, false);
+      return;
+    }
     if (game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => { game.volleyCharging = false; },

@@ -1,6 +1,5 @@
 import { CFG } from './config.js';
 import { predictPaths } from './physics.js';
-import { orbitRadius } from './tractor.js';
 import { TAU, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
@@ -184,14 +183,6 @@ function drawShipRings(game) {
   ctx.setLineDash([5 / z, 11 / z]);
   ctx.beginPath(); ctx.arc(s.x, s.y, game.st.range, 0, TAU); ctx.stroke();
 
-  if (game.st.orbitCap > 0) {
-    ctx.strokeStyle = 'rgba(120, 255, 200, 0.22)';
-    ctx.lineWidth = 1.5 / z;
-    ctx.setLineDash([3 / z, 8 / z]);
-    ctx.lineDashOffset = -game.time * 24;
-    ctx.beginPath(); ctx.arc(s.x, s.y, orbitRadius(game), 0, TAU); ctx.stroke();
-    ctx.lineDashOffset = 0;
-  }
   ctx.setLineDash([]);
 }
 
