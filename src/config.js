@@ -151,9 +151,11 @@ export function shipStats(prog) {
     maxHull: Math.round(prog.maxHull),
     // Generous size rule: anything up to ~45% of beam capacity fits the orbit,
     // so a chunky asteroid your beam handles easily is never "too big".
-    orbitCap: tier >= 1 ? Math.max(TIERS.caps[tier - 1], prog.capacity * 0.45) : 0,
-    orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'locked',
-    maxOrbiters: Math.min(24, 4 + 2 * tier + 2 * orbitLvl),
+    // The orbit works from the very start (small rocks only at tier 0).
+    orbitCap: Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, prog.capacity * 0.45),
+    orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks',
+    // 1 slot out of the gate; every orbit level adds 3 more
+    maxOrbiters: 1 + 3 * orbitLvl,
     orbitLvl,
     levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
     fracs,

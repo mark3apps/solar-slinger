@@ -133,9 +133,7 @@ function update(dtReal) {
     game.cam.zoom = Math.min(2.4, Math.max(0.04, game.userZoom / game.st.zoomOut));
     if (game.st.tier > game.lastTier) {
       game.lastTier = game.st.tier;
-      const orbitNote = game.st.tier === 1
-        ? ' ORBIT SHIELD UNLOCKED — right-click while holding to add.'
-        : ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
+      const orbitNote = ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
       hud.message(`BEAM STRENGTHENED: you can now grab ${game.st.label.toUpperCase()}.${orbitNote}`, 6);
     }
 
