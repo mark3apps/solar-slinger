@@ -45,6 +45,7 @@ export class Body {
     this.onRails = false;    // riding a precomputed circular orbit
     this.rail = null;        // { parent, r, w, ang }
     this.liveT = 0;          // seconds since derailed (for re-railing)
+    this.local = false;      // spawned by the view-local field (cullable)
   }
 }
 

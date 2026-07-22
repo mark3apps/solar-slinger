@@ -132,8 +132,12 @@ function update(dtReal) {
 
     // Per-frame inputs & AI
     readControls(game);
-    const m = mouseWorld(game, view.getView().vw, view.getView().vh);
+    const { vw, vh } = view.getView();
+    const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
+    // World-space radius of the current view — the local asteroid spawner
+    // keeps rocks in a ring just beyond this
+    game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
     updateAliens(game, dtReal);
 
     // Fixed-step physics

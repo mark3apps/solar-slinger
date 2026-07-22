@@ -77,13 +77,14 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   return p;
 }
 
-function asteroidRadius(mass) { return 2 + Math.cbrt(mass) * 0.8; }
+function asteroidRadius(mass) { return 1.6 + Math.cbrt(mass) * 0.78; }
 
-// Skewed small, occasionally chunky — and ~12% are BOULDERS, a class between
-// common rocks and moons that keeps the size ladder readable.
+// Skewed small (down to pebbles), occasionally chunky — and ~12% are
+// BOULDERS, a class between common rocks and moons that keeps the size
+// ladder readable.
 function asteroidMass(rng) {
   if (rng() < 0.12) return 2600 + rng() * 3400;   // boulder: 2600-6000
-  return 40 + Math.pow(rng(), 2.2) * 2560;
+  return 15 + Math.pow(rng(), 2.2) * 2585;
 }
 
 export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
@@ -122,11 +123,11 @@ export function generateWorld(game, seed = 20260721) {
     { r: 2400,  mass: 2e4,   radius: 55 },
     { r: 3300,  mass: 3e4,   radius: 70 },
     { r: 4200,  mass: 5e4,   radius: 95,  moons: 1 },
-    { r: 5200,  belt: true, spread: 400, count: 90 },
+    { r: 5200,  belt: true, spread: 400, count: 55 },
     { r: 6600,  mass: 1e5,   radius: 150, moons: 3 },
     { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 6 },
     { r: 10800, mass: 1.2e5, radius: 160, moons: 2 },
-    { r: 11900, belt: true, spread: 450, count: 65 },
+    { r: 11900, belt: true, spread: 450, count: 45 },
     { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 5 },
     { r: 16800, mass: 6e4,   radius: 110, moons: 3 },
   ];
@@ -135,14 +136,8 @@ export function generateWorld(game, seed = 20260721) {
     else addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
   }
 
-  // Free-floating asteroids — the space between orbits shouldn't feel empty
-  for (let i = 0; i < 160; i++) {
-    const th = rng() * TAU;
-    const r = rand(rng, 3600, CFG.WORLD_R * 0.94);
-    const v = orbitVel(sun, Math.cos(th) * r, Math.sin(th) * r, rng() < 0.9 ? 1 : -1);
-    const a = spawnAsteroid(bodies, Math.cos(th) * r, Math.sin(th) * r, v.vx, v.vy, asteroidMass(rng));
-    railBody(a, sun);
-  }
+  // (No map-wide free asteroid field — the view-local spawner in
+  // replenishWorld keeps rocks available wherever the player actually is.)
 
   // Rogue planets — wanderers that stir up (but can't shred) the system
   const rogues = [
@@ -232,22 +227,39 @@ export function replenishWorld(game, dt) {
     }
   }
 
-  // Asteroids near the player — faster refill when the field is depleted
+  // View-local asteroid field: rocks only need to exist a threshold outside
+  // the current view. Keep a slowly-drifting target count in a ring just
+  // beyond the camera edge, and cull local rocks left far behind.
+  const viewR = game.viewR || 900;
+
+  game.localCullT = (game.localCullT ?? 2.5) - dt;
+  if (game.localCullT <= 0) {
+    game.localCullT = 2.5;
+    const cullR = viewR * 1.8 + 2600;
+    for (const b of game.bodies) {
+      if (!b.local || !b.alive || b.heldBy || b.thrownTimer > 0) continue;
+      if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) > cullR) b.alive = false;
+    }
+  }
+
   game.asteroidTimer -= dt;
   if (game.asteroidTimer > 0) return;
-  game.asteroidTimer = 3;
-  const count = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  if (count >= 230) return;
-  const spawnN = count < 160 ? 3 : 1;
-  for (let i = 0; i < spawnN; i++) {
+  game.asteroidTimer = 0.4;
+  // The available amount breathes over time so the field never feels static
+  const target = Math.round(30 + 22 * (0.5 + 0.5 * Math.sin(game.time * 0.02)));
+  const locals = game.bodies.reduce((n, b) => n + (b.alive && b.local ? 1 : 0), 0);
+  const total = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
+  if (locals >= target || total >= 220) return;
+  for (let i = 0; i < Math.min(3, target - locals); i++) {
     const th = rng() * TAU;
-    const d = 2400 + rng() * 1400;
+    const d = viewR + 250 + rng() * 1100;
     const x = game.ship.x + Math.cos(th) * d;
     const y = game.ship.y + Math.sin(th) * d;
     const fromSun = Math.hypot(x - game.homeStar.x, y - game.homeStar.y);
     if (Math.hypot(x, y) > CFG.WORLD_R || fromSun < game.homeStar.radius + 900) continue;
     const v = orbitVel(game.homeStar, x, y, 1);
     const a = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+    a.local = true;
     railBody(a, game.homeStar);
   }
 }
