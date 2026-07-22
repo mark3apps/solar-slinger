@@ -592,18 +592,53 @@ function drawShip(game) {
   }
   ctx.setLineDash([]);
 
-  // Personal shield: a faint cyan bubble while any charge remains — it
-  // flashes bright on absorbed hits and dims as the shield drains
-  if (s.shield > 0 && game.st.shieldMax > 0) {
-    const sf = s.shield / game.st.shieldMax;
-    const flash = Math.max(0, s.shieldHitT || 0) * 2.2;
-    const sr2 = r * 1.32 + 5 / game.cam.zoom;
-    ctx.strokeStyle = `rgba(120, 220, 255, ${0.14 + 0.3 * sf + flash})`;
-    ctx.lineWidth = 2 / game.cam.zoom;
-    ctx.beginPath(); ctx.arc(s.x, s.y, sr2, 0, TAU); ctx.stroke();
-    if (flash > 0) {
-      ctx.fillStyle = `rgba(140, 220, 255, ${Math.min(0.35, flash * 0.12)})`;
-      ctx.beginPath(); ctx.arc(s.x, s.y, sr2, 0, TAU); ctx.fill();
+  // Personal shield: the bubble tells the whole story at a glance —
+  //   full: cool cyan double-shimmer (two counter-rotating dashed arcs)
+  //   low:  strained violet with a nervous flicker
+  //   down: four dim broken stubs where the bubble used to be
+  //   recharging: bright rings sweep inward and seal
+  //   absorb: hard flash + expanding ripple
+  if (game.st.shieldMax > 0) {
+    const z = game.cam.zoom;
+    const sf = Math.max(0, s.shield / game.st.shieldMax);
+    const R = r * 1.32 + 5 / z;
+    if (sf > 0.02) {
+      const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
+      let a = 0.12 + 0.30 * sf;
+      if (sf < 0.3) a *= 0.6 + 0.4 * Math.sin(game.time * 26);
+      ctx.strokeStyle = `rgba(${col}, ${a})`;
+      ctx.lineWidth = 2 / z;
+      ctx.setLineDash([R * 0.45, R * 0.22]);
+      ctx.lineDashOffset = game.time * R * 0.8;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = `rgba(${col}, ${a * 0.55})`;
+      ctx.setLineDash([R * 0.2, R * 0.3]);
+      ctx.lineDashOffset = -game.time * R * 1.3;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.12, 0, TAU); ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      ctx.strokeStyle = 'rgba(255, 130, 110, 0.3)';
+      ctx.lineWidth = 1.5 / z;
+      for (let q = 0; q < 4; q++) {
+        const a0 = q * Math.PI / 2 + 0.4;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R, a0, a0 + 0.3); ctx.stroke();
+      }
+    }
+    const charging = s.alive && sf < 1 &&
+      game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY;
+    if (charging) {
+      const t = (game.time % 0.8) / 0.8;
+      ctx.strokeStyle = `rgba(140, 230, 255, ${0.5 * t})`;
+      ctx.lineWidth = 1.5 / z;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R * (1.7 - 0.7 * t), 0, TAU); ctx.stroke();
+    }
+    if (s.shieldHitT > 0) {
+      const k = 1 - s.shieldHitT / 0.35;
+      ctx.strokeStyle = `rgba(220, 245, 255, ${(1 - k) * 0.9})`;
+      ctx.lineWidth = 3 / z;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R * (1 + k * 0.55), 0, TAU); ctx.stroke();
+      ctx.fillStyle = `rgba(150, 225, 255, ${(1 - k) * 0.16})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
     }
   }
 

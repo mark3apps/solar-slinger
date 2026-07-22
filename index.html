@@ -11,9 +11,15 @@
 
 <div id="hud">
   <div id="topleft">
-    <div class="barwrap">
-      <div class="bar"><div id="hullFill"></div><div id="shieldFill"></div></div>
-      <span id="hullText" class="bartext">HULL 67 &#x26E8; 33</span>
+    <div class="statbar" id="hullBar">
+      <span class="statlabel">HULL</span>
+      <span class="stattrack"><span id="hullFill"></span></span>
+      <span class="statnum" id="hullNum">67/67</span>
+    </div>
+    <div class="statbar" id="shieldBar">
+      <span class="statlabel">&#x26E8; SHLD</span>
+      <span class="stattrack"><span id="shieldFill"></span></span>
+      <span class="statnum" id="shieldNum">33/33</span>
     </div>
     <div id="scrapRow">&#x2B21; <span id="scrapText">0</span> SCRAP</div>
     <div id="tracks"></div>

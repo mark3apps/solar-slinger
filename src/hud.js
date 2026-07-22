@@ -1,6 +1,16 @@
+import { CFG } from './config.js';
+
 const el = {};
 let msgTimer = null;
 let pipSig = '';
+let prevHull = Infinity, prevShield = Infinity;
+
+// Retrigger a one-shot CSS animation class
+function flash(bar) {
+  bar.classList.remove('hit');
+  void bar.offsetWidth;
+  bar.classList.add('hit');
+}
 
 // [levels key, label, current-value getter]
 const TRACKS = [
@@ -12,8 +22,8 @@ const TRACKS = [
 ];
 
 export function initHud(game) {
-  for (const id of ['hullFill', 'shieldFill', 'hullText', 'scrapText', 'tracks', 'msg',
-    'deathScreen', 'deathCause', 'pauseScreen']) {
+  for (const id of ['hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
+    'scrapText', 'tracks', 'msg', 'deathScreen', 'deathCause', 'pauseScreen']) {
     el[id] = document.getElementById(id);
   }
   // Build one row per progression track — levels live on screen, always
@@ -50,13 +60,23 @@ export function setDeathVisible(v, cause = '') {
 export function updateHud(game) {
   const s = game.ship;
   const st = game.st;
-  const hullFrac = Math.max(0, s.hull / st.hullMax);
-  const shieldFrac = Math.max(0, (s.shield || 0) / st.shieldMax);
-  el.hullFill.style.width = `${hullFrac * 66.7}%`;
-  el.shieldFill.style.width = `${shieldFrac * 33.3}%`;
-  el.hullFill.classList.toggle('low', hullFrac < 0.35);
-  el.hullText.textContent =
-    `HULL ${Math.max(0, Math.ceil(s.hull))}/${st.hullMax} ⛨ ${Math.max(0, Math.ceil(s.shield || 0))}/${st.shieldMax}`;
+  const shield = Math.max(0, s.shield || 0);
+  const hullFrac = Math.max(0, Math.min(1, s.hull / st.hullMax));
+  const shieldFrac = Math.max(0, Math.min(1, shield / st.shieldMax));
+  el.hullFill.style.width = `${hullFrac * 100}%`;
+  el.shieldFill.style.width = `${shieldFrac * 100}%`;
+  el.hullNum.textContent = `${Math.max(0, Math.ceil(s.hull))}/${st.hullMax}`;
+  el.shieldNum.textContent = `${Math.ceil(shield)}/${st.shieldMax}`;
+  el.hullBar.classList.toggle('low', hullFrac < 0.35);
+  // Charging shimmer while the recharge is actually running; alarm when down
+  const charging = s.alive && shield < st.shieldMax &&
+    game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY;
+  el.shieldBar.classList.toggle('charging', charging);
+  el.shieldBar.classList.toggle('down', shield <= 0.5);
+  // White flash on the bar that just took the hit
+  if (s.hull < prevHull - 0.4) flash(el.hullBar);
+  if (shield < prevShield - 0.4) flash(el.shieldBar);
+  prevHull = s.hull; prevShield = shield;
   el.scrapText.textContent = Math.floor(game.scrap);
 
   // Rebuild pips only when a level actually changes
