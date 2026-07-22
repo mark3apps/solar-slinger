@@ -59,6 +59,31 @@ function drawStarfield(game) {
   ctx.globalAlpha = 1;
 }
 
+// Asteroids are jagged polygons, not discs — and the bigger the rock, the
+// craggier the silhouette (pebbles stay nearly round, boulders are gnarled).
+// The vertex offsets are generated once per body, keyed off its id, and
+// regenerated if the radius changes (chip damage shrinks rocks).
+function traceAsteroid(b) {
+  if (!b.jag || b.jagR !== b.radius) {
+    const t = Math.min(1, Math.max(0, (b.radius - 3) / 27));   // 0 pebble -> 1 boulder
+    const n = 7 + Math.min(9, Math.round(b.radius * 0.45));
+    const amp = 0.06 + 0.3 * t;
+    const rng = mulberry32(b.id * 7919 + 13);
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push(1 - amp + rng() * amp * 2);
+    b.jag = pts; b.jagR = b.radius;
+  }
+  const n = b.jag.length;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = b.rot + (i / n) * TAU;
+    const r = b.radius * b.jag[i];
+    const x = b.x + Math.cos(a) * r, y = b.y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+}
+
 function nearestStar(game, x, y) {
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
@@ -121,7 +146,12 @@ function drawBody(game, b) {
   }
 
   ctx.fillStyle = b.color;
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+  if (b.type === 'asteroid') {
+    traceAsteroid(b);
+    ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+  }
 
   if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
 
@@ -131,8 +161,11 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.stroke();
   }
 
-  // Asteroid texture: a couple of darker pits keyed off the id
+  // Asteroid texture: darker pits keyed off the id, clipped to the silhouette
   if (b.type === 'asteroid') {
+    ctx.save();
+    traceAsteroid(b);
+    ctx.clip();
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     const n = 2 + (b.id % 3);
     for (let i = 0; i < n; i++) {
@@ -141,6 +174,7 @@ function drawBody(game, b) {
       ctx.arc(b.x + Math.cos(a) * b.radius * 0.45, b.y + Math.sin(a) * b.radius * 0.45, b.radius * 0.22, 0, TAU);
       ctx.fill();
     }
+    ctx.restore();
   }
 
   // Day/night shading away from the nearest star
