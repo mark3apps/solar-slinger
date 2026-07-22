@@ -157,8 +157,9 @@ export function shipStats(prog) {
     orbitLvl,
     levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
     fracs,
-    // Lock-on aim assist cone widens as you level
-    lockCone: 0.05 + 0.022 * totalLevel,
+    // Lock-on aim assist: hover forgiveness (px around a target's edge)
+    // widens as you level
+    lockSlack: 45 + 12 * totalLevel,
     // Start tiny; the top end stays where it was
     radius: Math.min(32, 9 + totalLevel * 0.9),
     // Camera pulls back as you grow — the system shrinks around you (gently)

@@ -449,26 +449,8 @@ export function step(game, dt) {
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
 
-    // Lock-on guidance: locked player throws briefly steer to intercept
-    if (b.homing) {
-      const h = b.homing;
-      h.t -= dt;
-      const tg = h.target;
-      if (h.t <= 0 || !tg.alive || b.thrownTimer <= 0) {
-        b.homing = null;
-      } else {
-        const sp = Math.hypot(b.vx, b.vy) || 1;
-        const d = Math.hypot(tg.x - b.x, tg.y - b.y);
-        const tt = d / sp;
-        const px = tg.x + tg.vx * tt, py = tg.y + tg.vy * tt;
-        const dd = Math.hypot(px - b.x, py - b.y) || 1;
-        let hx = ((px - b.x) / dd * sp - b.vx) * 4;
-        let hy = ((py - b.y) / dd * sp - b.vy) * 4;
-        const hm = Math.hypot(hx, hy);
-        if (hm > h.acc) { hx *= h.acc / hm; hy *= h.acc / hm; }
-        b.ax += hx; b.ay += hy;
-      }
-    }
+    // (No mid-flight guidance: thrown rocks are pure ballistics. The aim
+    // assist lives entirely in the release angle — see tractor.lockOn.)
     // Star-anchored bodies are held by their sun, never the map edge — the
     // boundary force would deorbit outer planets of off-center systems.
     if (!(b.parent && (b.type === 'planet' || b.type === 'moon'))) {

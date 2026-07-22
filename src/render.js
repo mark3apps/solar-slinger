@@ -678,7 +678,41 @@ export function render(game) {
     ctx.stroke();
   }
 
-  // (No lock reticle — lock-on shows itself as the throw line shifting.)
+  // Lock-on display: rotating brackets on the hovered target, a faint line
+  // showing where IT is drifting, and an X where the trajectories will meet.
+  // The yellow throw line bends to the same point — release and they collide.
+  if ((game.held || game.volleyCharging) && game.lock && game.lock.target) {
+    const L = game.lock, tg = L.target;
+    const z = game.cam.zoom;
+    const pulse = 0.65 + 0.35 * Math.sin(game.time * 7);
+    const rr = tg.radius + 9 / z;
+    ctx.strokeStyle = `rgba(255, 214, 100, ${0.45 + 0.4 * pulse})`;
+    ctx.lineWidth = 2 / z;
+    ctx.beginPath();
+    for (let q = 0; q < 4; q++) {
+      const a0 = q * Math.PI / 2 + game.time * 1.2;
+      ctx.moveTo(tg.x + Math.cos(a0) * rr, tg.y + Math.sin(a0) * rr);
+      ctx.arc(tg.x, tg.y, rr, a0, a0 + 0.55);
+    }
+    ctx.stroke();
+    // Where will it be when the rock arrives?
+    if (L.t > 0.08 && Math.hypot(L.px - tg.x, L.py - tg.y) > tg.radius * 0.5) {
+      ctx.setLineDash([4 / z, 6 / z]);
+      ctx.strokeStyle = 'rgba(255, 214, 100, 0.35)';
+      ctx.lineWidth = 1.5 / z;
+      ctx.beginPath(); ctx.moveTo(tg.x, tg.y); ctx.lineTo(L.px, L.py); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (L.t > 0.08) {
+      const xr = 7 / z;
+      ctx.strokeStyle = `rgba(255, 214, 100, ${0.45 + 0.4 * pulse})`;
+      ctx.lineWidth = 2 / z;
+      ctx.beginPath();
+      ctx.moveTo(L.px - xr, L.py - xr); ctx.lineTo(L.px + xr, L.py + xr);
+      ctx.moveTo(L.px + xr, L.py - xr); ctx.lineTo(L.px - xr, L.py + xr);
+      ctx.stroke();
+    }
+  }
 
   // "Too heavy" indicator on a failed grab
   if (game.tooHeavyT > 0 && game.tooHeavy) {

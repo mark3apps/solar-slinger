@@ -192,11 +192,14 @@ function update(dtReal) {
       if (!game.orbit.length) game.volleyCharging = false;
     }
 
-    // Lock-on target (for the reticle; the actual throw re-solves at release)
+    // Lock-on solve (for the UI; the actual throw re-solves at release).
+    // Hovering the cursor over an entity while holding ammo locks it: the
+    // release angle will be shifted onto a ballistic intercept course.
     if (s.alive && (game.held || game.volleyCharging)) {
-      const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-      game.lockTarget = lockOn(game, baseAng, game.st.fling).target;
+      game.lock = lockOn(game, game.st.fling, game.held);
+      game.lockTarget = game.lock.target;
     } else {
+      game.lock = null;
       game.lockTarget = null;
     }
 

@@ -12,19 +12,20 @@ function holdPoint(game, body) {
   return { x: s.x + Math.cos(ang) * d, y: s.y + Math.sin(ang) * d };
 }
 
-// Lock-on aim assist: ANY entity (rock, moon, planet, rogue, alien) inside the
-// (level-scaled) cone and within throw-line reach pulls the throw onto an
-// intercept course. UI-wise this is just the throw line shifting slightly.
-export function lockOn(game, baseAng, speed, exclude = null) {
+// Aim assist: HOVER the cursor over any entity within throw reach to lock it.
+// Throws NEVER steer mid-flight — instead the release angle is solved so the
+// straight-line trajectories collide (classic ballistic intercept). Returns
+// the solved angle plus the target and predicted meeting point for the UI.
+export function lockOn(game, speed, exclude = null) {
   const s = game.ship;
   const maxD = Math.min(2600, speed * CFG.LOCK_T);
+  const slack = game.st.lockSlack;
   let best = null, bestD = Infinity;
   const consider = (e) => {
-    const d = Math.hypot(e.x - s.x, e.y - s.y);
-    if (d > maxD) return;
-    const ang = Math.atan2(e.y - s.y, e.x - s.x);
-    if (Math.abs(angDiff(baseAng, ang)) > game.st.lockCone) return;
-    if (d < bestD) { best = e; bestD = d; }
+    const dc = Math.hypot(e.x - game.aim.x, e.y - game.aim.y);
+    if (dc > e.radius + slack) return;                       // must be hovered
+    if (Math.hypot(e.x - s.x, e.y - s.y) > maxD) return;     // must be in reach
+    if (dc < bestD) { best = e; bestD = dc; }
   };
   for (const al of game.aliens) if (al.alive) consider(al);
   for (const b of game.bodies) {
@@ -33,26 +34,35 @@ export function lockOn(game, baseAng, speed, exclude = null) {
     if (!b.alive || b.type === 'star' || b === game.held || b === exclude || b.heldBy) continue;
     consider(b);
   }
-  if (!best) return { ang: baseAng, target: null };
-  // Lead the target: aim where it will be when the rock arrives
-  const t = bestD / Math.max(120, speed);
-  const px = best.x + (best.vx - s.vx) * t;
-  const py = best.y + (best.vy - s.vy) * t;
-  return { ang: Math.atan2(py - s.y, px - s.x), target: best };
-}
-
-// Locked throws briefly steer toward the target after launch — the aliens
-// dodge anything purely ballistic, so this is what makes lock-on real.
-// Guidance authority grows with level. ONLY aliens get chased: rocks and
-// moons don't dodge (the launch angle already leads them), and mid-flight
-// curving toward an incidental lock target reads as the throw going rogue.
-function armHoming(game, b) {
-  const s = game.ship;
   const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const { target } = lockOn(game, baseAng, game.st.fling, b);
-  if (target && game.aliens.includes(target)) {
-    b.homing = { target, t: 1.3, acc: 340 + 70 * game.st.totalLevel };
+  if (!best) return { ang: baseAng, target: null, t: 0, px: 0, py: 0 };
+
+  // Solve |R + V t| = speed * t for the earliest positive t, where R/V are
+  // the target's position/velocity relative to the ship (the rock inherits
+  // ship velocity, so `speed` is ship-relative).
+  const rx = best.x - s.x, ry = best.y - s.y;
+  const vx = best.vx - s.vx, vy = best.vy - s.vy;
+  const a = vx * vx + vy * vy - speed * speed;
+  const bq = 2 * (rx * vx + ry * vy);
+  const c = rx * rx + ry * ry;
+  let t = 0;
+  if (Math.abs(a) > 1e-6) {
+    const disc = bq * bq - 4 * a * c;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      const ts = [(-bq - sq) / (2 * a), (-bq + sq) / (2 * a)].filter((x) => x > 0.01);
+      if (ts.length) t = Math.min(...ts);
+    }
+  } else if (bq < -1e-6) {
+    t = -c / bq;
   }
+  if (!t || !isFinite(t)) t = Math.sqrt(c) / Math.max(120, speed);   // fallback: current distance
+  t = Math.min(t, 3.5);
+  return {
+    ang: Math.atan2(ry + vy * t, rx + vx * t),
+    target: best, t,
+    px: best.x + best.vx * t, py: best.y + best.vy * t,
+  };
 }
 
 // Heavier objects fling slower; ship velocity is inherited.
@@ -61,8 +71,7 @@ export function computeFlingVelocity(game, body) {
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
   const speed = st.fling * massFactor;
-  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const { ang } = lockOn(game, baseAng, speed, body);
+  const { ang } = lockOn(game, speed, body);
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
@@ -121,7 +130,6 @@ export function releaseHeld(game, fling) {
     b.vx = v.vx; b.vy = v.vy;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
-    armHoming(game, b);
     sfx.sfxFling();
   } else {
     sfx.sfxDrop();
@@ -205,8 +213,7 @@ export function flingAllFromOrbit(game) {
   if (!game.orbit.length || !game.ship.alive) return 0;
   const s = game.ship;
   const st = game.st;
-  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const { ang } = lockOn(game, baseAng, st.fling);
+  const { ang } = lockOn(game, st.fling);
   const rocks = game.orbit;
   game.orbit = [];
   const n = rocks.length;
@@ -220,7 +227,6 @@ export function flingAllFromOrbit(game) {
     b.vy = s.vy + Math.sin(a) * speed;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
-    armHoming(game, b);
   });
   sfx.sfxFling();
   sfx.sfxBoom(1.5);
