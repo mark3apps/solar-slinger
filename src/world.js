@@ -357,9 +357,9 @@ export function replenishWorld(game, dt) {
 
   // ---- solar flares: the sun erupts plasma at ships that fly too close ----
   const s = game.ship;
-  game.flareTimer = (game.flareTimer ?? 14) - dt;
+  game.flareTimer = (game.flareTimer ?? 20) - dt;
   if (game.flareTimer <= 0 && s.alive) {
-    game.flareTimer = 16 + rng() * 14;
+    game.flareTimer = 30 + rng() * 25;
     const sun = game.homeStar;
     const d = Math.hypot(s.x - sun.x, s.y - sun.y);
     if (d < CFG.FLARE_RANGE) {
@@ -373,7 +373,7 @@ export function replenishWorld(game, dt) {
           x: sun.x + Math.cos(a) * (sun.radius + 80),
           y: sun.y + Math.sin(a) * (sun.radius + 80),
           vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
-          life: 16, radius: 26 + rng() * 18,
+          life: CFG.FLARE_LIFE, radius: 26 + rng() * 18,
         });
       }
       game.flareWarn = true;

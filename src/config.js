@@ -17,9 +17,10 @@ export const CFG = {
   // (total star pull on the ship = SHIP_GRAV * STAR_GRAV_SHIP)
   STAR_GRAV_SHIP: 1.6,
 
-  // Solar flares: the sun periodically erupts plasma at nearby ships
-  FLARE_RANGE: 10000,      // only fires while the ship is this close to the sun
+  // Solar flares: the sun occasionally erupts plasma at ships that fly CLOSE
+  FLARE_RANGE: 5500,       // only fires while the ship is this close to the sun
   FLARE_SPEED: 750,
+  FLARE_LIFE: 6,           // seconds of flight — flares fizzle ~4500 out
   FLARE_DMG: 26,
 
   // Celestial bodies feel full gravity from stars and their parent planet, but

@@ -747,6 +747,7 @@ export function render(game) {
   if (game.flares && game.flares.length) {
     ctx.globalCompositeOperation = 'lighter';
     for (const f of game.flares) {
+      ctx.globalAlpha = Math.min(1, f.life);   // fizzle out, don't pop
       const sm = Math.hypot(f.vx, f.vy) || 1;
       const tx = f.x - (f.vx / sm) * f.radius * 6, ty = f.y - (f.vy / sm) * f.radius * 6;
       const streak = ctx.createLinearGradient(f.x, f.y, tx, ty);
@@ -764,6 +765,7 @@ export function render(game) {
       ctx.fillStyle = g2;
       ctx.beginPath(); ctx.arc(f.x, f.y, f.radius * 2.2, 0, TAU); ctx.fill();
     }
+    ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
   }
 
