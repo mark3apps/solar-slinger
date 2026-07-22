@@ -196,6 +196,11 @@ function boundaryAccel(x, y) {
 function collideBodies(game, a, b) {
   // Orbiting shield rocks don't grind against each other
   if (a.heldBy === 'orbit' && b.heldBy === 'orbit') return;
+  // ...and your own throws (or the rock in your beam) pass through your
+  // shield instead of smashing it on the way out. Alien throws still connect.
+  const aOwn = (a.thrownBy === 'player' && a.thrownTimer > 0) || a.heldBy === 'player';
+  const bOwn = (b.thrownBy === 'player' && b.thrownTimer > 0) || b.heldBy === 'player';
+  if ((a.heldBy === 'orbit' && bOwn) || (b.heldBy === 'orbit' && aOwn)) return;
   const dx = b.x - a.x, dy = b.y - a.y;
   const d = Math.hypot(dx, dy) || 0.001;
   const overlap = a.radius + b.radius - d;
