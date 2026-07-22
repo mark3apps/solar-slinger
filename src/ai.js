@@ -221,16 +221,20 @@ function updateForts(game, dt) {
     if (d > 1900) continue;
     for (const t of f.turrets) {
       t.cool -= dt;
+      if (t.fireT > 0) t.fireT -= dt;
       if (t.cool > 0) continue;
-      t.cool = 2 + Math.random() * 0.9;
+      // GATLING: fast cyclic rate, slow heavy shells — a stream you dodge
+      // by strafing, not by luck
+      t.cool = 0.38 + Math.random() * 0.16;
+      t.fireT = 0.12;
       const wx = b.x + Math.cos(b.rot + t.ang) * b.radius;
       const wy = b.y + Math.sin(b.rot + t.ang) * b.radius;
-      const tt = d / 620;
+      const tt = d / 380;
       const ang = Math.atan2(s.y + s.vy * tt - wy, s.x + s.vx * tt - wx);
       game.bolts.push({
         x: wx, y: wy,
-        vx: Math.cos(ang) * 620 + b.vx, vy: Math.sin(ang) * 620 + b.vy,
-        life: 3.2,
+        vx: Math.cos(ang) * 380 + b.vx, vy: Math.sin(ang) * 380 + b.vy,
+        life: 3.6,
       });
     }
   }
@@ -241,7 +245,7 @@ function updateForts(game, dt) {
       bo.life -= dt;
       let dead = bo.life <= 0;
       if (!dead && s.alive && Math.hypot(bo.x - s.x, bo.y - s.y) < s.radius + 6) {
-        damageShip(game, 9, 'Shot down by a Bastion turret.');
+        damageShip(game, 16, 'Shot down by a Bastion gatling battery.');
         dead = true;
       }
       if (!dead) {

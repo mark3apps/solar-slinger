@@ -354,36 +354,98 @@ function drawEmberReef(game, b) {
   }
 }
 
-// Bastion fortifications: an energy shield bubble (flashing when struck)
-// and turret blocks riding the surface
+// Bastion fortifications: the mech race has built OVER the world — armor
+// plating and hazard lights on the surface, aimed twin-barrel gatling
+// turrets, and an unmissable energy shield bubble.
 function drawFort(game, b) {
   const f = b.fort;
-  const z = game.cam.zoom;
-  if (f.shield > 0) {
-    const frac = f.shield / f.maxShield;
-    const flash = f.hitT > 0 ? f.hitT * 1.6 : 0;
-    ctx.strokeStyle = `rgba(120, 200, 255, ${0.25 + 0.35 * frac + flash})`;
-    ctx.lineWidth = 2.5 / z + b.radius * 0.03;
-    ctx.setLineDash([b.radius * 0.4, b.radius * 0.12]);
-    ctx.lineDashOffset = game.time * b.radius * 0.5;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.3, 0, TAU); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = `rgba(120, 200, 255, ${0.05 + flash * 0.15})`;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.3, 0, TAU); ctx.fill();
+  const s = game.ship;
+
+  // Mechanized surface: armor girdle, panel seams, blinking hazard lights
+  ctx.save();
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot * 0.3);
+  ctx.fillStyle = 'rgba(38, 46, 58, 0.85)';
+  ctx.fillRect(-b.radius, -b.radius * 0.22, b.radius * 2, b.radius * 0.44);
+  ctx.strokeStyle = 'rgba(120, 140, 165, 0.45)';
+  ctx.lineWidth = Math.max(1, b.radius * 0.02);
+  for (let i = -3; i <= 3; i++) {
+    const x = i * b.radius * 0.3;
+    ctx.beginPath(); ctx.moveTo(x, -b.radius); ctx.lineTo(x, b.radius); ctx.stroke();
   }
-  ctx.fillStyle = '#3a4654';
-  ctx.strokeStyle = '#ffb35c';
-  ctx.lineWidth = Math.max(1, b.radius * 0.03);
+  for (let j = -2; j <= 2; j++) {
+    const y = j * b.radius * 0.38;
+    ctx.beginPath(); ctx.moveTo(-b.radius, y); ctx.lineTo(b.radius, y); ctx.stroke();
+  }
+  ctx.fillStyle = Math.sin(game.time * 3) > 0 ? '#ffb35c' : '#7a5828';
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.arc(i * b.radius * 0.42, 0, Math.max(1.5, b.radius * 0.035), 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Gatling turrets: mounted on the surface, heads TRACK the ship
+  const inRange = s.alive && Math.hypot(s.x - b.x, s.y - b.y) < 1900;
   for (const t of f.turrets) {
     const a = b.rot + t.ang;
-    const tx = b.x + Math.cos(a) * b.radius, ty = b.y + Math.sin(a) * b.radius;
-    const tr = Math.max(4, b.radius * 0.13);
+    const tx = b.x + Math.cos(a) * b.radius * 0.98;
+    const ty = b.y + Math.sin(a) * b.radius * 0.98;
+    const aim = inRange ? Math.atan2(s.y - ty, s.x - tx) : a;
+    const tr = Math.max(6, b.radius * 0.16);
     ctx.save();
     ctx.translate(tx, ty);
-    ctx.rotate(a);
-    ctx.fillRect(-tr * 0.6, -tr * 0.7, tr * 1.2, tr * 1.4);
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(tr * 1.5, 0); ctx.stroke();
+    // mount base
+    ctx.fillStyle = '#242c38';
+    ctx.beginPath(); ctx.arc(0, 0, tr * 0.85, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#4a5768';
+    ctx.lineWidth = Math.max(1, tr * 0.12);
+    ctx.stroke();
+    // rotating twin-barrel head
+    ctx.rotate(aim);
+    ctx.fillStyle = '#4d5a6e';
+    ctx.fillRect(0, -tr * 0.42, tr * 1.7, tr * 0.28);
+    ctx.fillRect(0, tr * 0.14, tr * 1.7, tr * 0.28);
+    ctx.fillStyle = '#141a24';
+    ctx.beginPath(); ctx.arc(0, 0, tr * 0.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffb35c';
+    ctx.beginPath(); ctx.arc(0, 0, tr * 0.2, 0, TAU); ctx.fill();
+    if (t.fireT > 0) {   // muzzle flash
+      ctx.fillStyle = `rgba(255, 220, 140, ${t.fireT * 6})`;
+      ctx.beginPath(); ctx.arc(tr * 1.85, 0, tr * 0.55, 0, TAU); ctx.fill();
+    }
     ctx.restore();
+  }
+
+  // Shield: a volumetric bubble with a bright rim, counter-rotating hex
+  // rings, and an expanding ripple on every hit
+  if (f.shield > 0) {
+    const frac = f.shield / f.maxShield;
+    const flash = Math.max(0, f.hitT) * 2.2;
+    const R = b.radius * 1.3;
+    const g2 = ctx.createRadialGradient(b.x, b.y, R * 0.55, b.x, b.y, R);
+    g2.addColorStop(0, 'rgba(90, 170, 255, 0.02)');
+    g2.addColorStop(0.82, `rgba(100, 190, 255, ${0.10 + 0.10 * frac + flash * 0.2})`);
+    g2.addColorStop(1, `rgba(150, 220, 255, ${0.28 + 0.30 * frac + flash * 0.4})`);
+    ctx.fillStyle = g2;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+    ctx.lineWidth = Math.max(2, b.radius * 0.045);
+    ctx.strokeStyle = `rgba(140, 210, 255, ${0.45 + 0.35 * frac + flash})`;
+    ctx.setLineDash([b.radius * 0.28, b.radius * 0.1]);
+    ctx.lineDashOffset = game.time * b.radius * 0.6;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = `rgba(120, 190, 255, ${0.25 + 0.25 * frac})`;
+    ctx.setLineDash([b.radius * 0.14, b.radius * 0.18]);
+    ctx.lineDashOffset = -game.time * b.radius * 0.9;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.05, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    if (f.hitT > 0) {
+      const rip = 1 - f.hitT / 0.35;
+      ctx.strokeStyle = `rgba(200, 240, 255, ${(1 - rip) * 0.8})`;
+      ctx.lineWidth = Math.max(2, b.radius * 0.05);
+      ctx.beginPath(); ctx.arc(b.x, b.y, R * (1 + rip * 0.25), 0, TAU); ctx.stroke();
+    }
   }
 }
 
