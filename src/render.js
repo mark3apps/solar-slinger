@@ -801,7 +801,7 @@ export function render(game) {
     const st = game.st;
     let hov = null, hovD = Infinity;
     for (const b of game.bodies) {
-      if (!b.alive || b.type === 'star' || b.heldBy) continue;
+      if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy) continue;
       const d = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
       if (d > b.radius + st.grabSlack) continue;
       if (d < hovD) { hov = b; hovD = d; }

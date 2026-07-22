@@ -114,7 +114,8 @@ export function tryGrab(game) {
   const st = game.st;
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
-    if (!b.alive || b.type === 'star' || b.heldBy === 'orbit') continue;
+    // Nests are a siege target, not cargo — never beamable
+    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy === 'orbit') continue;
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
     if (dCursor > b.radius + st.grabSlack) continue;
@@ -222,7 +223,7 @@ function orbiterRings(game) {
 export function addToOrbit(game) {
   const b = game.held;
   const st = game.st;
-  if (!b || !b.alive) return false;
+  if (!b || !b.alive || b.type === 'nest') return false;   // nests never orbit you
   if (st.orbitCap <= 0 || b.mass > st.orbitCap || game.orbit.length >= st.maxOrbiters) return false;
   game.held = null;
   b.heldBy = 'orbit';
