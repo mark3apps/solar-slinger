@@ -1,5 +1,5 @@
 import { CFG } from './config.js';
-import { Body } from './entities.js';
+import { Body, railBody } from './entities.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 
 const PLANET_COLORS = ['#c98a5a', '#5a9dc9', '#b05ac9', '#6ac95a', '#c9b45a', '#d97b6c', '#7bd9c9', '#9a8ad9'];
@@ -30,16 +30,18 @@ function spawnMoon(bodies, rng, planet, mr) {
   const m = new Body({
     type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
     mass: rand(rng, 1400, 1900), radius: rand(rng, 16, 22),
-    color: '#a8a8b8', parent: planet,
+    color: '#d3d9ec', parent: planet,   // pale ice — clearly not an asteroid
   });
   bodies.push(m);
+  railBody(m, planet);
   return m;
 }
 
-// How far out this planet can hold a moon against the sun's tide
+// How far out this planet can hold a moon against the sun's tide. Rails make
+// even the outer edge safe, so the zone is wider than raw Hill stability.
 function moonZone(star, planet, orbitR) {
   const hill = orbitR * Math.cbrt(planet.mass / (3 * star.mass));
-  return { minR: planet.radius + 110, maxR: hill * 0.45 };
+  return { minR: planet.radius + 90, maxR: hill * 0.5 };
 }
 
 function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
@@ -56,6 +58,7 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
     parent: star,
   });
   bodies.push(p);
+  railBody(p, star);
 
   // Moons spread across the whole stable zone — big outer planets get wide,
   // varied moon families instead of a tight string of pearls.
@@ -94,11 +97,8 @@ function addBelt(bodies, rng, star, beltR, spread, count) {
     const x = star.x + Math.cos(th) * r;
     const y = star.y + Math.sin(th) * r;
     const v = orbitVel(star, x, y, 1);
-    spawnAsteroid(
-      bodies, x, y,
-      v.vx + rand(rng, -8, 8), v.vy + rand(rng, -8, 8),
-      asteroidMass(rng),
-    );
+    const a = spawnAsteroid(bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+    railBody(a, star);
   }
 }
 
@@ -113,14 +113,16 @@ export function generateWorld(game, seed = 20260721) {
   bodies.push(sun);
 
   const layout = [
-    { r: 3200,  mass: 3e4,   radius: 70 },
+    { r: 2400,  mass: 2e4,   radius: 55 },
+    { r: 3300,  mass: 3e4,   radius: 70 },
     { r: 4200,  mass: 5e4,   radius: 95,  moons: 1 },
     { r: 5200,  belt: true, spread: 400, count: 60 },
-    { r: 6600,  mass: 1e5,   radius: 150, moons: 2 },
-    { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 4 },
-    { r: 11400, belt: true, spread: 550, count: 50 },
-    { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 3 },
-    { r: 16800, mass: 6e4,   radius: 110, moons: 2 },
+    { r: 6600,  mass: 1e5,   radius: 150, moons: 3 },
+    { r: 8800,  mass: 3e5,   radius: 300, ring: true, moons: 6 },
+    { r: 10800, mass: 1.2e5, radius: 160, moons: 2 },
+    { r: 11900, belt: true, spread: 450, count: 50 },
+    { r: 13600, mass: 2.5e5, radius: 260, ring: true, moons: 5 },
+    { r: 16800, mass: 6e4,   radius: 110, moons: 3 },
   ];
   for (const item of layout) {
     if (item.belt) addBelt(bodies, rng, sun, item.r, item.spread, item.count);
@@ -132,12 +134,8 @@ export function generateWorld(game, seed = 20260721) {
     const th = rng() * TAU;
     const r = rand(rng, 3600, CFG.WORLD_R * 0.94);
     const v = orbitVel(sun, Math.cos(th) * r, Math.sin(th) * r, rng() < 0.9 ? 1 : -1);
-    spawnAsteroid(
-      bodies,
-      Math.cos(th) * r, Math.sin(th) * r,
-      v.vx + rand(rng, -20, 20), v.vy + rand(rng, -20, 20),
-      asteroidMass(rng),
-    );
+    const a = spawnAsteroid(bodies, Math.cos(th) * r, Math.sin(th) * r, v.vx, v.vy, asteroidMass(rng));
+    railBody(a, sun);
   }
 
   // Rogue planets — wanderers that stir up (but can't shred) the system
@@ -163,9 +161,11 @@ export function generateWorld(game, seed = 20260721) {
     }));
   }
 
-  // Player starts in a stable orbit inside the inner asteroid belt
+  // Player starts in a stable orbit inside the inner asteroid belt.
+  // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
+  // from the rocks around it.
   const sr = 5200;
-  const sv = Math.sqrt((CFG.G * sun.mass) / sr);
+  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * sun.mass) / sr);
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
@@ -241,10 +241,7 @@ export function replenishWorld(game, dt) {
     const fromSun = Math.hypot(x - game.homeStar.x, y - game.homeStar.y);
     if (Math.hypot(x, y) > CFG.WORLD_R || fromSun < game.homeStar.radius + 900) continue;
     const v = orbitVel(game.homeStar, x, y, 1);
-    spawnAsteroid(
-      game.bodies, x, y,
-      v.vx + (rng() - 0.5) * 40, v.vy + (rng() - 0.5) * 40,
-      asteroidMass(rng),
-    );
+    const a = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+    railBody(a, game.homeStar);
   }
 }

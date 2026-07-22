@@ -71,6 +71,15 @@ function nearestStar(game, x, y) {
 }
 
 function drawBody(game, b) {
+  // Moons announce themselves: a faint orbit circle around their planet and a
+  // bright icy outline — no more confusing them with asteroids.
+  if (b.type === 'moon' && b.parent && b.parent.alive) {
+    const orbR = b.onRails ? b.rail.r : Math.hypot(b.x - b.parent.x, b.y - b.parent.y);
+    ctx.strokeStyle = 'rgba(180, 200, 255, 0.09)';
+    ctx.lineWidth = 1.5 / game.cam.zoom;
+    ctx.beginPath(); ctx.arc(b.parent.x, b.parent.y, orbR, 0, TAU); ctx.stroke();
+  }
+
   if (b.type === 'star') {
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.2, b.x, b.y, b.radius * 3.2);
     g.addColorStop(0, b.color);
@@ -94,6 +103,12 @@ function drawBody(game, b) {
 
   ctx.fillStyle = b.color;
   ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+
+  if (b.type === 'moon') {
+    ctx.strokeStyle = 'rgba(225, 235, 255, 0.85)';
+    ctx.lineWidth = Math.max(1.2, 1.5 / game.cam.zoom);
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.stroke();
+  }
 
   // Asteroid texture: a couple of darker pits keyed off the id
   if (b.type === 'asteroid') {
@@ -423,6 +438,34 @@ export function render(game) {
 
   for (const al of game.aliens) if (al.alive) drawAlien(game, al);
   drawShip(game);
+
+  // Volley charge arc around the ship
+  if (game.volleyT > 0 && game.ship.alive) {
+    const s = game.ship;
+    const frac = Math.min(1, game.volleyT / CFG.VOLLEY_TIME);
+    ctx.strokeStyle = `rgba(255, 200, 90, ${0.5 + frac * 0.5})`;
+    ctx.lineWidth = 4 / game.cam.zoom;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.radius + 16 / game.cam.zoom, -Math.PI / 2, -Math.PI / 2 + frac * TAU);
+    ctx.stroke();
+  }
+
+  // Lock-on reticle
+  if (game.lockTarget && game.lockTarget.alive) {
+    const t = game.lockTarget;
+    const r = t.radius + 12 / game.cam.zoom;
+    const rot = game.time * 2;
+    ctx.strokeStyle = 'rgba(255, 90, 90, 0.9)';
+    ctx.lineWidth = 2 / game.cam.zoom;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(rot);
+    ctx.beginPath();
+    ctx.moveTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.lineTo(0, -r);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
 
   // "Too heavy" indicator on a failed grab
   if (game.tooHeavyT > 0 && game.tooHeavy) {

@@ -10,6 +10,10 @@ export const CFG = {
   OORT_DPS: 6,             // hull damage/s at the edge, scaling with depth
   ATTRACT_MIN: 2000,       // bodies at/above this mass exert gravity
   GRAV_SOFT: 40,           // softening length to avoid singularities
+  // The ship feels amplified gravity from everything — big suns and planets
+  // should really pull on YOU (thrown objects and NPCs use normal G).
+  SHIP_GRAV: 1.45,
+
   // Celestial bodies feel full gravity from stars and their parent planet, but
   // only this fraction from other planets/moons/rogues. The ship, aliens,
   // debris, and anything you throw always feel FULL gravity from everything.
@@ -41,6 +45,13 @@ export const CFG = {
   DEBRIS_LIFE: 150,
 
   ORBIT_OMEGA: 1.5,        // rad/s — how fast the shield orbit spins
+  VOLLEY_TIME: 3,          // hold RMB this long to fling the whole orbit
+
+  // Rails: celestial bodies ride precomputed orbits until something disturbs
+  // them (impulse, grab, or a heavy wanderer inside this range).
+  RAIL_DISTURB: 1400,
+  RAIL_RETRY: 2,           // seconds between re-rail scans
+  RAIL_TOL: 0.16,          // max fractional deviation from circular to re-rail
 
   ALIEN_HP: 45,
   ALIEN_RADIUS: 13,
@@ -70,7 +81,7 @@ export const TIERS = {
 //   collect scrap             -> heals you AND raises max hull
 //   spend delta-v flying      -> engines grow
 export const GROWTH = {
-  CATCH_RATE: 0.22,        // capacity *= 1 + rate * (mass/capacity, repeat-discounted)
+  CATCH_RATE: 0.35,        // capacity *= 1 + rate * (mass/capacity, repeat-discounted)
   CAPACITY_MAX: 1500000,
   SMASH_RATE: 0.05,        // fling *= 1 + rate per player-credited kill
   FLING_BASE: 430,
@@ -80,7 +91,8 @@ export const GROWTH = {
   HULL_MAX: 800,
   THRUST_BASE: 130,        // slow start — leveling up opens the system to you
   THRUST_MAX: 850,
-  THRUST_SCALE: 62,        // thrust = base + scale * sqrt(deltaV / 1000)
+  THRUST_SCALE: 62,        // thrust = base + scale * sqrt(deltaV / THRUST_DIV)
+  THRUST_DIV: 4500,        // bigger = slower engine leveling
 };
 
 export function newProgress() {
@@ -106,6 +118,20 @@ export function shipStats(prog) {
   const thrustLvl = Math.min(5, Math.floor((prog.thrust - GROWTH.THRUST_BASE) / 130));
   const orbitLvl = Math.min(5, Math.floor(Math.sqrt(prog.orbitXp / 4)));
   const totalLevel = tier + flingLvl + hullLvl + thrustLvl + orbitLvl;
+
+  // Fraction of the way to each track's next level (1 when maxed) — shown on
+  // the HUD so you always know how close the next level is.
+  const frac01 = (v) => Math.max(0, Math.min(1, v));
+  const fracs = {
+    beam: tier >= TIERS.caps.length - 1 ? 1
+      : frac01((prog.capacity - TIERS.caps[tier]) / (TIERS.caps[tier + 1] - TIERS.caps[tier])),
+    fling: flingLvl >= 5 ? 1 : frac01(((prog.fling - GROWTH.FLING_BASE) - flingLvl * 300) / 300),
+    hull: hullLvl >= 5 ? 1 : frac01(((prog.maxHull - GROWTH.HULL_BASE) - hullLvl * 120) / 120),
+    thrust: thrustLvl >= 5 ? 1 : frac01(((prog.thrust - GROWTH.THRUST_BASE) - thrustLvl * 130) / 130),
+    orbit: orbitLvl >= 5 ? 1
+      : frac01((prog.orbitXp - 4 * orbitLvl * orbitLvl) / (4 * (orbitLvl + 1) ** 2 - 4 * orbitLvl * orbitLvl)),
+  };
+
   return {
     capacity: prog.capacity,
     tier,
@@ -115,14 +141,19 @@ export function shipStats(prog) {
     fling: prog.fling,
     thrust: prog.thrust,
     maxHull: Math.round(prog.maxHull),
-    orbitCap: tier >= 1 ? TIERS.caps[tier - 1] : 0,
+    // Generous size rule: anything up to ~45% of beam capacity fits the orbit,
+    // so a chunky asteroid your beam handles easily is never "too big".
+    orbitCap: tier >= 1 ? Math.max(TIERS.caps[tier - 1], prog.capacity * 0.45) : 0,
     orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'locked',
     maxOrbiters: Math.min(9, 2 + tier + Math.floor(orbitLvl / 2)),
     orbitLvl,
     levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
+    fracs,
+    // Lock-on aim assist cone widens as you level
+    lockCone: 0.05 + 0.022 * totalLevel,
     radius: Math.min(32, 14 + totalLevel * 0.75),
-    // Camera pulls back as you grow — the system shrinks around you
-    zoomOut: 1 + totalLevel * 0.045,
+    // Camera pulls back as you grow — the system shrinks around you (gently)
+    zoomOut: Math.min(1.5, 1 + totalLevel * 0.022),
     totalLevel,
   };
 }

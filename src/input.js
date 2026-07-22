@@ -27,13 +27,14 @@ export function initInput(canvas, handlers) {
   canvas.addEventListener('mousedown', (e) => {
     initAudio();
     if (e.button === 0) { input.mouseDown = true; handlers.onGrab(); }
-    if (e.button === 2) handlers.onDrop();
+    if (e.button === 2) handlers.onRmbDown();
   });
   window.addEventListener('mouseup', (e) => {
     if (e.button === 0 && input.mouseDown) {
       input.mouseDown = false;
       handlers.onFling();
     }
+    if (e.button === 2) handlers.onRmbUp();
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('wheel', (e) => {

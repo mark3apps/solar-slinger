@@ -42,7 +42,29 @@ export class Body {
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;
     this.catchCount = 0;     // repeat catches of the same rock grow the beam less
+    this.onRails = false;    // riding a precomputed circular orbit
+    this.rail = null;        // { parent, r, w, ang }
+    this.liveT = 0;          // seconds since derailed (for re-railing)
   }
+}
+
+// Put a body on a precomputed circular orbit around parent, derived from its
+// current position and velocity. Railed bodies cost no gravity math and can
+// never drift, decay, or get pumped — they move on rails until disturbed.
+export function railBody(b, parent) {
+  const dx = b.x - parent.x, dy = b.y - parent.y;
+  const r = Math.hypot(dx, dy) || 1;
+  const w = (dx * (b.vy - parent.vy) - dy * (b.vx - parent.vx)) / (r * r);
+  b.onRails = true;
+  b.rail = { parent, r, w, ang: Math.atan2(dy, dx) };
+  b.liveT = 0;
+}
+
+export function derail(b) {
+  if (!b.onRails) return;
+  b.onRails = false;
+  b.rail = null;
+  b.liveT = 0;
 }
 
 export class Ship {

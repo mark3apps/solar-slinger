@@ -1,5 +1,5 @@
 import { CFG, GROWTH } from './config.js';
-import { makeScrap, scrapValue, massToHp } from './entities.js';
+import { makeScrap, scrapValue, massToHp, railBody, derail } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
 import { TAU, clamp, angDiff } from './util.js';
@@ -80,6 +80,7 @@ export function shatter(game, body, credit = null) {
 // Chip damage: lose hp, shed some mass as scrap, shrink
 export function damageBody(game, body, dmg, credit = null) {
   if (body.type === 'star' || !body.alive) return;
+  derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
   const frac = clamp(dmg / body.maxHp, 0, 0.5);
@@ -244,6 +245,11 @@ function collideBodies(game, a, b) {
   if (bMoves) { const p = overlap * (aMoves ? a.mass / total : 1); b.x += nx * p; b.y += ny * p; }
 
   if (closing > 0) {
+    // A real bounce knocks a body off its rails into live physics
+    if (closing > 25) {
+      if (aMoves) derail(a);
+      if (bMoves) derail(b);
+    }
     // Impulse with restitution (immovable side treated as infinite mass).
     // Natural celestial-vs-celestial bounces are damped — a rogue drive-by
     // must shove a planet, not launch it out of orbit into its star. Thrown
@@ -292,6 +298,7 @@ function collideShipBody(game, s, b) {
   if (b.type === 'star') { damageShip(game, 99999, 'You flew into a star.'); return; }
   if (b === game.held) return;      // held object can't crush you
   if (b.heldBy === 'orbit') return; // your own shield can't crush you either
+  if (b.thrownBy === 'player' && b.thrownTimer > 0) return; // your own throws pass through you
 
   const nx = dx / d, ny = dy / d;
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
@@ -360,15 +367,82 @@ export function step(game, dt) {
   const attractors = [];
   for (const b of bodies) if (b.alive && b.attractor) attractors.push(b);
 
+  // Rails maintenance: heavy wanderers (rogues, thrown giants) wake nearby
+  // railed bodies into live physics; long-quiet live bodies snap back onto
+  // rails when their orbit is near-circular again.
+  game.railScanT = (game.railScanT ?? 0) - dt;
+  if (game.railScanT <= 0) {
+    game.railScanT = CFG.RAIL_RETRY;
+    const disturbers = [];
+    for (const b of bodies) {
+      if (!b.alive) continue;
+      if (b.type === 'rogue' || (b.thrownTimer > 0 && b.mass > 5e4)) disturbers.push(b);
+    }
+    for (const b of bodies) {
+      if (!b.alive) continue;
+      if (b.onRails) {
+        for (const d of disturbers) {
+          if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { derail(b); break; }
+        }
+      } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 &&
+                 (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet')) {
+        // Try to re-rail around the natural parent
+        const parent = (b.type === 'moon' && b.parent && b.parent.alive) ? b.parent : game.homeStar;
+        let clear = true;
+        for (const d of disturbers) {
+          if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { clear = false; break; }
+        }
+        if (clear) {
+          const dx = b.x - parent.x, dy = b.y - parent.y;
+          const r = Math.hypot(dx, dy);
+          if (r > parent.radius + b.radius + 60) {
+            const vC = Math.sqrt((CFG.G * parent.mass * r * r) / Math.pow(r * r + CFG.GRAV_SOFT ** 2, 1.5));
+            // tangential/radial decomposition of current relative velocity
+            const rvx = b.vx - parent.vx, rvy = b.vy - parent.vy;
+            const vT = (dx * rvy - dy * rvx) / r;
+            const vR = (dx * rvx + dy * rvy) / r;
+            if (Math.abs(Math.abs(vT) - vC) < vC * CFG.RAIL_TOL && Math.abs(vR) < vC * CFG.RAIL_TOL) {
+              b.vx = parent.vx - (dy / r) * Math.sign(vT) * vC;
+              b.vy = parent.vy + (dx / r) * Math.sign(vT) * vC;
+              railBody(b, parent);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Phase 1: compute ALL accelerations from a consistent position snapshot.
   // (Integrating each body inside the same loop makes forces asymmetric —
   // later bodies see earlier bodies' updated positions — which violates
   // Newton's third law and pumps energy into tight planet-moon pairs.)
+  // Railed bodies skip gravity entirely — that's the point of rails.
   for (const b of bodies) {
-    if (!b.alive || b.type === 'star') continue;
+    if (!b.alive || b.type === 'star' || b.onRails) continue;
     const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue';
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
+
+    // Lock-on guidance: locked player throws briefly steer to intercept
+    if (b.homing) {
+      const h = b.homing;
+      h.t -= dt;
+      const tg = h.target;
+      if (h.t <= 0 || !tg.alive || b.thrownTimer <= 0) {
+        b.homing = null;
+      } else {
+        const sp = Math.hypot(b.vx, b.vy) || 1;
+        const d = Math.hypot(tg.x - b.x, tg.y - b.y);
+        const tt = d / sp;
+        const px = tg.x + tg.vx * tt, py = tg.y + tg.vy * tt;
+        const dd = Math.hypot(px - b.x, py - b.y) || 1;
+        let hx = ((px - b.x) / dd * sp - b.vx) * 4;
+        let hy = ((py - b.y) / dd * sp - b.vy) * 4;
+        const hm = Math.hypot(hx, hy);
+        if (hm > h.acc) { hx *= h.acc / hm; hy *= h.acc / hm; }
+        b.ax += hx; b.ay += hy;
+      }
+    }
     // Star-anchored bodies are held by their sun, never the map edge — the
     // boundary force would deorbit outer planets of off-center systems.
     if (!(b.parent && (b.type === 'planet' || b.type === 'moon'))) {
@@ -396,11 +470,12 @@ export function step(game, dt) {
     if (throttle !== 0) {
       game.prog.dv += th * dt;
       game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
-        GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / 1000));
+        GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
     }
 
+    // The ship feels amplified gravity — big bodies really grab at you
     const g = gravityAt(attractors, s.x, s.y);
-    shipAx = g.ax + tx; shipAy = g.ay + ty;
+    shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
 
@@ -434,13 +509,32 @@ export function step(game, dt) {
     }
   }
 
-  // Phase 2: integrate everything (semi-implicit Euler)
+  // Phase 2: integrate live bodies (semi-implicit Euler)
   for (const b of bodies) {
     if (!b.alive || b.type === 'star') continue;
-    b.vx += b.ax * dt; b.vy += b.ay * dt;
-    b.x += b.vx * dt; b.y += b.vy * dt;
     b.rot += b.spin * dt;
     if (b.thrownTimer > 0) b.thrownTimer -= dt; else b.thrownBy = null;
+    if (b.onRails) continue;
+    b.liveT += dt;
+    b.vx += b.ax * dt; b.vy += b.ay * dt;
+    b.x += b.vx * dt; b.y += b.vy * dt;
+  }
+
+  // Rails pass: advance precomputed orbits analytically. Array order puts
+  // planets before their moons, so a moon's (possibly live) parent has its
+  // final position before the moon reads it.
+  for (const b of bodies) {
+    if (!b.alive || !b.onRails) continue;
+    const rl = b.rail;
+    const p = rl.parent;
+    if (!p.alive) { derail(b); continue; }
+    rl.ang += rl.w * dt;
+    const c = Math.cos(rl.ang), sn = Math.sin(rl.ang);
+    b.x = p.x + c * rl.r;
+    b.y = p.y + sn * rl.r;
+    // Keep velocity truthful so collisions and grabs behave normally
+    b.vx = p.vx - sn * rl.w * rl.r;
+    b.vy = p.vy + c * rl.w * rl.r;
   }
 
   if (s.alive) {
@@ -544,6 +638,11 @@ export function predictPaths(game) {
         star: b.type === 'star',
         weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         parentIdx: -1, anchorIdx: -1,
+        // Railed attractors predict EXACTLY — advance the rail analytically
+        railR: b.onRails ? b.rail.r : 0,
+        railW: b.onRails ? b.rail.w : 0,
+        railAng: b.onRails ? b.rail.ang : 0,
+        railParent: b.onRails ? b.rail.parent : null,
       });
     }
   }
@@ -589,6 +688,12 @@ export function predictPaths(game) {
     for (let bi = 0; bi < atr.length; bi++) {
       const b = atr[bi];
       if (b.star) continue;
+      if (b.railParent) {
+        b.railAng += b.railW * dt;
+        b.x = b.railParent.x + Math.cos(b.railAng) * b.railR;
+        b.y = b.railParent.y + Math.sin(b.railAng) * b.railR;
+        continue;
+      }
       let ax = 0, ay = 0;
       for (let k = 0; k < atr.length; k++) {
         const o = atr[k];
@@ -608,7 +713,8 @@ export function predictPaths(game) {
     }
 
     if (ship && !shipHit) {
-      const [ax, ay] = accelAt(ship.x, ship.y);
+      let [ax, ay] = accelAt(ship.x, ship.y);
+      ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
       ship.vx += ax * dt; ship.vy += ay * dt;
       ship.x += ship.vx * dt; ship.y += ship.vy * dt;
       if (i % 2 === 0) shipPts.push({ x: ship.x, y: ship.y });

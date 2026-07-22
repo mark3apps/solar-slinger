@@ -22,7 +22,8 @@ export function initHud(game) {
     const row = document.createElement('div');
     row.className = 'track';
     row.dataset.key = key;
-    row.innerHTML = `<span class="tlabel">${label}</span><span class="pips"></span><span class="tval"></span>`;
+    row.innerHTML = `<span class="tlabel">${label}</span><span class="pips"></span>` +
+      `<span class="tnext"><span class="tnextfill"></span></span><span class="tval"></span>`;
     el.tracks.appendChild(row);
   }
   void game;
@@ -68,5 +69,8 @@ export function updateHud(game) {
   for (const row of el.tracks.children) {
     const track = TRACKS.find(([key]) => key === row.dataset.key);
     row.querySelector('.tval').textContent = track[2](game);
+    // Progress toward the next level, live
+    const frac = st.fracs[row.dataset.key];
+    row.querySelector('.tnextfill').style.width = `${Math.round(frac * 100)}%`;
   }
 }

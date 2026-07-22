@@ -2,7 +2,7 @@ import { CFG, newProgress, shipStats } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
-import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingFromOrbit } from './tractor.js';
+import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, lockOn } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
@@ -42,6 +42,9 @@ const game = {
   tooHeavyT: 0,
   lastTier: 0,
   oortWarnT: 0,
+  volleyT: 0,
+  volleyCharging: false,
+  lockTarget: null,
   tut: { grabbed: false, flung: false, orbited: false, alienSeen: false },
 };
 
@@ -57,12 +60,18 @@ initInput(canvas, {
   onGrab: () => {
     if (game.paused || !game.ship.alive) return;
     if (tryGrab(game)) {
-      if (!game.tut.grabbed) {
+      // Anything that fits your orbit is captured into it automatically
+      const b = game.held;
+      if (b.mass <= game.st.orbitCap && game.orbit.length < game.st.maxOrbiters) {
+        addToOrbit(game);
+        if (!game.tut.orbited) {
+          game.tut.orbited = true;
+          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE 3s to volley everything.', 5);
+        }
+      } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
         hud.message('Got it! RELEASE to FLING it toward the cursor. Every catch strengthens your beam.', 5);
       }
-    } else if (flingFromOrbit(game) && !game.tut.flung) {
-      game.tut.flung = true;
     }
   },
   onFling: () => {
@@ -74,18 +83,11 @@ initInput(canvas, {
       }
     }
   },
-  onDrop: () => {
-    if (!game.held) return;
-    if (addToOrbit(game)) {
-      if (!game.tut.orbited) {
-        game.tut.orbited = true;
-        hud.message('Added to your orbit! It shields you — left-click empty space to fling it.', 5);
-      }
-    } else {
-      releaseHeld(game, false);
-      if (game.st.orbitCap > 0) hud.message('Too big for your orbit — dropped it instead.', 2.5);
-    }
+  onRmbDown: () => {
+    if (game.held) { releaseHeld(game, false); return; }
+    if (game.orbit.length) game.volleyCharging = true;
   },
+  onRmbUp: () => { game.volleyCharging = false; },
   onZoom: (dy) => zoomBy(game, dy),
   onTogglePause: () => {
     game.paused = !game.paused;
@@ -161,6 +163,28 @@ function update(dtReal) {
           ? 'HULL GRINDING — you are inside the Oort cloud. Turn back!'
           : 'WARNING: Oort cloud ahead — it will tear your ship apart.', 4.5);
       }
+    }
+
+    // Volley charge: hold RMB for VOLLEY_TIME to unleash the whole orbit
+    if (game.volleyCharging && game.orbit.length && s.alive) {
+      game.volleyT += dtReal;
+      if (game.volleyT >= CFG.VOLLEY_TIME) {
+        const n = flingAllFromOrbit(game);
+        if (n) hud.message(`VOLLEY — ${n} rock${n > 1 ? 's' : ''} away!`, 2.5);
+        game.volleyT = 0;
+        game.volleyCharging = false;
+      }
+    } else {
+      game.volleyT = Math.max(0, game.volleyT - dtReal * 4);
+      if (!game.orbit.length) game.volleyCharging = false;
+    }
+
+    // Lock-on target (for the reticle; the actual throw re-solves at release)
+    if (s.alive && (game.held || game.volleyCharging)) {
+      const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+      game.lockTarget = lockOn(game, baseAng, game.st.fling).target;
+    } else {
+      game.lockTarget = null;
     }
 
     // Timers & one-shot messages

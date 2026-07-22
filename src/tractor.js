@@ -1,5 +1,6 @@
 import { GROWTH } from './config.js';
 import { CFG } from './config.js';
+import { derail } from './entities.js';
 import { clamp, angDiff, TAU } from './util.js';
 import * as sfx from './sfx.js';
 
@@ -11,13 +12,47 @@ function holdPoint(game, body) {
   return { x: s.x + Math.cos(ang) * d, y: s.y + Math.sin(ang) * d };
 }
 
+// Lock-on aim assist: if an alien sits within the (level-scaled) cone around
+// where you're aiming, snap the throw onto an intercept course.
+export function lockOn(game, baseAng, speed) {
+  const s = game.ship;
+  let best = null, bestD = Infinity;
+  for (const al of game.aliens) {
+    if (!al.alive) continue;
+    const d = Math.hypot(al.x - s.x, al.y - s.y);
+    if (d > 2400) continue;
+    const ang = Math.atan2(al.y - s.y, al.x - s.x);
+    if (Math.abs(angDiff(baseAng, ang)) > game.st.lockCone) continue;
+    if (d < bestD) { best = al; bestD = d; }
+  }
+  if (!best) return { ang: baseAng, target: null };
+  // Lead the target: aim where it will be when the rock arrives
+  const t = bestD / Math.max(120, speed);
+  const px = best.x + (best.vx - s.vx) * t;
+  const py = best.y + (best.vy - s.vy) * t;
+  return { ang: Math.atan2(py - s.y, px - s.x), target: best };
+}
+
+// Locked throws briefly steer toward the target after launch — the aliens
+// dodge anything purely ballistic, so this is what makes lock-on real.
+// Guidance authority grows with level.
+function armHoming(game, b) {
+  const s = game.ship;
+  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const { target } = lockOn(game, baseAng, game.st.fling);
+  if (target) {
+    b.homing = { target, t: 1.3, acc: 340 + 70 * game.st.totalLevel };
+  }
+}
+
 // Heavier objects fling slower; ship velocity is inherited.
 export function computeFlingVelocity(game, body) {
   const s = game.ship;
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (body.mass * 4), 0.25), 0.3, 1);
   const speed = st.fling * massFactor;
-  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const { ang } = lockOn(game, baseAng, speed);
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
@@ -47,6 +82,7 @@ export function tryGrab(game) {
     if (al.target === best) { al.target = null; al.state = 'cooldown'; al.cool = 2; }
   }
   best.heldBy = 'player';
+  derail(best);
   game.held = best;
 
   // AUTO-UPGRADE: every catch strengthens the beam. Heavy catches (relative to
@@ -76,6 +112,7 @@ export function releaseHeld(game, fling) {
     b.vx = v.vx; b.vy = v.vy;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    armHoming(game, b);
     // Recoil: flinging a planet shoves you backwards
     const s = game.ship;
     const k = (b.mass / (b.mass + 4000)) * 0.8;
@@ -142,28 +179,32 @@ export function addToOrbit(game) {
   return true;
 }
 
-// Fling the orbiter closest to the aim direction at the cursor.
-export function flingFromOrbit(game) {
-  if (!game.orbit.length || !game.ship.alive) return false;
+// VOLLEY: hold RMB for VOLLEY_TIME, then every rock in your orbit launches at
+// the cursor in a tight spread (lock-on adjusts the center line).
+export function flingAllFromOrbit(game) {
+  if (!game.orbit.length || !game.ship.alive) return 0;
   const s = game.ship;
-  const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-  const n = game.orbit.length;
-  let best = 0, bestD = Infinity;
-  for (let i = 0; i < n; i++) {
-    const b = game.orbit[i];
-    const ang = Math.atan2(b.y - s.y, b.x - s.x);
-    const d = Math.abs(angDiff(ang, aimAng));
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  const b = game.orbit.splice(best, 1)[0];
-  b.heldBy = null;
-  b.extAx = 0; b.extAy = 0;
-  const v = computeFlingVelocity(game, b);
-  b.vx = v.vx; b.vy = v.vy;
-  b.thrownBy = 'player';
-  b.thrownTimer = 4;
+  const st = game.st;
+  const baseAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const { ang } = lockOn(game, baseAng, st.fling);
+  const rocks = game.orbit;
+  game.orbit = [];
+  const n = rocks.length;
+  rocks.forEach((b, i) => {
+    b.heldBy = null;
+    b.extAx = 0; b.extAy = 0;
+    const massFactor = clamp(Math.pow(st.capacity / (b.mass * 4), 0.25), 0.3, 1);
+    const speed = st.fling * massFactor;
+    const a = ang + (i - (n - 1) / 2) * 0.07;
+    b.vx = s.vx + Math.cos(a) * speed;
+    b.vy = s.vy + Math.sin(a) * speed;
+    b.thrownBy = 'player';
+    b.thrownTimer = 4;
+    armHoming(game, b);
+  });
   sfx.sfxFling();
-  return true;
+  sfx.sfxBoom(1.5);
+  return n;
 }
 
 // Spring each orbiter to its rotating slot; runs every physics substep.

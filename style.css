@@ -49,6 +49,13 @@ html, body {
 .tval { color: rgba(207, 227, 255, .85); }
 .track[data-key="orbit"] .tlabel { color: #8fffc9; }
 
+.tnext {
+  display: inline-block; width: 34px; height: 4px;
+  border: 1px solid rgba(120, 200, 255, .3); border-radius: 2px;
+  overflow: hidden; background: rgba(10, 20, 40, .6);
+}
+.tnextfill { display: block; height: 100%; width: 0; background: rgba(90, 200, 255, .75); }
+
 .pips { display: inline-flex; gap: 3px; }
 .pip {
   display: inline-block; width: 8px; height: 8px;

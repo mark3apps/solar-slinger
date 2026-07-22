@@ -1,5 +1,5 @@
 import { CFG } from './config.js';
-import { Alien } from './entities.js';
+import { Alien, derail } from './entities.js';
 import { TAU, clamp } from './util.js';
 
 // Steering: accelerate toward a desired velocity (auto-fights gravity)
@@ -70,6 +70,7 @@ function updateAlien(game, al, dt) {
       steer(al, r.x + r.vx * 0.4, r.y + r.vy * 0.4, CFG.ALIEN_SPEED);
       if (Math.hypot(r.x - al.x, r.y - al.y) < al.radius + r.radius + 55) {
         r.heldBy = al;
+        derail(r);
         al.fetchT = 0;
         al.state = 'carry';
       }
