@@ -606,16 +606,23 @@ function drawShip(game) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
       let a = 0.12 + 0.30 * sf;
       if (sf < 0.3) a *= 0.6 + 0.4 * Math.sin(game.time * 26);
-      ctx.strokeStyle = `rgba(${col}, ${a})`;
-      ctx.lineWidth = 2 / z;
-      ctx.setLineDash([R * 0.45, R * 0.22]);
-      ctx.lineDashOffset = game.time * R * 0.8;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.stroke();
-      ctx.strokeStyle = `rgba(${col}, ${a * 0.55})`;
-      ctx.setLineDash([R * 0.2, R * 0.3]);
-      ctx.lineDashOffset = -game.time * R * 1.3;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.12, 0, TAU); ctx.stroke();
-      ctx.setLineDash([]);
+      // Deliberately NOT dashed — dashed lines mean helper/aiming UI
+      // everywhere else. The shield is a soft volumetric rim glow with
+      // solid glints sweeping around it.
+      const g2 = ctx.createRadialGradient(s.x, s.y, R * 0.72, s.x, s.y, R * 1.08);
+      g2.addColorStop(0, 'transparent');
+      g2.addColorStop(0.8, `rgba(${col}, ${a * 0.55})`);
+      g2.addColorStop(1, 'transparent');
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.08, 0, TAU); ctx.fill();
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 2.5 / z;
+      for (const [sp, ph, len] of [[1.1, 0, 0.9], [-0.7, 2.4, 0.6]]) {
+        const a0 = game.time * sp + ph;
+        ctx.strokeStyle = `rgba(${col}, ${Math.min(1, a + 0.25)})`;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R, a0, a0 + len); ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
     } else {
       ctx.strokeStyle = 'rgba(255, 130, 110, 0.3)';
       ctx.lineWidth = 1.5 / z;
