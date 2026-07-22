@@ -211,6 +211,9 @@ export function addToOrbit(game) {
   game.held = null;
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
+  // The tractor capture spins the rock up — captured bodies visibly whirl
+  // (ambient spin is a sleepy ±0.3 rad/s)
+  b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
   game.orbit.push(b);
   game.prog.orbitXp += 1;   // AUTO-UPGRADE: using the orbit grows the orbit
   sfx.setBeam(false);
