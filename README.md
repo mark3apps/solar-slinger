@@ -42,7 +42,21 @@ python3 -m http.server 8642
 # then open http://localhost:8642
 ```
 
-or `npx serve`, or any equivalent.
+or `npx serve`, or any equivalent. (`serve.py` in this repo is the same thing with caching disabled — preferred for development so edits are never stale.)
+
+## Desktop app
+
+The game also ships as an Electron app for macOS and Windows.
+
+```sh
+npm install
+npm start          # run the desktop app locally
+npm run dist       # build installers into dist/
+```
+
+Every push to `main` triggers the **Build & Release** GitHub Actions workflow, which packages a macOS DMG (arm64 + Intel) and a Windows installer and attaches them to a new GitHub release tagged `build-<run number>`. The builds are unsigned: on macOS right-click → Open (or clear the quarantine flag); on Windows click through SmartScreen.
+
+The Electron shell ([electron/main.js](electron/main.js)) serves the exact same static files over an internal `app://` scheme — the game code has no idea it's in Electron, and browser development is unchanged.
 
 ## How it works
 
