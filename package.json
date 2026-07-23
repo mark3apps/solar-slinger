@@ -22,6 +22,7 @@
     "directories": {
       "output": "dist"
     },
+    "afterPack": "scripts/adhoc-sign-mac.js",
     "files": [
       "electron/**/*",
       "index.html",

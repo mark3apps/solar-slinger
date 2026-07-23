@@ -60,9 +60,12 @@ jobs:
           body: |
             Automated build of `${{ github.sha }}`.
 
-            **macOS:** the app is unsigned. If macOS reports it as damaged or from an
-            unidentified developer, right-click the app and choose Open, or run:
+            **macOS:** the app is ad-hoc signed but not notarized, so Gatekeeper will
+            block the first launch. Either clear quarantine before opening:
             `xattr -dr com.apple.quarantine "/Applications/Solar Slinger.app"`
+            or, after the blocked launch attempt, allow it under
+            System Settings → Privacy & Security → "Open Anyway".
+            (Right-click → Open no longer bypasses Gatekeeper on modern macOS.)
 
             **Windows:** SmartScreen may warn because the installer is unsigned —
             choose "More info" → "Run anyway".
