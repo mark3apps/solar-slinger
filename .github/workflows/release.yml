@@ -21,6 +21,8 @@ jobs:
             args: --mac
           - os: windows-latest
             args: --win
+          - os: ubuntu-latest
+            args: --linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +35,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Patch version is stamped from the CI run number so every release is
+      # unique and monotonic (v0.1.41, v0.1.42, ...). Bump major/minor by
+      # editing package.json; its patch digit is ignored on CI.
+      - name: Stamp release version
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          npm pkg set version="${base}.${{ github.run_number }}"
+
       - name: Build installers
         run: npx electron-builder ${{ matrix.args }} --publish never
 
@@ -42,12 +53,21 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.deb
           if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute release version
+        id: ver
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          echo "version=${base}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -55,15 +75,22 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Solar Slinger build ${{ github.run_number }}
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Solar Slinger v${{ steps.ver.outputs.version }}
           body: |
             Automated build of `${{ github.sha }}`.
 
-            **macOS:** the app is unsigned. If macOS reports it as damaged or from an
-            unidentified developer, right-click the app and choose Open, or run:
+            **macOS:** the app is ad-hoc signed but not notarized, so Gatekeeper will
+            block the first launch. Either clear quarantine before opening:
             `xattr -dr com.apple.quarantine "/Applications/Solar Slinger.app"`
+            or, after the blocked launch attempt, allow it under
+            System Settings → Privacy & Security → "Open Anyway".
+            (Right-click → Open no longer bypasses Gatekeeper on modern macOS.)
 
             **Windows:** SmartScreen may warn because the installer is unsigned —
             choose "More info" → "Run anyway".
+
+            **Raspberry Pi / Linux arm64:** requires a 64-bit OS (Raspberry Pi OS
+            64-bit on a Pi 3 or later). Install with:
+            `sudo apt install ./solar-slinger_*_arm64.deb`
           files: artifacts/*

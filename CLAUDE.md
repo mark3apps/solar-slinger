@@ -151,8 +151,10 @@ about it — this is a hard rule.
 - `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
   `app://` for hot-ish iteration.
 - **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)): every push to
-  `main` builds a mac DMG (arm64 + x64) and a Windows NSIS installer and attaches them to a GitHub
-  release tagged `build-<run number>`. Builds are **unsigned** (mac: right-click → Open / clear
+  `main` builds a mac DMG (arm64 + x64), a Windows NSIS installer, and a Linux arm64 `.deb`
+  (Raspberry Pi 3+ on 64-bit Raspberry Pi OS) and attaches them to a GitHub
+  release tagged `v<major>.<minor>.<run number>` — the patch digit is stamped from the CI run
+  number, so package.json's patch is ignored on CI; bump major/minor there when it matters. Builds are **unsigned** (mac: right-click → Open / clear
   quarantine; Windows: click through SmartScreen). The `build:` block in package.json controls what
   gets packaged and the installer targets. App icons live in `build/` (`icon.icns/.ico/.png`,
   generated from `build/icon-src/`).
