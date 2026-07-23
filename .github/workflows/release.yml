@@ -35,6 +35,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Patch version is stamped from the CI run number so every release is
+      # unique and monotonic (v0.1.41, v0.1.42, ...). Bump major/minor by
+      # editing package.json; its patch digit is ignored on CI.
+      - name: Stamp release version
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          npm pkg set version="${base}.${{ github.run_number }}"
+
       - name: Build installers
         run: npx electron-builder ${{ matrix.args }} --publish never
 
@@ -51,6 +60,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute release version
+        id: ver
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          echo "version=${base}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -58,8 +75,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Solar Slinger build ${{ github.run_number }}
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Solar Slinger v${{ steps.ver.outputs.version }}
           body: |
             Automated build of `${{ github.sha }}`.
 
