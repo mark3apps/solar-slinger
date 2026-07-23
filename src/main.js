@@ -186,6 +186,25 @@ function update(dtReal) {
 
     const s = game.ship;
 
+    // Gravity-compass smoothing (display only): the raw per-substep pull
+    // vector whips around during fast flybys and flips near field nulls —
+    // vector-lerping it calms the arrow without lying about the trend.
+    {
+      const k = 1 - Math.exp(-5 * dtReal);
+      game.compassX = lerp(game.compassX ?? 0, game.shipGx || 0, k);
+      game.compassY = lerp(game.compassY ?? 0, game.shipGy || 0, k);
+      // Chevron flow phase must ACCUMULATE (+= speed * dt). The old
+      // time * speed form made the phase teleport by (time * dSpeed) whole
+      // cycles whenever field strength moved — the "insanely fast" strobe.
+      // Flow speed depends ONLY on smoothed field strength, nothing else.
+      const mag = Math.hypot(game.compassX, game.compassY);
+      const t = Math.min(1, Math.max(0, (Math.log10(Math.max(1e-6, mag)) - 0.08) / 2.2));
+      game.compassPhase = ((game.compassPhase || 0) + (0.25 + 0.5 * t) * dtReal) % 1;
+    }
+    if (game.scrapeT > 0) game.scrapeT -= dtReal;
+    if (game.gasDiveT > 0) game.gasDiveT -= dtReal;
+    if (game.gasEnterT > 0) game.gasEnterT -= dtReal;
+
     // SLINGSHOT: pass through a planet's well without touching the throttle
     // and leave faster than you entered — clean flying feeds the engines.
     if (s.alive) {
@@ -202,8 +221,11 @@ function update(dtReal) {
         if (game.controls.f || game.controls.b) game.sling.thrusted = true;
       } else if (game.sling) {
         const gain = Math.round(sp - game.sling.entry);
-        if (!game.sling.thrusted && gain > 50) {
-          game.prog.dv += gain * 8;   // counts as delta-v earned, not spent
+        // Bar raised from 50 and reward cut from x8: long-arm wells made
+        // modest assists routine, and the old numbers inflated low-level
+        // engine growth into a runaway
+        if (!game.sling.thrusted && gain > 90) {
+          game.prog.dv += gain * 5;   // counts as delta-v earned, not spent
           game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
             GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
           hud.message(`SLINGSHOT! +${gain} speed — the gravity assist feeds your engines.`, 3);
@@ -350,6 +372,99 @@ function update(dtReal) {
     if (game.emberCleansedName) {
       hud.message(`${game.emberCleansedName} cleansed — the Emberkin bloom is extinguished.`, 5);
       game.emberCleansedName = null;
+    }
+    // ---- discovery-layer events ----
+    if (game.vesperWarn) {
+      game.vesperWarn = false;
+      if (!game.tut.vesper) {
+        game.tut.vesper = true;
+        hud.message('COMET VESPER — a long-period wanderer, falling sunward. Its tail blooms at perihelion. Catch it if you can.', 6);
+      }
+    }
+    if (game.visitorWarn) {
+      game.visitorWarn = false;
+      hud.message('DEEP-SPACE CONTACT: an interstellar object is crossing the system. It will not come back.', 6);
+    }
+    if (game.visitorGone) {
+      game.visitorGone = false;
+      hud.message('The interstellar visitor has left the system — forever.', 5.5);
+    }
+    if (game.stormWarn) {
+      game.stormWarn = false;
+      hud.message(game.tut.storm
+        ? 'SOLAR STORM — a charged wave is sweeping the system.'
+        : 'SOLAR STORM — the sun has loosed a charged wave across the whole system. Watch the skies of nearby worlds.',
+      game.tut.storm ? 3.5 : 6);
+      game.tut.storm = true;
+    }
+    if (game.auroraName) {
+      hud.message(game.tut.aurora
+        ? `AURORA over ${game.auroraName}.`
+        : `AURORA — the storm wave is lighting up ${game.auroraName}'s sky.`, game.tut.aurora ? 3 : 5);
+      game.tut.aurora = true;
+      game.auroraName = null;
+    }
+    if (game.eclipseName) {
+      hud.message(`MOONSHADOW — a lunar eclipse is sweeping across ${game.eclipseName}.`, 5);
+      game.eclipseName = null;
+    }
+    if (game.surveyMsg) {
+      hud.message(game.surveyMsg, 4.5);
+      game.surveyMsg = null;
+    }
+    if (game.echoMsg) {
+      hud.message(game.echoMsg, 7.5);
+      game.echoMsg = null;
+    }
+    if (game.graveyardWarn) {
+      game.graveyardWarn = false;
+      if (!game.tut.graveyard) {
+        game.tut.graveyard = true;
+        hud.message('GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6);
+      }
+    }
+    if (game.ghostWarn) {
+      game.ghostWarn = false;
+      if (!game.tut.ghost) {
+        game.tut.ghost = true;
+        hud.message('UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6);
+      }
+    }
+    if (game.ringDecayName) {
+      hud.message(`The shepherd moon is gone — ${game.ringDecayName}'s ring is beginning to scatter.`, 6);
+      game.ringDecayName = null;
+    }
+    if (game.volcWarn) {
+      game.volcWarn = false;
+      if (!game.tut.volc) {
+        game.tut.volc = true;
+        hud.message('FORGE MOON — this moon is volcanically alive. Its ejecta cools into dense slinging rock.', 5.5);
+      }
+    }
+    if (game.heatWarn) {
+      game.heatWarn = false;
+      if (!game.tut.heat) {
+        game.tut.heat = true;
+        hud.message('MELTDOWN WARNING — the heat is liquefying your hull. Turn back!', 4.5);
+      }
+    }
+    if (game.gasDiveWarn) {
+      game.gasDiveWarn = false;
+      if (!game.tut.gasdive) {
+        game.tut.gasdive = true;
+        hud.message('CRUSH DEPTH — the atmosphere is collapsing your hull. The core will finish the job. CLIMB!', 5);
+      }
+    }
+    if (game.flareHitWarn) {
+      game.flareHitWarn = false;
+      hud.message('FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5);
+    }
+    if (game.scrapeWarn) {
+      game.scrapeWarn = false;
+      if (!game.tut.scrape) {
+        game.tut.scrape = true;
+        hud.message("HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5);
+      }
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;

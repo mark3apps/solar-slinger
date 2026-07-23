@@ -1,6 +1,22 @@
 import { CFG } from './config.js';
 import { Body, railBody } from './entities.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
+import { sfxPing } from './sfx.js';
+
+// Recovered echo logs — one-line lore fragments carried by derelicts and
+// oddities, shown once on the first grab (tractor.js sets game.echoMsg).
+// Cheapest possible worldbuilding: strings on bodies.
+const ECHOES = {
+  stations: [
+    'RECOVERED LOG — "…day 900. The relay still points at a star none of our charts contain."',
+    'RECOVERED LOG — "…evacuation complete. If you find this: the forge moon was already burning when we arrived."',
+    'RECOVERED LOG — "…they were never invaders. The nests grew from the cargo we abandoned."',
+  ],
+  hulk: 'RECOVERED LOG — "…too close to the sun, I know. The graveyard keeps what the light takes."',
+  herald: 'RECOVERED LOG — "…final entry: we followed the ping past the ice line. It was already old when this sun was young."',
+  carved: 'ANALYSIS — these facets are machined, not tumbled. Whoever cut this stone counted in sixes.',
+  visitor: 'ANALYSIS — the lattice is annealed by aeons of starlight. This object is older than the sun.',
+};
 
 // Planet archetypes — each type has its own palette and its own look in the
 // renderer (lava glow, rocky continents, gas bands, ice caps) so the kinds
@@ -124,6 +140,49 @@ function addNest(bodies, rng, planet) {
   return n;
 }
 
+// The ring-gap shepherd moonlet, in its lane. Shared by generateWorld and
+// the replenish respawn (ambient deaths only — player kills are permanent).
+function spawnShepherd(game, host, th) {
+  const r = host.radius * 1.9;
+  const x = host.x + Math.cos(th) * r, y = host.y + Math.sin(th) * r;
+  const v = orbitVel(host, x, y, 1);
+  const sh = new Body({
+    type: 'moon', x, y, vx: v.vx, vy: v.vy,
+    mass: 900, radius: 9, color: '#e8ddc0', name: 'Shepherd', parent: host,
+    // Override hp (default massToHp(900) ≈ 11): ambient ring-chunk bumps
+    // killed it within ~20 idle minutes in soak testing. The ring-scatter
+    // consequence should follow a PLAYER choice, not background noise —
+    // a deliberate fling still one-shots it easily. It also station-keeps
+    // (physics.js `install`) so knocks can't drag it out of its lane.
+    hp: 120,
+  });
+  sh.shepherd = true;
+  game.bodies.push(sh);
+  railBody(sh, host);
+  game.shepherd = sh;
+  return sh;
+}
+
+// Comet Vesper at perihelion, falling into a fresh pass. Shared by
+// generateWorld (seeded angle) and the replenish respawn (random angle).
+function spawnVesper(game, sun, th) {
+  const peri = 3900, semi = 12000;
+  const vp = Math.sqrt(CFG.G * sun.mass * (2 / peri - 1 / semi));
+  const c = spawnAsteroid(game.bodies,
+    sun.x + Math.cos(th) * peri, sun.y + Math.sin(th) * peri,
+    -Math.sin(th) * vp, Math.cos(th) * vp, 2400);
+  c.comet = true; c.cometT = Infinity; c.majorComet = true;
+  c.name = 'Comet Vesper'; c.color = '#d8f4ff';
+  // A landmark must outlive ambient traffic: its orbit crosses every belt
+  // and planet lane between 3900 and 20100, and at default massToHp (~29)
+  // a single hard crunch shattered it within ~10 minutes in soak testing.
+  // Override hp like stations do — the natural-hit cap (70% of remaining
+  // hp) then means only deliberate player throws can actually finish it.
+  c.hp = c.maxHp = 500;
+  game.vesper = c;
+  return c;
+}
+
 function asteroidRadius(mass) { return 1.6 + Math.cbrt(mass) * 0.78; }
 
 // Skewed small (down to pebbles), occasionally chunky — and ~12% are
@@ -161,8 +220,13 @@ export function generateWorld(game, seed = 20260721) {
   const bodies = game.bodies;
 
   // ONE sun, vast and dangerous, with the whole map as its system.
+  // Mass is DOUBLE the original 1.6e7 to spin every sun-anchored orbit ~1.4x
+  // faster (orbitVel derives speeds from this, so planets, belts, trojans,
+  // graveyard, and Vesper all speed up consistently — rails included).
+  // CFG.STAR_GRAV_SHIP was halved in compensation, so the ship-felt sun
+  // pull and the spawn-orbit speed below are unchanged. Tune them together.
   const sun = new Body({
-    type: 'star', x: 0, y: 0, mass: 1.6e7, radius: 2400, color: '#ffd98a',
+    type: 'star', x: 0, y: 0, mass: 3.2e7, radius: 2400, color: '#ffd98a',
   });
   bodies.push(sun);
 
@@ -243,12 +307,46 @@ export function generateWorld(game, seed = 20260721) {
     }
   }
 
-  // RING FIELDS: gas-giant rings are made of actual grabbable ice chunks
+  // ---- DISCOVERY LAYER: landmarks and one-off finds. Everything here is
+  // seeded, so each is in the same place every run — you can give directions
+  // by them. (Set BEFORE the ring fields so ringGap shapes chunk placement.)
+  const planetAtOrbit = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
+
+  // LANDMARKS: render-only flags giving select worlds a unique face — the
+  // Great Eye on the big gas giant, a rayed impact basin, live cryo-geysers.
+  const stormHost = planetAtOrbit(24000); if (stormHost) stormHost.landmark = 'storm';
+  const craterHost = planetAtOrbit(34500); if (craterHost) craterHost.landmark = 'crater';
+  const geyserHost = planetAtOrbit(30200); if (geyserHost) geyserHost.landmark = 'geysers';
+
+  // FORGE MOON: the inner gas giant keeps one volcanically live moon. When
+  // you're close it lobs loose magma bombs that cool into dense sling rock
+  // (replenishWorld hazard loop) — an Io, not a gun battery.
+  const forgeHost = planetAtOrbit(14800);
+  if (forgeHost) {
+    const m = bodies.find((b) => b.type === 'moon' && b.parent === forgeHost);
+    if (m) { m.volcanic = true; m.color = '#c98a6a'; m.name = 'Forge Moon'; }
+  }
+
+  // RING SHEPHERD: one ringed giant has a visible ring gap held open by a
+  // tiny named moonlet riding in it. Steal (or smash) the shepherd and the
+  // ring slowly scatters — a consequence you can watch happen over minutes
+  // (decay logic in replenishWorld, visuals in render.js).
+  const shepHost = planetAtOrbit(20200);
+  if (shepHost) {
+    shepHost.ringGap = true;
+    spawnShepherd(game, shepHost, rng() * TAU);
+    game.shepherdPlanet = shepHost;
+  }
+
+  // RING FIELDS: gas-giant rings are made of actual grabbable ice chunks.
+  // A ringGap planet keeps its chunks OUT of the shepherd's lane.
   for (const p of planets) {
     if (p.ptype !== 'gas') continue;
     for (let i = 0; i < 14; i++) {
       const a = rng() * TAU;
-      const cr = p.radius * rand(rng, 1.55, 2.15);
+      const cr = p.radius * (p.ringGap
+        ? (rng() < 0.5 ? rand(rng, 1.55, 1.78) : rand(rng, 2.02, 2.15))
+        : rand(rng, 1.55, 2.15));
       const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
       const v = orbitVel(p, x, y, 1);
       const c = spawnAsteroid(bodies, x, y, v.vx, v.vy, rand(rng, 60, 480));
@@ -272,6 +370,78 @@ export function generateWorld(game, seed = 20260721) {
     }
   }
 
+  // GRAVEYARD ORBIT: pre-collapse wreckage rings the sun just above its
+  // corona (r~3250, below the innermost planet at 3600 and well inside the
+  // flare zone) — the richest salvage in the system, guarded by heat, not
+  // guns. One hulk carries a recovered log.
+  {
+    const g0 = rng() * TAU;
+    for (let i = 0; i < 9; i++) {
+      const a = g0 + (i / 9) * TAU + rand(rng, -0.15, 0.15);
+      const gr = 3250 + rand(rng, -90, 90);
+      const wx = Math.cos(a) * gr, wy = Math.sin(a) * gr;
+      const wv = orbitVel(sun, wx, wy, 1);
+      const w = spawnAsteroid(bodies, wx, wy, wv.vx, wv.vy, i === 0 ? 2800 : rand(rng, 200, 700));
+      w.color = '#9fb0c2'; w.junk = true;
+      if (i === 0) w.echo = ECHOES.hulk;
+      railBody(w, sun);
+    }
+  }
+
+  // COMET VESPER: ONE real long-period comet on a genuinely eccentric orbit
+  // (perihelion ~3900, aphelion ~20100, period ~8.6 min under the heavy
+  // sun). It free-flies under full gravity — rails are circular-only and
+  // the re-rail scan can never capture it (an ellipse never sits within
+  // RAIL_TOL of circular). The comet flag reuses the ambient-comet tail +
+  // 4x scrap; cometT = Infinity keeps the ambient expiry (Infinity - dt
+  // stays Infinity) from culling it. Perihelion sits ABOVE the graveyard
+  // ring (3250±90) on purpose: when it dipped through the wrecks, repeated
+  // collisions random-walked its perihelion into the sun within ~8 minutes.
+  spawnVesper(game, sun, rng() * TAU);
+
+  // GHOST SHIP: a pre-collapse hull drifting in the outer dark between the
+  // ice worlds, found by EAR before eye — it pings when you fly near
+  // (replenishWorld). Station-type so shattering it breaks into salvage
+  // modules; parent stays null so it gets none of the installation
+  // station-keeping (it's a wreck, not infrastructure).
+  {
+    const th = rng() * TAU;
+    const gr = 31400;
+    const gx = Math.cos(th) * gr, gy = Math.sin(th) * gr;
+    const gv = orbitVel(sun, gx, gy, 1);
+    const gh = new Body({
+      type: 'station', x: gx, y: gy, vx: gv.vx, vy: gv.vy,
+      mass: 1500, radius: 22, hp: 200,
+      color: '#5a6472', name: 'The Herald',
+    });
+    gh.ghost = true; gh.spin = 0.18; gh.echo = ECHOES.herald;
+    bodies.push(gh);
+    railBody(gh, sun);
+    game.ghost = gh;
+  }
+
+  // THE CARVED STONE: one rock in the middle belt is... not a rock.
+  // Perfectly faceted, clearly worked. No mechanic — just something to find
+  // and screenshot. (render.js gives carved rocks a machined silhouette.)
+  {
+    const th = rng() * TAU;
+    const cr2 = 18400 + rand(rng, -300, 300);
+    const cx2 = Math.cos(th) * cr2, cy2 = Math.sin(th) * cr2;
+    const cv2 = orbitVel(sun, cx2, cy2, 1);
+    const cs = spawnAsteroid(bodies, cx2, cy2, cv2.vx, cv2.vy, 777);
+    cs.carved = true; cs.junk = true; cs.color = '#95a3b5';
+    cs.echo = ECHOES.carved;
+    railBody(cs, sun);
+  }
+
+  // Hand each derelict station its echo log, in generation order
+  {
+    let ei = 0;
+    for (const b of bodies) {
+      if (b.type === 'station' && !b.ghost && ei < ECHOES.stations.length) b.echo = ECHOES.stations[ei++];
+    }
+  }
+
   // (No map-wide free asteroid field — the view-local spawner in
   // replenishWorld keeps rocks available wherever the player actually is.)
 
@@ -289,7 +459,8 @@ export function generateWorld(game, seed = 20260721) {
   };
   const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
   fortify(planetAtR(13000), 260, 3);
-  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28).slice(0, 1);
+  // (volcanic/shepherd moons are discovery content — never fortified)
+  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 && !b.volcanic && !b.shepherd).slice(0, 1);
   for (const m of bigMoons) fortify(m, 150, 2);
 
   // THE EMBERKIN: living plasma already blooming on the innermost lava world.
@@ -327,6 +498,7 @@ export function generateWorld(game, seed = 20260721) {
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
+  game.surveyTotal = planets.length;   // worlds the CHART track can log
   respawnShip(game);
 }
 
@@ -346,10 +518,10 @@ export function respawnShip(game) {
 export function replenishWorld(game, dt) {
   const rng = Math.random;
 
-  // Rogues
-  game.rogueTimer = (game.rogueTimer ?? 150) - dt;
+  // Rogues — slower trickle, same cap of 3
+  game.rogueTimer = (game.rogueTimer ?? 240) - dt;
   if (game.rogueTimer <= 0) {
-    game.rogueTimer = 150;
+    game.rogueTimer = 200 + rng() * 200;
     const rogues = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'rogue' ? 1 : 0), 0);
     if (rogues < 3) {
       const th = rng() * TAU;
@@ -366,10 +538,12 @@ export function replenishWorld(game, dt) {
     }
   }
 
-  // Moons — destroyed ones are eventually replaced around big planets
-  game.moonTimer = (game.moonTimer ?? 90) - dt;
+  // Moons — destroyed ones are eventually replaced around big planets.
+  // 60s cadence (was 90) pairs with the doubled sun mass: the stronger tide
+  // claims derailed moons faster, and replenishment must keep the sky full.
+  game.moonTimer = (game.moonTimer ?? 60) - dt;
   if (game.moonTimer <= 0) {
-    game.moonTimer = 90;
+    game.moonTimer = 60;
     const moons = game.bodies.filter((b) => b.alive && b.type === 'moon').length;
     if (moons < game.moonBaseline) {
       const hosts = game.bodies.filter((b) => b.alive && b.type === 'planet' && b.mass >= 5e4);
@@ -385,11 +559,16 @@ export function replenishWorld(game, dt) {
     }
   }
 
-  // ---- solar flares: the sun erupts plasma at ships that fly too close ----
+  // ---- AMBIENT EVENT PACING: sparse and genuinely random. Wide windows
+  // (min + a span several times the min) keep events from ever feeling like
+  // a metronome — quiet stretches are the point; an event should interrupt
+  // calm, not compete with the last one. ----
+
+  // ---- solar flares: the sun RARELY erupts plasma at ships that fly close ----
   const s = game.ship;
-  game.flareTimer = (game.flareTimer ?? 20) - dt;
+  game.flareTimer = (game.flareTimer ?? 60) - dt;
   if (game.flareTimer <= 0 && s.alive) {
-    game.flareTimer = 30 + rng() * 25;
+    game.flareTimer = 75 + rng() * 90;
     const sun = game.homeStar;
     const d = Math.hypot(s.x - sun.x, s.y - sun.y);
     if (d < CFG.FLARE_RANGE) {
@@ -411,9 +590,9 @@ export function replenishWorld(game, dt) {
   }
 
   // ---- comet showers: streams of fast ice sweeping past the player ----
-  game.cometTimer = (game.cometTimer ?? 75) - dt;
+  game.cometTimer = (game.cometTimer ?? 180) - dt;
   if (game.cometTimer <= 0 && s.alive) {
-    game.cometTimer = 90 + rng() * 60;
+    game.cometTimer = 240 + rng() * 300;
     const th = rng() * TAU;
     const ex = Math.cos(th) * CFG.WORLD_R * 0.95, ey = Math.sin(th) * CFG.WORLD_R * 0.95;
     const aimAng = Math.atan2(s.y - ey, s.x - ex) + (rng() - 0.5) * 0.12;
@@ -429,6 +608,99 @@ export function replenishWorld(game, dt) {
       c.comet = true; c.cometT = 90; c.color = '#bfeffc';
     }
     game.cometWarn = true;
+  }
+
+  // ---- interstellar visitor: a hyperbolic one-shot. It enters once per
+  // run, crosses the system in ~3 minutes, and leaves FOREVER unless caught.
+  // noBoundary exempts it from the world-edge force (physics.js) — that
+  // force would bend the hyperbola into a captured orbit and break the
+  // whole "it will not return" promise.
+  if (!game.visitorDone && game.time > 240) {
+    game.visitorDone = true;
+    const th = rng() * TAU;
+    const R0 = CFG.WORLD_R * 1.22;
+    const ex = Math.cos(th) * R0, ey = Math.sin(th) * R0;
+    // Aim past the sun with a ~3-5k impact parameter: it sweeps the
+    // mid-system instead of either beelining into the star or skirting the rim
+    const off = (rng() < 0.5 ? -1 : 1) * (3200 + rng() * 1800);
+    const px = -Math.sin(th) * off, py = Math.cos(th) * off;
+    const ang = Math.atan2(py - ey, px - ex);
+    const sp = 540 + rng() * 80;   // far above escape speed everywhere
+    const v = spawnAsteroid(game.bodies, ex, ey, Math.cos(ang) * sp, Math.sin(ang) * sp, 1800);
+    v.visitor = true; v.noBoundary = true; v.junk = true;
+    v.color = '#c08a5f'; v.name = 'Interstellar Object';
+    v.echo = ECHOES.visitor;
+    game.visitor = v;
+    game.visitorWarn = true;
+  }
+  if (game.visitor) {
+    const v = game.visitor;
+    if (!v.alive) {
+      game.visitor = null;                 // somebody smashed it — no farewell
+    } else if (v.catchCount > 0 || v.heldBy) {
+      v.noBoundary = false;                // caught! it lives here now
+      game.visitor = null;
+    } else if ((v.x * v.vx + v.y * v.vy) > 0 &&
+               v.x * v.x + v.y * v.y > (CFG.WORLD_R * 1.26) ** 2) {
+      v.alive = false;                     // receding past the rim: gone for good
+      game.visitor = null;
+      game.visitorGone = true;
+    }
+  }
+
+  // Comet Vesper is a permanent landmark: comets keep coming. If cosmic
+  // chaos (or the player) ever claims it, a fresh incarnation falls sunward
+  // from a new angle a few minutes later — THE comet is always out there.
+  if (game.vesper && !game.vesper.alive) {
+    game.vesperRespawnT = (game.vesperRespawnT ?? 240) - dt;
+    if (game.vesperRespawnT <= 0) {
+      game.vesperRespawnT = null;
+      // Never pop into existence in view — flip to the far side if needed
+      let th = rng() * TAU;
+      const px = Math.cos(th) * 3900, py = Math.sin(th) * 3900;
+      if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
+      spawnVesper(game, game.homeStar, th);
+    }
+  }
+
+  // A shepherd lost to AMBIENT chaos is eventually replaced (a stray
+  // moonlet migrates into the lane and the ring reknits). A deliberate
+  // player kill is permanent — that scattered ring is the player's mark.
+  if (game.shepherdPlanet && game.shepherdPlanet.alive &&
+      game.shepherd && !game.shepherd.alive && !game.shepherdPlayerKilled) {
+    game.shepherdRespawnT = (game.shepherdRespawnT ?? 300) - dt;
+    if (game.shepherdRespawnT <= 0) {
+      game.shepherdRespawnT = null;
+      // Arrive on the far side of the planet from the player, never in view
+      const p2 = game.shepherdPlanet;
+      let th = Math.atan2(p2.y - s.y, p2.x - s.x) + rand(Math.random, -0.9, 0.9);
+      spawnShepherd(game, p2, th);
+    }
+  }
+
+  // ---- solar storms: system-wide discovery weather (CFG.STORM_*). The
+  // expanding front is tracked here; render draws it, physics gives loose
+  // scrap a nudge, and every world the front washes over gets an aurora.
+  game.stormTimer = (game.stormTimer ?? 300) - dt;
+  if (game.stormTimer <= 0 && !game.storm) {
+    game.stormTimer = CFG.STORM_EVERY * (0.6 + rng() * 1.0);
+    game.storm = { r: game.homeStar.radius, prevR: game.homeStar.radius };
+    game.stormWarn = true;
+  }
+  if (game.storm) {
+    const wave = game.storm;
+    wave.prevR = wave.r;
+    wave.r += CFG.STORM_SPEED * dt;
+    for (const p of game.bodies) {
+      if (!p.alive || p.type !== 'planet') continue;
+      const pr = Math.hypot(p.x, p.y);
+      if (pr > wave.prevR - CFG.STORM_BAND && pr < wave.r + CFG.STORM_BAND) {
+        // Only announce an aurora the player can actually see light up
+        if (!(p.auroraT > 0) && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
+        p.auroraT = 7;
+      }
+    }
+    if (wave.r > CFG.WORLD_R + CFG.STORM_BAND) game.storm = null;
   }
 
   // Emberkin creep: infestations deepen over time, and at full bloom seed
@@ -451,16 +723,38 @@ export function replenishWorld(game, dt) {
 
   // ---- planet-type hazards & gifts (only fire while the player is close) ----
   for (const p of game.bodies) {
-    if (!p.alive || p.type !== 'planet' || !s.alive) continue;
+    if (!p.alive) continue;
+    // Aurora / eclipse timers fade even while the player is far away or dead
+    if (p.auroraT > 0) p.auroraT -= dt;
+    if (p.eclipseT > 0) p.eclipseT -= dt;
+    if (!s.alive || (p.type !== 'planet' && !p.volcanic)) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);
     if (d > 4200) { continue; }
-    if (p.ptype === 'lava' || p.ember > 0.01) {
+    if (p.volcanic) {
+      // FORGE MOON: undirected eruptions, not artillery — a plume of magma
+      // pops out at a random angle and cools into dense sling rock
+      if (p.heldBy) continue;
+      p.hazT = (p.hazT ?? 9) - dt;
+      if (p.hazT <= 0) {
+        p.hazT = 20 + rng() * 18;
+        const ang = rng() * TAU;
+        const sp = 180 + rng() * 120;
+        const m = spawnAsteroid(game.bodies,
+          p.x + Math.cos(ang) * (p.radius + 14), p.y + Math.sin(ang) * (p.radius + 14),
+          p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
+          350 + rng() * 550);
+        m.magma = 8; m.color = '#ff8040';
+        game.volcWarn = true;
+      }
+    } else if (p.ptype === 'lava' || p.ember > 0.01) {
       // Magma bombardment. Wild lava worlds lob loosely; EMBERKIN-colonized
       // worlds fire AIMED artillery, faster the deeper the infestation.
       const infested = p.ember > 0.01;
       p.hazT = (p.hazT ?? 4) - dt;
       if (p.hazT <= 0) {
-        p.hazT = infested ? 8.5 - 5 * p.ember + rng() * 3 : 7 + rng() * 6;
+        // Wild lava worlds erupt sparsely; Emberkin artillery keeps its
+        // combat cadence (it's a threat you clear, not ambient weather)
+        p.hazT = infested ? 8.5 - 5 * p.ember + rng() * 3 : 14 + rng() * 14;
         const sp = infested ? 400 + rng() * 90 : 300 + rng() * 150;
         const lead = infested ? d / sp : 0;
         const tx = s.x + s.vx * lead, ty = s.y + s.vy * lead;
@@ -474,9 +768,9 @@ export function replenishWorld(game, dt) {
       }
     } else if (p.ptype === 'ice') {
       // Cryo-geysers pop free ice chunks into low orbit — shield restock
-      p.hazT = (p.hazT ?? 5) - dt;
+      p.hazT = (p.hazT ?? 7) - dt;
       if (p.hazT <= 0) {
-        p.hazT = 9 + rng() * 6;
+        p.hazT = 16 + rng() * 12;
         let n = 0;
         for (const b of game.bodies) {
           if (b.alive && b.iceOf === p && !b.heldBy &&
@@ -495,6 +789,103 @@ export function replenishWorld(game, dt) {
       }
     }
   }
+  // ---- discovery scans (throttled — none of this needs frame precision) ----
+  game.scanT = (game.scanT ?? 0.5) - dt;
+  if (game.scanT <= 0) {
+    game.scanT = 0.5;
+    const hs = game.homeStar;
+    // FOG OF WAR: anything that has come within sensor range is charted on
+    // the minimap forever (render.js skips bodies without b.seen). Only the
+    // types the minimap actually draws are worth flagging.
+    if (s.alive) {
+      const seeR = Math.max(2600, (game.viewR || 1200) * 1.25);
+      const seeR2 = seeR * seeR;
+      for (const b of game.bodies) {
+        if (b.seen || !b.alive) continue;
+        const bt = b.type;
+        if (bt !== 'planet' && bt !== 'moon' && bt !== 'rogue' && bt !== 'station' &&
+            bt !== 'nest' && !b.comet && !b.visitor) continue;
+        const ddx = b.x - s.x, ddy = b.y - s.y;
+        if (ddx * ddx + ddy * ddy < seeR2) b.seen = true;
+      }
+    }
+    if (s.alive) for (const p of game.bodies) {
+      if (!p.alive || p.type !== 'planet') continue;
+      if (p.eclipseCd > 0) p.eclipseCd -= 0.5;
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
+      // SURVEY: reading a world's nameplate (the approach zone) charts it —
+      // exploring IS the mechanic, no extra button.
+      if (!p.surveyed && d < p.radius * 5 + 600) {
+        p.surveyed = true;
+        game.prog.surveyed++;
+        game.surveyMsg = `WORLD CHARTED: ${(p.name || 'planet').toUpperCase()} — ${game.prog.surveyed}/${game.surveyTotal} surveyed.`
+          + (game.prog.surveyed % 4 === 0 ? ' Sensors refined — trajectory forecast extended.' : '');
+      }
+      if (d > 6500) continue;
+      // MOONSHADOW: a moon sitting on the sun-planet line casts its shadow
+      // on the world. Pure geometry, only checked for planets near the player.
+      const rpx = p.x - hs.x, rpy = p.y - hs.y;
+      const pr = Math.hypot(rpx, rpy) || 1;
+      const ux = rpx / pr, uy = rpy / pr;
+      for (const m of game.bodies) {
+        if (!m.alive || m.type !== 'moon' || m.parent !== p) continue;
+        const mx = m.x - hs.x, my = m.y - hs.y;
+        const proj = mx * ux + my * uy;
+        if (proj <= 0 || proj >= pr) continue;          // must sit between sun and planet
+        if (Math.abs(mx * uy - my * ux) < m.radius * 1.7) {
+          p.eclipseT = 1.2;                             // refreshed while aligned
+          if (!(p.eclipseCd > 0)) { p.eclipseCd = 90; game.eclipseName = p.name; }
+          break;
+        }
+      }
+    }
+    // Graveyard orbit: announce the wreck ring on first close pass
+    if (s.alive && !game.tut.graveyard) {
+      const rc = Math.hypot(s.x - hs.x, s.y - hs.y);
+      if (rc > 2750 && rc < 3900) game.graveyardWarn = true;
+    }
+    // Comet Vesper: announce the first time it crosses the player's view
+    if (s.alive && game.vesper && game.vesper.alive && !game.tut.vesper &&
+        Math.hypot(game.vesper.x - s.x, game.vesper.y - s.y) < (game.viewR || 1200) * 1.35) {
+      game.vesperWarn = true;
+    }
+    // Ring shepherd: an unshepherded ring scatters, and slowly reknits if
+    // the moonlet ever settles back into its lane. Runs even while the ship
+    // is dead — the consequence keeps unfolding without an audience. "Gone"
+    // means dead, stolen, or out of the lane; a mere derail (rogue drive-by)
+    // while it still orbits in place must NOT scatter the ring.
+    const shp = game.shepherdPlanet;
+    if (shp && shp.alive) {
+      const sh = game.shepherd;
+      const gone = !sh || !sh.alive || !!sh.heldBy ||
+        Math.hypot(sh.x - shp.x, sh.y - shp.y) > shp.radius * 2.6;
+      shp.ringDecay = Math.max(0, Math.min(1, (shp.ringDecay || 0) + (gone ? 0.004 : -0.002)));
+      if (gone && !shp.ringWarned && shp.ringDecay > 0.05) {
+        shp.ringWarned = true;
+        game.ringDecayName = shp.name;
+      }
+      if (!gone && shp.ringDecay === 0) shp.ringWarned = false;
+    }
+  }
+
+  // Ghost ship ping — found by ear: a sonar blip (louder as you close in)
+  // plus a visible ring rippling out of the wreck
+  if (game.ghost && game.ghost.alive && s.alive) {
+    const gh = game.ghost;
+    const gd = Math.hypot(gh.x - s.x, gh.y - s.y);
+    game.ghostPingT = (game.ghostPingT ?? 1) - dt;
+    if (gd < 3000 && game.ghostPingT <= 0) {
+      game.ghostPingT = 3.5;
+      game.ghostPing = { x: gh.x, y: gh.y, t: 1.6 };
+      sfxPing(1 - gd / 3200);
+      if (!game.tut.ghost) game.ghostWarn = true;
+    }
+  }
+  if (game.ghostPing) {
+    game.ghostPing.t -= dt;
+    if (game.ghostPing.t <= 0) game.ghostPing = null;
+  }
+
   // Magma cools into dense dark rock; spent comets fade away off-screen
   // (captured ones are keepers)
   for (const b of game.bodies) {
