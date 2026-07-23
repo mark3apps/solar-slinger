@@ -10,7 +10,9 @@ const oortSpecks = [];   // icy debris ring marking the world edge
 
 export function initRender(cv) {
   canvas = cv;
-  ctx = canvas.getContext('2d');
+  // alpha:false — the first fill each frame paints the whole canvas opaque,
+  // so an opaque backbuffer is visually identical and skips compositor blending
+  ctx = canvas.getContext('2d', { alpha: false });
   const resize = () => {
     dpr = Math.min(2, window.devicePixelRatio || 1);
     vw = window.innerWidth; vh = window.innerHeight;
@@ -33,6 +35,48 @@ export function initRender(cv) {
     oortSpecks.push({ x: Math.cos(th) * r, y: Math.sin(th) * r, s: 2 + rng() * 7, b: 0.25 + rng() * 0.5 });
   }
   return { getView: () => ({ vw, vh }) };
+}
+
+// Per-frame view rectangle (world space, padded) + the frame's star list —
+// both rebuilt at the top of render() so the draw passes can cull cheaply
+// instead of pathing every one of ~400 bodies for the canvas to clip.
+const view = { x0: 0, y0: 0, x1: 0, y1: 0, cx: 0, cy: 0, r: 0 };
+const frameStars = [];
+
+function beginFrame(game) {
+  const { cam } = game;
+  // pad absorbs screen shake (±15px) and stroke widths
+  const halfW = (vw / 2 + 80) / cam.zoom, halfH = (vh / 2 + 80) / cam.zoom;
+  view.cx = cam.x; view.cy = cam.y;
+  view.x0 = cam.x - halfW; view.x1 = cam.x + halfW;
+  view.y0 = cam.y - halfH; view.y1 = cam.y + halfH;
+  view.r = Math.hypot(halfW, halfH);
+  frameStars.length = 0;
+  for (const b of game.bodies) if (b.alive && b.type === 'star') frameStars.push(b);
+}
+
+// View culling: true if any drawn element of this body can touch the screen.
+// The margin covers the largest overdraw any sprite pass makes (glows, rings
+// and halos reach ~3.2x radius; comet tails stream 9x). Railed moons/planets
+// also paint faint orbit guides that can be on-screen while the body itself
+// is not — those get their own geometric checks so nothing ever pops.
+function bodyOnScreen(b) {
+  const m = (b.comet ? b.radius * 10 : b.radius * 4) + 80;
+  if (b.x + m > view.x0 && b.x - m < view.x1 && b.y + m > view.y0 && b.y - m < view.y1) return true;
+  if (b.onRails && b.rail && b.rail.parent.alive) {
+    if (b.type === 'moon') {
+      // whisper orbit circle centered on the parent: annulus-vs-view test
+      const p = b.rail.parent;
+      const d = Math.hypot(view.cx - p.x, view.cy - p.y);
+      if (Math.abs(d - b.rail.r) < view.r + 20) return true;
+    } else if (b.type === 'planet') {
+      // short orbit arc reaching ~0.22*r along the orbit from the planet
+      const reach = b.rail.r * 0.23 + 80;
+      if (b.x + reach > view.x0 && b.x - reach < view.x1 &&
+          b.y + reach > view.y0 && b.y - reach < view.y1) return true;
+    }
+  }
+  return false;
 }
 
 function worldTransform(game, shakeX, shakeY) {
@@ -87,11 +131,12 @@ function traceAsteroid(b) {
 }
 
 function nearestStar(game, x, y) {
-  let best = null, bestD = Infinity;
-  for (const b of game.bodies) {
-    if (b.type !== 'star') continue;
-    const d = Math.hypot(b.x - x, b.y - y);
-    if (d < bestD) { best = b; bestD = d; }
+  // frameStars is rebuilt each frame in beginFrame — looping all bodies here
+  // made this O(bodies) per drawn body
+  let best = null, bestD2 = Infinity;
+  for (const b of frameStars) {
+    const d2 = (b.x - x) ** 2 + (b.y - y) ** 2;
+    if (d2 < bestD2) { best = b; bestD2 = d2; }
   }
   return best;
 }
@@ -484,8 +529,9 @@ function drawApproach(game) {
     const isPOI = b.type === 'station' || b.type === 'nest' || (b.fort && b.type === 'moon');
     if (!isWorld && !isPOI) continue;
     const zone = isPOI && !isWorld ? 1400 : b.radius * 5 + 600;
-    const d = Math.hypot(b.x - s.x, b.y - s.y);
-    if (d > zone) continue;
+    const d2 = (b.x - s.x) ** 2 + (b.y - s.y) ** 2;
+    if (d2 > zone * zone) continue;
+    const d = Math.sqrt(d2);
     const t = 1 - Math.max(0, (d - b.radius) / (zone - b.radius));  // 0 edge -> 1 surface
     const a = 0.15 + 0.55 * t;
 
@@ -935,6 +981,7 @@ function drawMinimap(game) {
 }
 
 export function render(game) {
+  beginFrame(game);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#04060d';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -967,30 +1014,36 @@ export function render(game) {
   const shakeY = (Math.random() - 0.5) * game.shake;
   worldTransform(game, shakeX, shakeY);
 
-  // Oort cloud: icy fog band + speck field beyond the world edge
-  ctx.strokeStyle = 'rgba(150, 190, 255, 0.05)';
-  ctx.lineWidth = 3400;
-  ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R + 1750, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = 'rgba(170, 120, 120, 0.22)';
-  ctx.lineWidth = 26;
-  ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R, 0, TAU); ctx.stroke();
-  ctx.fillStyle = 'rgba(190, 215, 255, 0.5)';
-  for (const p of oortSpecks) {
-    ctx.globalAlpha = p.b;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, TAU); ctx.fill();
+  // Oort cloud: icy fog band + speck field beyond the world edge. Only drawn
+  // when the view can actually reach the edge — deep in the system, all 420
+  // specks (and the giant ring strokes) are guaranteed off-screen.
+  if (Math.hypot(game.cam.x, game.cam.y) + view.r > CFG.WORLD_R - 200) {
+    ctx.strokeStyle = 'rgba(150, 190, 255, 0.05)';
+    ctx.lineWidth = 3400;
+    ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R + 1750, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(170, 120, 120, 0.22)';
+    ctx.lineWidth = 26;
+    ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R, 0, TAU); ctx.stroke();
+    ctx.fillStyle = 'rgba(190, 215, 255, 0.5)';
+    for (const p of oortSpecks) {
+      if (p.x < view.x0 - 12 || p.x > view.x1 + 12 || p.y < view.y0 - 12 || p.y > view.y1 + 12) continue;
+      ctx.globalAlpha = p.b;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   }
-  ctx.globalAlpha = 1;
 
   armedSet = (game.volleyCharging && game.volleySel > 0)
     ? new Set(volleyPick(game, game.volleySel)) : null;
 
   drawShipRings(game);
   drawPrediction(game);
-  for (const b of game.bodies) if (b.alive) drawBody(game, b);
+  for (const b of game.bodies) if (b.alive && bodyOnScreen(b)) drawBody(game, b);
   drawApproach(game);
 
   // Scrap debris — glinting gold
   for (const d of game.debris) {
+    if (d.x < view.x0 - 20 || d.x > view.x1 + 20 || d.y < view.y0 - 20 || d.y > view.y1 + 20) continue;
     const tw = 0.6 + Math.sin(game.time * 6 + d.phase) * 0.4;
     ctx.fillStyle = `rgba(255, 210, 90, ${(0.55 + tw * 0.45) * Math.min(1, d.life / 4)})`;
     ctx.beginPath(); ctx.arc(d.x, d.y, d.radius, 0, TAU); ctx.fill();
@@ -999,6 +1052,7 @@ export function render(game) {
   // Particles (additive glow)
   ctx.globalCompositeOperation = 'lighter';
   for (const p of game.particles) {
+    if (p.x < view.x0 - 20 || p.x > view.x1 + 20 || p.y < view.y0 - 20 || p.y > view.y1 + 20) continue;
     ctx.globalAlpha = Math.max(0, p.life / p.maxLife) * 0.8;
     ctx.fillStyle = p.color;
     ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, TAU); ctx.fill();
@@ -1057,12 +1111,13 @@ export function render(game) {
   // beam range.
   if (game.ship.alive) {
     const st = game.st;
-    let hov = null, hovD = Infinity;
+    let hov = null, hovD2 = Infinity;
     for (const b of game.bodies) {
       if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy) continue;
-      const d = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
-      if (d > b.radius + st.grabSlack) continue;
-      if (d < hovD) { hov = b; hovD = d; }
+      const gr = b.radius + st.grabSlack;
+      const d2 = (b.x - game.aim.x) ** 2 + (b.y - game.aim.y) ** 2;
+      if (d2 > gr * gr) continue;
+      if (d2 < hovD2) { hov = b; hovD2 = d2; }
     }
     if (hov && hov !== game.held) {
       const canOrbit = hov.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters && !hov.fort;

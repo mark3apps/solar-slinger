@@ -31,14 +31,14 @@ function avoidStars(game, al) {
 }
 
 function nearestRock(game, al) {
-  let best = null, bestD = Infinity;
+  let best = null, bestD2 = 3200 * 3200;
   for (const b of game.bodies) {
     if (!b.alive || b.type === 'star') continue;
     if (b.type === 'nest' || b.type === 'station') continue;   // never throw home
     if (b.mass > CFG.ALIEN_CAPACITY) continue;
     if (b.heldBy) continue;
-    const d = Math.hypot(b.x - al.x, b.y - al.y);
-    if (d < bestD && d < 3200) { best = b; bestD = d; }
+    const d2 = (b.x - al.x) ** 2 + (b.y - al.y) ** 2;
+    if (d2 < bestD2) { best = b; bestD2 = d2; }
   }
   return best;
 }
@@ -252,7 +252,8 @@ function updateForts(game, dt) {
       bo.x += bo.vx * dt; bo.y += bo.vy * dt;
       bo.life -= dt;
       let dead = bo.life <= 0;
-      if (!dead && s.alive && Math.hypot(bo.x - s.x, bo.y - s.y) < s.radius + 6) {
+      const sr = s.radius + 6;
+      if (!dead && s.alive && (bo.x - s.x) ** 2 + (bo.y - s.y) ** 2 < sr * sr) {
         damageShip(game, 10, 'Shot down by a Bastion gatling battery.');
         dead = true;
       }
@@ -260,8 +261,9 @@ function updateForts(game, dt) {
         // Any rock blocks a bolt — your orbit shield is real cover here
         for (const b of game.bodies) {
           if (!b.alive || b.fort) continue;
-          if (Math.abs(b.x - bo.x) > b.radius + 6) continue;
-          if (Math.hypot(b.x - bo.x, b.y - bo.y) < b.radius + 6) {
+          const br = b.radius + 6;
+          if (Math.abs(b.x - bo.x) > br) continue;
+          if ((b.x - bo.x) ** 2 + (b.y - bo.y) ** 2 < br * br) {
             damageBody(game, b, 5, null, bo.x, bo.y);
             dead = true;
             break;

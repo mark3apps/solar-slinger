@@ -206,6 +206,12 @@ export function damageShip(game, dmg, cause) {
 
 // ---------- gravity ----------
 
+// Perf: these run every substep for every live entity, so they avoid
+// allocating — both return a shared scratch object whose values must be
+// consumed before the next gravity call.
+const SOFT2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
+const _g = { ax: 0, ay: 0 };
+
 // Full acceleration from all attractors at point (x,y) — used for the ship,
 // aliens, and debris, which always feel everything.
 function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
@@ -214,11 +220,12 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
     const w = b.type === 'star' ? starMul
       : (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue') ? heavyMul : 1;
     const dx = b.x - x, dy = b.y - y;
-    const d2 = dx * dx + dy * dy + CFG.GRAV_SOFT * CFG.GRAV_SOFT;
+    const d2 = dx * dx + dy * dy + SOFT2;
     const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
     ax += dx * inv; ay += dy * inv;
   }
-  return { ax, ay };
+  _g.ax = ax; _g.ay = ay;
+  return _g;
 }
 
 // The star a body is gravitationally anchored to (its own system's sun).
@@ -246,20 +253,25 @@ function gravityOnBody(attractors, body) {
     else if (b.type === 'star') w = (!anchor || b === anchor) ? 1 : CFG.CROSS_STAR;
     else w = CFG.CROSS_GRAV;
     const dx = b.x - body.x, dy = b.y - body.y;
-    const d2 = dx * dx + dy * dy + CFG.GRAV_SOFT * CFG.GRAV_SOFT;
+    const d2 = dx * dx + dy * dy + SOFT2;
     const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
     ax += dx * inv; ay += dy * inv;
   }
-  return { ax, ay };
+  _g.ax = ax; _g.ay = ay;
+  return _g;
 }
 
 // Soft boundary: everything beyond WORLD_R gets nudged back toward the center
+// (squared-distance early-out first — nearly everything is inside the world)
+const WORLD_R2 = CFG.WORLD_R * CFG.WORLD_R;
+const _bnd = { ax: 0, ay: 0 };
 function boundaryAccel(x, y) {
-  const d = Math.hypot(x, y);
-  if (d < CFG.WORLD_R) return null;
+  if (x * x + y * y < WORLD_R2) return null;
+  const d = Math.sqrt(x * x + y * y);
   const over = (d - CFG.WORLD_R) / 1000;
   const k = 25 * (1 + over * over);
-  return { ax: (-x / d) * k, ay: (-y / d) * k };
+  _bnd.ax = (-x / d) * k; _bnd.ay = (-y / d) * k;
+  return _bnd;
 }
 
 // ---------- collisions ----------
@@ -273,9 +285,11 @@ function collideBodies(game, a, b) {
   const bOwn = (b.thrownBy === 'player' && b.thrownTimer > 0) || b.heldBy === 'player';
   if ((a.heldBy === 'orbit' && bOwn) || (b.heldBy === 'orbit' && aOwn)) return;
   const dx = b.x - a.x, dy = b.y - a.y;
-  const d = Math.hypot(dx, dy) || 0.001;
-  const overlap = a.radius + b.radius - d;
-  if (overlap <= 0) return;
+  const rr = a.radius + b.radius;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= rr * rr) return;
+  const d = Math.sqrt(d2) || 0.001;
+  const overlap = rr - d;
 
   // Stars vaporize anything they touch
   if (a.type === 'star' || b.type === 'star') {
@@ -431,8 +445,10 @@ function collideBodies(game, a, b) {
 
 function collideShipBody(game, s, b) {
   const dx = b.x - s.x, dy = b.y - s.y;
-  const d = Math.hypot(dx, dy) || 0.001;
-  if (d > s.radius + b.radius) return;
+  const rr = s.radius + b.radius;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > rr * rr) return;
+  const d = Math.sqrt(d2) || 0.001;
 
   if (b.type === 'star') { damageShip(game, 99999, 'You flew into a star.'); return; }
   // Touching a live Bastion shield zaps you on top of the normal bounce
@@ -473,8 +489,10 @@ function collideShipBody(game, s, b) {
 function collideAlienBody(game, al, b) {
   if (b === al.target) return;   // never collide with its own ammo (incl. during fetch approach)
   const dx = b.x - al.x, dy = b.y - al.y;
-  const d = Math.hypot(dx, dy) || 0.001;
-  if (d > al.radius + b.radius) return;
+  const rr = al.radius + b.radius;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > rr * rr) return;
+  const d = Math.sqrt(d2) || 0.001;
 
   if (b.type === 'star') { killAlien(game, al); return; }
 
@@ -506,9 +524,13 @@ function collideAlienBody(game, al, b) {
 
 // ---------- main step ----------
 
+const _sweep = [];       // collision broad-phase scratch (reused every substep)
+const _attractors = [];  // attractor list scratch (reused every substep)
+
 export function step(game, dt) {
   const bodies = game.bodies;
-  const attractors = [];
+  const attractors = _attractors;
+  attractors.length = 0;
   for (const b of bodies) if (b.alive && b.attractor) attractors.push(b);
 
   // Rails maintenance: heavy wanderers (rogues, thrown giants) wake nearby
@@ -689,7 +711,7 @@ export function step(game, dt) {
 
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
-    const dd = Math.hypot(dx, dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
+    const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
     if (s.alive && dd < CFG.PICKUP_MAGNET) {
       // Spring-steer toward the ship (matching its velocity) rather than pure
       // acceleration — otherwise chunks whip into little orbits around you.
@@ -758,15 +780,23 @@ export function step(game, dt) {
     d.life -= dt;
   }
 
-  // Collisions: body-body (skip pairs of tiny far-apart rocks via cheap bound)
-  for (let i = 0; i < bodies.length; i++) {
-    const a = bodies[i];
+  // Collisions: body-body via sweep-and-prune on x. Sorting ~400 bodies by
+  // left edge is cheap; the inner loop then stops at the first body whose
+  // x-extent can't overlap, so the old O(n^2) pair scan (~80k tests per
+  // substep) collapses to the handful of genuinely near pairs. The x-extent
+  // overlap test is exactly the old |a.x-b.x| <= a.r+b.r cheap bound.
+  const sweep = _sweep;
+  sweep.length = 0;
+  for (const b of bodies) if (b.alive) sweep.push(b);
+  sweep.sort((a, b) => (a.x - a.radius) - (b.x - b.radius));
+  for (let i = 0; i < sweep.length; i++) {
+    const a = sweep[i];
     if (!a.alive) continue;
-    for (let j = i + 1; j < bodies.length; j++) {
-      const b = bodies[j];
+    for (let j = i + 1; j < sweep.length; j++) {
+      const b = sweep[j];
+      if (b.x - b.radius > a.x + a.radius) break;
       if (!b.alive) continue;
-      const rr = a.radius + b.radius;
-      if (Math.abs(a.x - b.x) > rr || Math.abs(a.y - b.y) > rr) continue;
+      if (Math.abs(a.y - b.y) > a.radius + b.radius) continue;
       collideBodies(game, a, b);
     }
   }
@@ -781,8 +811,10 @@ export function step(game, dt) {
   // Alien-ship ramming
   for (const al of game.aliens) {
     if (!al.alive || !s.alive) continue;
-    const d = Math.hypot(al.x - s.x, al.y - s.y);
-    if (d < al.radius + s.radius) {
+    const rr = al.radius + s.radius;
+    const dd2 = (al.x - s.x) ** 2 + (al.y - s.y) ** 2;
+    if (dd2 < rr * rr) {
+      const d = Math.sqrt(dd2);
       const nx = (s.x - al.x) / (d || 1), ny = (s.y - al.y) / (d || 1);
       s.vx += nx * 180; s.vy += ny * 180;
       al.vx -= nx * 180; al.vy -= ny * 180;
@@ -793,11 +825,14 @@ export function step(game, dt) {
     }
   }
 
-  // Scrap pickup + expiry
+  // Scrap pickup + expiry (compacted in place — this runs at 120Hz)
   if (game.debris.length) {
-    const keep = [];
-    for (const d of game.debris) {
-      if (s.alive && Math.hypot(d.x - s.x, d.y - s.y) < s.radius + d.radius + 8) {
+    const debris = game.debris;
+    const escapeR2 = (CFG.WORLD_R * 1.3) ** 2;
+    let w = 0;
+    for (const d of debris) {
+      const pr = s.radius + d.radius + 8;
+      if (s.alive && (d.x - s.x) ** 2 + (d.y - s.y) ** 2 < pr * pr) {
         // AUTO-UPGRADE: scrap heals you and toughens the hull
         game.scrap += d.value;
         game.prog.scrapCollected += d.value;
@@ -806,9 +841,9 @@ export function step(game, dt) {
         sfx.sfxCollect();
         continue;
       }
-      if (d.life > 0 && Math.hypot(d.x, d.y) < CFG.WORLD_R * 1.3) keep.push(d);
+      if (d.life > 0 && d.x * d.x + d.y * d.y < escapeR2) debris[w++] = d;
     }
-    game.debris = keep;
+    debris.length = w;
   }
 
   // Solar flares: plasma blobs racing out from the sun. They scorch the
@@ -818,7 +853,8 @@ export function step(game, dt) {
     for (const f of game.flares) {
       f.x += f.vx * dt; f.y += f.vy * dt;
       f.life -= dt;
-      if (s.alive && Math.hypot(f.x - s.x, f.y - s.y) < f.radius + s.radius) {
+      const fr = f.radius + s.radius;
+      if (s.alive && (f.x - s.x) ** 2 + (f.y - s.y) ** 2 < fr * fr) {
         damageShip(game, CFG.FLARE_DMG, 'Scorched by a solar flare.');
         s.vx += f.vx * 0.18; s.vy += f.vy * 0.18;
         addParticles(game, s.x, s.y, f.vx * 0.3, f.vy * 0.3, 18, '#ffb35c', 220, 1, 4);
@@ -827,8 +863,9 @@ export function step(game, dt) {
       if (f.life > 0) {
         for (const b of bodies) {
           if (!b.alive || b.type === 'star') continue;
-          if (Math.abs(b.x - f.x) > f.radius + b.radius) continue;
-          if (Math.hypot(b.x - f.x, b.y - f.y) > f.radius + b.radius) continue;
+          const br = f.radius + b.radius;
+          if (Math.abs(b.x - f.x) > br) continue;
+          if ((b.x - f.x) ** 2 + (b.y - f.y) ** 2 > br * br) continue;
           if (b.mass < 500 && !b.heldBy) {
             shatter(game, b);
             f.life = 0;
@@ -844,18 +881,32 @@ export function step(game, dt) {
     game.flares = keep;
   }
 
-  // Particles
-  for (const p of game.particles) {
-    p.x += p.vx * dt; p.y += p.vy * dt;
-    p.vx *= 0.985; p.vy *= 0.985;
-    p.life -= dt;
+  // Particles (updated + compacted in place — filter() would allocate at 120Hz)
+  {
+    const parts = game.particles;
+    let w = 0;
+    for (const p of parts) {
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.vx *= 0.985; p.vy *= 0.985;
+      p.life -= dt;
+      if (p.life > 0) parts[w++] = p;
+    }
+    parts.length = w;
   }
-  game.particles = game.particles.filter((p) => p.life > 0);
 
-  // Cull dead / escaped bodies
-  game.bodies = bodies.filter((b) =>
-    b.alive && (b.type !== 'asteroid' || Math.hypot(b.x, b.y) < CFG.WORLD_R * 1.35));
-  game.aliens = game.aliens.filter((a) => a.alive);
+  // Cull dead / escaped bodies (in place, squared distance)
+  {
+    const cullR2 = (CFG.WORLD_R * 1.35) ** 2;
+    let w = 0;
+    for (const b of bodies) {
+      if (b.alive && (b.type !== 'asteroid' || b.x * b.x + b.y * b.y < cullR2)) bodies[w++] = b;
+    }
+    bodies.length = w;
+    const aliens = game.aliens;
+    w = 0;
+    for (const a of aliens) if (a.alive) aliens[w++] = a;
+    aliens.length = w;
+  }
 }
 
 // ---------- trajectory prediction ----------
@@ -904,8 +955,9 @@ export function predictPaths(game) {
   const shipPts = [], heldPts = [];
   let shipHit = null, heldHit = null;
   const dt = CFG.PREDICT_DT;
-  const soft2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
+  const soft2 = SOFT2;
 
+  const _acc = [0, 0];   // reused — 200 steps/frame would otherwise churn arrays
   const accelAt = (x, y, starMul = 1, heavyMul = 1) => {
     let ax = 0, ay = 0;
     for (const b of atr) {
@@ -915,7 +967,8 @@ export function predictPaths(game) {
       const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
       ax += dx * inv; ay += dy * inv;
     }
-    return [ax, ay];
+    _acc[0] = ax; _acc[1] = ay;
+    return _acc;
   };
 
   for (let i = 0; i < CFG.PREDICT_STEPS; i++) {
@@ -961,7 +1014,8 @@ export function predictPaths(game) {
       ship.x += ship.vx * dt; ship.y += ship.vy * dt;
       if (i % 2 === 0) shipPts.push({ x: ship.x, y: ship.y });
       for (const b of atr) {
-        if (Math.hypot(b.x - ship.x, b.y - ship.y) < b.radius + ship.r) { shipHit = { x: ship.x, y: ship.y }; break; }
+        const hr = b.radius + ship.r;
+        if ((b.x - ship.x) ** 2 + (b.y - ship.y) ** 2 < hr * hr) { shipHit = { x: ship.x, y: ship.y }; break; }
       }
     }
     if (held && !heldHit && i < CFG.HELD_STEPS) {
@@ -985,7 +1039,8 @@ export function predictPaths(game) {
       held.x += held.vx * dt; held.y += held.vy * dt;
       if (i % 2 === 0) heldPts.push({ x: held.x, y: held.y });
       for (const b of atr) {
-        if (Math.hypot(b.x - held.x, b.y - held.y) < b.radius + held.r) { heldHit = { x: held.x, y: held.y }; break; }
+        const hr = b.radius + held.r;
+        if ((b.x - held.x) ** 2 + (b.y - held.y) ** 2 < hr * hr) { heldHit = { x: held.x, y: held.y }; break; }
       }
     }
   }

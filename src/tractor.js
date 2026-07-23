@@ -36,7 +36,7 @@ export function aimSolutions(game) {
   let hot = null;
   const consider = (e) => {
     const rx = e.x - o.x, ry = e.y - o.y;
-    if (Math.hypot(rx, ry) > reach + 400) return;
+    if (rx * rx + ry * ry > (reach + 400) ** 2) return;
     const vx = e.vx - s.vx, vy = e.vy - s.vy;
     const a = vx * vx + vy * vy - speed * speed;
     const bq = 2 * (rx * vx + ry * vy);
@@ -322,9 +322,11 @@ export function updateOrbit(game, dt) {
     if (b.type === 'star' || b.type === 'planet' || b.type === 'rogue' || b.mass > 9000) continue;
     if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;   // our own shots
     const dx = b.x - s.x, dy = b.y - s.y;
-    const d = Math.hypot(dx, dy);
     // Tight defense perimeter — the scan reruns every substep, so a threat
-    // drifting back out of this radius releases its interceptor immediately
+    // drifting back out of this radius releases its interceptor immediately.
+    // (Cheap axis reject first: this loop runs over every body at 120Hz.)
+    if (dx > 520 || dx < -520 || dy > 520 || dy < -520) continue;
+    const d = Math.sqrt(dx * dx + dy * dy);
     if (d > 520) continue;
     const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
     const closing = -(rvx * dx + rvy * dy) / (d || 1);
