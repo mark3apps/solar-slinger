@@ -98,13 +98,6 @@ html, body {
 }
 .pip.lit { background: #5ac8ff; box-shadow: 0 0 6px rgba(90, 200, 255, .8); }
 
-#hint {
-  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-  font-size: 11px; letter-spacing: .5px;
-  color: rgba(160, 200, 255, .55);
-  white-space: nowrap;
-}
-
 #msg {
   position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
   font-size: 20px; letter-spacing: 2px; text-align: center;

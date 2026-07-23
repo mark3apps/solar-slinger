@@ -59,6 +59,15 @@ const canvas = document.getElementById('game');
 const view = initRender(canvas);
 hud.initHud(game);
 
+// Fair view: fold the canvas-size normalization into cam.zoom itself —
+// mouseWorld, viewR, render culling, and the /zoom UI-stroke idiom all read
+// cam.zoom, so this one assignment keeps every consumer consistent.
+function applyZoom() {
+  const { vw, vh } = view.getView();
+  game.cam.zoom = game.zoomCur * (Math.hypot(vw, vh) / CFG.VIEW_REF_DIAG);
+}
+applyZoom();
+
 // Fire the shotgun: launches however many orbiters the charge has armed
 function fireVolley() {
   const n = flingAllFromOrbit(game, game.volleySel || game.orbit.length);
@@ -149,7 +158,7 @@ function update(dtReal) {
     // snapping — leveling up feels like slowly zooming out of the universe
     const zoomTarget = 1.15 / game.st.zoomOut;
     game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
-    game.cam.zoom = game.zoomCur;
+    applyZoom();
     if (game.st.tier > game.lastTier) {
       game.lastTier = game.st.tier;
       const orbitNote = ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
@@ -362,7 +371,7 @@ function frame(now) {
   last = now;
 
   if (!game.paused) update(dtReal);
-  else setThrust(false);
+  else { setThrust(false); applyZoom(); }   // a resize while paused must still reframe
 
   render(game);
   hud.updateHud(game);

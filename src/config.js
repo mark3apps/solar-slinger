@@ -53,6 +53,14 @@ export const CFG = {
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
+  // Fair-view normalization: cam.zoom is scaled by the canvas diagonal so
+  // EVERY window sees the same world extent — a small screen renders the
+  // world smaller instead of cropping it, and a huge monitor grants no wider
+  // view. At this reference diagonal (1920x1080) zoom equals the tuned
+  // values exactly. Screen-space UI (DOM HUD, minimap, the /zoom stroke
+  // idiom) is unaffected and never scales.
+  VIEW_REF_DIAG: Math.hypot(1920, 1080),
+
   SHIP_TURN: 9,            // rad/s — the nose tracks the mouse
   // The SHIELD recharges after a quiet spell; the hull only heals from scrap
   SHIP_REGEN: 9,           // shield/s once recharging
