@@ -28,6 +28,7 @@ const TRACKS = [
   ['fling',  'FLING',  (g) => Math.round(g.st.fling)],
   ['hull',   'HULL',   (g) => `max ${g.st.maxHull}`],
   ['thrust', 'ENGINE', (g) => Math.round(g.st.thrust)],
+  ['chart',  'CHART',  (g) => g.surveyTotal ? `${g.prog.surveyed}/${g.surveyTotal} worlds` : '—'],
 ];
 
 export function initHud(game) {

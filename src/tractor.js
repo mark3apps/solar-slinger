@@ -146,6 +146,13 @@ export function tryGrab(game) {
   game.prog.catches++;
   best.catchCount++;
 
+  // Echo logs: derelicts and oddities carry a one-line lore fragment,
+  // recovered the first time the beam touches them (main.js announces it)
+  if (best.echo && !best.echoRead) {
+    best.echoRead = true;
+    game.echoMsg = best.echo;
+  }
+
   sfx.sfxGrab();
   sfx.setBeam(true);
   return true;

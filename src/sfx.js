@@ -69,6 +69,13 @@ export function sfxUpgrade() { blip(440, 0.12, 'square', 0.12); blip(660, 0.14, 
 export function sfxHit()     { blip(140, 0.2, 'sawtooth', 0.2, 50); }
 export function sfxDenied()  { blip(160, 0.2, 'square', 0.1, 110); }
 
+// Ghost-ship sonar: two soft descending sines, louder the closer you are
+export function sfxPing(vol = 0.5) {
+  const v = Math.max(0.15, Math.min(1, vol));
+  blip(1180, 0.5, 'sine', 0.10 * v, 880);
+  blip(590, 0.7, 'sine', 0.05 * v, 560);
+}
+
 export function sfxBoom(size = 1) {
   if (!ctx) return;
   try {

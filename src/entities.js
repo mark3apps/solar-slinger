@@ -90,6 +90,7 @@ export class Ship {
     this.invuln = 0;
     this.thrusting = false;
     this.braking = false;
+    this.engineOutT = 0;     // flare EMP: seconds of dead engines remaining
   }
 }
 

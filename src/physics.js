@@ -43,6 +43,9 @@ function dropScrap(game, x, y, vx, vy, totalValue) {
 export function shatter(game, body, credit = null) {
   if (!body.alive) return;
   body.alive = false;
+  // The ring shepherd only respawns after AMBIENT deaths — a deliberate
+  // player kill earns its permanently scattered ring (world.js respawn).
+  if (body.shepherd && credit === 'player') game.shepherdPlayerKilled = true;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'shattered', type: body.type, mass: Math.round(body.mass) });
   if (body.heldBy === 'player' && game.held === body) game.held = null;
 
@@ -211,20 +214,43 @@ export function damageShip(game, dmg, cause) {
 // consumed before the next gravity call.
 const SOFT2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
 const _g = { ax: 0, ay: 0 };
+const _gp = { ax: 0, ay: 0 };   // non-star portion of the last gravityAt call (gravity compass)
 
 // Full acceleration from all attractors at point (x,y) — used for the ship,
 // aliens, and debris, which always feel everything.
 function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
-  let ax = 0, ay = 0;
+  let ax = 0, ay = 0, pax = 0, pay = 0;
   for (const b of attractors) {
-    const w = b.type === 'star' ? starMul
-      : (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue') ? heavyMul : 1;
+    const star = b.type === 'star';
+    const heavy = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue';
+    let w = star ? starMul : heavy ? heavyMul : 1;
     const dx = b.x - x, dy = b.y - y;
     const d2 = dx * dx + dy * dy + SOFT2;
-    const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
+    const d = Math.sqrt(d2);
+    // LONG ARMS (see CFG.SHIP_WELL_*): only the SHIP passes heavyMul != 1,
+    // so this far-field boost never touches aliens, debris, or thrown rocks.
+    // Inside SHIP_WELL_START radii f <= 1 and nothing changes — same
+    // close-range gravity, longer reach. predictPaths mirrors this exactly.
+    if (heavy && heavyMul !== 1) {
+      const f = d / (b.radius * CFG.SHIP_WELL_START);
+      if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+      // GAS DIVE: inside a gas giant the ship feels enclosed-mass gravity
+      // (uniform-density: x d³/R³ of the point value) — without this, the
+      // point-mass interior pull (~380 at half depth) makes every dive
+      // terminal; with it, escape is hard but genuinely possible.
+      if (b.ptype === 'gas' && d < b.radius) {
+        const q = d / b.radius;
+        w *= q * q * q;
+      }
+    }
+    const inv = (w * CFG.G * b.mass) / (d2 * d);
     ax += dx * inv; ay += dy * inv;
+    // Non-star portion, stashed for the gravity compass: the sun's ambient
+    // pull is everywhere and obvious — worlds are what's worth pointing at
+    if (!star) { pax += dx * inv; pay += dy * inv; }
   }
   _g.ax = ax; _g.ay = ay;
+  _gp.ax = pax; _gp.ay = pay;
   return _g;
 }
 
@@ -331,7 +357,8 @@ function collideBodies(game, a, b) {
     const big = a.mass >= b.mass ? a : b;
     const small = big === a ? b : a;
     if (big.mass >= small.mass * 15 && !small.heldBy && small.type !== 'rogue' &&
-        small.type !== 'station' && small.type !== 'nest') {   // artificial structures don't melt into planets
+        small.type !== 'station' && small.type !== 'nest' &&   // artificial structures don't melt into planets
+        !small.majorComet) {   // ...and the landmark comet bounces off worlds instead of melting into them
       small.alive = false;
       if (small === game.held) game.held = null;
       if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'absorbed', type: small.type, mass: Math.round(small.mass) });
@@ -368,8 +395,17 @@ function collideBodies(game, a, b) {
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
     let j = ((1 + e) * closing) / (invA + invB || 1);
-    const celestial = (t) => t === 'planet' || t === 'moon' || t === 'rogue';
-    if (a.thrownTimer <= 0 && b.thrownTimer <= 0 && celestial(a.type) && celestial(b.type)) {
+    // majorComet (Vesper) counts as a celestial here: its eccentric orbit
+    // crosses the inner planets every pass, and at mass 2400 vs the 2e4 lava
+    // world (8x — both movable) an undamped natural bounce shoves the planet
+    // hard enough to walk its perihelion into the sun over repeated hits.
+    // It ALSO damps natural hits on Vesper from plain rocks: an undamped
+    // belt-asteroid strike moved Vesper ~100 u/s per hit, and crossing two
+    // belts twice per orbit random-walked its perihelion into the sun.
+    // Player throws (thrownTimer) keep full impulse in every case.
+    const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
+    if (a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
+        ((celestial(a) && celestial(b)) || a.majorComet || b.majorComet)) {
       j *= 0.25;
     }
     a.vx -= j * invA * nx; a.vy -= j * invA * ny;
@@ -443,14 +479,63 @@ function collideBodies(game, a, b) {
   }
 }
 
-function collideShipBody(game, s, b) {
+function collideShipBody(game, s, b, dt) {
   const dx = b.x - s.x, dy = b.y - s.y;
   const rr = s.radius + b.radius;
   const d2 = dx * dx + dy * dy;
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
 
-  if (b.type === 'star') { damageShip(game, 99999, 'You flew into a star.'); return; }
+  // Stars have no wall for the SHIP: no bounce, no instant kill — you fly
+  // straight INTO the photosphere, and the corona heat (whose exponential
+  // ramp keeps climbing past the surface) melts you down mid-plunge. Bodies
+  // and aliens still vaporize on contact; only the ship gets the long dive.
+  if (b.type === 'star') return;
+
+  // GAS DIVE: gas giants have no surface for the SHIP — it flies straight
+  // in. Pressure crushes with depth² and dense atmosphere drags the ship
+  // toward the planet's frame; the core is instant death, everything above
+  // it is a fight you can still win. (Rocks/aliens keep the solid bounce.)
+  if (b.ptype === 'gas') {
+    if (d < b.radius * CFG.GAS_CORE) {
+      damageShip(game, 99999, `Crushed at the core of ${b.name || 'a gas giant'}.`);
+      return;
+    }
+    const depth = Math.min(1, 1 - (d - b.radius * CFG.GAS_CORE) / (b.radius * (1 - CFG.GAS_CORE)));
+    if (s.invuln <= 0) {
+      damageShip(game, depth * depth * CFG.GAS_CRUSH_DPS * dt,
+        `Crushed in the depths of ${b.name || 'a gas giant'}.`);
+    }
+    // Dense air drags HARD from the first deck down — the giant grabs you
+    // and pulls you into its frame; thrust is how you argue with it
+    const drag = Math.min(0.95, 0.35 + depth * 1.1) * dt;
+    s.vx += (b.vx - s.vx) * drag; s.vy += (b.vy - s.vy) * drag;
+    // ENTRY: punching through the cloud tops is a full-screen moment —
+    // flash + shock rings (render reads gasEnterT) + a hull-rattling jolt
+    if (!(game.gasDiveT > 0)) {
+      game.gasEnterT = 0.8;
+      addShake(game, 14);
+      sfx.sfxBoom(1.3);
+    }
+    game.gasDiveT = 0.2;
+    game.gasDiveDepth = depth;
+    game.gasDiveBody = b;
+    if (!game.tut.gasdive) game.gasDiveWarn = true;
+    // Turbulence: the deep decks batter the hull and cloud-stuff streams
+    // past — throttled particle cadence, not per-substep
+    addShake(game, depth * 0.6);
+    game.gasFxT = (game.gasFxT ?? 0) - dt;
+    if (game.gasFxT <= 0) {
+      game.gasFxT = 0.05;
+      const rvx2 = b.vx - s.vx, rvy2 = b.vy - s.vy;
+      addParticles(game,
+        s.x + (Math.random() - 0.5) * 130, s.y + (Math.random() - 0.5) * 130,
+        s.vx + rvx2 * 0.5 + (Math.random() - 0.5) * 90,
+        s.vy + rvy2 * 0.5 + (Math.random() - 0.5) * 90,
+        2, b.color, 60, 0.6, 3);
+    }
+    return;
+  }
   // Touching a live Bastion shield zaps you on top of the normal bounce
   if (b.fort && b.fort.shield > 0) damageShip(game, 10, 'Zapped by a Bastion fortress shield.');
   if (b === game.held) return;      // held object can't crush you
@@ -465,17 +550,56 @@ function collideShipBody(game, s, b) {
   const overlap = s.radius + b.radius - d;
   s.x -= nx * overlap; s.y -= ny * overlap;
 
+  // SURFACE SKIMMING: sliding along a surface in contact grinds the hull.
+  // The normal bounce only bites above a CLOSING speed, so a fast tangential
+  // graze was completely free — now it sparks and ticks damage (per-substep,
+  // so damageShip's dmg>=1 gate keeps the hit sfx/shake from 120Hz spam).
+  {
+    const tvx = rvx + closing * nx, tvy = rvy + closing * ny;   // tangential slide
+    const vT = Math.hypot(tvx, tvy);
+    if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
+      damageShip(game, (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt,
+        `Ground apart skimming ${b.name || 'a ' + b.type}.`);
+      game.scrapeT = 0.18;                                       // render: contact glow
+      game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
+      if (!game.tut.scrape) game.scrapeWarn = true;
+      game.scrapeFxT = (game.scrapeFxT ?? 0) - dt;
+      if (game.scrapeFxT <= 0) {
+        game.scrapeFxT = 0.06;                                   // spark cadence, not per-substep
+        addParticles(game, game.scrapeX, game.scrapeY,
+          -tvx * 0.35 + b.vx, -tvy * 0.35 + b.vy, 2, '#ffcf7a', 90, 0.35, 2);
+      }
+    }
+  }
+
   if (closing > 0) {
     // Ship bounces away, scaled by the impactor's mass and hard-capped — a
     // flat closing*1.3 kick let alien-thrown rocks launch the ship at 900+.
     const mEff = Math.min(b.mass, 4e5);
     const kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
     s.vx -= nx * kick; s.vy -= ny * kick;
+
+    // NEWTON'S OTHER HALF: the impact moves and damages the BODY too. The
+    // ship's effective ram mass grows with level — a scout nudges pebbles,
+    // a titan bulldozes boulders. Planets barely notice (mass ratio kills
+    // the kick before it can derail anything heavy), so orbits stay safe.
+    const shipM = 30 + game.st.totalLevel * 25;
+    const bKick = Math.min(260, closing * 1.1 * (shipM / (shipM + b.mass)));
+    if (bKick > 6) {
+      if (closing > 25) derail(b);
+      b.vx += nx * bKick; b.vy += ny * bKick;
+    }
+    const effB = Math.max(0, closing - 100);
+    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2;
+    if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'player', s.x, s.y);
+
     const thrown = b.thrownTimer > 0 && b.thrownBy === 'alien' ? 1.25 : 1;
     // Graded, not binary: damage scales with closing speed and a SATURATING
     // mass factor, so a planet bump stings (~25) and a planet slam hurts
     // (~70) without instantly gutting the hull. Capped at 45% per hit.
-    const massSat = b.mass / (b.mass + 1500);
+    // The saturation knee grows with beam tier: a dreadnought shrugs off
+    // the pebbles that used to sting the scout — big slams always hurt.
+    const massSat = b.mass / (b.mass + 1500 * (1 + game.st.tier * 1.2));
     const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown,
       game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
@@ -550,9 +674,15 @@ export function step(game, dt) {
         for (const d of disturbers) {
           if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { derail(b); break; }
         }
-      } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 &&
+      } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 && !b.majorComet && !b.shepherd &&
                  (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet' ||
                   b.type === 'station' || b.type === 'nest')) {
+        // (majorComet — Vesper — is excluded: a hard knock can leave its
+        // orbit momentarily near-circular, and railing it would freeze the
+        // long-period comet onto a circle forever. It free-flies for life.
+        // The shepherd is excluded too: this scan's railBody would silently
+        // rebase homeR to wherever it happens to be — its install-path snap
+        // is the only one allowed to re-rail it, back in its true lane.)
         // Never re-rail on-screen: a flung rock snapping onto a circular
         // orbit in front of the player reads as "it just stopped mid-flight"
         if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) <
@@ -593,14 +723,20 @@ export function step(game, dt) {
   // Railed bodies skip gravity entirely — that's the point of rails.
   for (const b of bodies) {
     if (!b.alive || b.type === 'star' || b.onRails) continue;
-    const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue';
+    // majorComet (Vesper) rides the weighted path as an honorary celestial:
+    // under full planet gravity, gravitational focusing funneled it into a
+    // planet impact or a sun plunge every ~15 minutes. CROSS_GRAV keeps its
+    // long ellipse stable the same way it keeps every other orbit stable.
+    const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet;
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
 
     // INSTALLATIONS (stations, nests, fortified moons) don't wander when
     // knocked loose — station-keeping thrusters drive them straight back
     // toward their home orbit, and they re-rail as soon as they're close.
-    const install = b.type === 'station' || b.type === 'nest' || b.fort;
+    // The ring SHEPHERD keeps station too: it must hold its lane, or ambient
+    // knocks (not the player) would scatter the ring it exists to shepherd.
+    const install = b.type === 'station' || b.type === 'nest' || b.fort || b.shepherd;
     if (install && !b.heldBy && b.thrownTimer <= 0 && b.parent && b.parent.alive) {
       const p = b.parent;
       const dx = b.x - p.x, dy = b.y - p.y;
@@ -633,7 +769,9 @@ export function step(game, dt) {
     // draws from tractor.aimSolutions — the player releases on the ✕.)
     // Star-anchored bodies are held by their sun, never the map edge — the
     // boundary force would deorbit outer planets of off-center systems.
-    if (!(b.parent && (b.type === 'planet' || b.type === 'moon'))) {
+    // noBoundary marks the interstellar visitor: the edge force would bend
+    // its hyperbolic pass into a captured orbit and it could never leave.
+    if (!(b.parent && (b.type === 'planet' || b.type === 'moon')) && !b.noBoundary) {
       const bnd = boundaryAccel(b.x, b.y);
       if (bnd) { b.ax += bnd.ax; b.ay += bnd.ay; }
     }
@@ -648,7 +786,9 @@ export function step(game, dt) {
 
     const th = game.st.thrust;
     const c = game.controls;
-    const throttle = c.f - c.b;
+    // Flare EMP: fried engines answer to nobody for a few seconds
+    if (s.engineOutT > 0) s.engineOutT -= dt;
+    const throttle = s.engineOutT > 0 ? 0 : c.f - c.b;
     s.thrusting = throttle > 0;
     s.braking = throttle < 0;
     const tx = Math.cos(s.angle) * th * throttle;
@@ -664,7 +804,30 @@ export function step(game, dt) {
     // The ship feels amplified gravity — big bodies really grab at you,
     // worlds doubly so and the sun hardest of all
     const g = gravityAt(attractors, s.x, s.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
+    // Gravity compass source (render.js): WORLDS ONLY — the sun's ambient
+    // pull would drown the planet signal everywhere, and the sun is never
+    // hard to find. main.js smooths this before display.
+    game.shipGx = _gp.ax * CFG.SHIP_GRAV; game.shipGy = _gp.ay * CFG.SHIP_GRAV;
     shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
+
+    // ORBIT RUBBER BAND (CFG.SHIP_BAND_*): near a world, bleed off the
+    // ship's INWARD radial velocity relative to it — plunges soften into
+    // captures and near-orbits circularize. Tangential motion and outbound
+    // climbs are untouched.
+    for (const b of attractors) {
+      if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
+      const band = b.radius * CFG.SHIP_BAND_RANGE + 300;
+      const dx = b.x - s.x, dy = b.y - s.y;
+      if (dx > band || dx < -band || dy > band || dy < -band) continue;
+      const d = Math.hypot(dx, dy);
+      if (d > band || d < b.radius + s.radius) continue;
+      const ux = dx / d, uy = dy / d;                              // ship -> world
+      const vR = (s.vx - b.vx) * ux + (s.vy - b.vy) * uy;          // >0 = falling in
+      if (vR <= 0) continue;
+      const t = 1 - (d - b.radius) / (band - b.radius);
+      const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t);
+      shipAx -= ux * brake; shipAy -= uy * brake;
+    }
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
 
@@ -701,6 +864,52 @@ export function step(game, dt) {
       const dps = CFG.OORT_DPS * (1 + (rc - CFG.WORLD_R) / 900);
       damageShip(game, dps * dt, 'Shredded by the Oort cloud.');
     }
+
+    // CORONA HEAT + lava auras: a sunward approach MELTS the ship well
+    // before contact — by the surface there's nothing left to crash. The
+    // ship's ramp is EXPONENTIAL (CFG.HEAT_SHIP_*): the envelope is wide
+    // and warns early with warmth and glow, but real damage only arrives
+    // really close. game.heatT feeds the render glow/vignette.
+    game.heatT = 0;
+    {
+      const sun2 = game.homeStar;
+      if (sun2) {
+        const hz = sun2.radius * CFG.HEAT_SHIP_ZONE;
+        const dSun = Math.hypot(s.x - sun2.x, s.y - sun2.y);
+        if (dSun < hz) {
+          const dps = CFG.HEAT_SHIP_DPS * Math.exp(-(dSun - sun2.radius) / CFG.HEAT_SHIP_FALLOFF);
+          if (s.invuln <= 0 && dps > 0.05) damageShip(game, dps * dt, "Melted in the sun's corona.");
+          game.heatT = Math.pow(Math.min(1, dps / CFG.HEAT_SHIP_DPS), 0.55);
+          if (!game.tut.heat && dps > 2) game.heatWarn = true;
+          // FEAR: deep heat shakes the hull hard, and sparks tear off the
+          // hull itself — tight around the ship, fast, and MULTIPLYING as
+          // the heat climbs (rate and speed both scale with heatT)
+          if (game.heatT > 0.35) addShake(game, game.heatT * 0.5);
+          const sparkRate = 30 * game.heatT + 40 * game.heatT * game.heatT;
+          if (Math.random() < dt * sparkRate) {
+            const ux2 = (s.x - sun2.x) / (dSun || 1), uy2 = (s.y - sun2.y) / (dSun || 1);
+            const sp2 = (260 + Math.random() * 440) * (0.5 + game.heatT);
+            addParticles(game,
+              s.x + (Math.random() - 0.5) * s.radius * 2.4,
+              s.y + (Math.random() - 0.5) * s.radius * 2.4,
+              s.vx + ux2 * sp2 + (Math.random() - 0.5) * 120,
+              s.vy + uy2 * sp2 + (Math.random() - 0.5) * 120,
+              2, Math.random() < 0.4 ? '#fff3d0' : '#ffcf8a', 90, 0.35, 2);
+          }
+        }
+      }
+      for (const b of attractors) {
+        if (b.ptype !== 'lava') continue;
+        const lz = b.radius * CFG.LAVA_HEAT_ZONE;
+        const dl = Math.hypot(s.x - b.x, s.y - b.y);
+        if (dl < lz) {
+          const t = Math.min(1, (lz - dl) / (lz - b.radius));
+          if (t * 0.6 > game.heatT) game.heatT = t * 0.6;   // less prominent glow
+          if (s.invuln <= 0) damageShip(game, t * t * CFG.LAVA_HEAT_DPS * dt, `Melted over ${b.name || 'a lava world'}.`);
+          if (!game.tut.heat) game.heatWarn = true;
+        }
+      }
+    }
   }
 
   for (const al of game.aliens) {
@@ -709,6 +918,7 @@ export function step(game, dt) {
     al.ax = g.ax + al.thrustX; al.ay = g.ay + al.thrustY;
   }
 
+  const storm = game.storm;   // solar storm front nudges loose scrap outward
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
     const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
@@ -722,6 +932,15 @@ export function step(game, dt) {
     } else {
       const g = gravityAt(attractors, d.x, d.y);
       d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
+      if (storm) {
+        // Gentle radiation-pressure shove while the front passes. Scrap
+        // ONLY — pushing bodies or celestials is how invariants die.
+        const hx = d.x - game.homeStar.x, hy = d.y - game.homeStar.y;
+        const hr = Math.hypot(hx, hy) || 1;
+        if (Math.abs(hr - storm.r) < CFG.STORM_BAND) {
+          d.ax += (hx / hr) * 130; d.ay += (hy / hr) * 130;
+        }
+      }
     }
   }
 
@@ -755,11 +974,14 @@ export function step(game, dt) {
 
   if (s.alive) {
     s.vx += shipAx * dt; s.vy += shipAy * dt;
-    // Speed governor: above this level's ceiling, velocity bleeds back down
+    // Speed governor (CFG.SPEED_*): above the ceiling, velocity bleeds back
+    // down — and the hard cap means no assist chain can outrun the bleed
     const sp = Math.hypot(s.vx, s.vy);
     if (sp > game.st.maxSpeed) {
-      const brake = (sp - game.st.maxSpeed) * 0.8 * dt;
-      const f = Math.max(0, (sp - brake) / sp);
+      const brake = (sp - game.st.maxSpeed) * CFG.SPEED_BLEED * dt;
+      let f = Math.max(0, (sp - brake) / sp);
+      const hard = game.st.maxSpeed * CFG.SPEED_HARD;
+      if (sp * f > hard) f = hard / sp;
       s.vx *= f; s.vy *= f;
     }
     s.x += s.vx * dt; s.y += s.vy * dt;
@@ -804,7 +1026,7 @@ export function step(game, dt) {
   // Ship & alien collisions with bodies
   for (const b of bodies) {
     if (!b.alive) continue;
-    if (s.alive) collideShipBody(game, s, b);
+    if (s.alive) collideShipBody(game, s, b, dt);
     for (const al of game.aliens) if (al.alive) collideAlienBody(game, al, b);
   }
 
@@ -858,6 +1080,20 @@ export function step(game, dt) {
         damageShip(game, CFG.FLARE_DMG, 'Scorched by a solar flare.');
         s.vx += f.vx * 0.18; s.vy += f.vy * 0.18;
         addParticles(game, s.x, s.y, f.vx * 0.3, f.vy * 0.3, 18, '#ffb35c', 220, 1, 4);
+        // EMP SURGE: a direct hit is an EVENT — engines dead for a beat,
+        // and the charged front blows HALF the orbit shield out of formation
+        s.engineOutT = CFG.FLARE_ENGINE_OUT;
+        if (game.orbit.length) {
+          const kick = Math.ceil(game.orbit.length / 2);
+          for (let k = 0; k < kick; k++) {
+            const ob = game.orbit.pop();
+            ob.heldBy = null; ob.orbitAng = undefined;
+            ob.extAx = 0; ob.extAy = 0;
+            ob.vx += f.vx * 0.4 + (Math.random() - 0.5) * 140;
+            ob.vy += f.vy * 0.4 + (Math.random() - 0.5) * 140;
+          }
+        }
+        game.flareHitWarn = true;
         f.life = 0;
       }
       if (f.life > 0) {
@@ -876,9 +1112,48 @@ export function step(game, dt) {
           break;
         }
       }
+      // In-flight sputter: the plasma sheds glowing embers as it flies
+      if (f.life > 0 && Math.random() < dt * 7) {
+        addParticles(game, f.x, f.y, f.vx * 0.15, f.vy * 0.15, 1, '#ffcf8a', 70, 0.6, 3);
+      }
       if (f.life > 0 && Math.hypot(f.x, f.y) < CFG.WORLD_R * 1.2) keep.push(f);
     }
     game.flares = keep;
+  }
+
+  // CORONA HEAT on bodies and aliens: everything but lava-born matter
+  // (molten magma, lava/ember worlds) melts near the sun — rocks shed
+  // embers and shatter before they can reach the surface. Two-compare
+  // bounding reject first; the zone is tiny compared to the map, so this
+  // is nearly free for the whole population.
+  {
+    const sun2 = game.homeStar;
+    if (sun2) {
+      const hz = sun2.radius * CFG.HEAT_ZONE;
+      for (const b of bodies) {
+        if (!b.alive || b.type === 'star') continue;
+        const hx = b.x - sun2.x, hy = b.y - sun2.y;
+        if (hx > hz || hx < -hz || hy > hz || hy < -hz) continue;
+        if (b.ptype === 'lava' || b.magma > 0 || b.ember > 0.01) continue;
+        const d = Math.hypot(hx, hy);
+        if (d >= hz) continue;
+        const t = Math.min(1, (hz - d) / (hz - sun2.radius));
+        damageBody(game, b, t * t * CFG.HEAT_DPS_BODY * b.maxHp * dt);
+        if (b.alive && Math.random() < dt * 5) {
+          addParticles(game, b.x, b.y, b.vx * 0.3, b.vy * 0.3, 1, '#ffb35c', 80, 0.7, 3);
+        }
+      }
+      for (const al of game.aliens) {
+        if (!al.alive) continue;
+        const hx = al.x - sun2.x, hy = al.y - sun2.y;
+        if (hx > hz || hx < -hz || hy > hz || hy < -hz) continue;
+        const d = Math.hypot(hx, hy);
+        if (d >= hz) continue;
+        const t = Math.min(1, (hz - d) / (hz - sun2.radius));
+        al.hp -= t * t * 25 * dt;
+        if (al.hp <= 0) killAlien(game, al);
+      }
+    }
   }
 
   // Particles (updated + compacted in place — filter() would allocate at 120Hz)
@@ -922,7 +1197,11 @@ export function predictPaths(game) {
       atr.push({
         x: b.x, y: b.y, vx: b.vx, vy: b.vy, mass: b.mass, radius: b.radius,
         star: b.type === 'star',
-        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
+        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet,
+        // rubber-band eligible: real worlds only (majorComet is weighted for
+        // gravity but the capture assist doesn't apply near a comet)
+        rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
+        gas: b.ptype === 'gas',   // ship path enters these; hit = the core
         parentIdx: -1, anchorIdx: -1,
         // Railed attractors predict EXACTLY — advance the rail analytically
         railR: b.onRails ? b.rail.r : 0,
@@ -946,7 +1225,7 @@ export function predictPaths(game) {
     const anchor = starAnchor(h);
     held = {
       x: h.x, y: h.y, vx: fv.vx, vy: fv.vy, r: h.radius,
-      weighted: h.type === 'planet' || h.type === 'moon' || h.type === 'rogue',
+      weighted: h.type === 'planet' || h.type === 'moon' || h.type === 'rogue' || h.majorComet,
       parentGhost: h.parent ? atr[src.indexOf(h.parent)] || null : null,
       anchorGhost: anchor ? atr[src.indexOf(anchor)] || null : null,
     };
@@ -957,21 +1236,75 @@ export function predictPaths(game) {
   const dt = CFG.PREDICT_DT;
   const soft2 = SOFT2;
 
+  // DISPLAY FRAME for the ship path: the whole universe orbits, so an
+  // inertial-space line near a moving world is technically true but
+  // unreadable — it curves toward where the world WILL be, through where
+  // it ISN'T. Physics still predicts in inertial space; only the DRAWN
+  // points are re-expressed relative to the dominant attractor's frame,
+  // anchored at that body's CURRENT position — so near a world you see
+  // your actual approach/orbit shape around it. The sun is pinned at the
+  // origin, so with the sun dominant this is exactly the inertial path.
+  // 1.35x hysteresis keeps the frame from flickering at dominance borders.
+  let refIdx = -1, refX0 = 0, refY0 = 0;
+  if (ship) {
+    let bestIdx = -1, bestA = 0, prevIdx = -1, prevA = 0;
+    for (let i = 0; i < atr.length; i++) {
+      const b = atr[i];
+      const dx = b.x - ship.x, dy = b.y - ship.y;
+      const d2 = dx * dx + dy * dy + soft2;
+      const d = Math.sqrt(d2);
+      let w = b.star ? CFG.STAR_GRAV_SHIP : b.weighted ? CFG.PLANET_GRAV_SHIP : 1;
+      if (b.weighted) {
+        const f = d / (b.radius * CFG.SHIP_WELL_START);
+        if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+      }
+      const a = (w * CFG.G * b.mass) / d2;
+      if (a > bestA) { bestA = a; bestIdx = i; }
+      if (src[i] === game.predictRef) { prevIdx = i; prevA = a; }
+    }
+    refIdx = (prevIdx >= 0 && prevA * 1.35 >= bestA) ? prevIdx : bestIdx;
+    if (refIdx >= 0) {
+      game.predictRef = src[refIdx];
+      refX0 = atr[refIdx].x; refY0 = atr[refIdx].y;
+    }
+  }
+
   const _acc = [0, 0];   // reused — 200 steps/frame would otherwise churn arrays
   const accelAt = (x, y, starMul = 1, heavyMul = 1) => {
     let ax = 0, ay = 0;
     for (const b of atr) {
-      const w = b.star ? starMul : b.weighted ? heavyMul : 1;
+      let w = b.star ? starMul : b.weighted ? heavyMul : 1;
       const dx = b.x - x, dy = b.y - y;
       const d2 = dx * dx + dy * dy + soft2;
-      const inv = (w * CFG.G * b.mass) / (d2 * Math.sqrt(d2));
+      const d = Math.sqrt(d2);
+      // Mirror of gravityAt's LONG ARMS far-field boost — the ship path is
+      // the only caller passing heavyMul != 1, and the predicted trajectory
+      // must bend exactly like the real one or the forecast lies.
+      if (b.weighted && heavyMul !== 1) {
+        const f = d / (b.radius * CFG.SHIP_WELL_START);
+        if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+        if (b.gas && d < b.radius) {   // enclosed-mass interior, like gravityAt
+          const q = d / b.radius;
+          w *= q * q * q;
+        }
+      }
+      const inv = (w * CFG.G * b.mass) / (d2 * d);
       ax += dx * inv; ay += dy * inv;
     }
     _acc[0] = ax; _acc[1] = ay;
     return _acc;
   };
 
-  for (let i = 0; i < CFG.PREDICT_STEPS; i++) {
+  // CHART progression: surveyed worlds extend the ship forecast (up to ~2x,
+  // hard-capped so the per-frame predictor can't grow unbounded)
+  const steps = Math.min(420, Math.round(CFG.PREDICT_STEPS * (game.st.predictBoost || 1)));
+  // The DRAWN ship path never leaves the screen: cap its displayed length
+  // at a fraction of the view radius (chart levels widen the fraction a
+  // little, so surveying still buys forecast). render fades the tail out.
+  const maxPathLen = (game.viewR || 1200) *
+    Math.min(0.95, 0.55 + 0.08 * ((game.st.levels && game.st.levels.chart) || 0));
+  let pathLen = 0, lastPx = null, lastPy = null, shipEnd = false;
+  for (let i = 0; i < steps; i++) {
     // Advance attractors (stars pinned) with the same hierarchical weighting
     // the real sim uses, so predicted planet positions match reality.
     for (let bi = 0; bi < atr.length; bi++) {
@@ -1001,21 +1334,49 @@ export function predictPaths(game) {
       b.x += b.vx * dt; b.y += b.vy * dt;
     }
 
-    if (ship && !shipHit) {
+    if (ship && !shipHit && !shipEnd) {
       let [ax, ay] = accelAt(ship.x, ship.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
       ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
+      // Mirror of the orbit rubber band (step) — same inward-only radial
+      // damping, so the forecast bends into captures exactly like the ship
+      for (const b of atr) {
+        if (!b.rb) continue;
+        const band = b.radius * CFG.SHIP_BAND_RANGE + 300;
+        const bdx = b.x - ship.x, bdy = b.y - ship.y;
+        if (bdx > band || bdx < -band || bdy > band || bdy < -band) continue;
+        const d = Math.hypot(bdx, bdy);
+        if (d > band || d < b.radius + ship.r) continue;
+        const ux = bdx / d, uy = bdy / d;
+        const vR = (ship.vx - b.vx) * ux + (ship.vy - b.vy) * uy;
+        if (vR <= 0) continue;
+        const t = 1 - (d - b.radius) / (band - b.radius);
+        const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t);
+        ax -= ux * brake; ay -= uy * brake;
+      }
       ship.vx += ax * dt; ship.vy += ay * dt;
       // Mirror the speed governor so the predicted path stays honest
       const psp = Math.hypot(ship.vx, ship.vy);
       if (psp > game.st.maxSpeed) {
-        const f = Math.max(0, (psp - (psp - game.st.maxSpeed) * 0.8 * dt) / psp);
+        let f = Math.max(0, (psp - (psp - game.st.maxSpeed) * CFG.SPEED_BLEED * dt) / psp);
+        const hard = game.st.maxSpeed * CFG.SPEED_HARD;
+        if (psp * f > hard) f = hard / psp;
         ship.vx *= f; ship.vy *= f;
       }
       ship.x += ship.vx * dt; ship.y += ship.vy * dt;
-      if (i % 2 === 0) shipPts.push({ x: ship.x, y: ship.y });
-      for (const b of atr) {
-        const hr = b.radius + ship.r;
-        if ((b.x - ship.x) ** 2 + (b.y - ship.y) ** 2 < hr * hr) { shipHit = { x: ship.x, y: ship.y }; break; }
+      // Re-express in the reference body's frame (see DISPLAY FRAME above)
+      const fx = refIdx >= 0 ? refX0 - atr[refIdx].x : 0;
+      const fy = refIdx >= 0 ? refY0 - atr[refIdx].y : 0;
+      const px = ship.x + fx, py = ship.y + fy;
+      if (lastPx !== null) {
+        pathLen += Math.hypot(px - lastPx, py - lastPy);
+        if (pathLen > maxPathLen) shipEnd = true;   // path cap: stays on screen
+      }
+      lastPx = px; lastPy = py;
+      if (!shipEnd && i % 2 === 0) shipPts.push({ x: px, y: py });
+      if (!shipEnd) for (const b of atr) {
+        // Gas giants have no ship surface — the meaningful "hit" is the core
+        const hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
+        if ((b.x - ship.x) ** 2 + (b.y - ship.y) ** 2 < hr * hr) { shipHit = { x: px, y: py }; break; }
       }
     }
     if (held && !heldHit && i < CFG.HELD_STEPS) {

@@ -13,18 +13,76 @@ export const CFG = {
   // The ship feels amplified gravity from everything — big suns and planets
   // should really pull on YOU (thrown objects and NPCs use normal G).
   SHIP_GRAV: 1.45,
-  // ...and the SUN doubly so: stars pull on the ship this much harder still
-  // (total star pull on the ship = SHIP_GRAV * STAR_GRAV_SHIP)
-  STAR_GRAV_SHIP: 1.6,
+  // SKY-SPEED COMPENSATION: the sun's mass was doubled (world.js) so every
+  // sun-anchored orbit sweeps ~1.4x faster — a livelier sky. This amp was
+  // HALVED at the same time so the ship-felt sun pull (mass x amp) and the
+  // spawn-orbit speed are numerically unchanged. These two tune together:
+  // never touch one without the other or the ship's flight feel shifts.
+  STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this)
   PLANET_GRAV_SHIP: 3.0,
+  // LONG ARMS (ship only): beyond SHIP_WELL_START planet radii, the
+  // ship-felt pull of a world falls off as 1/r instead of 1/r² until the
+  // boost caps at SHIP_WELL_MAX — wells reach farther WITHOUT deepening
+  // close-range gravity. Applies only on the ship's gravity path (and its
+  // mirror in predictPaths — keep them in sync); thrown rocks, aliens,
+  // debris, and celestials are untouched.
+  SHIP_WELL_START: 2.5,
+  SHIP_WELL_MAX: 6,
+  // ORBIT RUBBER BAND (ship only): inside SHIP_BAND_RANGE body radii (+300)
+  // of a world, the INWARD radial component of the ship's velocity relative
+  // to that world is damped by up to SHIP_BAND_DAMP/s (accel capped at
+  // SHIP_BAND_MAX). Tangential motion is untouched — plunges soften into
+  // captures and orbits circularize on their own. Outward radial velocity
+  // is exempt ON PURPOSE: an assist must never become an escape jail.
+  // Mirrored in predictPaths like the long arms.
+  SHIP_BAND_RANGE: 4,
+  SHIP_BAND_DAMP: 1.2,
+  SHIP_BAND_MAX: 130,
+  // SURFACE SKIMMING: grinding tangentially along a body while in contact
+  // chews the hull (collideShipBody) — a gentle landing is free below
+  // SKIM_SPEED, then dps = (tangential speed - SKIM_SPEED) * SKIM_DPS_K.
+  // (A sub-orbital slide grinds continuously; a super-orbital graze lifts
+  // off in a few substeps and only takes a scratch — both are intended.)
+  SKIM_SPEED: 100,
+  SKIM_DPS_K: 0.09,
 
-  // Solar flares: the sun occasionally erupts plasma at ships that fly CLOSE
+  // Solar flares: the sun RARELY erupts plasma at ships that fly close.
+  // A direct hit is a real event now: EMP kills the engines for
+  // FLARE_ENGINE_OUT seconds and blows half the orbit shield loose.
   FLARE_RANGE: 5500,       // only fires while the ship is this close to the sun
   FLARE_SPEED: 750,
   FLARE_LIFE: 6,           // seconds of flight — flares fizzle ~4500 out
   FLARE_DMG: 26,
+  FLARE_ENGINE_OUT: 3,     // seconds of dead engines after a direct hit
+
+  // CORONA HEAT on BODIES/ALIENS: everything melts inside HEAT_ZONE x the
+  // sun's radius (dps ramps depth²). Lava-born things are immune.
+  // HEAT_ZONE must keep this zone's outer edge INSIDE the graveyard ring
+  // (~3160): 1.30 x 2400 = 3120 — raise it and the wrecks start cooking
+  // (any damage at all derails them; there is no "subtle" for railed bodies).
+  HEAT_ZONE: 1.30,
+  HEAT_DPS_BODY: 0.12,     // fraction of a body's maxHp per second at surface
+  // CORONA HEAT on the SHIP: a wide envelope with an EXPONENTIAL ramp —
+  // dps = HEAT_SHIP_DPS * e^(-(d - sunR) / HEAT_SHIP_FALLOFF). At the zone
+  // edge it's a whisper (~0.01), at the graveyard ring ~2.5/s, at the
+  // photosphere the full 42/s. Warmth warns long before it kills; the kill
+  // only happens if you keep going.
+  HEAT_SHIP_ZONE: 2.1,     // visual + damage envelope, x sun radius
+  HEAT_SHIP_DPS: 42,       // dps at the photosphere
+  HEAT_SHIP_FALLOFF: 300,  // e-folding distance of the ramp
+  // Lava worlds radiate the same aura, weaker and SHIP-only (their own
+  // moons must never cook on their rails)
+  LAVA_HEAT_ZONE: 1.7,     // reach, x planet radius
+  LAVA_HEAT_DPS: 12,
+  // GAS DIVE: gas giants have no surface for the SHIP — it flies in.
+  // Interior gravity uses enclosed mass (x d³/R³ of the point value, in
+  // gravityAt + predictPaths) so climbing out stays possible while the
+  // pressure crushes: dps = depth² x GAS_CRUSH_DPS; instant death inside
+  // GAS_CORE x radius. Rocks and aliens still bounce off the cloud tops.
+  GAS_CRUSH_DPS: 110,
+  GAS_CORE: 0.30,
 
   // Celestial bodies feel full gravity from stars and their parent planet, but
   // only this fraction from other planets/moons/rogues. The ship, aliens,
@@ -43,15 +101,29 @@ export const CFG = {
   // death in minutes. Deliberately THROWN objects get a lower threshold and a
   // damage multiplier, so the tractor fling (and alien throws) stay lethal.
   DMG_BODY: 1.2e-6,        // dmg = K * (closing - threshold)^2 * otherMass
-  DMG_THRESH: 240,         // closing speed below which impacts just bounce
+  // 340 = the original 240 scaled by the ~1.41x sky speed-up (doubled sun
+  // mass): ambient crossing traffic now closes at ~140-420, and the old
+  // threshold let routine crossings sandblast moons/comets. THROWN keeps its
+  // old threshold — fling/alien-throw speeds are ship-derived, not orbital.
+  DMG_THRESH: 340,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
   DMG_THROWN_MULT: 2,
   // Ship impact damage: closing * DMG_SHIP * massSat, where massSat is the
-  // impactor's mass saturating at 1 (m/(m+1500)) — so a planet bump stings
-  // instead of near-one-shotting, and pebbles barely tickle. Capped at 45%
-  // of max hull per hit in collideShipBody.
+  // impactor's mass saturating at 1 — the saturation knee SCALES WITH BEAM
+  // TIER (1500 * (1 + tier * 1.2) in collideShipBody), so pebbles that
+  // stung a scout barely tickle a dreadnought while planet slams always
+  // hurt. Capped at 45% of max hull per hit.
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
+
+  // Speed governor: each engine level raises the ceiling; excess speed
+  // (slingshots, knockbacks) bleeds off at SPEED_BLEED x the overage per
+  // second, and NOTHING sustains beyond SPEED_HARD x the ceiling. The old
+  // gentle bleed (0.8, no hard cap) predates the long-arm gravity boost —
+  // 6x far-field assists let low-level ships coast at absurd speeds.
+  // predictPaths mirrors both numbers; keep them in sync.
+  SPEED_BLEED: 1.6,
+  SPEED_HARD: 1.9,
 
   // Fair-view normalization: cam.zoom is scaled by the canvas diagonal so
   // EVERY window sees the same world extent — a small screen renders the
@@ -93,6 +165,14 @@ export const CFG = {
   ALIEN_SCRAP: 28,
   ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
   ALIEN_BURST: 4,          // a nest can scramble up to this many at once
+
+  // Solar storms: periodic charged waves sweeping the WHOLE system —
+  // discovery weather, not a weapon. The front lights auroras on the worlds
+  // it washes over, brightens comet tails, and gives loose scrap a gentle
+  // outward push. It deals no damage and never touches celestials or rails.
+  STORM_EVERY: 420,        // average seconds between storms — rare weather, not a metronome
+  STORM_SPEED: 950,        // wave-front expansion speed (u/s)
+  STORM_BAND: 700,         // half-thickness of the active front
 
   PREDICT_STEPS: 200,      // trajectory forecast resolution (ship path)
   PREDICT_DT: 1 / 30,
@@ -138,6 +218,7 @@ export function newProgress() {
     smashes: 0,
     scrapCollected: 0,
     orbitXp: 0,            // +1 per orbit add, +3 per shield block
+    surveyed: 0,           // worlds charted by flying close (world.js scan)
   };
 }
 
@@ -149,6 +230,9 @@ export function shipStats(prog) {
   const hullLvl = Math.min(5, Math.floor((prog.maxHull - GROWTH.HULL_BASE) / 120));
   const thrustLvl = Math.min(5, Math.floor((prog.thrust - GROWTH.THRUST_BASE) / 180));
   const orbitLvl = Math.min(5, Math.floor(Math.sqrt(prog.orbitXp / 4)));
+  // Charting worlds levels a SENSOR track — deliberately excluded from
+  // totalLevel so exploration never inflates the zoom/ship-size pacing.
+  const chartLvl = Math.min(5, Math.floor(prog.surveyed / 4));
   const totalLevel = tier + flingLvl + hullLvl + thrustLvl + orbitLvl;
 
   // Fraction of the way to each track's next level (1 when maxed) — shown on
@@ -162,6 +246,7 @@ export function shipStats(prog) {
     thrust: thrustLvl >= 5 ? 1 : frac01(((prog.thrust - GROWTH.THRUST_BASE) - thrustLvl * 180) / 180),
     orbit: orbitLvl >= 5 ? 1
       : frac01((prog.orbitXp - 4 * orbitLvl * orbitLvl) / (4 * (orbitLvl + 1) ** 2 - 4 * orbitLvl * orbitLvl)),
+    chart: chartLvl >= 5 ? 1 : frac01((prog.surveyed - chartLvl * 4) / 4),
   };
 
   return {
@@ -190,8 +275,12 @@ export function shipStats(prog) {
     // 1 slot out of the gate; every orbit level adds 3 more
     maxOrbiters: 1 + 3 * orbitLvl,
     orbitLvl,
-    levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl },
+    levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl, chart: chartLvl },
     fracs,
+    // Every charted world sharpens the sensors: predictPaths multiplies its
+    // forecast step count by this, so exploring literally extends how far
+    // ahead you can see. Capped ~2x so the per-frame predictor stays cheap.
+    predictBoost: 1 + Math.min(1.1, prog.surveyed * 0.06),
     // The ship GROWS with you — paired with the deep auto zoom-out below,
     // leveling reads as you outgrowing the universe
     radius: Math.min(64, 9 + totalLevel * 2.0),

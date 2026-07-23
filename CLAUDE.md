@@ -83,8 +83,10 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    (`CROSS_GRAV 0.15`, `CROSS_STAR 0.05`) — at full strength their tides deorbit outer planets into their
    sun in ~8 min. Ship/aliens/debris always feel full gravity (`gravityAt`); only celestials use the
    weighted `gravityOnBody`. (`physics.js:232`, `config.js:29`)
-3. **Ambient collisions below a closing-speed threshold do no damage** (`DMG_THRESH 240` natural,
-   `DMG_THRESH_THROWN 140`); damage is mass-dominance weighted; natural celestial hits are damped and
+3. **Ambient collisions below a closing-speed threshold do no damage** (`DMG_THRESH 340` natural —
+   240 scaled by the ~1.41x sky speed-up, keep them in ratio if orbital speeds change again;
+   `DMG_THRESH_THROWN 140` — thrown speeds are ship-derived, not orbital); damage is mass-dominance
+   weighted; natural celestial hits are damped and
    capped at 70% of remaining hp when masses are within 8× (comparable rocks crunch + spall, they don't
    one-shot). (`physics.js:377`, `config.js:40`)
 4. **>20× mass ratio → the heavy body is immovable**; natural celestial-vs-celestial impulse is damped
@@ -102,6 +104,68 @@ They derail on grab/damage/throw/hard-bounce or when a heavy rogue/thrown giant 
 (the `game.viewR` guard, `physics.js:534`): an on-screen re-rail snap reads as "the rock I flung just
 stopped mid-flight." Installations (stations, nests, forts) instead use active station-keeping — they
 thrust back to `homeR` and re-rail even on-screen, because they must never wander.
+
+### The discovery layer
+
+Combat-free exploration content, deliberately sparse and all seeded to fixed spots (landmarks you can
+give directions by). Rules that keep it from breaking the invariants above:
+
+- **Comet Vesper** free-flies an eccentric orbit (peri ~3900 — deliberately above the graveyard ring,
+  which otherwise collision-random-walks it into the sun — apo ~20100) and must NEVER be railed —
+  rails are circular-only. It is an **honorary celestial**: weighted gravity (`majorComet` in the
+  Phase-1 `weighted` check + predictPaths mirrors) and ×0.25 natural impulses, because full planet
+  gravity/impulses killed it every ~15 min in soaks. If chaos still claims it, `replenishWorld`
+  respawns it in ~4 min. `cometT = Infinity` deliberately survives the ambient-comet expiry
+  (`Infinity - dt` stays `Infinity`). Its anti-sunward tail is render-only.
+- The **shepherd** station-keeps (it's in the physics `install` set) and respawns ~5 min after an
+  AMBIENT death only — a player kill scatters the ring permanently. Both are deliberate: ring decay
+  must always trace back to a player choice.
+- **The interstellar visitor** carries `noBoundary` — the one flag exempting a non-star-anchored body
+  from the world-edge force (`physics.js`), because that force would capture its hyperbolic pass. It's
+  cleared the moment the player catches it. Don't put `noBoundary` on anything else without a reason
+  this strong.
+- **Solar storms** (`CFG.STORM_*`) push SCRAP DEBRIS ONLY — never bodies, celestials, or the ship.
+  Auroras, tail-brightening, and the front visual are render-side. A storm touching rails or celestial
+  velocities is an invariant-3-style regression waiting to happen.
+- **Survey/CHART** progression: flying into a world's nameplate zone charts it (`replenishWorld` scan);
+  `st.predictBoost` (from `prog.surveyed`) only lengthens the trajectory forecast, and the chart level
+  is deliberately excluded from `totalLevel` so exploring never inflates zoom/ship-size pacing.
+- **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
+- The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
+  null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
+  pass must keep skipping volcanic/shepherd moons.
+- **Sky speed is a PAIRED tuning:** the sun's mass (3.2e7, world.js) is double the original 1.6e7 so
+  every sun-anchored orbit sweeps ~1.4x faster, and `STAR_GRAV_SHIP` (0.8) was halved in compensation
+  so the ship-felt sun pull and spawn-orbit speed are unchanged. Their PRODUCT is the tuned flight
+  feel — never change one without the other.
+- **LONG ARMS** (`SHIP_WELL_START`/`SHIP_WELL_MAX`): the SHIP feels planet/moon/rogue gravity fall off
+  as 1/r (capped at 3.5x) beyond 4 body radii — longer reach, identical close-range gravity. It lives
+  in `gravityAt` behind `heavyMul !== 1` (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two
+  must stay in sync or the forecast lies. Thrown rocks, aliens, debris, celestials never feel it.
+- **Fog of war:** the minimap only draws bodies with `b.seen` (set by the `replenishWorld` scan once
+  within sensor range; the sun is always visible). The **gravity compass** (chevrons at the ship) shows
+  the pull of WORLDS ONLY — `game.shipGx/Gy` is stashed from the non-star portion of the ship's gravity
+  in `step`, then vector-smoothed into `game.compassX/Y` in main.js so the arrow can't whip.
+- **Orbit rubber band** (`SHIP_BAND_*`): ship-only, inward-radial-only damping near worlds (mirrored in
+  predictPaths). Outbound is exempt by design — the assist must never become an escape jail. **Surface
+  skimming** (`SKIM_*`): tangential contact grinding damages the hull with sparks + a contact glow; the
+  normal bounce path still only bites above closing-speed thresholds.
+- **Corona heat** (`HEAT_*`): bodies/aliens melt inside `HEAT_ZONE x radius` (depth², lava-born matter
+  immune: `ptype 'lava'`, `magma > 0`, `ember > 0.01`) — that zone's outer edge MUST stay inside the
+  graveyard ring (~3160): ANY body damage derails railed wrecks, there is no "subtle" for them. The
+  SHIP uses a separate wide envelope (`HEAT_SHIP_*`) with an EXPONENTIAL ramp — warmth/glow warn far
+  out, lethal dps only arrives near the photosphere. Lava worlds radiate a weaker SHIP-ONLY aura
+  (`LAVA_*`) — their own railed moons must never take heat.
+- **Gas giants have no surface for the SHIP** (`GAS_*`): it flies in, crushed by depth², dead at the
+  core. Interior ship gravity is enclosed-mass (`x d³/R³`, in `gravityAt` AND `predictPaths.accelAt` —
+  keep in sync, else dives predict as inescapable). The prediction hit marker for a gas giant is its
+  CORE, not its cloud tops. Rocks and aliens still bounce off the cloud tops — only the ship dives.
+- **The drawn ship trajectory is frame-relative:** predictPaths simulates in inertial space (physics
+  truth) but re-expresses the DISPLAYED ship path in the dominant attractor's frame, anchored at its
+  current position (`game.predictRef`, 1.35x hysteresis) — near a world you see your real orbit shape
+  around it; sun-dominant is exactly the inertial path (the sun is pinned). The compass chevron phase
+  ACCUMULATES in main.js (`game.compassPhase`) — never derive animation phase as `time * speed`, a
+  changing speed teleports the phase.
 
 ## Design laws (gameplay + visual)
 
