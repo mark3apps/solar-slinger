@@ -5,7 +5,8 @@
       "name": "solar-slinger",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["serve.py"],
-      "port": 8642
+      "port": 8642,
+      "autoPort": true
     }
   ]
 }

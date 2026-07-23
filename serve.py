@@ -7,6 +7,7 @@ stale code until a hard refresh (sometimes two). This handler forces
 revalidation on every request, so a normal reload always gets fresh modules.
 """
 import http.server
+import os
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
@@ -18,4 +19,7 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    http.server.test(HandlerClass=NoCacheHandler, port=8642, bind='127.0.0.1')
+    # PORT env override lets a second checkout (e.g. a git worktree) serve
+    # alongside the default instance; everything else keeps using 8642.
+    port = int(os.environ.get('PORT', 8642))
+    http.server.test(HandlerClass=NoCacheHandler, port=port, bind='127.0.0.1')

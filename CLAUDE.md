@@ -41,6 +41,13 @@ variable-timestep presentation loop.
 | [sfx.js](src/sfx.js) | Web Audio synthesis. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`). |
 
+The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
+draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull fraction) in the
+ship's local frame, nose along +x, per the `SHIP_TIERS` spec table. Ring assemblies rotate in
+world space in the orbit shield's spin direction (+angle). Damage scars are seeded per
+(tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. The shield
+bubble wraps `shipVisualR(tier, r)` (the drawn art's reach), not the collision radius.
+
 **Import rules:** named exports only (no default exports), explicit `.js` extensions on every
 import path (native browser ESM requires them), `config`/`util` are leaves.
 
