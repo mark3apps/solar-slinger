@@ -1,0 +1,54 @@
+{
+  "name": "solar-slinger",
+  "productName": "Solar Slinger",
+  "version": "0.1.0",
+  "description": "Top-down 2D gravity-sandbox space game",
+  "author": "Mark Wright",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "serve": "python3 serve.py",
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.mark3apps.solar-slinger",
+    "productName": "Solar Slinger",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "index.html",
+      "style.css",
+      "src/**/*",
+      "!**/.DS_Store"
+    ],
+    "mac": {
+      "category": "public.app-category.games",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64", "x64"]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "deleteAppDataOnUninstall": true
+    }
+  }
+}
