@@ -3,7 +3,9 @@
   "productName": "Solar Slinger",
   "version": "0.1.0",
   "description": "Top-down 2D gravity-sandbox space game",
-  "author": "Mark Wright",
+  "author": "Mark Wright <mark@mark3wright.com>",
+  "homepage": "https://github.com/mark3apps/solar-slinger",
+  "desktopName": "solar-slinger",
   "license": "UNLICENSED",
   "private": true,
   "main": "electron/main.js",
@@ -36,6 +38,17 @@
         {
           "target": "dmg",
           "arch": ["arm64", "x64"]
+        }
+      ]
+    },
+    "linux": {
+      "category": "Game",
+      "synopsis": "Top-down 2D gravity-sandbox space game",
+      "syncDesktopName": true,
+      "target": [
+        {
+          "target": "deb",
+          "arch": ["arm64"]
         }
       ]
     },

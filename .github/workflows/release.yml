@@ -21,6 +21,8 @@ jobs:
             args: --mac
           - os: windows-latest
             args: --win
+          - os: ubuntu-latest
+            args: --linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +44,7 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.deb
           if-no-files-found: error
 
   release:
@@ -69,4 +72,8 @@ jobs:
 
             **Windows:** SmartScreen may warn because the installer is unsigned —
             choose "More info" → "Run anyway".
+
+            **Raspberry Pi / Linux arm64:** requires a 64-bit OS (Raspberry Pi OS
+            64-bit on a Pi 3 or later). Install with:
+            `sudo apt install ./solar-slinger_*_arm64.deb`
           files: artifacts/*
