@@ -1,7 +1,7 @@
 import { CFG } from './config.js';
 import { predictPaths } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, mulberry32 } from './util.js';
+import { TAU, lerp, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 let armedSet = null;   // orbiters the shotgun charge has armed this frame
@@ -958,25 +958,25 @@ function shipScars(tier, dmg) {
 //   2 CORVETTE    first ring arms bracketing the nose
 //   3 CRUISER     four arms, armor collar, hull windows
 //   4 DREADNOUGHT near-closed ring, strut spokes, triple bell
-//   5 TITAN       double ring, five pod pairs, spokes everywhere — and a
-//                 straight-up bigger footprint (s 1.55) so it reads as a
-//                 class above everything else
-// The s curve deliberately spans 0.72 -> 1.55: stacked with the collision
-// radius growing off totalLevel, the scout is a speck and the titan looms.
+//   5 TITAN       double ring, five pod pairs, spokes everywhere — a class
+//                 above everything else
+// The tier size ladder lives in config.js SHIP_RADIUS (read by shipStats),
+// so the COLLISION circle is exactly the drawn body disc: here r arrives
+// pre-sized and u = r / bR normalizes the proportions.
 const SHIP_TIERS = [
-  { s: 0.72, bR: 0.58, nose: 1.35, rear: 1.00, fins: true, core: 0, eng: 1 },
-  { s: 0.86, bR: 0.68, nose: 1.32, rear: 1.08, fins: true, wings: true, core: 1, eng: 2 },
+  { bR: 0.58, nose: 1.35, rear: 1.00, fins: true, core: 0, eng: 1 },
+  { bR: 0.68, nose: 1.32, rear: 1.08, fins: true, wings: true, core: 1, eng: 2 },
   // Corvette's arms deliberately bracket the nose and DON'T spin — the
   // rotating machinery is a bigger-class privilege (spin: true, tiers 3+).
-  { s: 1.00, bR: 0.78, nose: 1.42, rear: 1.12, armR: 1.20, core: 1, eng: 1,
+  { bR: 0.78, nose: 1.42, rear: 1.12, armR: 1.20, core: 1, eng: 1,
     arms: [[-1.45, -0.40]], pods: [-1.45, -0.40] },
-  { s: 1.12, bR: 0.88, nose: 1.55, rear: 1.22, armR: 1.32, core: 2, eng: 1,
+  { bR: 0.88, nose: 1.55, rear: 1.22, armR: 1.32, core: 2, eng: 1,
     arms: [[-1.50, -0.45], [-2.75, -1.90]], pods: [-1.50, -0.45, -2.75],
     collar: true, windows: true, spin: true },
-  { s: 1.28, bR: 0.98, nose: 1.68, rear: 1.34, armR: 1.44, core: 2, eng: 3,
+  { bR: 0.98, nose: 1.68, rear: 1.34, armR: 1.44, core: 2, eng: 3,
     arms: [[-1.62, -0.30], [-2.95, -1.78]], pods: [-0.30, -1.05, -1.78, -2.50],
     spokes: [-0.90, -2.20], collar: true, windows: true, spin: true },
-  { s: 1.55, bR: 1.05, nose: 1.85, rear: 1.45, armR: 1.58, armR2: 1.26, core: 2, eng: 3,
+  { bR: 1.05, nose: 1.85, rear: 1.45, armR: 1.58, armR2: 1.26, core: 2, eng: 3,
     arms: [[-2.90, -0.25]], arms2: [[-2.35, -1.85], [-1.25, -0.65]],
     pods: [-0.45, -1.02, -1.57, -2.12, -2.68],
     spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
@@ -987,12 +987,12 @@ const SHIP_TIERS = [
 // collision radius — a titan's bubble must clear its outer ring and nose.
 function shipVisualR(tier, r) {
   const t = SHIP_TIERS[tier];
-  return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2)) * r * t.s;
+  return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2)) * r / t.bR;
 }
 
 function drawShipHull(game, tier, dmg, r) {
   const t = SHIP_TIERS[tier];
-  const u = r * t.s;
+  const u = r / t.bR;   // r IS the body-disc (collision) radius
   const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
   const lw = Math.max(1.1, 0.07 * u);
   const cx = -0.12 * u;                   // body circle sits a touch aft
@@ -1215,6 +1215,13 @@ function drawShipHull(game, tier, dmg, r) {
   ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
 }
 
+// Tier-morph state (render-local, cosmetic): when the tier changes, the new
+// hull scales in from the old silhouette's size over MORPH_T seconds with a
+// flash ring, masking the hard art swap. Driven by game.time so it freezes
+// with the sim when paused.
+const MORPH_T = 0.9;
+let morphTierSeen = -1, morphStart = -1e9, morphFromVisR = 0, morphLastVisR = 0;
+
 function drawShip(game) {
   const s = game.ship;
   if (!s.alive) return;
@@ -1225,6 +1232,19 @@ function drawShip(game) {
   const tier = Math.min(game.st.tier, SHIP_TIERS.length - 1);
   const tG = SHIP_TIERS[tier];
   const visR = shipVisualR(tier, r);   // how far the drawn art reaches
+
+  if (tier !== morphTierSeen) {
+    // First frame ever doesn't morph; every later tier change (up OR down —
+    // demo tools flip both ways) blends from the previous drawn size.
+    if (morphTierSeen >= 0) { morphStart = game.time; morphFromVisR = morphLastVisR; }
+    morphTierSeen = tier;
+  }
+  morphLastVisR = visR;
+  const mk = (game.time - morphStart) / MORPH_T;   // 0..1 during a morph
+  const morphing = mk >= 0 && mk < 1;
+  const morphScale = morphing
+    ? lerp(morphFromVisR / visR, 1, 1 - Math.pow(1 - mk, 3))   // cubic ease-out
+    : 1;
 
   // The tier hull designs carry the ship's visual growth; the only extra
   // stage FX kept is the dreadnought+ gravity-well halo dimming space around
@@ -1250,8 +1270,9 @@ function drawShip(game) {
     const z = game.cam.zoom;
     const sf = Math.max(0, s.shield / game.st.shieldMax);
     // The bubble wraps the DRAWN hull (rings, nose tower and all), not the
-    // collision radius — on a titan those differ by almost 2x.
-    const R = visR * 1.08 + 5 / z;
+    // collision radius — on a titan those differ by almost 2x. It tracks the
+    // tier-morph scale so it grows with the art instead of snapping.
+    const R = visR * morphScale * 1.08 + 5 / z;
     if (sf > 0.02) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
       let a = 0.12 + 0.30 * sf;
@@ -1300,13 +1321,36 @@ function drawShip(game) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Tier-morph flash: a bright pulse + one expanding ring sweeping from the
+  // old silhouette size to the new — EVENT motion, like the absorb ripple.
+  if (morphing) {
+    const z = game.cam.zoom;
+    const pulse = Math.sin(Math.PI * Math.min(1, mk * 1.15));
+    ctx.globalCompositeOperation = 'lighter';
+    const fg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, visR * morphScale * 1.5);
+    fg.addColorStop(0, `rgba(190, 240, 255, ${pulse * 0.4})`);
+    fg.addColorStop(0.6, `rgba(110, 200, 255, ${pulse * 0.18})`);
+    fg.addColorStop(1, 'transparent');
+    ctx.fillStyle = fg;
+    ctx.beginPath(); ctx.arc(s.x, s.y, visR * morphScale * 1.5, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(170, 235, 255, ${(1 - mk) * 0.8})`;
+    ctx.lineWidth = 2.5 / z;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, lerp(morphFromVisR, visR * 1.35, 1 - Math.pow(1 - mk, 3)), 0, TAU);
+    ctx.stroke();
+  }
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.angle);
+  // The whole local-frame group (flames, sputter, hull) rides the morph
+  // scale, so the swap reads as the ship growing into its new class.
+  ctx.scale(morphScale, morphScale);
 
   // Flames anchor to the tier's actual engine mouth / nose tip, not the
   // collision radius — the art's rear moves aft as the hulls grow.
-  const rearX = -tG.rear * r * tG.s, noseX = tG.nose * r * tG.s;
+  const rearX = -tG.rear * r / tG.bR, noseX = tG.nose * r / tG.bR;
   if (s.thrusting) {
     const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15);
     const g = ctx.createLinearGradient(rearX, 0, rearX - r * 1.9 * f, 0);
@@ -1337,7 +1381,7 @@ function drawShip(game) {
     if (Math.sin(game.time * 29) > -0.3) {
       ctx.fillStyle = `rgba(255, 205, 130, ${0.3 + 0.5 * Math.random()})`;
       ctx.beginPath();
-      ctx.arc(rearX * (0.9 + Math.random() * 0.25), (Math.random() - 0.5) * r * tG.s * 0.8,
+      ctx.arc(rearX * (0.9 + Math.random() * 0.25), (Math.random() - 0.5) * r * 0.8,
         Math.max(1.2, r * 0.09), 0, TAU);
       ctx.fill();
     }
