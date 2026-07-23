@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{margin:0;background:#333}</style></head>
+<body>
+<canvas id="c" width="1024" height="1024"></canvas>
+<script>
+function renderIcon() {
+  const S = 1024;
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+
+  // ---- macOS-style rounded square, transparent corners ----
+  const R = 232;
+  ctx.save();
+  const rr = new Path2D();
+  rr.roundRect(0, 0, S, S, R);
+  ctx.clip(rr);
+
+  // ---- deep space background ----
+  const bg = ctx.createRadialGradient(S*0.32, S*0.72, 60, S*0.5, S*0.5, S*0.85);
+  bg.addColorStop(0, '#101c3a');
+  bg.addColorStop(0.45, '#081020');
+  bg.addColorStop(1, '#04060d');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, S, S);
+
+  // ---- starfield (deterministic) ----
+  let seed = 42;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 130; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 0.8 + rnd() * 1.9, a = 0.25 + rnd() * 0.65;
+    ctx.fillStyle = `rgba(${200+Math.floor(rnd()*55)}, ${220+Math.floor(rnd()*35)}, 255, ${a})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+
+  // ---- the sun, lower-left ----
+  const sx = S*0.34, sy = S*0.70, sr = 175;
+  // far corona
+  let g = ctx.createRadialGradient(sx, sy, sr*0.3, sx, sy, sr*3.1);
+  g.addColorStop(0, 'rgba(255, 160, 60, 0.55)');
+  g.addColorStop(0.35, 'rgba(255, 120, 40, 0.18)');
+  g.addColorStop(1, 'rgba(255, 100, 30, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+  // body
+  g = ctx.createRadialGradient(sx - sr*0.25, sy - sr*0.25, sr*0.1, sx, sy, sr);
+  g.addColorStop(0, '#fff7e0');
+  g.addColorStop(0.35, '#ffd77a');
+  g.addColorStop(0.75, '#ff9a3d');
+  g.addColorStop(1, '#f06a1e');
+  ctx.shadowColor = 'rgba(255,150,50,0.9)';
+  ctx.shadowBlur = 90;
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // ---- slingshot trajectory: hyperbolic swoosh around the sun ----
+  // Tail sweeps in from the lower-left (fading off behind the sun), whips
+  // around the sun's lower-right flank at perigee, and exits toward the
+  // open upper-right with the ship at its head. Angle sweeps CCW around
+  // the sun; radius dips to perigee mid-sweep.
+  const pts = [];
+  const N = 140;
+  const A0 = -3.55, A1 = 1.05;             // sweep (rad), tail -> ship
+  const PERI = 0.52;                        // t of closest approach
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;                       // 0 tail .. 1 ship
+    const ang = A0 + t * (A1 - A0);
+    const rad = sr + 88 + 540 * Math.pow(Math.abs(t - PERI) / PERI, 2.1);
+    pts.push({ x: sx + Math.cos(ang) * rad, y: sy - Math.sin(ang) * rad, t });
+  }
+  // glow pass then core pass, tapered width, fading tail
+  for (const pass of [
+    { wMax: 46, color: (a) => `rgba(70, 190, 255, ${0.16 * a})`, blur: 34 },
+    { wMax: 20, color: (a) => `rgba(140, 225, 255, ${0.85 * a})`, blur: 14 },
+    { wMax: 7,  color: (a) => `rgba(240, 252, 255, ${0.95 * a})`, blur: 0 },
+  ]) {
+    for (let i = 1; i < N - 4; i++) {
+      const p = pts[i], q = pts[i + 1];
+      const a = Math.pow(p.t, 2.2);
+      ctx.strokeStyle = pass.color(a);
+      ctx.lineWidth = Math.max(1, pass.wMax * (0.15 + 0.85 * p.t));
+      ctx.lineCap = 'round';
+      ctx.shadowColor = 'rgba(80, 200, 255, 0.8)';
+      ctx.shadowBlur = pass.blur * a;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+    }
+  }
+  ctx.shadowBlur = 0;
+
+  // ---- the ship at the head of the swoosh ----
+  const hp = pts[N - 4], hq = pts[N - 1];
+  const heading = Math.atan2(hq.y - hp.y, hq.x - hp.x);
+  ctx.save();
+  ctx.translate(hq.x, hq.y);
+  ctx.rotate(heading);
+  const sc = 3.1;
+  ctx.scale(sc, sc);
+  // engine glow
+  g = ctx.createRadialGradient(-16, 0, 2, -16, 0, 26);
+  g.addColorStop(0, 'rgba(120, 220, 255, 0.9)');
+  g.addColorStop(1, 'rgba(120, 220, 255, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(-16, 0, 26, 0, 7); ctx.fill();
+  // hull — sleek dart
+  ctx.shadowColor = 'rgba(140, 230, 255, 0.9)';
+  ctx.shadowBlur = 18;
+  const hull = ctx.createLinearGradient(-14, 0, 22, 0);
+  hull.addColorStop(0, '#9fdcff');
+  hull.addColorStop(1, '#f2fcff');
+  ctx.fillStyle = hull;
+  ctx.beginPath();
+  ctx.moveTo(24, 0);
+  ctx.lineTo(-10, -13);
+  ctx.lineTo(-4, 0);
+  ctx.lineTo(-10, 13);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  // cockpit
+  ctx.fillStyle = '#0a2a4a';
+  ctx.beginPath(); ctx.arc(8, 0, 4.4, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(160, 235, 255, 0.9)';
+  ctx.beginPath(); ctx.arc(9.2, -1.2, 1.8, 0, 7); ctx.fill();
+  ctx.restore();
+
+  // ---- vignette to seat everything ----
+  g = ctx.createRadialGradient(S*0.5, S*0.5, S*0.42, S*0.5, S*0.5, S*0.78);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(2,4,10,0.55)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+
+  // subtle inner rim light on the rounded square
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(130, 200, 255, 0.14)';
+  ctx.lineWidth = 6;
+  const rim = new Path2D();
+  rim.roundRect(3, 3, S - 6, S - 6, R - 3);
+  ctx.stroke(rim);
+  ctx.restore();
+
+  return cv.toDataURL('image/png');
+}
+window.renderIcon = renderIcon;
+renderIcon();
+</script>
+</body>
+</html>
