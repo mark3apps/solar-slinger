@@ -48,7 +48,11 @@
       "target": [
         {
           "target": "deb",
-          "arch": ["arm64"]
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "rpm",
+          "arch": ["x64", "arm64"]
         }
       ]
     },
