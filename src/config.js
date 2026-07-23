@@ -187,6 +187,28 @@ export const TIERS = {
   labels: ['Asteroids', 'Moons', 'Minor planets', 'Planets', 'Gas giants', 'Anything but stars'],
 };
 
+// Per-tier collision radius (= the drawn hull's body disc; render.js
+// normalizes the art to it). These are DERIVED, not hand-picked: the ship's
+// full drawn FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the
+// SAME RATIO each tier (x1.62, from 6.0 to 67 world units), and each entry
+// divides that footprint by its tier design's art-reach ratio
+// (footprint/bodyR from render.js SHIP_TIERS: 2.33, 1.94, 1.82, 1.76, 1.71,
+// 1.76). Equal RATIOS, not equal increments: the eye judges size change
+// multiplicatively, so an increment ladder made the early tiers feel huge
+// and (paired with the zoom's growing ratio steps) tier 6 feel like an
+// explosion. Recompute if SHIP_TIERS proportions change.
+export const SHIP_RADIUS = [2.6, 5.0, 8.6, 14.5, 24.1, 38.0];
+
+// Per-tier camera zoom TARGET (the value cam zoom eases toward): a
+// geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
+// RATIO. The start value is DERIVED, not aesthetic: it makes the ship's
+// APPARENT on-screen size arc identical to the approved one (~15px-eq
+// scout -> ~40px-eq titan) while the ship's WORLD size shrank — small
+// ships look the same in the viewport but tiny next to planets. Change
+// SHIP_RADIUS and you must re-derive this. Zoom is driven by beam tier
+// alone — other progression tracks don't pull the camera back.
+export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
+
 // Upgrades are AUTOMATIC — playing the game grows the ship:
 //   catch things in the beam  -> beam capacity grows (heavier catches = faster)
 //   smash things              -> fling speed grows
@@ -254,8 +276,11 @@ export function shipStats(prog) {
     tier,
     label: TIERS.labels[tier],
     // Orbit level extends how far the beam reaches and how forgiving the
-    // cursor is about being near a target
-    range: 280 + 70 * tier + 45 * orbitLvl,
+    // cursor is about being near a target. The per-tier base is sized
+    // against SHIP_ZOOM so the reach ring stays ON SCREEN at every tier —
+    // the old flat 280+70/tier curve overflowed the viewport at the
+    // zoomed-in early tiers. Tiers 4-6 keep their original values.
+    range: [200, 265, 350, 490, 560, 630][tier] + 45 * orbitLvl,
     grabSlack: 70 + 28 * orbitLvl,
     force: prog.capacity * 55 * (0.6 + 0.12 * tier),
     // Speed governor: each engine level raises the ceiling; exceeding it
@@ -281,12 +306,15 @@ export function shipStats(prog) {
     // forecast step count by this, so exploring literally extends how far
     // ahead you can see. Capped ~2x so the per-frame predictor stays cheap.
     predictBoost: 1 + Math.min(1.1, prog.surveyed * 0.06),
-    // The ship GROWS with you — paired with the deep auto zoom-out below,
-    // leveling reads as you outgrowing the universe
-    radius: Math.min(64, 9 + totalLevel * 2.0),
-    // Camera pulls way back as you grow (animated in main.js, no manual
-    // zoom) — the system visibly shrinks around your ever-bigger ship
-    zoomOut: Math.min(3.4, 1 + totalLevel * 0.11),
+    // The ship GROWS at each beam tier (render.js morphs the transition).
+    // Size is tier-driven ONLY — no totalLevel term: multiplying two growing
+    // curves makes the top tiers balloon superlinearly and the size ladder
+    // uneven. The collision circle always matches the drawn art.
+    radius: SHIP_RADIUS[tier],
+    // Camera pulls back as you tier up (animated in main.js, no manual
+    // zoom) — main.js targets 1.15 / zoomOut, so this makes the final zoom
+    // target exactly SHIP_ZOOM[tier] (geometric 2.46 -> 0.6 across tiers).
+    zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };
 }

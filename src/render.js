@@ -1,7 +1,7 @@
 import { CFG } from './config.js';
 import { predictPaths } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, mulberry32 } from './util.js';
+import { TAU, lerp, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 let armedSet = null;   // orbiters the shotgun charge has armed this frame
@@ -913,6 +913,315 @@ function drawBeam(game, fromX, fromY, obj, color) {
   ctx.stroke();
 }
 
+// ---- Player-ship hull: procedural vector art --------------------------------
+// Vector remake of the AI sprite sheet (6 tiers x 3 damage states): the same
+// silhouette language — delta nose over a round segmented body, glowing cyan
+// core, arc ring-arms with orb pods on the big tiers — but canvas paths, so it
+// stays crisp at every zoom and matches the game's vector look. Drawn in the
+// ship's local frame, nose along +x, sized off the collision radius r.
+const SHIP_HULL = '#dce6f2', SHIP_MID = '#9fb0c6', SHIP_DARK = '#2b3444',
+  SHIP_GREY = '#57637a', SHIP_CYAN = '#7adcff';
+
+// Damage scars are seeded per (tier, dmg) so they never flicker frame to frame.
+// Stored in unit space (fractions of body radius) and scaled at draw time.
+const scarCache = new Map();
+function shipScars(tier, dmg) {
+  const key = tier * 3 + dmg;
+  let list = scarCache.get(key);
+  if (!list) {
+    const rng = mulberry32(0xC0FFEE + key * 977);
+    list = [];
+    const n = dmg === 0 ? 0 : dmg * 2 + (tier >> 1);
+    for (let i = 0; i < n; i++) {
+      list.push({
+        a: rng() * TAU, d: 0.2 + rng() * 0.65,
+        sz: (0.5 + rng() * 0.5) * (dmg === 2 ? 1.4 : 1),
+        rot: rng() * TAU, streak: 0.25 + rng() * 0.4, jit: (rng() - 0.5) * 0.3,
+      });
+    }
+    // Major damage also bites chunks out of the hull rim
+    if (dmg === 2) {
+      for (let i = 0; i < 2; i++) {
+        list.push({ bite: true, a: rng() * TAU, sz: 0.6 + rng() * 0.4 });
+      }
+    }
+    scarCache.set(key, list);
+  }
+  return list;
+}
+
+// Per-tier anatomy. Lengths are in units of u = r * s (collision radius x
+// per-tier visual scale); arc angles are for the top half (-y) and mirrored
+// at draw time. Each tier is a DISTINCT design, not just a bigger wedge:
+//   0 SCOUT       bare wedge, tail fins
+//   1 FIGHTER     swept wing pods, twin engine bells
+//   2 CORVETTE    first ring arms bracketing the nose
+//   3 CRUISER     four arms, armor collar, hull windows
+//   4 DREADNOUGHT near-closed ring, strut spokes, triple bell
+//   5 TITAN       double ring, five pod pairs, spokes everywhere — a class
+//                 above everything else
+// The tier size ladder lives in config.js SHIP_RADIUS (read by shipStats),
+// so the COLLISION circle is exactly the drawn body disc: here r arrives
+// pre-sized and u = r / bR normalizes the proportions.
+const SHIP_TIERS = [
+  { bR: 0.58, nose: 1.35, rear: 1.00, fins: true, core: 0, eng: 1 },
+  { bR: 0.68, nose: 1.32, rear: 1.08, fins: true, wings: true, core: 1, eng: 2 },
+  // Corvette's arms deliberately bracket the nose and DON'T spin — the
+  // rotating machinery is a bigger-class privilege (spin: true, tiers 3+).
+  { bR: 0.78, nose: 1.42, rear: 1.12, armR: 1.20, core: 1, eng: 1,
+    arms: [[-1.45, -0.40]], pods: [-1.45, -0.40] },
+  { bR: 0.88, nose: 1.55, rear: 1.22, armR: 1.32, core: 2, eng: 1,
+    arms: [[-1.50, -0.45], [-2.75, -1.90]], pods: [-1.50, -0.45, -2.75],
+    collar: true, windows: true, spin: true },
+  { bR: 0.98, nose: 1.68, rear: 1.34, armR: 1.44, core: 2, eng: 3,
+    arms: [[-1.62, -0.30], [-2.95, -1.78]], pods: [-0.30, -1.05, -1.78, -2.50],
+    spokes: [-0.90, -2.20], collar: true, windows: true, spin: true },
+  { bR: 1.05, nose: 1.85, rear: 1.45, armR: 1.58, armR2: 1.26, core: 2, eng: 3,
+    arms: [[-2.90, -0.25]], arms2: [[-2.35, -1.85], [-1.25, -0.65]],
+    pods: [-0.45, -1.02, -1.57, -2.12, -2.68],
+    spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
+];
+
+// How far the DRAWN ship reaches from its center (world units). The shield
+// bubble and any effect that should wrap the art uses this, NOT the (smaller)
+// collision radius — a titan's bubble must clear its outer ring and nose.
+function shipVisualR(tier, r) {
+  const t = SHIP_TIERS[tier];
+  return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2)) * r / t.bR;
+}
+
+function drawShipHull(game, tier, dmg, r) {
+  const t = SHIP_TIERS[tier];
+  const u = r / t.bR;   // r IS the body-disc (collision) radius
+  const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
+  const lw = Math.max(1.1, 0.07 * u);
+  const cx = -0.12 * u;                   // body circle sits a touch aft
+  ctx.lineJoin = 'round';
+
+  // The ring assemblies ROTATE (tiers flagged spin: true), in the same
+  // +angle direction the orbit shield spins (CFG.ORBIT_OMEGA > 0) but
+  // statelier; the inner ring turns slower for parallax. We're drawing
+  // inside rotate(s.angle), so subtract the heading to anchor the spin in
+  // WORLD space — otherwise every aim twitch would slew the rings.
+  const spinA = t.spin ? game.time * 0.35 - game.ship.angle : 0;
+  const spinB = t.spin ? game.time * 0.20 - game.ship.angle : 0;
+
+  // Dark-outlined light arc, mirrored top/bottom — ring arms + armor collar
+  const arcPass = (R, list, wOut, wIn) => {
+    ctx.lineCap = 'round';
+    for (const [a0, a1] of list) {
+      for (const m of [1, -1]) {
+        ctx.beginPath();
+        ctx.arc(0, 0, R, m > 0 ? a0 : -a1, m > 0 ? a1 : -a0);
+        ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = wOut; ctx.stroke();
+        ctx.strokeStyle = SHIP_MID; ctx.lineWidth = wIn; ctx.stroke();
+      }
+    }
+    ctx.lineCap = 'butt';
+  };
+
+  // Outer ring assembly — spokes, arms and pods spin as one rigid wheel
+  // around the stationary core.
+  if (t.arms || t.spokes) {
+    ctx.save();
+    ctx.rotate(spinA);
+    if (t.spokes) {
+      ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = 0.13 * u;
+      for (const a of t.spokes) {
+        for (const m of [1, -1]) {
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a * m) * bR * 0.9, Math.sin(a * m) * bR * 0.9);
+          ctx.lineTo(Math.cos(a * m) * t.armR * u, Math.sin(a * m) * t.armR * u);
+          ctx.stroke();
+        }
+      }
+    }
+    if (t.arms) arcPass(t.armR * u, t.arms, 0.30 * u, 0.14 * u);
+    if (t.pods) {
+      for (const a of t.pods) {
+        for (const m of [1, -1]) {
+          const px = Math.cos(a * m) * t.armR * u, py = Math.sin(a * m) * t.armR * u;
+          ctx.fillStyle = SHIP_HULL;
+          ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+          ctx.beginPath(); ctx.arc(px, py, 0.17 * u, 0, TAU); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = SHIP_CYAN;
+          ctx.beginPath(); ctx.arc(px, py, 0.09 * u, 0, TAU); ctx.fill();
+        }
+      }
+    }
+    ctx.restore();
+  }
+  // Inner ring (titan): same direction, slower — depth through parallax
+  if (t.arms2) {
+    ctx.save();
+    ctx.rotate(spinB);
+    arcPass(t.armR2 * u, t.arms2, 0.20 * u, 0.09 * u);
+    ctx.restore();
+  }
+
+  // Tail fins (scout/fighter — the ring arms take over the silhouette later)
+  if (t.fins) {
+    ctx.fillStyle = SHIP_MID;
+    ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(-0.15 * u, m * bR * 0.7);
+      ctx.lineTo(-0.85 * u, m * (bR + 0.35 * u));
+      ctx.lineTo(-0.62 * u, m * bR * 0.5);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  // Fighter wing pods: swept struts ending in cyan-orbed nacelles
+  if (t.wings) {
+    for (const m of [1, -1]) {
+      const wx = -0.5 * u, wy = m * (bR + 0.42 * u);
+      ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.22 * u; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(-0.05 * u, m * bR * 0.7); ctx.lineTo(wx, wy); ctx.stroke();
+      ctx.strokeStyle = SHIP_MID; ctx.lineWidth = 0.11 * u;
+      ctx.beginPath(); ctx.moveTo(-0.05 * u, m * bR * 0.7); ctx.lineTo(wx, wy); ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.fillStyle = SHIP_HULL;
+      ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.arc(wx, wy, 0.16 * u, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = SHIP_CYAN;
+      ctx.beginPath(); ctx.arc(wx, wy, 0.08 * u, 0, TAU); ctx.fill();
+    }
+  }
+
+  // Engine bells: 1 = single trapezoid, 2 = twin, 3 = big bell + outboards
+  ctx.fillStyle = SHIP_GREY;
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  const bell = (x0, x1, w0, w1, off) => {
+    ctx.beginPath();
+    ctx.moveTo(x0, off - w0); ctx.lineTo(x1, off - w1);
+    ctx.lineTo(x1, off + w1); ctx.lineTo(x0, off + w0);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  };
+  if (t.eng === 1) bell(-bR * 0.72, rear, 0.36 * bR, 0.24 * bR, 0);
+  else if (t.eng === 2) {
+    bell(-bR * 0.62, rear, 0.20 * bR, 0.13 * bR, -0.34 * bR);
+    bell(-bR * 0.62, rear, 0.20 * bR, 0.13 * bR, 0.34 * bR);
+  } else {
+    bell(-bR * 0.72, rear, 0.30 * bR, 0.20 * bR, 0);
+    bell(-bR * 0.58, rear * 0.86, 0.15 * bR, 0.10 * bR, -0.60 * bR);
+    bell(-bR * 0.58, rear * 0.86, 0.15 * bR, 0.10 * bR, 0.60 * bR);
+  }
+  // Cyan glow at the main bell mouth
+  ctx.fillStyle = 'rgba(122, 220, 255, 0.8)';
+  ctx.fillRect(rear, -0.14 * bR, 0.05 * u, 0.28 * bR);
+
+  // Hull: round rear body + delta nose in one path
+  ctx.fillStyle = SHIP_HULL;
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.arc(cx, 0, bR, 1.05, -1.05);
+  ctx.quadraticCurveTo(0.55 * u, -0.68 * bR, nose, 0);
+  ctx.quadraticCurveTo(0.55 * u, 0.68 * bR, cx + bR * Math.cos(1.05), bR * Math.sin(1.05));
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // Armor collar: heavy plate arcs hugging the rear rim
+  if (t.collar) arcPass(bR * 1.04, [[-2.45, -1.75]], 0.28 * u, 0.15 * u);
+
+  // Panel seams: a concentric ring plus diagonal radials keep the big
+  // disc from reading as a blank plate
+  ctx.strokeStyle = 'rgba(43, 52, 68, 0.30)';
+  ctx.lineWidth = lw * 0.6;
+  ctx.beginPath(); ctx.arc(cx, 0, bR * 0.72, 0, TAU); ctx.stroke();
+  for (const a of [0.7, 2.2, -0.7, -2.2]) {
+    ctx.beginPath();
+    ctx.moveTo(cx + bR * 0.52 * Math.cos(a), bR * 0.52 * Math.sin(a));
+    ctx.lineTo(cx + bR * 0.94 * Math.cos(a), bR * 0.94 * Math.sin(a));
+    ctx.stroke();
+  }
+  // Lit hull windows along the mid-deck ring
+  if (t.windows) {
+    ctx.fillStyle = 'rgba(122, 220, 255, 0.9)';
+    for (const a of [0.55, 1.15, 2.05, -0.55, -1.15, -2.05]) {
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * bR * 0.55, Math.sin(a) * bR * 0.55, 0.035 * u, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  // Dark nose spine with a cyan slit and tip light
+  ctx.fillStyle = SHIP_GREY;
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+  ctx.beginPath();
+  ctx.moveTo(nose * 0.97, 0);
+  ctx.lineTo(0.45 * bR, -0.16 * bR);
+  ctx.lineTo(0.45 * bR, 0.16 * bR);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = SHIP_CYAN; ctx.lineWidth = Math.max(1, 0.05 * u);
+  ctx.beginPath(); ctx.moveTo(nose * 0.88, 0); ctx.lineTo(0.6 * bR, 0); ctx.stroke();
+  if (tier >= 3) {
+    ctx.fillStyle = '#e8f7ff';
+    ctx.beginPath(); ctx.arc(nose * 0.96, 0, 0.045 * u, 0, TAU); ctx.fill();
+  }
+
+  // Core: dark well, cyan glow ring, bright center. core 2 adds an outer
+  // graduated ring with tick marks — the reference's big-hull reactor look.
+  const cR = (t.core === 0 ? 0.34 : 0.46) * bR;
+  ctx.fillStyle = '#141b28';
+  ctx.beginPath(); ctx.arc(0, 0, cR, 0, TAU); ctx.fill();
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.10 * bR;
+  ctx.beginPath(); ctx.arc(0, 0, cR, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(90, 200, 255, 0.35)'; ctx.lineWidth = 0.17 * bR;
+  ctx.beginPath(); ctx.arc(0, 0, cR * 0.65, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = SHIP_CYAN; ctx.lineWidth = 0.07 * bR;
+  ctx.beginPath(); ctx.arc(0, 0, cR * 0.65, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#e8f7ff';
+  ctx.beginPath(); ctx.arc(0, 0, cR * 0.28, 0, TAU); ctx.fill();
+  if (t.core === 2) {
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.6)';
+    ctx.lineWidth = lw * 0.7;
+    ctx.beginPath(); ctx.arc(0, 0, cR * 1.35, 0, TAU); ctx.stroke();
+    for (const a of [0.785, 2.356, -0.785, -2.356]) {
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * cR * 1.1, Math.sin(a) * cR * 1.1);
+      ctx.lineTo(Math.cos(a) * cR * 1.35, Math.sin(a) * cR * 1.35);
+      ctx.stroke();
+    }
+  }
+
+  // Damage overlay: scorch gouges with rust streaks trailing aft, and (major
+  // only) dark bites out of the hull rim
+  for (const sc of shipScars(tier, dmg)) {
+    if (sc.bite) {
+      ctx.fillStyle = '#0c0f16';
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(sc.a) * bR, Math.sin(sc.a) * bR, sc.sz * 0.18 * bR, 0, TAU);
+      ctx.fill();
+      continue;
+    }
+    // Scar geometry scales with the BODY, not the collision radius — the same
+    // damage level should look equally beat-up on a scout and a titan.
+    const x = cx + Math.cos(sc.a) * sc.d * bR, y = Math.sin(sc.a) * sc.d * bR;
+    const sz = sc.sz * 0.16 * bR;
+    ctx.fillStyle = 'rgba(122, 74, 34, 0.7)';
+    ctx.beginPath();
+    ctx.moveTo(x, y - sz * 0.3);
+    ctx.lineTo(x - sc.streak * bR, y + sc.jit * bR);
+    ctx.lineTo(x, y + sz * 0.3);
+    ctx.closePath(); ctx.fill();
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(sc.rot);
+    ctx.fillStyle = '#241c12';
+    ctx.beginPath();
+    ctx.moveTo(-sz, 0); ctx.lineTo(-0.2 * sz, -0.8 * sz);
+    ctx.lineTo(sz, -0.15 * sz); ctx.lineTo(0.3 * sz, 0.7 * sz);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
+}
+
+// Tier-morph state (render-local, cosmetic): when the tier changes, the new
+// hull scales in from the old silhouette's size over MORPH_T seconds with a
+// flash ring, masking the hard art swap. Driven by game.time so it freezes
+// with the sim when paused.
+const MORPH_T = 0.9;
+let morphTierSeen = -1, morphStart = -1e9, morphFromVisR = 0, morphLastVisR = 0;
+
 function drawShip(game) {
   const s = game.ship;
   if (!s.alive) return;
@@ -920,54 +1229,37 @@ function drawShip(game) {
 
   const lv = game.st.levels;
   const r = s.radius;
+  const tier = Math.min(game.st.tier, SHIP_TIERS.length - 1);
+  const tG = SHIP_TIERS[tier];
+  const visR = shipVisualR(tier, r);   // how far the drawn art reaches
 
-  // GRAVITY-SHIP: four stages, each projecting a bigger sense of scale.
-  //   0 SCOUT       (lvl <4):  bare wedge — a speck among the rocks
-  //   1 CRUISER     (4-8):     field ring + swept vanes
-  //   2 DREADNOUGHT (9-15):    counter-rotating rings, singularity core,
-  //                            and a dark gravity-well halo around the hull
-  //   3 TITAN       (16+):     third ring, five orbiting field nodes,
-  //                            lensing arcs — space itself bends around you
+  if (tier !== morphTierSeen) {
+    // First frame ever doesn't morph; every later tier change (up OR down —
+    // demo tools flip both ways) blends from the previous drawn size.
+    if (morphTierSeen >= 0) { morphStart = game.time; morphFromVisR = morphLastVisR; }
+    morphTierSeen = tier;
+  }
+  morphLastVisR = visR;
+  const mk = (game.time - morphStart) / MORPH_T;   // 0..1 during a morph
+  const morphing = mk >= 0 && mk < 1;
+  const morphScale = morphing
+    ? lerp(morphFromVisR / visR, 1, 1 - Math.pow(1 - mk, 3))   // cubic ease-out
+    : 1;
+
+  // The tier hull designs carry the ship's visual growth; the only extra
+  // stage FX kept is the dreadnought+ gravity-well halo dimming space around
+  // the hull (it layers under the art instead of duplicating its geometry).
   const stage = game.st.totalLevel >= 16 ? 3 : game.st.totalLevel >= 9 ? 2 : game.st.totalLevel >= 4 ? 1 : 0;
-  const drawRing = (R, dash, gap, speed, color) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.6;
-    ctx.setLineDash([r * dash, r * gap]);
-    ctx.lineDashOffset = game.time * r * speed;
-    ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.stroke();
-  };
-  const drawHalo = (R, strength) => {
-    // The drive's captive well dims space around the ship
+  if (stage >= 2) {
+    const R = r * (stage >= 3 ? 3.8 : 2.8);
+    const strength = stage >= 3 ? 0.5 : 0.35;
     const hg = ctx.createRadialGradient(s.x, s.y, R * 0.25, s.x, s.y, R);
     hg.addColorStop(0, `rgba(4, 2, 16, ${strength})`);
     hg.addColorStop(0.75, `rgba(30, 20, 70, ${strength * 0.4})`);
     hg.addColorStop(1, 'transparent');
     ctx.fillStyle = hg;
     ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
-  };
-  if (stage >= 2) drawHalo(r * (stage >= 3 ? 3.8 : 2.8), stage >= 3 ? 0.5 : 0.35);
-  if (stage >= 1) drawRing(r * 1.6, 0.5, 0.35, -1.6, 'rgba(140, 170, 255, 0.5)');
-  if (stage >= 2) drawRing(r * 2.25, 0.32, 0.26, 2.1, 'rgba(190, 140, 255, 0.42)');
-  if (stage >= 3) {
-    drawRing(r * 3.1, 0.2, 0.42, -2.8, 'rgba(120, 230, 255, 0.38)');
-    ctx.setLineDash([]);
-    // Five field nodes riding the outermost ring
-    ctx.fillStyle = '#9fd0ff';
-    for (let i = 0; i < 5; i++) {
-      const a = game.time * 1.2 + (i * TAU) / 5;
-      ctx.beginPath();
-      ctx.arc(s.x + Math.cos(a) * r * 3.1, s.y + Math.sin(a) * r * 3.1, Math.max(2, r * 0.11), 0, TAU);
-      ctx.fill();
-    }
-    // Gravitational lensing: two bright thin arcs where light slips past
-    ctx.strokeStyle = 'rgba(210, 230, 255, 0.3)';
-    ctx.lineWidth = 1.2;
-    const la = game.time * 0.35;
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.55, la, la + 0.9); ctx.stroke();
-    ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.55, la + Math.PI, la + Math.PI + 0.9); ctx.stroke();
   }
-  ctx.setLineDash([]);
-  ctx.lineDashOffset = 0;   // stage-ring animation must not leak into helper dashes
 
   // Personal shield (DESIGN LAW — see CLAUDE.md): a calm, steady volumetric
   // rim glow. No dashes, no idle motion. Color/alpha track shield fraction
@@ -977,7 +1269,10 @@ function drawShip(game) {
   if (game.st.shieldMax > 0) {
     const z = game.cam.zoom;
     const sf = Math.max(0, s.shield / game.st.shieldMax);
-    const R = r * 1.32 + 5 / z;
+    // The bubble wraps the DRAWN hull (rings, nose tower and all), not the
+    // collision radius — on a titan those differ by almost 2x. It tracks the
+    // tier-morph scale so it grows with the art instead of snapping.
+    const R = visR * morphScale * 1.08 + 5 / z;
     if (sf > 0.02) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
       let a = 0.12 + 0.30 * sf;
@@ -1026,20 +1321,46 @@ function drawShip(game) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Tier-morph flash: a bright pulse + one expanding ring sweeping from the
+  // old silhouette size to the new — EVENT motion, like the absorb ripple.
+  if (morphing) {
+    const z = game.cam.zoom;
+    const pulse = Math.sin(Math.PI * Math.min(1, mk * 1.15));
+    ctx.globalCompositeOperation = 'lighter';
+    const fg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, visR * morphScale * 1.5);
+    fg.addColorStop(0, `rgba(190, 240, 255, ${pulse * 0.4})`);
+    fg.addColorStop(0.6, `rgba(110, 200, 255, ${pulse * 0.18})`);
+    fg.addColorStop(1, 'transparent');
+    ctx.fillStyle = fg;
+    ctx.beginPath(); ctx.arc(s.x, s.y, visR * morphScale * 1.5, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(170, 235, 255, ${(1 - mk) * 0.8})`;
+    ctx.lineWidth = 2.5 / z;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, lerp(morphFromVisR, visR * 1.35, 1 - Math.pow(1 - mk, 3)), 0, TAU);
+    ctx.stroke();
+  }
+
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.angle);
+  // The whole local-frame group (flames, sputter, hull) rides the morph
+  // scale, so the swap reads as the ship growing into its new class.
+  ctx.scale(morphScale, morphScale);
 
+  // Flames anchor to the tier's actual engine mouth / nose tip, not the
+  // collision radius — the art's rear moves aft as the hulls grow.
+  const rearX = -tG.rear * r / tG.bR, noseX = tG.nose * r / tG.bR;
   if (s.thrusting) {
     const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15);
-    const g = ctx.createLinearGradient(-r, 0, -r * 2.6 * f, 0);
+    const g = ctx.createLinearGradient(rearX, 0, rearX - r * 1.9 * f, 0);
     g.addColorStop(0, 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.moveTo(-r * 0.7, -5 - lv.thrust);
-    ctx.lineTo(-r * 2.6 * f, 0);
-    ctx.lineTo(-r * 0.7, 5 + lv.thrust);
+    ctx.moveTo(rearX * 0.92, -5 - lv.thrust);
+    ctx.lineTo(rearX - r * 1.9 * f, 0);
+    ctx.lineTo(rearX * 0.92, 5 + lv.thrust);
     ctx.closePath(); ctx.fill();
   }
   if (s.braking) {
@@ -1047,127 +1368,30 @@ function drawShip(game) {
     ctx.fillStyle = 'rgba(255, 190, 120, 0.7)';
     const f = 1 + Math.sin(game.time * 50) * 0.4;
     ctx.beginPath();
-    ctx.moveTo(r * 0.9, -4);
-    ctx.lineTo(r * (1.5 + 0.4 * f), 0);
-    ctx.lineTo(r * 0.9, 4);
+    ctx.moveTo(noseX * 0.92, -4);
+    ctx.lineTo(noseX + r * (0.45 + 0.3 * f), 0);
+    ctx.lineTo(noseX * 0.92, 4);
     ctx.closePath(); ctx.fill();
   }
 
   // Flare EMP: dead engines don't flame — they SPUTTER, arcing little
-  // shorts at the stern until the surge clears
+  // shorts at the stern until the surge clears (anchored to the tier's
+  // actual engine bell, like the flames above)
   if (s.engineOutT > 0) {
     if (Math.sin(game.time * 29) > -0.3) {
       ctx.fillStyle = `rgba(255, 205, 130, ${0.3 + 0.5 * Math.random()})`;
       ctx.beginPath();
-      ctx.arc(-r * (0.75 + Math.random() * 0.35), (Math.random() - 0.5) * r * 0.8,
+      ctx.arc(rearX * (0.9 + Math.random() * 0.25), (Math.random() - 0.5) * r * 0.8,
         Math.max(1.2, r * 0.09), 0, TAU);
       ctx.fill();
     }
   }
 
-  // ENGINES augment: side pods, bigger with level
-  if (lv.thrust >= 1) {
-    const pr = 2 + lv.thrust * 0.8;
-    ctx.fillStyle = '#8aa8c8';
-    ctx.beginPath(); ctx.arc(-r * 0.55, -r * 0.62, pr, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.arc(-r * 0.55, r * 0.62, pr, 0, TAU); ctx.fill();
-  }
-
-  // HULL augment: armor shell outline, thicker with level
-  if (lv.hull >= 1) {
-    ctx.strokeStyle = 'rgba(160, 190, 220, 0.55)';
-    ctx.lineWidth = 1.5 + lv.hull * 0.8;
-    ctx.beginPath();
-    ctx.moveTo(r * 1.12, 0);
-    ctx.lineTo(-r * 0.9, -r * 0.85);
-    ctx.lineTo(-r * 0.5, 0);
-    ctx.lineTo(-r * 0.9, r * 0.85);
-    ctx.closePath(); ctx.stroke();
-  }
-
-  // Field-vane fins fill out the silhouette once the gravity drive matures
-  if (stage >= 1) {
-    ctx.fillStyle = '#b8cee6';
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.2, -r * 0.6); ctx.lineTo(-r * 1.15, -r * 1.05); ctx.lineTo(-r * 0.75, -r * 0.35);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.2, r * 0.6); ctx.lineTo(-r * 1.15, r * 1.05); ctx.lineTo(-r * 0.75, r * 0.35);
-    ctx.closePath(); ctx.fill();
-  }
-  // Dreadnought-class rear vanes: a second, broader pair behind the first
-  if (stage >= 2) {
-    ctx.fillStyle = '#93aecb';
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.5, -r * 0.45); ctx.lineTo(-r * 1.6, -r * 0.75); ctx.lineTo(-r * 1.05, -r * 0.15);
-    ctx.closePath(); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.5, r * 0.45); ctx.lineTo(-r * 1.6, r * 0.75); ctx.lineTo(-r * 1.05, r * 0.15);
-    ctx.closePath(); ctx.fill();
-  }
-  // Titan crown: forward prongs bracketing the nose
-  if (stage >= 3) {
-    ctx.strokeStyle = '#cfe0f4';
-    ctx.lineWidth = Math.max(1.5, r * 0.09);
-    ctx.beginPath();
-    ctx.moveTo(r * 0.55, -r * 0.5); ctx.lineTo(r * 1.45, -r * 0.72);
-    ctx.moveTo(r * 0.55, r * 0.5); ctx.lineTo(r * 1.45, r * 0.72);
-    ctx.moveTo(r * 0.9, 0); ctx.lineTo(r * 1.7, 0);
-    ctx.stroke();
-  }
-
-  // Main hull
-  ctx.fillStyle = '#dce8f8';
-  ctx.strokeStyle = '#6aa8e8';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(r, 0);
-  ctx.lineTo(-r * 0.75, -r * 0.7);
-  ctx.lineTo(-r * 0.35, 0);
-  ctx.lineTo(-r * 0.75, r * 0.7);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-
-  // Singularity core: the drive's captive gravity well, dark with a violet rim
-  if (stage >= 2) {
-    const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.55);
-    cg.addColorStop(0, 'rgba(10, 6, 24, 0.95)');
-    cg.addColorStop(0.7, 'rgba(120, 80, 220, 0.5)');
-    cg.addColorStop(1, 'transparent');
-    ctx.fillStyle = cg;
-    ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, TAU); ctx.fill();
-  }
-  // Titan accretion ring: matter spiraling into the core, glowing warm
-  if (stage >= 3) {
-    ctx.strokeStyle = 'rgba(255, 190, 110, 0.65)';
-    ctx.lineWidth = Math.max(1.2, r * 0.06);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, r * 0.62, r * 0.24, game.time * 0.9, 0, TAU);
-    ctx.stroke();
-  }
-
-  // FLING DRIVE augment: amber accelerator coils across the body
-  if (lv.fling >= 1) {
-    ctx.strokeStyle = 'rgba(255, 200, 90, 0.75)';
-    ctx.lineWidth = 1.4;
-    for (let i = 0; i < Math.min(3, lv.fling); i++) {
-      const cx = r * (0.15 - i * 0.28);
-      ctx.beginPath(); ctx.arc(cx, 0, r * (0.34 - i * 0.05), -1.9, 1.9); ctx.stroke();
-    }
-  }
-
-  // BEAM augment: emitter prongs on the nose, glowing with tier
-  if (lv.beam >= 1) {
-    ctx.strokeStyle = '#5ac8ff';
-    ctx.lineWidth = 1.6;
-    const pl = r * (0.3 + lv.beam * 0.09);
-    ctx.beginPath();
-    ctx.moveTo(r * 0.7, -r * 0.28); ctx.lineTo(r * 0.7 + pl, -r * 0.34);
-    ctx.moveTo(r * 0.7, r * 0.28); ctx.lineTo(r * 0.7 + pl, r * 0.34);
-    ctx.stroke();
-  }
-  ctx.fillStyle = lv.beam >= 1 ? '#7adcff' : '#2c6ac8';
-  ctx.beginPath(); ctx.arc(r * 0.25, 0, 3.5 + lv.beam * 0.5, 0, TAU); ctx.fill();
+  // Hull art: tier picks the design (the ship visibly growing is the whole
+  // progression fantasy), hull fraction picks the damage state.
+  const hullFrac = s.hull / game.st.hullMax;
+  const dmg = hullFrac > 0.66 ? 0 : hullFrac > 0.33 ? 1 : 2;
+  drawShipHull(game, tier, dmg, r);
 
   ctx.restore();
 
