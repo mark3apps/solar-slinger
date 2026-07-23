@@ -35,6 +35,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # electron-builder shells out to rpmbuild for the rpm target; the
+      # GitHub ubuntu image doesn't guarantee it, so install explicitly.
+      - name: Install rpm tooling (Linux only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
       # Patch version is stamped from the CI run number so every release is
       # unique and monotonic (v0.1.41, v0.1.42, ...). Bump major/minor by
       # editing package.json; its patch digit is ignored on CI.
@@ -54,6 +60,7 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/*.deb
+            dist/*.rpm
           if-no-files-found: error
 
   release:
@@ -90,7 +97,14 @@ jobs:
             **Windows:** SmartScreen may warn because the installer is unsigned —
             choose "More info" → "Run anyway".
 
+            **Debian / Ubuntu (x86_64):** install with
+            `sudo apt install ./solar-slinger_*_amd64.deb`
+
             **Raspberry Pi / Linux arm64:** requires a 64-bit OS (Raspberry Pi OS
             64-bit on a Pi 3 or later). Install with:
             `sudo apt install ./solar-slinger_*_arm64.deb`
+
+            **RHEL / Rocky / Fedora:** install with
+            `sudo dnf install ./solar-slinger-*.x86_64.rpm`
+            (or the `.aarch64.rpm` on arm64)
           files: artifacts/*
