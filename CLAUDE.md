@@ -2,7 +2,9 @@
 
 A top-down 2D gravity-sandbox space game. Fly a ship through a single-sun system where
 every body moves under N-body gravity, grab things with a tractor beam, and fling them.
-**Vanilla JS + HTML5 canvas, ES modules, no build step, zero dependencies.**
+**The game is vanilla JS + HTML5 canvas, ES modules, no build step, no runtime dependencies.**
+The repo also ships a thin desktop-packaging layer (Electron + a release CI) — see
+[Desktop packaging](#desktop-packaging). Everything under `src/` stays packaging-agnostic.
 
 ## Run it
 
@@ -10,11 +12,13 @@ every body moves under N-body gravity, grab things with a tractor beam, and flin
 python3 serve.py          # http://127.0.0.1:8642  (or preview_start name "solar-slinger")
 ```
 
+This is the primary dev workflow: edit a `.js`, reload, see it live — no build, no bundler.
 `serve.py` is a **no-cache** wrapper around `http.server` on port 8642. Do **not** replace it
 with plain `python3 -m http.server`: plain http.server sends no cache header, browsers cache
 the ES modules, and every edit runs stale until a hard refresh (this bit us repeatedly).
-ES modules do not load over `file://` — you need a server. No build, no bundler, no `npm`:
-edit a `.js`, reload, see it live.
+ES modules do not load over `file://` — you need a server (which is also why the Electron shell
+serves over `app://`, below). The `npm` scripts are only for the desktop build; the game itself
+needs no `npm install` to develop in the browser.
 
 ## Architecture
 
@@ -128,6 +132,30 @@ code "works."
 - Reset `globalCompositeOperation` to `'source-over'` and `globalAlpha` to 1 after additive/alpha passes.
 - Divide UI/overlay line widths and dash arrays by `game.cam.zoom` so they stay constant on screen.
 - One draw function per sprite type; hook new body types into `drawBody`'s type switch.
+
+## Desktop packaging
+
+The game ships as an Electron desktop app for macOS + Windows, but the game code knows nothing
+about it — this is a hard rule.
+
+- **`src/` must stay host-agnostic.** The exact same static files run under `serve.py` (browser dev)
+  and inside Electron. [electron/main.js](electron/main.js) serves the repo over a privileged
+  `app://` scheme (Chromium won't load ES modules over `file://`, same reason `serve.py` exists) and
+  the game code has no idea it's in Electron. Never `require`/`import` Electron or Node APIs from
+  `src/`, and never assume an origin, absolute path, or `file://` — if it wouldn't work over
+  `serve.py`, it's wrong.
+- **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
+  `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`).
+  Electron + electron-builder are **devDependencies** — dev/build only, not shipped game deps, so
+  the "no runtime dependencies" claim still holds.
+- `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
+  `app://` for hot-ish iteration.
+- **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)): every push to
+  `main` builds a mac DMG (arm64 + x64) and a Windows NSIS installer and attaches them to a GitHub
+  release tagged `build-<run number>`. Builds are **unsigned** (mac: right-click → Open / clear
+  quarantine; Windows: click through SmartScreen). The `build:` block in package.json controls what
+  gets packaged and the installer targets. App icons live in `build/` (`icon.icns/.ico/.png`,
+  generated from `build/icon-src/`).
 
 ## Testing (headless, no framework)
 
