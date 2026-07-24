@@ -101,11 +101,13 @@ export const CFG = {
   // death in minutes. Deliberately THROWN objects get a lower threshold and a
   // damage multiplier, so the tractor fling (and alien throws) stay lethal.
   DMG_BODY: 1.2e-6,        // dmg = K * (closing - threshold)^2 * otherMass
-  // 340 = the original 240 scaled by the ~1.41x sky speed-up (doubled sun
-  // mass): ambient crossing traffic now closes at ~140-420, and the old
-  // threshold let routine crossings sandblast moons/comets. THROWN keeps its
-  // old threshold — fling/alien-throw speeds are ship-derived, not orbital.
-  DMG_THRESH: 340,         // closing speed below which impacts just bounce
+  // 240 is tuned to the sky speed (sun mass 1.42e7, world.js): ambient
+  // crossing traffic closes at ~100-300, and this lets it bounce harmlessly
+  // while real slams still bite. It was briefly raised to 340 when the sun
+  // was 3.2e7 (1.4x faster sky); with the sky slowed back down it returns to
+  // 240. Keep them in ratio if the sun mass changes again. THROWN keeps its
+  // own low threshold — fling/alien-throw speeds are ship-derived, not orbital.
+  DMG_THRESH: 240,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
   DMG_THROWN_MULT: 2,
   // Ship impact damage: closing * DMG_SHIP * massSat, where massSat is the
@@ -121,7 +123,12 @@ export const CFG = {
   // second, and NOTHING sustains beyond SPEED_HARD x the ceiling. The old
   // gentle bleed (0.8, no hard cap) predates the long-arm gravity boost —
   // 6x far-field assists let low-level ships coast at absurd speeds.
-  // predictPaths mirrors both numbers; keep them in sync.
+  // The ceiling is measured RELATIVE to the local orbital flow
+  // (physics.orbitalFlow): the ship's velocity is capped to within maxSpeed of
+  // the surrounding space's prograde circular velocity. The current carries the
+  // ship and the engine buys maxSpeed of deviation in any direction — with the
+  // spin you reach flow+maxSpeed, against it flow-maxSpeed. predictPaths mirrors
+  // the bleed, the hard cap, AND the flow-relative reference; keep all in sync.
   SPEED_BLEED: 1.6,
   SPEED_HARD: 1.9,
 
@@ -207,6 +214,10 @@ export const SHIP_RADIUS = [2.6, 5.0, 8.6, 14.5, 24.1, 38.0];
 // ships look the same in the viewport but tiny next to planets. Change
 // SHIP_RADIUS and you must re-derive this. Zoom is driven by beam tier
 // alone — other progression tracks don't pull the camera back.
+// NOTE: this tight tier-0 zoom is why the SKY SPEED is tuned low (the sun's
+// mass, world.js) — the world scrolls past ~2x faster per zoom unit, so a
+// fast sky at this zoom reads as flying wildly fast. Flight feel = sky speed
+// x zoom; they tune together. Raise this zoom and the sun mass must drop.
 export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
 
 // Upgrades are AUTOMATIC — playing the game grows the ship:

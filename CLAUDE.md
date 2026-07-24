@@ -59,9 +59,13 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
 
 - `frame(now)` → `dtReal = min(0.05, delta)` (clamps tab-switch stalls) → `update(dtReal)` when not
   paused → always `render(game)` + `hud.updateHud(game)`. Rendering continues while paused; the sim freezes.
-- Physics runs on a **fixed substep** via an accumulator: `while (acc >= CFG.DT) { updateTractor; updateOrbit; step(game, CFG.DT); acc -= CFG.DT }` with `CFG.DT = 1/120`.
-- **Gameplay math goes inside the `CFG.DT` loop.** Only cosmetic/camera/easing work uses `dtReal`.
-  Frame-rate-independent easing idiom: `lerp(a, b, 1 - Math.exp(-k*dt))`.
+- Physics runs on a **fixed substep** via an accumulator: `while (acc >= CFG.DT) { updateTractor; updateOrbit; step(game, CFG.DT); cam follow; acc -= CFG.DT }` with `CFG.DT = 1/120`.
+- **Gameplay math goes inside the `CFG.DT` loop.** Cosmetic easing with no quantized target
+  (shake decay, the zoom ramp) rides `dtReal`. Frame-rate-independent easing idiom: `lerp(a, b, 1 - Math.exp(-k*dt))`.
+- **The camera follow is the exception: it lives INSIDE the `CFG.DT` loop**, not on `dtReal`. Its target
+  (the ship) advances in quantized DT chunks; a `dtReal`-chased camera beats against that quantization as
+  the substeps-per-frame count wobbles, and the ship visibly jerks back and forth around screen centre
+  (worse the higher the zoom). Phase-locking ship and camera to one clock is what keeps flight smooth.
 
 ## Conventions
 
@@ -75,6 +79,20 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
 - **No shop, no menus.** All progression is *derived* from `game.prog` by `shipStats()` every frame.
   Leveling comes from play: catches grow the beam, smashes grow fling, scrap heals + toughens hull,
   spent delta-v grows thrust, orbit use grows the shield. Tune via `GROWTH` in config.js.
+- **Scrap is EARNED, never ambient.** Only a player throw or a shield-rock hit mints scrap
+  (`physics.collisionCredit` → `earnsScrap`): belt traffic colliding, a rogue clipping a moon, the
+  ship RAMMING a body, an absorption, or star heat all shatter with NO salvage. A direct throw-kill
+  (`'player-throw'`) additionally grows the fling; your own projectile shattering / a shield brush
+  (`'player'`) pays scrap but not fling. Don't reintroduce unconditional `dropScrap` on death.
+- **The ship speed ceiling is RELATIVE to the local orbital flow** (`physics.orbitalFlow`): the ship's
+  velocity is capped to within `maxSpeed` of the surrounding space's prograde circular velocity vector,
+  not capped in absolute magnitude. The current carries the ship and the engine buys `maxSpeed` of
+  deviation in any direction — with the spin you reach flow+maxSpeed, against it flow−maxSpeed (so out
+  in the belt, where maxSpeed exceeds the flow, you can fly retrograde; near the sun the flow outruns
+  maxSpeed and sweeps you prograde). Mirrored in predictPaths — keep in sync.
+- **Sun-anchored orbits are slightly non-uniform:** `railBody` nudges each star-anchored body's angular
+  speed by a deterministic ±~4% (hashed off `b.id`), so the sky isn't one rigid disc. Kept SUBTLE — a
+  bigger spread lets same-radius rocks catch up and grind each other. Moons/installations stay exact.
 - **Event-flag messaging:** a subsystem signals a one-shot event by setting `game.<x>Warn` / `game.<x>Name`;
   `update()` in main.js drains and clears it and calls `hud.message(text, seconds)`. First-time-vs-repeat
   wording is gated on `game.tut.*` booleans.
@@ -94,8 +112,8 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    (`CROSS_GRAV 0.15`, `CROSS_STAR 0.05`) — at full strength their tides deorbit outer planets into their
    sun in ~8 min. Ship/aliens/debris always feel full gravity (`gravityAt`); only celestials use the
    weighted `gravityOnBody`. (`physics.js:232`, `config.js:29`)
-3. **Ambient collisions below a closing-speed threshold do no damage** (`DMG_THRESH 340` natural —
-   240 scaled by the ~1.41x sky speed-up, keep them in ratio if orbital speeds change again;
+3. **Ambient collisions below a closing-speed threshold do no damage** (`DMG_THRESH 240` natural —
+   tuned to the sky speed (sun mass 1.42e7); keep them in ratio if orbital speeds change again;
    `DMG_THRESH_THROWN 140` — thrown speeds are ship-derived, not orbital); damage is mass-dominance
    weighted; natural celestial hits are damped and
    capped at 70% of remaining hp when masses are within 8× (comparable rocks crunch + spall, they don't
@@ -145,10 +163,15 @@ give directions by). Rules that keep it from breaking the invariants above:
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
   pass must keep skipping volcanic/shepherd moons.
-- **Sky speed is a PAIRED tuning:** the sun's mass (3.2e7, world.js) is double the original 1.6e7 so
-  every sun-anchored orbit sweeps ~1.4x faster, and `STAR_GRAV_SHIP` (0.8) was halved in compensation
-  so the ship-felt sun pull and spawn-orbit speed are unchanged. Their PRODUCT is the tuned flight
-  feel — never change one without the other.
+- **Sky speed pairs with camera zoom:** the sun's mass (`1.42e7`, world.js) is the sole knob for how
+  fast every sun-anchored orbit sweeps — orbital cruise is `sqrt(G*sunMass/r)`, so planets, belts,
+  trojans, graveyard, Vesper, rails, and the ship's own cruise all scale with it together. It is tuned
+  LOW on purpose: the tier-0 camera is zoomed in tight (`SHIP_ZOOM` 2.46, config.js) and the world
+  scrolls past ~2x faster per zoom unit, so a fast sky at that zoom reads as "flying wildly fast."
+  Flight feel = sky speed × zoom — **raise the zoom and this mass must drop, and vice-versa.**
+  `STAR_GRAV_SHIP` (0.8) is NOT a compensator: it sets how hard the sun grabs the ship, and it rides
+  down with the sky on purpose (slower cruise ⇒ gentler pull). (History: mass was once 3.2e7 to speed
+  the sky up 1.4x; it was lowered to 1.42e7 — ~1.5x slower than that — to calm flight at the 2.46 zoom.)
 - **LONG ARMS** (`SHIP_WELL_START`/`SHIP_WELL_MAX`): the SHIP feels planet/moon/rogue gravity fall off
   as 1/r (capped at 3.5x) beyond 4 body radii — longer reach, identical close-range gravity. It lives
   in `gravityAt` behind `heavyMul !== 1` (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two
@@ -200,6 +223,21 @@ code "works."
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
 - **Ship health is split:** hull = 2/3 of the pool, heals *only* from scrap; shield = 1/3, absorbs first,
   recharges after quiet time. Separate HULL/SHLD HUD bars.
+- **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
+  existing throw/grab/collision loop, no new subsystems):
+  - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
+    the shell with a PLAYER smash frees a dense `b.core` crystal — heavy salvage (3.5x scrap, fat beam
+    catch). Ambient shatters don't reveal it (earnsScrap gate). A purple glint marks cored rocks.
+  - **Salvage caches** (`b.cache`, world.js `spawnCache`, ~5% of local-field spawns): light grabbable
+    canisters that BURST into scrap + ice ammo when the player cracks them (physics.shatter).
+  - **Gravity billiards** (physics.js): throw-kills chained within `game.comboT` (2.6s) rack up
+    `game.combo`; a heavy rock plowing through light ones, or a knocked rock (credit propagated — ASTEROIDS
+    ONLY, never moons/planets) killing the next, keeps it going. 2+ shouts a multiplier + bonus scrap.
+  - **Ice-moon geysers** (world.js): ice-type moons vent catchable ammo like the far ice planets, but
+    close-in and faster — an early harvesting loop.
+  - **Belt shoals** (`game.critters`, critters.js): bioluminescent drifters that flee thrust and drift
+    toward a lit beam. Pure cosmetic — no mass, no collisions, no scrap, never touch the sim; updated on
+    dtReal, drawn additively in `drawCritters`.
 
 ### Canvas discipline
 
