@@ -1,4 +1,4 @@
-import { CFG, GROWTH } from './config.js';
+import { CFG, PROG, addXp } from './config.js';
 import { makeScrap, scrapValue, massToHp, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
@@ -147,10 +147,10 @@ export function shatter(game, body, credit = null) {
   addShake(game, isBig ? 14 : 4);
   sfx.sfxBoom(isBig ? 3 : 1);
 
-  // AUTO-UPGRADE: only a direct throw-kill speeds up the fling (not your own
-  // projectile shattering or a shield brush — those still pay scrap, above)
+  // XP: only a direct throw-kill pays combat XP (not your own projectile
+  // shattering or a shield brush — those still pay scrap, above)
   if (credit === 'player-throw') {
-    game.prog.fling = Math.min(GROWTH.FLING_MAX, game.prog.fling * (1 + GROWTH.SMASH_RATE * (isBig ? 2 : 1)));
+    addXp(game, PROG.XP_SMASH + (isBig ? 12 : 0));
     game.prog.smashes++;
     // GRAVITY BILLIARDS: throw-kills chained within the window rack up a
     // combo (the chain is carried by propagated credit in collideBodies).
@@ -420,11 +420,11 @@ function collideBodies(game, a, b) {
     }
   }
 
-  // Shield rocks earn orbit XP by making contact with incoming alien throws
+  // Shield rocks earn XP by intercepting incoming alien throws
   if (closing > 50 &&
       ((a.heldBy === 'orbit' && b.thrownBy === 'alien' && b.thrownTimer > 0) ||
        (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
-    game.prog.orbitXp += 3;
+    addXp(game, PROG.XP_BLOCK);
   }
 
   // No surface-hugging: a small body drifting gently onto a much bigger one
@@ -651,8 +651,10 @@ function collideShipBody(game, s, b, dt) {
     const tvx = rvx + closing * nx, tvy = rvy + closing * ny;   // tangential slide
     const vT = Math.hypot(tvx, tvy);
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
-      damageShip(game, (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt,
-        `Ground apart skimming ${b.name || 'a ' + b.type}.`);
+      const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
+      damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`);
+      addXp(game, grind * PROG.XP_SKIM);   // skating a surface is risky XP
+
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
       if (!game.tut.scrape) game.scrapeWarn = true;
@@ -733,7 +735,7 @@ function collideAlienBody(game, al, b) {
       if (al.hp <= 0) {
         killAlien(game, al);
         if (playerRock) {   // alien kills count as smashes too
-          game.prog.fling = Math.min(GROWTH.FLING_MAX, game.prog.fling * (1 + GROWTH.SMASH_RATE));
+          addXp(game, PROG.XP_SMASH);
           game.prog.smashes++;
         }
       }
@@ -883,18 +885,14 @@ export function step(game, dt) {
     const c = game.controls;
     // Flare EMP: fried engines answer to nobody for a few seconds
     if (s.engineOutT > 0) s.engineOutT -= dt;
-    const throttle = s.engineOutT > 0 ? 0 : c.f - c.b;
+    // Reverse thrust is an UPGRADE (Retro Thrusters) — until unlocked, S does
+    // nothing and only forward thrust drives the ship.
+    const back = game.st.hasReverse ? c.b : 0;
+    const throttle = s.engineOutT > 0 ? 0 : c.f - back;
     s.thrusting = throttle > 0;
     s.braking = throttle < 0;
     const tx = Math.cos(s.angle) * th * throttle;
     const ty = Math.sin(s.angle) * th * throttle;
-
-    // AUTO-UPGRADE: spent delta-v grows the engines
-    if (throttle !== 0) {
-      game.prog.dv += th * dt;
-      game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
-        GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
-    }
 
     // The ship feels amplified gravity — big bodies really grab at you,
     // worlds doubly so and the sun hardest of all
@@ -1017,10 +1015,11 @@ export function step(game, dt) {
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
     const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
-    if (s.alive && dd < CFG.PICKUP_MAGNET) {
+    const magnet = game.st.magnet || CFG.PICKUP_MAGNET;   // Scrap Magnet upgrade widens it
+    if (s.alive && dd < magnet) {
       // Spring-steer toward the ship (matching its velocity) rather than pure
       // acceleration — otherwise chunks whip into little orbits around you.
-      const t = 1 - dd / CFG.PICKUP_MAGNET;
+      const t = 1 - dd / magnet;
       const spd = 260 + 700 * t;
       const desVx = (dx / dd) * spd + s.vx, desVy = (dy / dd) * spd + s.vy;
       d.ax = (desVx - d.vx) * 4; d.ay = (desVy - d.vy) * 4;
@@ -1162,11 +1161,9 @@ export function step(game, dt) {
     for (const d of debris) {
       const pr = s.radius + d.radius + 8;
       if (s.alive && (d.x - s.x) ** 2 + (d.y - s.y) ** 2 < pr * pr) {
-        // AUTO-UPGRADE: scrap heals you and toughens the hull
-        game.scrap += d.value;
-        game.prog.scrapCollected += d.value;
-        game.prog.maxHull = Math.min(GROWTH.HULL_MAX, game.prog.maxHull + d.value * GROWTH.TOUGH_RATE);
-        s.hull = Math.min(game.st.hullMax, s.hull + d.value);   // scrap is the ONLY hull heal
+        // Debris chunks are pure XP pickups now — no scrap currency, and they
+        // do NOT heal the hull (hull only resets on respawn; shield recharges).
+        addXp(game, d.value * PROG.XP_SCRAP);
         sfx.sfxCollect();
         continue;
       }

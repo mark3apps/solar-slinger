@@ -29,7 +29,7 @@ variable-timestep presentation loop.
 | Module | Owns |
 |---|---|
 | [main.js](src/main.js) | Orchestrator + the `game` object + the rAF/`update`/`render` loop. Runs at import time (no `init()` wrapper). |
-| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `GROWTH`) and the pure `newProgress()` / `shipStats(prog)` derivations. |
+| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `PROG`), the roguelite `UPGRADES`/`PATHS` catalog, and the pure `newProgress()` / `shipStats(prog)` / `pickChoices` / `addXp` derivations. |
 | [entities.js](src/entities.js) | The only classes: `Body`, `Ship`, `Alien`. Plus `railBody`/`derail`, `scrapValue`, `makeScrap`. |
 | [world.js](src/world.js) | `generateWorld` (seeded), `respawnShip`, `replenishWorld`, `spawnAsteroid`. |
 | [physics.js](src/physics.js) | `step` — N-body integration, collisions/damage, rails, the trajectory predictor. **The load-bearing file.** |
@@ -76,14 +76,34 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
 - **Comments are load-bearing — they explain *why*, and most guard a real past bug.** Preserve the
   rationale comment when you touch a tuned constant or a physics decision. Do not delete a "don't regress"
   comment without understanding the bug it names.
-- **No shop, no menus.** All progression is *derived* from `game.prog` by `shipStats()` every frame.
-  Leveling comes from play: catches grow the beam, smashes grow fling, scrap heals + toughens hull,
-  spent delta-v grows thrust, orbit use grows the shield. Tune via `GROWTH` in config.js.
-- **Scrap is EARNED, never ambient.** Only a player throw or a shield-rock hit mints scrap
-  (`physics.collisionCredit` → `earnsScrap`): belt traffic colliding, a rogue clipping a moon, the
-  ship RAMMING a body, an absorption, or star heat all shatter with NO salvage. A direct throw-kill
-  (`'player-throw'`) additionally grows the fling; your own projectile shattering / a shield brush
-  (`'player'`) pays scrap but not fling. Don't reintroduce unconditional `dropScrap` on death.
+- **Roguelite progression (XP + pick-one-of-two).** There is NO passive leveling. Good play
+  (catch, smash, skim/skate, kill, collect scrap, survey, slingshot, shield-block) grants XP via
+  `addXp(game, amount)` — the per-action awards live in `PROG.XP_*` (config.js). Crossing
+  `xpForPick(prog)` sets `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) while a modal
+  offers a CHOICE of 2 upgrades (`pickChoices`, drawn from the tier-gated `UPGRADES` pool — narrow
+  early, widening by tier). Every `PROG.PICKS_PER_TIER` small picks the next choice is a **tier-up
+  milestone**: a 3-way specialization-path card (`PATHS`) that bumps `prog.tier`, grants a signature
+  upgrade, biases the pool, and +1 life. `shipStats(prog)` derives `game.st` from `prog.tier` +
+  earned upgrade RANKS (not accumulators) — the `st.*` field names are unchanged, plus new ability
+  gates (`hasReverse/hasTargeting/hasPredict/hasCrashWarn/hasCompass/hasVolley`, `maxOrbiters`
+  starts 0). **You start with ONLY the tractor beam + one held rock**; reverse thrust, targeting
+  markers, the trajectory plotter, collision alerts, the gravity compass, the orbit shield, and the
+  RMB shotgun are all upgrades gated on those `st` flags (checked in physics/render/main/tractor).
+  `totalLevel` = `min(25, tier*2 + round(rankSum*0.6))` — kept in the old 0–25 band because it still
+  feeds enemy scaling (ai.js) and ship mass (physics.js). Tune XP rates / pool / ranks in config.js;
+  the auto-resolve test hook is `game.autoUpgrade = true` (picks card 0 headlessly).
+- **Lives, not a death penalty.** `prog.lives` starts at `PROG.START_LIVES` (3). A death spends one
+  life and respawns with ALL upgrades kept; 0 lives → `game.gameOver` + the GAME OVER panel, and R
+  calls `resetRun()` (fresh `newProgress()`, world regenerated). Extra lives come from sparse **life
+  pods** (`game.pickups`, seeded in `generateWorld` + trickled by
+  `main.updateLifePods`/`world.spawnLifePod`, capped at `PROG.MAX_LIVES`) and +1 per tier-up
+  milestone. Life pods are real objects → SOLID stroke (render `drawPickups`).
+- **No scrap currency — debris chunks are XP pickups.** There is NO scrap counter and NO hull heal:
+  collecting a debris chunk pays `d.value * PROG.XP_SCRAP` and nothing else (hull only resets on
+  respawn; shield recharges). Which kills DROP chunks is still gated — only a player throw or a
+  shield-rock hit (`physics.collisionCredit` → `earnsScrap`) mints them; belt traffic, a rogue
+  clipping a moon, a ram, an absorption, or star heat shatter with NO drop. A direct throw-kill
+  (`'player-throw'`) additionally pays combat XP. Don't reintroduce unconditional `dropScrap` on death.
 - **The ship speed ceiling is RELATIVE to the local orbital flow** (`physics.orbitalFlow`): the ship's
   velocity is capped to within `maxSpeed` of the surrounding space's prograde circular velocity vector,
   not capped in absolute magnitude. The current carries the ship and the engine buys `maxSpeed` of
@@ -156,9 +176,9 @@ give directions by). Rules that keep it from breaking the invariants above:
 - **Solar storms** (`CFG.STORM_*`) push SCRAP DEBRIS ONLY — never bodies, celestials, or the ship.
   Auroras, tail-brightening, and the front visual are render-side. A storm touching rails or celestial
   velocities is an invariant-3-style regression waiting to happen.
-- **Survey/CHART** progression: flying into a world's nameplate zone charts it (`replenishWorld` scan);
-  `st.predictBoost` (from `prog.surveyed`) only lengthens the trajectory forecast, and the chart level
-  is deliberately excluded from `totalLevel` so exploring never inflates zoom/ship-size pacing.
+- **Survey/CHART**: flying into a world's nameplate zone charts it (`replenishWorld` scan) and pays
+  `PROG.XP_SURVEY`. Forecast horizon (`st.predictBoost`) and sensor/minimap reach (`st.sensorMul`) now
+  come from the **Deep Sensors** and **Trajectory Plotter** upgrades, not from a passive survey track.
 - **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
@@ -221,8 +241,10 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **Ship health is split:** hull = 2/3 of the pool, heals *only* from scrap; shield = 1/3, absorbs first,
-  recharges after quiet time. Separate HULL/SHLD HUD bars.
+- **Ship health is split:** hull ≈ 2/3 of the pool, does NOT heal mid-life (only resets to full on
+  respawn); shield ≈ 1/3, absorbs first, recharges after quiet time. The **Shield Cells** upgrade
+  shifts the split toward shield; **Shield Regen** speeds the recharge (`st.regen`/`st.regenDelay`).
+  Separate HULL/SHLD HUD bars.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
@@ -280,6 +302,8 @@ There is no test runner. Verify balance and physics with the console hooks:
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
   `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes.
 - `window.game` — the live state handle.
+- `game.autoUpgrade = true` — headless helper: auto-resolves each upgrade pick (picks card 0) so a
+  `window.tick` soak doesn't stall on the choice modal. Drive a climb by pumping `game.prog.xp`.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
 

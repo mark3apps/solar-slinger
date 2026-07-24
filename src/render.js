@@ -1029,6 +1029,33 @@ function drawApproach(game) {
 }
 
 // Faint hints: beam reach (blue) and the shield-orbit ring (green)
+// Life pods: drifting extra-life collectibles (roguelite lives). A real object,
+// so SOLID strokes — a soft green halo around a pulsing "+" cross.
+function drawPickups(game) {
+  if (!game.pickups || !game.pickups.length) return;
+  const z = game.cam.zoom;
+  for (const p of game.pickups) {
+    if (p.x < view.x0 - 80 || p.x > view.x1 + 80 || p.y < view.y0 - 80 || p.y > view.y1 + 80) continue;
+    const pulse = 0.7 + 0.3 * Math.sin(game.time * 4 + (p.phase || 0));
+    const R = 26;
+    const halo = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, R * 1.7);
+    halo.addColorStop(0, `rgba(120, 255, 170, ${0.32 * pulse})`);
+    halo.addColorStop(1, 'transparent');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(p.x, p.y, R * 1.7, 0, TAU); ctx.fill();
+    ctx.strokeStyle = `rgba(150, 255, 190, ${0.7 + 0.3 * pulse})`;
+    ctx.lineWidth = 2.5 / z;
+    ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, TAU); ctx.stroke();
+    // "+" cross
+    const a = R * 0.5;
+    ctx.lineWidth = 3.5 / z;
+    ctx.beginPath();
+    ctx.moveTo(p.x - a, p.y); ctx.lineTo(p.x + a, p.y);
+    ctx.moveTo(p.x, p.y - a); ctx.lineTo(p.x, p.y + a);
+    ctx.stroke();
+  }
+}
+
 function drawShipRings(game) {
   const s = game.ship;
   if (!s.alive) return;
@@ -1046,9 +1073,10 @@ function drawShipRings(game) {
   // the smoothed vector from main.js so the arrow can't whip or flicker.
   // Helper UI: screen-constant stroke, violet-blue so it can't be confused
   // with the cyan beam ring.
+  // Gravity Compass is an upgrade — no chevrons until it's unlocked
   const gx = game.compassX || 0, gy = game.compassY || 0;
   const mag = Math.hypot(gx, gy);
-  if (mag > 1.2) {
+  if (game.st.hasCompass && mag > 1.2) {
     // log scale: ~1.2 (barely felt) -> ~200 (deep well) saturates
     const t = Math.min(1, Math.max(0, (Math.log10(mag) - 0.08) / 2.2));
     const ang = Math.atan2(gy, gx);
@@ -1650,12 +1678,15 @@ function drawAlien(game, al) {
 }
 
 function drawPrediction(game) {
-  if (!game.predict || game.paused) return;
+  // The Trajectory Plotter is an upgrade; the throw line also hides while an
+  // upgrade card is open (frozen sim)
+  if (!game.predict || game.paused || game.choosingUpgrade || !game.st.hasPredict) return;
   const { shipPts, heldPts, shipHit, heldHit } = predictPaths(game);
   const z = game.cam.zoom;
 
+  // Collision ✕ marks are a SEPARATE upgrade (Collision Alert)
   const drawHitMark = (hit) => {
-    if (!hit) return;
+    if (!hit || !game.st.hasCrashWarn) return;
     ctx.strokeStyle = '#ff6a5c';
     ctx.lineWidth = 2 / z;
     const r = 10 / z;
@@ -1833,6 +1864,8 @@ export function render(game) {
     ctx.fillStyle = `rgba(255, 210, 90, ${(0.55 + tw * 0.45) * Math.min(1, d.life / 4)})`;
     ctx.beginPath(); ctx.arc(d.x, d.y, d.radius, 0, TAU); ctx.fill();
   }
+
+  drawPickups(game);
 
   // Particles (additive glow)
   ctx.globalCompositeOperation = 'lighter';
