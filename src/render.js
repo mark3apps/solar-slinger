@@ -66,10 +66,12 @@ function bodyOnScreen(b) {
   if (b.x + m > view.x0 && b.x - m < view.x1 && b.y + m > view.y0 && b.y - m < view.y1) return true;
   if (b.onRails && b.rail && b.rail.parent.alive) {
     if (b.type === 'moon') {
-      // whisper orbit circle centered on the parent: annulus-vs-view test
+      // whisper orbit ring centered on the parent: annulus-vs-view test.
+      // For an ellipse the apoapsis a(1+e) is the outermost reach.
       const p = b.rail.parent;
+      const rr = b.rail.e > 0 ? b.rail.a * (1 + b.rail.e) : b.rail.r;
       const d = Math.hypot(view.cx - p.x, view.cy - p.y);
-      if (Math.abs(d - b.rail.r) < view.r + 20) return true;
+      if (Math.abs(d - rr) < view.r + 20) return true;
     } else if (b.type === 'planet') {
       // short orbit arc reaching ~0.22*r along the orbit from the planet
       const reach = b.rail.r * 0.23 + 80;
@@ -154,9 +156,19 @@ function drawBody(game, b) {
   // Only while actually riding the rail: a captured or knocked-loose moon
   // isn't following that circle anymore, so it gets no ring.
   if (b.type === 'moon' && b.onRails && b.parent && b.parent.alive) {
+    const rl = b.rail;
     ctx.strokeStyle = 'rgba(180, 200, 255, 0.045)';
     ctx.lineWidth = 1.5 / game.cam.zoom;
-    ctx.beginPath(); ctx.arc(b.parent.x, b.parent.y, b.rail.r, 0, TAU); ctx.stroke();
+    ctx.beginPath();
+    if (rl.e > 0) {
+      // ellipse guide: the parent sits at a focus, so the traced ellipse is
+      // offset from it by c = a*e along the apsidal line
+      const c = rl.a * rl.e;
+      ctx.ellipse(rl.parent.x - c * rl.ca, rl.parent.y - c * rl.sa, rl.a, rl.smin, rl.arg, 0, TAU);
+    } else {
+      ctx.arc(rl.parent.x, rl.parent.y, rl.r, 0, TAU);
+    }
+    ctx.stroke();
   }
 
   // Planets show a short stretch of their orbital path around the sun
@@ -355,9 +367,14 @@ function drawBody(game, b) {
   ctx.fillStyle = b.color;
   if (b.visitor) {
     drawVisitorSprite(b);
+  } else if (b.cache) {
+    drawCacheSprite(game, b);
+  } else if (b.core) {
+    drawCoreSprite(game, b);
   } else if (b.type === 'asteroid') {
     traceAsteroid(b);
     ctx.fill();
+    if (b.cored) drawCoreGlint(game, b);
   } else if (b.ghost) {
     drawGhostSprite(game, b);
   } else if (b.type === 'station') {
@@ -373,11 +390,7 @@ function drawBody(game, b) {
   if (b.ember > 0.01) drawEmberReef(game, b);
   if (b.fort) drawFort(game, b);
 
-  if (b.type === 'moon') {
-    ctx.strokeStyle = 'rgba(225, 235, 255, 0.85)';
-    ctx.lineWidth = Math.max(1.2, 1.5 / game.cam.zoom);
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.stroke();
-  }
+  if (b.type === 'moon') drawMoonDetail(game, b);
 
   // Asteroid texture: darker pits keyed off the id, clipped to the silhouette
   // (the carved stone gets clean facet lines instead — no pits on machined work)
@@ -494,6 +507,10 @@ function drawPlanetDetail(b) {
   ctx.save();
   ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
   ctx.translate(b.x, b.y);
+  // The surface turns under the fixed star-lit terminator (drawn after this in
+  // drawBody) — that rotation IS the day/night cycle. Ice caps are polar, so
+  // they stay put; everything else rides b.rot.
+  if (b.ptype !== 'ice') ctx.rotate(b.rot);
 
   if (b.ptype === 'gas') {
     ctx.rotate(b.id % 2 ? 0.32 : -0.26);
@@ -538,6 +555,19 @@ function drawPlanetDetail(b) {
       ctx.stroke();
     }
   } else if (b.ptype === 'ice') {
+    // Scattered blue-white plains ride the spin (so the world visibly turns)…
+    ctx.save();
+    ctx.rotate(b.rot);
+    ctx.fillStyle = 'rgba(180, 215, 240, 0.35)';
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 1.7 + i * 1.9;
+      const rr = b.radius * (0.22 + ((b.id + i) % 3) * 0.09);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.7, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+    // …but the polar caps stay pinned to the poles (spin axis is vertical)
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
     ctx.beginPath(); ctx.ellipse(0, b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
@@ -568,6 +598,150 @@ function drawPlanetDetail(b) {
       }
       ctx.stroke();
     }
+  }
+  ctx.restore();
+}
+
+// Per-archetype moon surface, drawn clipped to the disc and seeded off b.id so
+// it's stable frame to frame. Keyed off b.moonType (world.js MOON_TYPES): ice
+// fractures, iron sheen, sulfur mottle, banded stripes, else cratered rock —
+// this is what makes a moon family read as distinct little worlds.
+function drawMoonDetail(game, b) {
+  const R = b.radius;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);   // surface turns under the fixed terminator → day/night
+  const craters = (n) => {
+    for (let i = 0; i < n; i++) {
+      const a = b.id * 1.3 + i * 2.399;
+      const dist = (((b.id * 7 + i * 53) % 100) / 100) * 0.72;
+      const cr = R * (0.12 + ((b.id + i) % 4) * 0.055);
+      const cx = Math.cos(a) * R * dist, cy = Math.sin(a) * R * dist;
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.beginPath(); ctx.arc(cx, cy, cr, 0, TAU); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.beginPath(); ctx.arc(cx - cr * 0.25, cy - cr * 0.25, cr * 0.7, 0, TAU); ctx.fill();
+    }
+  };
+  if (b.moonType === 'ice') {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 1.7 + i * 2.2;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.4, Math.sin(a) * R * 0.4, R * 0.34, R * 0.22, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(180,220,255,0.5)';
+    ctx.lineWidth = Math.max(0.8, R * 0.05);
+    for (let i = 0; i < 3; i++) {
+      const a = b.id + i * 2.1;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * R * 0.9, Math.sin(a) * R * 0.9);
+      ctx.lineTo(-Math.cos(a + 0.4) * R * 0.9, -Math.sin(a + 0.4) * R * 0.9);
+      ctx.stroke();
+    }
+  } else if (b.moonType === 'iron') {
+    craters(2);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.beginPath(); ctx.ellipse(-R * 0.3, -R * 0.3, R * 0.5, R * 0.28, -0.6, 0, TAU); ctx.fill();
+  } else if (b.moonType === 'sulfur') {
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.9 + i * 1.6;
+      const rr = R * (0.2 + ((b.id + i) % 3) * 0.1);
+      ctx.fillStyle = i % 2 ? 'rgba(120,70,20,0.30)' : 'rgba(255,220,120,0.22)';
+      ctx.beginPath(); ctx.ellipse(Math.cos(a) * R * 0.5, Math.sin(a) * R * 0.5, rr, rr * 0.7, a, 0, TAU); ctx.fill();
+    }
+  } else if (b.moonType === 'banded') {
+    ctx.rotate(b.id % 2 ? 0.3 : -0.24);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)';
+      ctx.fillRect(-R, -R + i * R * 0.7, R * 2, R * 0.5);
+    }
+  } else {
+    craters(b.moonType === 'dust' ? 5 : 3);
+  }
+  ctx.restore();
+  // Subtle tinted rim — dimmer than the old flat bright ring
+  ctx.strokeStyle = 'rgba(210, 224, 245, 0.35)';
+  ctx.lineWidth = Math.max(0.8, 1.1 / game.cam.zoom);
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
+}
+
+// A cored rock: a mineral vein glinting through the shell so prospectors can
+// spot which rocks are worth cracking.
+function drawCoreGlint(game, b) {
+  const a = b.rot * 0.5 + b.id;
+  const gx = b.x + Math.cos(a) * b.radius * 0.35, gy = b.y + Math.sin(a) * b.radius * 0.35;
+  const tw = 0.55 + 0.45 * Math.sin(game.time * 3 + b.id);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = `rgba(190,150,255,${0.5 * tw})`;
+  ctx.beginPath(); ctx.arc(gx, gy, Math.max(0.8, b.radius * 0.24), 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+// The freed core: a glowing faceted crystal — clearly premium salvage
+function drawCoreSprite(game, b) {
+  const r = b.radius;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 2.6);
+  g.addColorStop(0, 'rgba(185,140,255,0.5)'); g.addColorStop(1, 'rgba(185,140,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r * 2.6, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.rotate(b.rot);
+  ctx.fillStyle = b.color; ctx.strokeStyle = 'rgba(232,214,255,0.9)'; ctx.lineWidth = Math.max(0.6, r * 0.12);
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TAU, rr = r * (i % 2 ? 0.72 : 1.12);
+    const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = Math.max(0.5, r * 0.06);
+  ctx.beginPath(); ctx.moveTo(0, -r * 1.0); ctx.lineTo(0, r * 0.72); ctx.moveTo(-r * 0.9, 0); ctx.lineTo(r * 0.9, 0); ctx.stroke();
+  ctx.restore();
+}
+
+// Derelict cargo canister with a pulsing amber salvage light
+function drawCacheSprite(game, b) {
+  const r = b.radius;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot * 0.4);
+  ctx.fillStyle = b.color;
+  ctx.strokeStyle = 'rgba(40,55,72,0.9)'; ctx.lineWidth = Math.max(0.6, r * 0.14);
+  const w = r * 1.5, h = r * 1.05;
+  ctx.beginPath(); ctx.rect(-w, -h, w * 2, h * 2); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(40,55,72,0.7)'; ctx.lineWidth = Math.max(0.5, r * 0.1);
+  ctx.beginPath();
+  ctx.moveTo(-w * 0.4, -h); ctx.lineTo(-w * 0.4, h);
+  ctx.moveTo(w * 0.4, -h); ctx.lineTo(w * 0.4, h); ctx.stroke();
+  const tw = 0.5 + 0.5 * Math.sin(game.time * 2.5 + b.id);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = `rgba(255,190,90,${0.4 + 0.4 * tw})`;
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.34, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+// Belt shoals (critters.js): additive bioluminescent motes with a soft halo
+function drawCritters(game) {
+  const cr = game.critters;
+  if (!cr || !cr.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const c of cr) {
+    const pulse = 0.55 + 0.45 * Math.sin(c.ph);
+    const r = c.sz * (1.0 + 0.3 * pulse);
+    const col = `hsla(${c.hue | 0}, 90%, 68%,`;
+    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r * 4.5);
+    g.addColorStop(0, col + (0.45 * pulse) + ')'); g.addColorStop(1, col + '0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(c.x, c.y, r * 4.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = col + '0.9)';
+    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, TAU); ctx.fill();
   }
   ctx.restore();
 }
@@ -1649,6 +1823,7 @@ export function render(game) {
   drawShipRings(game);
   drawPrediction(game);
   for (const b of game.bodies) if (b.alive && bodyOnScreen(b)) drawBody(game, b);
+  drawCritters(game);
   drawApproach(game);
 
   // Scrap debris — glinting gold

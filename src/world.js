@@ -1,5 +1,5 @@
 import { CFG } from './config.js';
-import { Body, railBody } from './entities.js';
+import { Body, railBody, railEllipse } from './entities.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 import { sfxPing } from './sfx.js';
 
@@ -29,6 +29,25 @@ const PTYPE_COLORS = {
 };
 const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex'];
 
+// Moon archetypes — like planets, each kind has its own palette and a distinct
+// renderer look (render.js drawMoonDetail), plus a mass/size skew, so a
+// planet's moon family reads as a set of little worlds instead of pale clones.
+// w = spawn weight; the render.js switch keys off `type`.
+const MOON_TYPES = [
+  { type: 'rock',   w: 3, colors: ['#9a8f7f', '#8c8072', '#a89a86'], mMul: 1.0,  rMul: 1.0 },
+  { type: 'ice',    w: 3, colors: ['#cfe4f5', '#d3d9ec', '#bfe0ea'], mMul: 0.8,  rMul: 1.18 },
+  { type: 'iron',   w: 2, colors: ['#8a8d96', '#7c7f88', '#9aa0ab'], mMul: 1.55, rMul: 0.82 },
+  { type: 'dust',   w: 2, colors: ['#6a655f', '#5f5a55', '#746d65'], mMul: 0.9,  rMul: 1.02 },
+  { type: 'sulfur', w: 1, colors: ['#c9a24b', '#b5763a', '#d4b45a'], mMul: 1.0,  rMul: 0.94 },
+  { type: 'banded', w: 1, colors: ['#a99a86', '#93a0b2', '#b0a58f'], mMul: 1.1,  rMul: 1.06 },
+];
+const MOON_TYPE_TOTAL = MOON_TYPES.reduce((s, m) => s + m.w, 0);
+function pickMoonType(rng) {
+  let r = rng() * MOON_TYPE_TOTAL;
+  for (const mt of MOON_TYPES) { if ((r -= mt.w) < 0) return mt; }
+  return MOON_TYPES[0];
+}
+
 // Circular-orbit velocity around a parent at distance r, plus the parent's own
 // velocity. Uses the SOFTENED gravity the sim actually applies, so initial
 // orbits are truly circular even close-in (matters for moons).
@@ -43,24 +62,41 @@ function orbitVel(parent, x, y, dir = 1) {
 }
 
 function spawnMoon(bodies, rng, planet, mr) {
-  const mth = rng() * TAU;
-  const mx = planet.x + Math.cos(mth) * mr;
-  const my = planet.y + Math.sin(mth) * mr;
-  const mv = orbitVel(planet, mx, my, rng() < 0.85 ? 1 : -1);
+  // Archetype sets the palette + look and skews mass/size, so a moon family
+  // spans ice, rock, iron, dust, sulfur, banded instead of pale clones.
+  const mt = pickMoonType(rng);
+  const t = rng();
+  const radius = (18 + t * 16) * mt.rMul + rand(rng, -2, 2);
   // Moons run the gamut now — some are proper little worlds, and at these
   // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
   // rule predates rails: it only ever mattered for LIVE moons, and rails
   // hold their orbits exact regardless.) Heavier moons also gate the beam:
   // most need tier 2+ capacity to grab, so mooncatching is earned.
-  const t = rng();
+  const mass = (3000 + t * 8000) * mt.mMul;
+  const dir = rng() < 0.85 ? 1 : -1;
   const m = new Body({
-    type: 'moon', x: mx, y: my, vx: mv.vx, vy: mv.vy,
-    mass: 3000 + t * 8000,
-    radius: 18 + t * 16 + rand(rng, -2, 2),
-    color: '#d3d9ec', parent: planet,   // pale ice — clearly not an asteroid
+    type: 'moon', x: planet.x + mr, y: planet.y, vx: 0, vy: 0,
+    mass, radius, color: pick(rng, mt.colors), parent: planet,
   });
+  m.moonType = mt.type;
   bodies.push(m);
-  railBody(m, planet);
+  // ~55% of moons ride an ELLIPSE (railEllipse), the rest circular. mr is the
+  // semi-major axis; e is capped so periapsis always clears the planet, and
+  // kept moderate so neighbouring moon orbits rarely cross (a crossing that
+  // actually collides just derails + re-rails, but we keep it rare). Tight
+  // inner slots fall back to circular. arg + phase are randomised so orbits
+  // don't share an apsidal line.
+  const eCap = Math.min(0.34, 1 - (planet.radius + radius + 60) / mr);
+  if (eCap > 0.08 && rng() < 0.55) {
+    railEllipse(m, planet, mr, rand(rng, 0.1, eCap), rng() * TAU, rng() * TAU, dir);
+  } else {
+    const mth = rng() * TAU;
+    m.x = planet.x + Math.cos(mth) * mr;
+    m.y = planet.y + Math.sin(mth) * mr;
+    const mv = orbitVel(planet, m.x, m.y, dir);
+    m.vx = mv.vx; m.vy = mv.vy;
+    railBody(m, planet);
+  }
   return m;
 }
 
@@ -183,7 +219,13 @@ function spawnVesper(game, sun, th) {
   return c;
 }
 
-function asteroidRadius(mass) { return 1.6 + Math.cbrt(mass) * 0.78; }
+// Radius from mass. Shrunk to match the smaller starting hull (SHIP_RADIUS[0]
+// = 2.6): the old 1.6 + cbrt*0.78 bottomed out at ~3.5, so even a "pebble"
+// out-sized the scout. This drops the floor and slope so common rocks land
+// ~1.7-3.3 (peer to / smaller than the ship) while boulders stay clearly
+// chunky (~9-12). Mass is untouched, so gravity, grab tiers, hp and scrap
+// are all unchanged — only the drawn/collision disc shrinks.
+function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
 
 // Skewed small (down to pebbles), occasionally chunky — and ~12% are
 // BOULDERS, a class between common rocks and moons that keeps the size
@@ -203,6 +245,24 @@ export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
   return a;
 }
 
+// ~13% of belt/field rocks over pebble size hide a dense mineral CORE. Cracking
+// the shell (a player smash) frees the core as heavy, high-value salvage — a
+// reason to prospect the belt instead of grinding every rock the same.
+function maybeCore(a, rng) {
+  if (a.mass > 250 && rng() < 0.13) { a.cored = true; a.color = '#7d7566'; }
+  return a;
+}
+
+// Derelict cargo cache: a light canister adrift in the lanes. Grabbable from
+// the very start; smashing it (yours, or a rock you throw at it) bursts it into
+// scrap + ice ammo — early loot that isn't "smash the same rock again".
+export function spawnCache(bodies, x, y, vx, vy) {
+  const c = new Body({ type: 'asteroid', x, y, vx, vy, mass: 460, radius: 8, color: '#93a6bc' });
+  c.cache = true;
+  bodies.push(c);
+  return c;
+}
+
 function addBelt(bodies, rng, star, beltR, spread, count) {
   for (let i = 0; i < count; i++) {
     const r = beltR + rand(rng, -spread, spread);
@@ -210,7 +270,7 @@ function addBelt(bodies, rng, star, beltR, spread, count) {
     const x = star.x + Math.cos(th) * r;
     const y = star.y + Math.sin(th) * r;
     const v = orbitVel(star, x, y, 1);
-    const a = spawnAsteroid(bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+    const a = maybeCore(spawnAsteroid(bodies, x, y, v.vx, v.vy, asteroidMass(rng)), rng);
     railBody(a, star);
   }
 }
@@ -220,13 +280,19 @@ export function generateWorld(game, seed = 20260721) {
   const bodies = game.bodies;
 
   // ONE sun, vast and dangerous, with the whole map as its system.
-  // Mass is DOUBLE the original 1.6e7 to spin every sun-anchored orbit ~1.4x
-  // faster (orbitVel derives speeds from this, so planets, belts, trojans,
-  // graveyard, and Vesper all speed up consistently — rails included).
-  // CFG.STAR_GRAV_SHIP was halved in compensation, so the ship-felt sun
-  // pull and the spawn-orbit speed below are unchanged. Tune them together.
+  // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
+  // sqrt(G * sunMass / r), so this mass single-handedly sets how fast the
+  // whole sky — planets, belts, trojans, graveyard, Vesper, the ship's own
+  // cruise, rails included — sweeps past. It's tuned LOW to suit the tight
+  // tier-0 camera zoom (SHIP_ZOOM, config.js): the world scrolls past ~2x
+  // faster per zoom unit, so at 2.46 a fast sky reads as "flying wildly
+  // fast." At 1.42e7 every orbit sweeps ~1.5x slower than the old 3.2e7,
+  // which calms flight at the zoom. STAR_GRAV_SHIP is deliberately NOT
+  // recompensated here — we WANT the ship's cruise (and the pull it feels)
+  // to come down with the sky, not stay pinned. Raising zoom or this mass
+  // without the other shifts flight feel; they tune together.
   const sun = new Body({
-    type: 'star', x: 0, y: 0, mass: 3.2e7, radius: 2400, color: '#ffd98a',
+    type: 'star', x: 0, y: 0, mass: 1.42e7, radius: 2400, color: '#ffd98a',
   });
   bodies.push(sun);
 
@@ -727,7 +793,8 @@ export function replenishWorld(game, dt) {
     // Aurora / eclipse timers fade even while the player is far away or dead
     if (p.auroraT > 0) p.auroraT -= dt;
     if (p.eclipseT > 0) p.eclipseT -= dt;
-    if (!s.alive || (p.type !== 'planet' && !p.volcanic)) continue;
+    const iceMoon = p.type === 'moon' && p.moonType === 'ice';
+    if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon)) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);
     if (d > 4200) { continue; }
     if (p.volcanic) {
@@ -782,6 +849,30 @@ export function replenishWorld(game, dt) {
           const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
           const v = orbitVel(p, x, y, 1);
           const c = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, 120 + rng() * 330);
+          c.color = '#bfe3f2'; c.ice = true; c.iceOf = p;
+          railBody(c, p);
+          game.geyserWarn = true;
+        }
+      }
+    } else if (iceMoon) {
+      // Ice MOONS vent cryo-geysers too — an early, close-in harvesting loop:
+      // hover the field and scoop the pellets it pops into low orbit. Faster
+      // cadence than the far ice planets, sized to the smaller moon.
+      if (p.heldBy) continue;
+      p.hazT = (p.hazT ?? 5) - dt;
+      if (p.hazT <= 0) {
+        p.hazT = 9 + rng() * 8;
+        let n = 0;
+        for (const b of game.bodies) {
+          if (b.alive && b.iceOf === p && !b.heldBy &&
+              Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 260) n++;
+        }
+        if (n < 4) {
+          const a = rng() * TAU;
+          const cr = p.radius + 40 + rng() * 90;
+          const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
+          const v = orbitVel(p, x, y, 1);
+          const c = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, 110 + rng() * 220);
           c.color = '#bfe3f2'; c.ice = true; c.iceOf = p;
           railBody(c, p);
           game.geyserWarn = true;
@@ -929,7 +1020,9 @@ export function replenishWorld(game, dt) {
     const fromSun = Math.hypot(x - game.homeStar.x, y - game.homeStar.y);
     if (Math.hypot(x, y) > CFG.WORLD_R || fromSun < game.homeStar.radius + 900) continue;
     const v = orbitVel(game.homeStar, x, y, 1);
-    const a = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(rng));
+    const a = rng() < 0.05
+      ? spawnCache(game.bodies, x, y, v.vx, v.vy)          // occasional salvage cache
+      : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(rng)), rng);
     a.local = true;
     railBody(a, game.homeStar);
   }

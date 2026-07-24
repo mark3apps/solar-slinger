@@ -1,5 +1,5 @@
 import { CFG, GROWTH } from './config.js';
-import { makeScrap, scrapValue, massToHp, railBody, derail } from './entities.js';
+import { makeScrap, scrapValue, massToHp, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
 import { TAU, clamp, angDiff } from './util.js';
@@ -40,12 +40,45 @@ function dropScrap(game, x, y, vx, vy, totalValue) {
   }
 }
 
+// The local orbital "flow" — the prograde circular velocity VECTOR of the space
+// around (x,y), i.e. "the rotation of the universe" at that point. The governor
+// caps the ship's velocity RELATIVE to this flow at maxSpeed, so the current
+// carries the ship along and the engine only buys maxSpeed of deviation in any
+// direction: with the flow you reach flow+maxSpeed, against it flow-maxSpeed,
+// sideways/radial ±maxSpeed. Near the sun the flow outruns maxSpeed and sweeps
+// you prograde; out in the belt maxSpeed exceeds it so you can even fly
+// retrograde. Speed magnitude alone is the WRONG cap (it let you sit still in a
+// fast current, or fly full-tilt against the spin). Mirrored in predictPaths.
+function orbitalFlow(game, x, y) {
+  const sun = game.homeStar;
+  const rx = x - sun.x, ry = y - sun.y;
+  const sr = Math.max(sun.radius, Math.hypot(rx, ry));
+  const v = Math.sqrt(CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass / sr);
+  return { vx: (-ry / sr) * v, vy: (rx / sr) * v };   // CCW/prograde unit tangent x speed
+}
+
+// Collision credit taxonomy (drives scrap + fling growth):
+//   'player-throw' — this body was smashed BY a player-thrown rock: scrap + fling
+//   'player'       — player-involved but not a direct throw-kill (your own
+//                    projectile shattering, or a shield-rock brush): scrap only
+//   'alien'/'ram'/null — no player payout
+// earnsScrap gates every scrap drop; only 'player-throw' grows the fling.
+function earnsScrap(credit) { return credit === 'player' || credit === 'player-throw'; }
+function collisionCredit(target, other) {
+  if (other.thrownBy === 'player' && other.thrownTimer > 0) return 'player-throw';
+  if ((target.thrownBy === 'player' && target.thrownTimer > 0)
+      || target.heldBy === 'orbit' || other.heldBy === 'orbit') return 'player';
+  if ((other.thrownBy === 'alien' && other.thrownTimer > 0)
+      || (target.thrownBy === 'alien' && target.thrownTimer > 0)) return 'alien';
+  return null;
+}
+
 export function shatter(game, body, credit = null) {
   if (!body.alive) return;
   body.alive = false;
   // The ring shepherd only respawns after AMBIENT deaths — a deliberate
   // player kill earns its permanently scattered ring (world.js respawn).
-  if (body.shepherd && credit === 'player') game.shepherdPlayerKilled = true;
+  if (body.shepherd && earnsScrap(credit)) game.shepherdPlayerKilled = true;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'shattered', type: body.type, mass: Math.round(body.mass) });
   if (body.heldBy === 'player' && game.held === body) game.held = null;
 
@@ -81,16 +114,54 @@ export function shatter(game, body, credit = null) {
   }
   if (body.type === 'nest') game.nestKilled = true;   // main.js announces it
 
-  dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, scrapValue(body));
+  // CORED ROCK: cracking the shell (only a player smash frees it) exposes a
+  // dense mineral core — heavy salvage that survives the break, grab or smash.
+  if (body.cored && earnsScrap(credit)) {
+    const cm = clamp(body.mass * 0.8, 500, 4000);
+    const core = spawnAsteroid(game.bodies, body.x, body.y, body.vx * 0.5, body.vy * 0.5, cm);
+    core.core = true; core.color = '#b98cff';
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 20, '#d8b8ff', 190, 1.3, 4);
+    game.coreFound = true;
+  }
+  // SALVAGE CACHE: bursts into scrap + ice ammo pellets when you crack it
+  if (body.cache && earnsScrap(credit)) {
+    dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 120);
+    for (let i = 0; i < 3; i++) {
+      const th = (i / 3) * TAU + Math.random() * 0.8;
+      const sp = 45 + Math.random() * 70;
+      const pel = spawnAsteroid(game.bodies, body.x + Math.cos(th) * 10, body.y + Math.sin(th) * 10,
+        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, 150 + Math.random() * 150);
+      pel.ice = true; pel.color = '#bfe3f2';
+    }
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 26, '#bfe3f2', 210, 1.4, 4);
+    game.cacheCracked = true;
+  }
+
+  // Scrap is EARNED, not ambient: only a player throw or a shield-rock hit
+  // (credit === 'player') pays out. A rock the player never touched — belt
+  // traffic sandblasting itself, a rogue clipping a moon, a ram, star heat —
+  // shatters with no salvage. Keeps the sky from minting free scrap.
+  if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, scrapValue(body));
   addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3,
     isBig ? 50 : 16, body.color, isBig ? 260 : 140, isBig ? 1.6 : 0.9, isBig ? 5 : 3);
   addShake(game, isBig ? 14 : 4);
   sfx.sfxBoom(isBig ? 3 : 1);
 
-  // AUTO-UPGRADE: smashing things (with your own throws) speeds up the fling
-  if (credit === 'player') {
+  // AUTO-UPGRADE: only a direct throw-kill speeds up the fling (not your own
+  // projectile shattering or a shield brush — those still pay scrap, above)
+  if (credit === 'player-throw') {
     game.prog.fling = Math.min(GROWTH.FLING_MAX, game.prog.fling * (1 + GROWTH.SMASH_RATE * (isBig ? 2 : 1)));
     game.prog.smashes++;
+    // GRAVITY BILLIARDS: throw-kills chained within the window rack up a
+    // combo (the chain is carried by propagated credit in collideBodies).
+    // 2+ pays a bonus and flags main.js to shout the multiplier.
+    game.combo = (game.combo || 0) + 1;
+    game.comboT = 2.6;
+    game.comboBest = Math.max(game.comboBest || 0, game.combo);
+    if (game.combo >= 2) {
+      game.comboShow = game.combo;
+      dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 8 * game.combo);
+    }
   }
 }
 
@@ -147,7 +218,8 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   if (body.hp <= 0) { shatter(game, body, credit); return; }
   const frac = clamp(dmg / body.maxHp, 0, 0.5);
   if (frac > 0.01) {
-    dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, scrapValue(body) * frac * 0.5);
+    // Chip scrap only from player-caused hits (throw / shield) — see shatter
+    if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, scrapValue(body) * frac * 0.5);
     body.mass = Math.max(body.baseMass * 0.25, body.mass - body.baseMass * frac * 0.35);
     body.radius = body.baseRadius * Math.cbrt(body.mass / body.baseMass);
     if (body.mass < CFG.ATTRACT_MIN && body.type !== 'star') body.attractor = false;
@@ -338,7 +410,11 @@ function collideBodies(game, a, b) {
       if (pl.ember <= 0.01) {
         pl.ember = 0;
         pl.emberSeeded = false;
-        dropScrap(game, rk.x, rk.y, pl.vx * 0.6, pl.vy * 0.6, 150);
+        // Cleanse bounty only if YOU lobbed the ice — ambient ice still
+        // smothers the reef, it just earns no salvage (scrap is player-earned).
+        if (rk.thrownBy === 'player' && rk.thrownTimer > 0) {
+          dropScrap(game, rk.x, rk.y, pl.vx * 0.6, pl.vy * 0.6, 150);
+        }
         game.emberCleansedName = pl.name;
       }
     }
@@ -362,7 +438,7 @@ function collideBodies(game, a, b) {
       small.alive = false;
       if (small === game.held) game.held = null;
       if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'absorbed', type: small.type, mass: Math.round(small.mass) });
-      dropScrap(game, small.x, small.y, big.vx * 0.6, big.vy * 0.6, scrapValue(small) * 0.3);
+      // No scrap: a rock gently melting into a planet is ambient, not a smash
       addParticles(game, small.x, small.y, big.vx * 0.5, big.vy * 0.5, 10, small.color, 90, 0.7);
       return;
     }
@@ -412,9 +488,26 @@ function collideBodies(game, a, b) {
     b.vx += j * invB * nx; b.vy += j * invB * ny;
 
     // Impact damage — each takes damage scaled by the other's mass, but only
-    // above the closing-speed threshold (thrown objects hit harder & easier)
-    const creditA = b.thrownTimer > 0 ? b.thrownBy : null;
-    const creditB = a.thrownTimer > 0 ? a.thrownBy : null;
+    // above the closing-speed threshold (thrown objects hit harder & easier).
+    // Credit is per-body (see collisionCredit): the rock your throw smashes
+    // earns scrap + fling; your own projectile shattering earns scrap only;
+    // ambient belt traffic earns nothing.
+    const creditA = collisionCredit(a, b);
+    const creditB = collisionCredit(b, a);
+    // GRAVITY BILLIARDS: a rock knocked hard by your throw (or a chain-link)
+    // inherits your credit for a beat, so the NEXT rock it smashes still counts
+    // as yours — trick shots chain. Only ASTEROIDS carry it (never moons/
+    // planets, which would then take undamped impulses and wander).
+    if (closing > 60) {
+      const aPlayer = (a.thrownBy === 'player' && a.thrownTimer > 0) || a.heldBy === 'orbit';
+      const bPlayer = (b.thrownBy === 'player' && b.thrownTimer > 0) || b.heldBy === 'orbit';
+      if (aPlayer && bMoves && b.type === 'asteroid' && b.thrownBy !== 'player') {
+        b.thrownBy = 'player'; b.thrownTimer = Math.max(b.thrownTimer, 1.4);
+      }
+      if (bPlayer && aMoves && a.type === 'asteroid' && a.thrownBy !== 'player') {
+        a.thrownBy = 'player'; a.thrownTimer = Math.max(a.thrownTimer, 1.4);
+      }
+    }
     const thrown = a.thrownTimer > 0 || b.thrownTimer > 0;
     const eff = Math.max(0, closing - (thrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
     const mult = thrown ? CFG.DMG_THROWN_MULT : 1;
@@ -591,7 +684,9 @@ function collideShipBody(game, s, b, dt) {
     }
     const effB = Math.max(0, closing - 100);
     const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2;
-    if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'player', s.x, s.y);
+    // Ramming is "running into things", not a throw — it damages the body but
+    // pays out NO scrap and no fling growth (credit 'ram', not 'player').
+    if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'ram', s.x, s.y);
 
     const thrown = b.thrownTimer > 0 && b.thrownBy === 'alien' ? 1.25 : 1;
     // Graded, not binary: damage scales with closing speed and a SATURATING
@@ -963,26 +1058,38 @@ export function step(game, dt) {
     const rl = b.rail;
     const p = rl.parent;
     if (!p.alive) { derail(b); continue; }
-    rl.ang += rl.w * dt;
-    const c = Math.cos(rl.ang), sn = Math.sin(rl.ang);
-    b.x = p.x + c * rl.r;
-    b.y = p.y + sn * rl.r;
-    // Keep velocity truthful so collisions and grabs behave normally
-    b.vx = p.vx - sn * rl.w * rl.r;
-    b.vy = p.vy + c * rl.w * rl.r;
+    if (rl.e > 0) {
+      // Elliptical rail: analytic Kepler advance (see entities.keplerStep)
+      keplerStep(rl, dt);
+      b.x = p.x + rl.px; b.y = p.y + rl.py;
+      b.vx = p.vx + rl.vpx; b.vy = p.vy + rl.vpy;
+    } else {
+      rl.ang += rl.w * dt;
+      const c = Math.cos(rl.ang), sn = Math.sin(rl.ang);
+      b.x = p.x + c * rl.r;
+      b.y = p.y + sn * rl.r;
+      // Keep velocity truthful so collisions and grabs behave normally
+      b.vx = p.vx - sn * rl.w * rl.r;
+      b.vy = p.vy + c * rl.w * rl.r;
+    }
   }
 
   if (s.alive) {
     s.vx += shipAx * dt; s.vy += shipAy * dt;
-    // Speed governor (CFG.SPEED_*): above the ceiling, velocity bleeds back
-    // down — and the hard cap means no assist chain can outrun the bleed
-    const sp = Math.hypot(s.vx, s.vy);
-    if (sp > game.st.maxSpeed) {
-      const brake = (sp - game.st.maxSpeed) * CFG.SPEED_BLEED * dt;
-      let f = Math.max(0, (sp - brake) / sp);
-      const hard = game.st.maxSpeed * CFG.SPEED_HARD;
-      if (sp * f > hard) f = hard / sp;
-      s.vx *= f; s.vy *= f;
+    // Speed governor (CFG.SPEED_*): the ceiling is maxSpeed measured RELATIVE
+    // to the local orbital flow (orbitalFlow) — the current carries the ship
+    // and the engine buys maxSpeed of deviation in any direction. Excess bleeds
+    // off; the hard cap stops any assist chain from outrunning the bleed.
+    const cap = game.st.maxSpeed;
+    const flow = orbitalFlow(game, s.x, s.y);
+    const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
+    const rsp = Math.hypot(rvx, rvy);
+    if (rsp > cap) {
+      const brake = (rsp - cap) * CFG.SPEED_BLEED * dt;
+      let f = Math.max(0, (rsp - brake) / rsp);
+      const hard = cap * CFG.SPEED_HARD;
+      if (rsp * f > hard) f = hard / rsp;
+      s.vx = flow.vx + rvx * f; s.vy = flow.vy + rvy * f;
     }
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.invuln > 0) s.invuln -= dt;
@@ -1203,11 +1310,16 @@ export function predictPaths(game) {
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
         parentIdx: -1, anchorIdx: -1,
-        // Railed attractors predict EXACTLY — advance the rail analytically
+        // Railed attractors predict EXACTLY — advance the rail analytically.
+        // Elliptical rails carry a COPY of their Kepler elements so advancing
+        // the forecast's mean anomaly never mutates the live rail.
         railR: b.onRails ? b.rail.r : 0,
         railW: b.onRails ? b.rail.w : 0,
         railAng: b.onRails ? b.rail.ang : 0,
         railParent: b.onRails ? b.rail.parent : null,
+        railEl: (b.onRails && b.rail.e > 0)
+          ? { e: b.rail.e, a: b.rail.a, smin: b.rail.smin, n: b.rail.n, M: b.rail.M, dir: b.rail.dir, ca: b.rail.ca, sa: b.rail.sa }
+          : null,
       });
     }
   }
@@ -1299,10 +1411,13 @@ export function predictPaths(game) {
   // hard-capped so the per-frame predictor can't grow unbounded)
   const steps = Math.min(420, Math.round(CFG.PREDICT_STEPS * (game.st.predictBoost || 1)));
   // The DRAWN ship path never leaves the screen: cap its displayed length
-  // at a fraction of the view radius (chart levels widen the fraction a
-  // little, so surveying still buys forecast). render fades the tail out.
+  // at a fraction of the view radius — which reaches to the screen CORNER,
+  // so even 0.85 stays on-screen and the render fades the tail out before
+  // the edge. Kept generous (0.85 base) because the tier-0 camera is zoomed
+  // in tight (SHIP_ZOOM 2.46): at a smaller fraction the forecast collapsed
+  // to a ~1s stub that read as broken. Chart levels widen it further.
   const maxPathLen = (game.viewR || 1200) *
-    Math.min(0.95, 0.55 + 0.08 * ((game.st.levels && game.st.levels.chart) || 0));
+    Math.min(0.95, 0.85 + 0.03 * ((game.st.levels && game.st.levels.chart) || 0));
   let pathLen = 0, lastPx = null, lastPy = null, shipEnd = false;
   for (let i = 0; i < steps; i++) {
     // Advance attractors (stars pinned) with the same hierarchical weighting
@@ -1311,9 +1426,15 @@ export function predictPaths(game) {
       const b = atr[bi];
       if (b.star) continue;
       if (b.railParent) {
-        b.railAng += b.railW * dt;
-        b.x = b.railParent.x + Math.cos(b.railAng) * b.railR;
-        b.y = b.railParent.y + Math.sin(b.railAng) * b.railR;
+        if (b.railEl) {
+          keplerStep(b.railEl, dt);
+          b.x = b.railParent.x + b.railEl.px;
+          b.y = b.railParent.y + b.railEl.py;
+        } else {
+          b.railAng += b.railW * dt;
+          b.x = b.railParent.x + Math.cos(b.railAng) * b.railR;
+          b.y = b.railParent.y + Math.sin(b.railAng) * b.railR;
+        }
         continue;
       }
       let ax = 0, ay = 0;
@@ -1354,13 +1475,17 @@ export function predictPaths(game) {
         ax -= ux * brake; ay -= uy * brake;
       }
       ship.vx += ax * dt; ship.vy += ay * dt;
-      // Mirror the speed governor so the predicted path stays honest
-      const psp = Math.hypot(ship.vx, ship.vy);
-      if (psp > game.st.maxSpeed) {
-        let f = Math.max(0, (psp - (psp - game.st.maxSpeed) * CFG.SPEED_BLEED * dt) / psp);
-        const hard = game.st.maxSpeed * CFG.SPEED_HARD;
-        if (psp * f > hard) f = hard / psp;
-        ship.vx *= f; ship.vy *= f;
+      // Mirror the speed governor (relative to the orbital flow) so the path
+      // stays honest — same flow-relative clamp the real ship gets
+      const pcap = game.st.maxSpeed;
+      const pflow = orbitalFlow(game, ship.x, ship.y);
+      const prvx = ship.vx - pflow.vx, prvy = ship.vy - pflow.vy;
+      const prsp = Math.hypot(prvx, prvy);
+      if (prsp > pcap) {
+        let f = Math.max(0, (prsp - (prsp - pcap) * CFG.SPEED_BLEED * dt) / prsp);
+        const hard = pcap * CFG.SPEED_HARD;
+        if (prsp * f > hard) f = hard / prsp;
+        ship.vx = pflow.vx + prvx * f; ship.vy = pflow.vy + prvy * f;
       }
       ship.x += ship.vx * dt; ship.y += ship.vy * dt;
       // Re-express in the reference body's frame (see DISPLAY FRAME above)

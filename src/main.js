@@ -4,6 +4,7 @@ import { generateWorld, respawnShip, replenishWorld } from './world.js';
 import { step } from './physics.js';
 import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
+import { updateCritters } from './critters.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
@@ -16,6 +17,7 @@ const game = {
   ship: new Ship(),
   bodies: [],
   aliens: [],
+  critters: [],            // bioluminescent belt shoals (cosmetic, critters.js)
   debris: [],
   particles: [],
   flares: [],              // solar plasma in flight
@@ -175,12 +177,24 @@ function update(dtReal) {
     game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
     updateAliens(game, dtReal);
 
-    // Fixed-step physics
+    // Fixed-step physics. The camera follows the ship INSIDE this loop, on
+    // the same fixed DT time-base, ON PURPOSE. Easing it on the variable
+    // dtReal (the tidy idiom) while the ship advances in quantized DT chunks
+    // makes the ship<->camera gap BEAT: the substeps-per-frame count wobbles
+    // (2, 2, 3, 2, ...), so a dtReal-chased camera over/under-shoots each
+    // frame and the ship visibly jerks back and forth around screen centre
+    // (worse the more zoomed-in you are). Phase-locked here, ship and camera
+    // share one clock and the gap stays rock-steady. Cosmetic-only easing
+    // (shake decay, the zoom ramp) still rides dtReal above — those have no
+    // quantized target to beat against.
     acc += dtReal;
+    const camK = 1 - Math.exp(-6 * CFG.DT);
     while (acc >= CFG.DT) {
       updateTractor(game, CFG.DT);
       updateOrbit(game, CFG.DT);
       step(game, CFG.DT);
+      game.cam.x = lerp(game.cam.x, game.ship.x, camK);
+      game.cam.y = lerp(game.cam.y, game.ship.y, camK);
       acc -= CFG.DT;
     }
 
@@ -201,6 +215,13 @@ function update(dtReal) {
       const t = Math.min(1, Math.max(0, (Math.log10(Math.max(1e-6, mag)) - 0.08) / 2.2));
       game.compassPhase = ((game.compassPhase || 0) + (0.25 + 0.5 * t) * dtReal) % 1;
     }
+    // Belt shoals — cosmetic, so dtReal (see critters.js)
+    updateCritters(game, dtReal);
+
+    // GRAVITY BILLIARDS combo: the window ticks down on real time; when it
+    // lapses the chain resets (the count itself is racked up in physics.shatter)
+    if (game.comboT > 0) { game.comboT -= dtReal; if (game.comboT <= 0) game.combo = 0; }
+
     if (game.scrapeT > 0) game.scrapeT -= dtReal;
     if (game.gasDiveT > 0) game.gasDiveT -= dtReal;
     if (game.gasEnterT > 0) game.gasEnterT -= dtReal;
@@ -333,6 +354,24 @@ function update(dtReal) {
     if (game.skimT > 0 && !game.tut.skim) {
       game.tut.skim = true;
       hud.message("CLOUD SKIMMING — the cloud tops sling you forward. Don't dip too deep.", 5);
+    }
+    if (game.comboShow) {
+      hud.message(`GRAVITY BILLIARDS ×${game.comboShow}! +${8 * game.comboShow} scrap`, 2);
+      game.comboShow = 0;
+    }
+    if (game.coreFound) {
+      game.coreFound = false;
+      if (!game.tut.core) {
+        game.tut.core = true;
+        hud.message('MINERAL CORE exposed — dense salvage. Catch it to fatten your beam, or smash it for scrap.', 5.5);
+      }
+    }
+    if (game.cacheCracked) {
+      game.cacheCracked = false;
+      if (!game.tut.cache) {
+        game.tut.cache = true;
+        hud.message('SALVAGE CACHE cracked — scrap and shield ammo. Watch the lanes for more canisters.', 5.5);
+      }
     }
     if (game.nestKilled) {
       game.nestKilled = false;
@@ -474,9 +513,8 @@ function update(dtReal) {
 
     setThrust(s.alive && (s.thrusting || s.braking));
 
-    // Camera follows ship
-    game.cam.x = lerp(game.cam.x, s.x, 1 - Math.exp(-6 * dtReal));
-    game.cam.y = lerp(game.cam.y, s.y, 1 - Math.exp(-6 * dtReal));
+    // Camera follows the ship inside the fixed-step loop above (see there);
+    // only the cosmetic shake decay rides the variable frame time here.
     game.shake *= Math.exp(-7 * dtReal);
 }
 
