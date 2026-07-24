@@ -220,111 +220,238 @@ export const SHIP_RADIUS = [2.6, 5.0, 8.6, 14.5, 24.1, 38.0];
 // x zoom; they tune together. Raise this zoom and the sun mass must drop.
 export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
 
-// Upgrades are AUTOMATIC — playing the game grows the ship:
-//   catch things in the beam  -> beam capacity grows (heavier catches = faster)
-//   smash things              -> fling speed grows
-//   collect scrap             -> heals you AND raises max hull
-//   spend delta-v flying      -> engines grow
-export const GROWTH = {
-  CATCH_RATE: 0.35,        // capacity *= 1 + rate * (mass/capacity, repeat-discounted)
-  CAPACITY_MAX: 1500000,
-  SMASH_RATE: 0.05,        // fling *= 1 + rate per player-credited kill
-  FLING_BASE: 430,
-  FLING_MAX: 2200,
-  TOUGH_RATE: 0.35,        // maxHull += scrapValue * rate
-  HULL_BASE: 100,
-  HULL_MAX: 800,
-  THRUST_BASE: 100,        // slow start — leveling up opens the system to you
-  THRUST_MAX: 1100,
-  THRUST_SCALE: 80,        // thrust = base + scale * sqrt(deltaV / THRUST_DIV)
-  THRUST_DIV: 2500,        // bigger = slower engine leveling
+// Per-tier ship CLASS name (matches the hull designs drawn in render.js
+// SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
+export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
+
+// ROGUELITE PROGRESSION. Nothing grows passively any more: doing good things
+// (grab, smash, skim, kill, collect, survey, slingshot, shield-block) grants
+// XP; crossing a threshold PAUSES the game and offers a CHOICE of 2 upgrades.
+// Every PICKS_PER_TIER small picks the next choice is a TIER-UP milestone —
+// a 3-way specialization-path card plus a full-ship boost. You start with only
+// the tractor beam and a single held rock; every other ability is an upgrade.
+// Death spends a life (upgrades kept); 0 lives = game over and a fresh run.
+export const PROG = {
+  START_LIVES: 3,
+  MAX_LIVES: 5,
+  PICKS_PER_TIER: 5,       // small picks before a tier-up milestone
+  // XP-to-next-pick rises with level: BASE + STEP * level
+  XP_BASE: 90,
+  XP_STEP: 26,
+  // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
+  XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
+  XP_SMASH: 10,            // + 12 for a big kill
+  XP_SCRAP: 0.5,           // per unit of debris-chunk value collected
+  XP_ORBIT: 8,             // stow a rock into the orbit shield
+  XP_BLOCK: 14,            // a shield rock intercepts an alien throw
+  XP_SURVEY: 40,           // chart a world
+  XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
+  XP_SLING: 0.6,           // per unit of speed gained in a clean slingshot
+  // Life pods: sparse world collectibles that refill the buffer
+  LIFE_R: 62,              // collect radius
+  LIFE_MAX_ACTIVE: 1,      // at most this many adrift at once
+  LIFE_RESPAWN: 150,       // avg seconds between respawns (only while under MAX_LIVES)
 };
+
+// The upgrade catalog. Each entry: id, display, icon, max rank, the tier
+// RANGE it can appear in (guides the pool — narrow early, widening later),
+// and a base draw weight. shipStats() reads the earned ranks to derive stats;
+// several upgrades are ABILITY UNLOCKS (rank 1 turns the ability on).
+export const UPGRADES = [
+  // core stat upgrades (broad availability)
+  { id: 'beamReach', name: 'Beam Reach', icon: '⤢', max: 3, tiers: [0, 5], weight: 1.0,
+    desc: 'Extend tractor range and grab forgiveness.' },
+  { id: 'catchStrength', name: 'Beam Power', icon: '✦', max: 3, tiers: [0, 5], weight: 1.0,
+    desc: 'Grab heavier rocks within your tier.' },
+  { id: 'hullPlate', name: 'Hull Plating', icon: '▤', max: 5, tiers: [0, 5], weight: 1.1,
+    desc: 'Raise maximum hull.' },
+  { id: 'engine', name: 'Engine Tuning', icon: '⏩', max: 4, tiers: [0, 5], weight: 1.0,
+    desc: 'Faster thrust and a higher speed ceiling.' },
+  { id: 'flingPower', name: 'Fling Power', icon: '➹', max: 4, tiers: [1, 5], weight: 1.0,
+    desc: 'Throw and shotgun rocks harder.' },
+  { id: 'shieldCap', name: 'Shield Cells', icon: '⛨', max: 3, tiers: [1, 5], weight: 0.9,
+    desc: 'Shift more of your health pool into regenerating shield.' },
+  { id: 'scrapMagnet', name: 'Scrap Magnet', icon: '⦿', max: 3, tiers: [2, 5], weight: 0.8,
+    desc: 'Pull in scrap from farther away.' },
+  { id: 'regen', name: 'Shield Regen', icon: '♻', max: 3, tiers: [3, 5], weight: 0.8,
+    desc: 'Shield recharges sooner and faster.' },
+  // ability unlocks (rank 1 unlocks; higher ranks improve)
+  { id: 'reverse', name: 'Retro Thrusters', icon: '◂', max: 1, tiers: [0, 5], weight: 1.3,
+    desc: 'Unlock reverse thrust (S).' },
+  { id: 'targeting', name: 'Targeting Computer', icon: '⊕', max: 3, tiers: [0, 5], weight: 1.2,
+    desc: 'Unlock aim lead-markers; ranks add reach and markers.' },
+  { id: 'predict', name: 'Trajectory Plotter', icon: '⋯', max: 3, tiers: [1, 5], weight: 1.1,
+    desc: 'Unlock your flight-path forecast; ranks see farther.' },
+  { id: 'orbitShield', name: 'Orbit Shield', icon: '◍', max: 4, tiers: [1, 5], weight: 1.2,
+    desc: 'Stow rocks into a defensive orbit; ranks add slots.' },
+  { id: 'compass', name: 'Gravity Compass', icon: '✧', max: 2, tiers: [2, 5], weight: 1.0,
+    desc: 'Unlock the world-gravity chevrons at your ship.' },
+  { id: 'crashWarn', name: 'Collision Alert', icon: '⚠', max: 1, tiers: [2, 5], weight: 1.0,
+    desc: 'Mark where your path will hit (needs the plotter).' },
+  { id: 'volley', name: 'Shotgun Array', icon: '☄', max: 3, tiers: [3, 5], weight: 1.1,
+    desc: 'Unlock the right-click orbit shotgun; ranks charge faster.' },
+  { id: 'sensor', name: 'Deep Sensors', icon: '◈', max: 3, tiers: [3, 5], weight: 0.9,
+    desc: 'See farther on the map and extend the forecast.' },
+];
+
+// Tier-up specialization paths. Choosing one grants a free rank of its
+// signature upgrade and biases the small-pick pool for the coming tier.
+export const PATHS = [
+  { id: 'brawler', name: 'BRAWLER', icon: '※',
+    desc: 'Built for the smash. Fling, hull, and shotgun favored.',
+    grant: 'flingPower', bias: { flingPower: 2.2, hullPlate: 1.8, volley: 1.9, catchStrength: 1.4 } },
+  { id: 'hauler', name: 'HAULER', icon: '◎',
+    desc: 'Master of the beam. Capacity, reach, and the orbit shield favored.',
+    grant: 'orbitShield', bias: { orbitShield: 2.2, catchStrength: 2.0, beamReach: 1.7, scrapMagnet: 1.6 } },
+  { id: 'scout', name: 'SCOUT', icon: '◇',
+    desc: 'Eyes everywhere. Engines, targeting, plotter, and sensors favored.',
+    grant: 'engine', bias: { engine: 2.0, targeting: 2.0, predict: 1.8, sensor: 1.8, compass: 1.6 } },
+];
+
+export function upgradeById(id) { return UPGRADES.find((u) => u.id === id); }
 
 export function newProgress() {
   return {
-    capacity: TIERS.caps[0],
-    fling: GROWTH.FLING_BASE,
-    maxHull: GROWTH.HULL_BASE,
-    thrust: GROWTH.THRUST_BASE,
-    dv: 0,                 // lifetime delta-v spent
+    xp: 0,
+    level: 0,              // total pick-events taken
+    tier: 0,               // 0..5 — driven by milestones, NOT capacity
+    picksThisTier: 0,      // toward the next tier-up milestone
+    upgrades: {},          // { id: rank } — the whole build
+    path: null,            // last chosen specialization (biases the pool)
+    lives: PROG.START_LIVES,
+    // flavor counters (stats only, not read by shipStats)
     catches: 0,
     smashes: 0,
-    scrapCollected: 0,
-    orbitXp: 0,            // +1 per orbit add, +3 per shield block
-    surveyed: 0,           // worlds charted by flying close (world.js scan)
+    surveyed: 0,
   };
 }
 
-// Derived ship stats + per-track levels (levels drive visuals & alien scaling)
-export function shipStats(prog) {
-  let tier = 0;
-  while (tier < TIERS.caps.length - 1 && prog.capacity >= TIERS.caps[tier + 1]) tier++;
-  const flingLvl = Math.min(5, Math.floor((prog.fling - GROWTH.FLING_BASE) / 300));
-  const hullLvl = Math.min(5, Math.floor((prog.maxHull - GROWTH.HULL_BASE) / 120));
-  const thrustLvl = Math.min(5, Math.floor((prog.thrust - GROWTH.THRUST_BASE) / 180));
-  const orbitLvl = Math.min(5, Math.floor(Math.sqrt(prog.orbitXp / 4)));
-  // Charting worlds levels a SENSOR track — deliberately excluded from
-  // totalLevel so exploration never inflates the zoom/ship-size pacing.
-  const chartLvl = Math.min(5, Math.floor(prog.surveyed / 4));
-  const totalLevel = tier + flingLvl + hullLvl + thrustLvl + orbitLvl;
+// ---- XP + pick bookkeeping (pure helpers over game.prog) --------------------
 
-  // Fraction of the way to each track's next level (1 when maxed) — shown on
-  // the HUD so you always know how close the next level is.
-  const frac01 = (v) => Math.max(0, Math.min(1, v));
-  const fracs = {
-    beam: tier >= TIERS.caps.length - 1 ? 1
-      : frac01((prog.capacity - TIERS.caps[tier]) / (TIERS.caps[tier + 1] - TIERS.caps[tier])),
-    fling: flingLvl >= 5 ? 1 : frac01(((prog.fling - GROWTH.FLING_BASE) - flingLvl * 300) / 300),
-    hull: hullLvl >= 5 ? 1 : frac01(((prog.maxHull - GROWTH.HULL_BASE) - hullLvl * 120) / 120),
-    thrust: thrustLvl >= 5 ? 1 : frac01(((prog.thrust - GROWTH.THRUST_BASE) - thrustLvl * 180) / 180),
-    orbit: orbitLvl >= 5 ? 1
-      : frac01((prog.orbitXp - 4 * orbitLvl * orbitLvl) / (4 * (orbitLvl + 1) ** 2 - 4 * orbitLvl * orbitLvl)),
-    chart: chartLvl >= 5 ? 1 : frac01((prog.surveyed - chartLvl * 4) / 4),
-  };
+export function xpForPick(prog) { return PROG.XP_BASE + PROG.XP_STEP * prog.level; }
+export function owesPick(prog) { return prog.xp >= xpForPick(prog); }
+export function addXp(game, amount) {
+  if (amount <= 0 || !game.ship || !game.ship.alive) return;
+  game.prog.xp += amount;
+}
+// The next owed pick is a tier-up milestone once enough small picks are banked
+// (until the top tier, after which it's small picks forever).
+export function pickIsMilestone(prog) {
+  return prog.tier < TIERS.caps.length - 1 && prog.picksThisTier >= PROG.PICKS_PER_TIER;
+}
+export function consumePickCost(prog) {
+  prog.xp = Math.max(0, prog.xp - xpForPick(prog));
+  prog.level++;
+}
+export function applyUpgrade(prog, id) {
+  prog.upgrades[id] = (prog.upgrades[id] || 0) + 1;
+}
+export function applyPath(prog, id) {
+  prog.path = id;
+  const p = PATHS.find((x) => x.id === id);
+  if (p && p.grant) {
+    const u = upgradeById(p.grant);
+    if (u && (prog.upgrades[p.grant] || 0) < u.max) applyUpgrade(prog, p.grant);
+  }
+  prog.tier = Math.min(TIERS.caps.length - 1, prog.tier + 1);
+  prog.picksThisTier = 0;
+}
+
+// Weighted, no-replacement draw of `n` eligible upgrades for the choice cards.
+// Eligibility = within the current tier's pool and not yet maxed; path bias
+// nudges the odds toward the chosen specialization. Runtime randomness
+// (Math.random) is intentional per the determinism rules.
+export function pickChoices(prog, n = 2) {
+  const path = PATHS.find((p) => p.id === prog.path);
+  const bag = UPGRADES
+    .filter((u) => prog.tier >= u.tiers[0] && prog.tier <= u.tiers[1] &&
+      (prog.upgrades[u.id] || 0) < u.max)
+    .map((u) => ({ u, w: u.weight * ((path && path.bias[u.id]) || 1) }));
+  const chosen = [];
+  while (chosen.length < n && bag.length) {
+    let total = 0; for (const e of bag) total += e.w;
+    let r = Math.random() * total, idx = 0;
+    for (; idx < bag.length - 1; idx++) { r -= bag[idx].w; if (r <= 0) break; }
+    chosen.push(bag[idx].u);
+    bag.splice(idx, 1);
+  }
+  return chosen;
+}
+
+// Derived ship stats. Everything is a function of tier + earned upgrade ranks
+// (no accumulators). The st field names match the old ones so every consumer
+// is untouched; the new gate fields (has*/…Lvl) turn abilities on/scale them.
+export function shipStats(prog) {
+  const tier = prog.tier;
+  const u = prog.upgrades || {};
+  const r = (id) => u[id] || 0;
+  const catchR = r('catchStrength'), beamR = r('beamReach'), hullR = r('hullPlate'),
+    engineR = r('engine'), flingR = r('flingPower'), shieldR = r('shieldCap'),
+    orbitR = r('orbitShield'), targR = r('targeting'), predR = r('predict'),
+    compR = r('compass'), volR = r('volley'), magR = r('scrapMagnet'),
+    senR = r('sensor'), regR = r('regen'), crashR = r('crashWarn'), revR = r('reverse');
+
+  const capacity = TIERS.caps[tier] * (1 + 0.22 * catchR);
+  const orbitLvl = orbitR;   // drives ring layout / interceptor reach in tractor.js
+  const maxHull = 120 + 40 * tier + 60 * hullR;
+  const shieldFrac = Math.min(0.55, (1 / 3) + 0.06 * shieldR);
+  const hullMax = Math.round(maxHull * (1 - shieldFrac));
+
+  // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it
+  // in the old ~0..25 band so combat/physics balance is preserved.
+  const rankSum = catchR + beamR + hullR + engineR + flingR + shieldR + orbitR +
+    targR + predR + compR + volR + magR + senR + regR + crashR + revR;
+  const totalLevel = Math.min(25, tier * 2 + Math.round(rankSum * 0.6));
 
   return {
-    capacity: prog.capacity,
+    capacity,
     tier,
     label: TIERS.labels[tier],
-    // Orbit level extends how far the beam reaches and how forgiving the
-    // cursor is about being near a target. The per-tier base is sized
-    // against SHIP_ZOOM so the reach ring stays ON SCREEN at every tier —
-    // the old flat 280+70/tier curve overflowed the viewport at the
-    // zoomed-in early tiers. Tiers 4-6 keep their original values.
-    range: [200, 265, 350, 490, 560, 630][tier] + 45 * orbitLvl,
-    grabSlack: 70 + 28 * orbitLvl,
-    force: prog.capacity * 55 * (0.6 + 0.12 * tier),
-    // Speed governor: each engine level raises the ceiling; exceeding it
-    // (slingshots, knockbacks) bleeds off gradually
-    maxSpeed: 280 + 135 * thrustLvl,
-    fling: prog.fling,
-    thrust: prog.thrust,
-    maxHull: Math.round(prog.maxHull),
-    // The pool splits ~2/3 hull (scrap-heal only) / 1/3 shield (recharges)
-    hullMax: Math.round(prog.maxHull * (2 / 3)),
-    shieldMax: Math.round(prog.maxHull) - Math.round(prog.maxHull * (2 / 3)),
-    // Generous size rule: anything up to ~45% of beam capacity fits the orbit,
-    // so a chunky asteroid your beam handles easily is never "too big".
-    // The orbit works from the very start (small rocks only at tier 0).
-    orbitCap: Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, prog.capacity * 0.45),
+    shipName: SHIP_NAMES[tier],
+    // Beam reach base is sized against SHIP_ZOOM so the ring stays on-screen at
+    // every tier; beamReach/orbit ranks extend it. The base is the old
+    // [200,265,350,490,560,630] ladder tapered by a shrink that runs from -20%
+    // at tier 0 to 0% at tier 5 (0.80 + 0.04*tier) — a tighter starting beam
+    // that grows back to the same top-tier reach.
+    range: [160, 223, 308, 451, 538, 630][tier] + 40 * beamR + 30 * orbitLvl,
+    grabSlack: 70 + 22 * beamR,
+    force: capacity * 55 * (0.6 + 0.12 * tier),
+    maxSpeed: 280 + 40 * tier + 85 * engineR,
+    thrust: 180 + 30 * tier + 105 * engineR,
+    fling: 430 + 55 * tier + 190 * flingR,
+    maxHull: Math.round(maxHull),
+    // Pool splits hull (scrap-heal only) / shield (recharges); shieldCap shifts it
+    hullMax,
+    shieldMax: Math.round(maxHull) - hullMax,
+    // Orbit shield is LOCKED until the orbitShield upgrade (rank 0 -> no slots)
+    orbitCap: orbitR > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0,
     orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks',
-    // 1 slot out of the gate; every orbit level adds 3 more
-    maxOrbiters: 1 + 3 * orbitLvl,
+    maxOrbiters: orbitR > 0 ? 2 * orbitR - 1 : 0,   // 1, 3, 5, 7 slots
     orbitLvl,
-    levels: { beam: tier, orbit: orbitLvl, fling: flingLvl, hull: hullLvl, thrust: thrustLvl, chart: chartLvl },
-    fracs,
-    // Every charted world sharpens the sensors: predictPaths multiplies its
-    // forecast step count by this, so exploring literally extends how far
-    // ahead you can see. Capped ~2x so the per-frame predictor stays cheap.
-    predictBoost: 1 + Math.min(1.1, prog.surveyed * 0.06),
-    // The ship GROWS at each beam tier (render.js morphs the transition).
-    // Size is tier-driven ONLY — no totalLevel term: multiplying two growing
-    // curves makes the top tiers balloon superlinearly and the size ladder
-    // uneven. The collision circle always matches the drawn art.
+    // Kept for render (engine-flare size, chart-length) — indexed like the old levels
+    levels: { beam: tier, orbit: orbitLvl, fling: flingR, hull: hullR, thrust: engineR, chart: senR },
+    // ---- ability gates (new) ----
+    hasReverse: revR > 0,
+    hasTargeting: targR > 0,
+    targetLvl: targR,
+    targetReach: 0.6 + 0.25 * targR,     // x LOCK_T, when targeting is on
+    targetMarkers: 2 + 2 * targR,        // how many ✕ markers show
+    hasPredict: predR > 0,
+    predictLvl: predR,
+    hasCrashWarn: crashR > 0,
+    hasCompass: compR > 0,
+    compassLvl: compR,
+    hasVolley: volR > 0,
+    volleyLvl: volR,
+    // ---- scaled passives (new) ----
+    magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magR),
+    sensorMul: 1 + 0.3 * senR,
+    regen: CFG.SHIP_REGEN * (1 + 0.35 * regR),
+    regenDelay: CFG.SHIP_REGEN_DELAY * (1 - 0.1 * regR),
+    // Forecast horizon: only meaningful once the plotter is unlocked
+    predictBoost: 1 + Math.min(1.1, 0.3 * Math.max(0, predR - 1) + 0.12 * senR),
+    // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
-    // Camera pulls back as you tier up (animated in main.js, no manual
-    // zoom) — main.js targets 1.15 / zoomOut, so this makes the final zoom
-    // target exactly SHIP_ZOOM[tier] (geometric 2.46 -> 0.6 across tiers).
     zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };

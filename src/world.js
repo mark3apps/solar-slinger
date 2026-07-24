@@ -1,4 +1,4 @@
-import { CFG } from './config.js';
+import { CFG, PROG, addXp } from './config.js';
 import { Body, railBody, railEllipse } from './entities.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 import { sfxPing } from './sfx.js';
@@ -565,7 +565,29 @@ export function generateWorld(game, seed = 20260721) {
   game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   game.surveyTotal = planets.length;   // worlds the CHART track can log
+  // Roguelite life pods: one seeded near the starting belt so the +1-life
+  // mechanic is discoverable; replenishWorld/main.js trickle in more.
+  game.pickups = [];
+  game.lifeTimer = PROG.LIFE_RESPAWN;
+  spawnLifePod(game, sun.x + 2400, sun.y - sr - 1100);
   respawnShip(game);
+}
+
+// A drifting extra-life collectible. Without explicit coords it appears on a
+// ring just beyond the current view (main.js trickles these in over time).
+export function spawnLifePod(game, x, y) {
+  if (x === undefined) {
+    const s = game.ship;
+    const ang = Math.random() * TAU;
+    const d = (game.viewR || 1600) * 1.05;
+    x = s.x + Math.cos(ang) * d;
+    y = s.y + Math.sin(ang) * d;
+  }
+  game.pickups.push({
+    x, y,
+    vx: (Math.random() - 0.5) * 18, vy: (Math.random() - 0.5) * 18,
+    phase: Math.random() * TAU,
+  });
 }
 
 export function respawnShip(game) {
@@ -889,7 +911,8 @@ export function replenishWorld(game, dt) {
     // the minimap forever (render.js skips bodies without b.seen). Only the
     // types the minimap actually draws are worth flagging.
     if (s.alive) {
-      const seeR = Math.max(2600, (game.viewR || 1200) * 1.25);
+      // Deep Sensors upgrade widens the reveal radius (st.sensorMul)
+      const seeR = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1);
       const seeR2 = seeR * seeR;
       for (const b of game.bodies) {
         if (b.seen || !b.alive) continue;
@@ -909,8 +932,8 @@ export function replenishWorld(game, dt) {
       if (!p.surveyed && d < p.radius * 5 + 600) {
         p.surveyed = true;
         game.prog.surveyed++;
-        game.surveyMsg = `WORLD CHARTED: ${(p.name || 'planet').toUpperCase()} — ${game.prog.surveyed}/${game.surveyTotal} surveyed.`
-          + (game.prog.surveyed % 4 === 0 ? ' Sensors refined — trajectory forecast extended.' : '');
+        addXp(game, PROG.XP_SURVEY);   // charting a world pays XP
+        game.surveyMsg = `WORLD CHARTED: ${(p.name || 'planet').toUpperCase()} — ${game.prog.surveyed}/${game.surveyTotal} surveyed. +XP.`;
       }
       if (d > 6500) continue;
       // MOONSHADOW: a moon sitting on the sun-planet line casts its shadow

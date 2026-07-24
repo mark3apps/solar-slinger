@@ -76,27 +76,45 @@ html, body {
   100% { filter: brightness(1); }
 }
 
-#scrapRow { color: #ffd76a; text-shadow: 0 0 8px rgba(255, 190, 60, .7); }
+/* Roguelite progression HUD: tier + lives, an XP bar, and acquired-upgrade icons */
+#progRow { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 11px; }
+#tierLabel { color: #8fd0ff; letter-spacing: 1px; }
+#livesText { color: #ff8aa0; text-shadow: 0 0 8px rgba(255, 100, 130, .7); letter-spacing: 2px; }
 
-#tracks { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
-.track { display: flex; align-items: center; gap: 7px; font-size: 11px; }
-.tlabel { width: 46px; color: #8fd0ff; letter-spacing: 1px; }
-.tval { color: rgba(207, 227, 255, .85); }
-.track[data-key="orbit"] .tlabel { color: #8fffc9; }
-
-.tnext {
-  display: inline-block; width: 34px; height: 4px;
-  border: 1px solid rgba(120, 200, 255, .3); border-radius: 2px;
-  overflow: hidden; background: rgba(10, 20, 40, .6);
+/* XP bar spans the WHOLE current tier; the ticks mark each intermediate
+   upgrade pick, and a full bar = the tier-up milestone. The tick period is
+   set inline (100 / PICKS_PER_TIER %) from hud.js so it tracks the constant. */
+#xpBar {
+  position: relative;
+  width: 260px; height: 9px; margin-top: 3px;
+  border: 1px solid rgba(150, 130, 255, .5); border-radius: 3px;
+  overflow: hidden; background: rgba(14, 12, 34, .7);
 }
-.tnextfill { display: block; height: 100%; width: 0; background: rgba(90, 200, 255, .75); }
-
-.pips { display: inline-flex; gap: 3px; }
-.pip {
-  display: inline-block; width: 8px; height: 8px;
-  border: 1px solid rgba(120, 200, 255, .45); border-radius: 2px;
+#xpFill {
+  display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, #7d9bff, #b78bff);
+  box-shadow: 0 0 8px rgba(150, 130, 255, .5); transition: width .12s ease;
 }
-.pip.lit { background: #5ac8ff; box-shadow: 0 0 6px rgba(90, 200, 255, .8); }
+#xpBar::after {   /* upgrade-pick tick marks (period set inline from hud.js) */
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(90deg,
+    transparent 0, transparent calc(var(--tick) - 2px),
+    rgba(214, 226, 255, .85) calc(var(--tick) - 2px), rgba(214, 226, 255, .85) var(--tick));
+}
+
+/* Acquired upgrades — a detailed list (icon, name, rank pips) */
+#upList2 { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; max-width: 260px; }
+#upList2 .ulhead { font-size: 9px; letter-spacing: 1.5px; color: rgba(150, 200, 255, .6); margin-bottom: 1px; }
+.uprow2 { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.35; }
+.uprow2 .ui-ic { width: 14px; text-align: center; color: #bfe0ff; }
+.uprow2 .ui-nm { flex: 1; color: #d6ecff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uprow2 .ui-rk { display: inline-flex; gap: 2px; }
+.uprow2 .ui-rk .rp {
+  width: 5px; height: 5px; border-radius: 1px;
+  border: 1px solid rgba(120, 200, 255, .4);
+}
+.uprow2 .ui-rk .rp.on { background: #7dffb8; border-color: rgba(120, 255, 180, .7); box-shadow: 0 0 4px rgba(120, 255, 180, .6); }
+.uprow2 .ui-on { font-size: 9px; color: #7dffb8; letter-spacing: 1px; }
 
 #msg {
   position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
@@ -121,6 +139,8 @@ html, body {
 .panel p { margin: 8px 0; }
 .panel .small { font-size: 11px; color: rgba(170, 200, 240, .6); margin-top: 14px; }
 
+/* The upgrade modal must receive clicks (the HUD layer is pointer-events:none) */
+#upgradeScreen { pointer-events: auto; }
 #upList { display: flex; flex-direction: column; gap: 10px; text-align: left; }
 .uprow {
   display: flex; align-items: center; gap: 14px;
@@ -128,7 +148,22 @@ html, body {
   border: 1px solid rgba(90, 150, 230, .3);
   border-radius: 6px;
   background: rgba(16, 28, 54, .6);
+  cursor: pointer; transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
 }
+.uprow:hover {
+  border-color: rgba(255, 200, 90, .6);
+  background: rgba(30, 42, 72, .72);
+  box-shadow: 0 0 14px rgba(120, 170, 255, .25);
+}
+.uprow.path { border-color: rgba(255, 200, 90, .4); background: rgba(40, 34, 20, .5); }
+.uprow.path:hover { border-color: rgba(255, 214, 100, .8); background: rgba(60, 48, 20, .6); }
+.upnum {
+  flex: none; width: 24px; height: 24px; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: #04060d; background: #8fd0ff; font-weight: bold;
+}
+.uprow.path .upnum { background: #ffd76a; }
+.upicon { flex: none; width: 26px; text-align: center; font-size: 20px; color: #bfe0ff; }
 .upinfo { flex: 1; }
 .upname { font-size: 14px; color: #d6ecff; letter-spacing: 1px; }
 .updesc { font-size: 11px; color: rgba(160, 195, 240, .65); margin-top: 3px; }

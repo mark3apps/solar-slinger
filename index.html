@@ -21,8 +21,12 @@
       <span class="stattrack"><span id="shieldFill"></span></span>
       <span class="statnum" id="shieldNum">33/33</span>
     </div>
-    <div id="scrapRow">&#x2B21; <span id="scrapText">0</span> SCRAP</div>
-    <div id="tracks"></div>
+    <div id="progRow">
+      <span id="tierLabel">TIER 0 &middot; SCOUT</span>
+      <span id="livesText">&#x2665;&#x2665;&#x2665;</span>
+    </div>
+    <div id="xpBar"><span id="xpFill"></span></div>
+    <div id="upList2"></div>
   </div>
   <div id="msg" class="hidden"></div>
 </div>
@@ -30,7 +34,19 @@
 <div id="deathScreen" class="panel hidden">
   <h1>SHIP DESTROYED</h1>
   <p id="deathCause"></p>
-  <p class="small">25% of scrap lost &mdash; press R to respawn</p>
+  <p class="small" id="deathLives">Press R to respawn</p>
+</div>
+
+<div id="gameoverScreen" class="panel hidden">
+  <h1>GAME OVER</h1>
+  <p id="gameoverCause"></p>
+  <p class="small">All lives lost &mdash; press R to start a new run</p>
+</div>
+
+<div id="upgradeScreen" class="panel hidden">
+  <h2 id="upTitle">CHOOSE AN UPGRADE</h2>
+  <div id="upList"></div>
+  <p class="small" id="upHint">Press 1 or 2 &mdash; or click a card</p>
 </div>
 
 <div id="pauseScreen" class="panel hidden">

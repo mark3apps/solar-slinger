@@ -14,6 +14,10 @@ export function initInput(canvas, handlers) {
     if (e.code === 'KeyP') handlers.onTogglePause();
     if (e.code === 'KeyR') handlers.onRespawn();
     if (e.code === 'KeyT') handlers.onTogglePredict();
+    // Upgrade-card selection (only acts while the choice modal is open)
+    if (e.code === 'Digit1') handlers.onUpgradePick(0);
+    if (e.code === 'Digit2') handlers.onUpgradePick(1);
+    if (e.code === 'Digit3') handlers.onUpgradePick(2);
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));

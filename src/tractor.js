@@ -1,5 +1,4 @@
-import { GROWTH } from './config.js';
-import { CFG } from './config.js';
+import { CFG, PROG, addXp } from './config.js';
 import { derail } from './entities.js';
 import { clamp, angDiff, TAU } from './util.js';
 import * as sfx from './sfx.js';
@@ -31,7 +30,9 @@ export function aimSolutions(game) {
   // misses by the full offset. Origin = the actual launch point.
   const o = held || s;
   const cursorAng = Math.atan2(game.aim.y - o.y, game.aim.x - o.x);
-  const reach = Math.min(2600, speed * CFG.LOCK_T);
+  // Targeting Computer upgrade scales the solve reach (targetReach x LOCK_T)
+  const lockT = CFG.LOCK_T * (st.targetReach || 1);
+  const reach = Math.min(2600, speed * lockT);
   const sols = [];
   let hot = null;
   const consider = (e) => {
@@ -52,7 +53,7 @@ export function aimSolutions(game) {
     } else if (bq < -1e-6) {
       t = -c / bq;
     } else return;
-    if (t > CFG.LOCK_T * 1.4) return;             // meets beyond the throw line
+    if (t > lockT * 1.4) return;                  // meets beyond the throw line
     // Lead point: where the cursor must sit for this angle (launch frame,
     // so it stays correct even while the ship itself is moving)
     const mx = o.x + rx + vx * t, my = o.y + ry + vy * t;
@@ -72,7 +73,7 @@ export function aimSolutions(game) {
     consider(b);
   }
   sols.sort((x, y) => x.cursorD - y.cursorD);
-  return { sols: sols.slice(0, 6), hot };
+  return { sols: sols.slice(0, st.targetMarkers || 6), hot };
 }
 
 // Fling speed for a given mass — heavier objects fling slower. TETHER THROW:
@@ -138,11 +139,11 @@ export function tryGrab(game) {
   derail(best);
   game.held = best;
 
-  // AUTO-UPGRADE: every catch strengthens the beam. Heavy catches (relative to
-  // current capacity) grow it fastest; re-catching the same rock pays less
-  // each time so you can't farm one pebble forever.
-  const w = clamp(best.mass / game.prog.capacity, 0.1, 1) / (1 + 0.6 * best.catchCount);
-  game.prog.capacity = Math.min(GROWTH.CAPACITY_MAX, game.prog.capacity * (1 + GROWTH.CATCH_RATE * w));
+  // XP: every catch pays. Heavy catches (relative to current capacity) pay
+  // most; re-catching the same rock pays less each time so you can't farm one
+  // pebble forever.
+  const w = clamp(best.mass / game.st.capacity, 0.1, 1) / (1 + 0.6 * best.catchCount);
+  addXp(game, PROG.XP_CATCH + 20 * w);
   game.prog.catches++;
   best.catchCount++;
 
@@ -239,7 +240,7 @@ export function addToOrbit(game) {
   // (ambient spin is a sleepy ±0.3 rad/s)
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
   game.orbit.push(b);
-  game.prog.orbitXp += 1;   // AUTO-UPGRADE: using the orbit grows the orbit
+  addXp(game, PROG.XP_ORBIT);   // stowing a rock into the shield pays XP
   sfx.setBeam(false);
   sfx.sfxCollect();
   return true;

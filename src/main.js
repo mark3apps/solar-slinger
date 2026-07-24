@@ -1,6 +1,10 @@
-import { CFG, GROWTH, newProgress, shipStats } from './config.js';
+import {
+  CFG, PROG, PATHS, newProgress, shipStats,
+  addXp, owesPick, xpForPick, pickIsMilestone, pickChoices,
+  consumePickCost, applyUpgrade, applyPath,
+} from './config.js';
 import { Ship } from './entities.js';
-import { generateWorld, respawnShip, replenishWorld } from './world.js';
+import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
 import { step } from './physics.js';
 import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
@@ -8,7 +12,7 @@ import { updateCritters } from './critters.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
-import { setThrust } from './sfx.js';
+import { setThrust, sfxUpgrade, sfxCollect } from './sfx.js';
 import { lerp } from './util.js';
 
 const game = {
@@ -22,9 +26,14 @@ const game = {
   particles: [],
   flares: [],              // solar plasma in flight
   bolts: [],               // Bastion turret fire in flight
-  scrap: 0,
-  prog: newProgress(),     // upgrades are automatic — this is the ship's growth
+  prog: newProgress(),     // roguelite build: xp / level / tier / upgrades / lives
   st: null,
+  pickups: [],             // drifting life pods (world.js seeds/replenishes)
+  choosingUpgrade: false,  // sim frozen while an upgrade card is open
+  upgradeChoices: null,
+  upgradeKind: null,       // 'upgrade' (2 cards) | 'path' (3 milestone cards)
+  gameOver: false,
+  lifeTimer: PROG.LIFE_RESPAWN,
   held: null,
   orbit: [],               // bodies circling the ship as a shield
   orbitAngle: 0,
@@ -81,7 +90,7 @@ function fireVolley() {
 
 initInput(canvas, {
   onGrab: () => {
-    if (game.paused || !game.ship.alive) return;
+    if (game.paused || game.choosingUpgrade || !game.ship.alive) return;
     if (tryGrab(game)) {
       // Anything that fits your orbit is captured into it automatically
       const b = game.held;
@@ -93,7 +102,7 @@ initInput(canvas, {
         }
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
-        hud.message('Got it! RELEASE to FLING it toward the cursor. Every catch strengthens your beam.', 5);
+        hud.message('Got it! RELEASE to FLING it toward the cursor. Good moves earn XP — level up to pick upgrades.', 5);
       }
     } else if (retrieveFromOrbit(game)) {
       if (!game.tut.retrieved) {
@@ -103,6 +112,7 @@ initInput(canvas, {
     }
   },
   onFling: () => {
+    if (game.choosingUpgrade) return;
     if (game.held) {
       releaseHeld(game, true);
       if (!game.tut.flung) {
@@ -112,12 +122,14 @@ initInput(canvas, {
     }
   },
   onRmbDown: () => {
+    if (game.choosingUpgrade) return;
     if (game.held) {
       // Send the held rock (back) into your orbit; too big -> gentle drop
       if (!addToOrbit(game)) releaseHeld(game, false);
       return;
     }
-    if (game.orbit.length) game.volleyCharging = true;
+    // The shotgun is an upgrade — no charge until the array is unlocked
+    if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => {
     // Release fires whatever the hold has armed (a tap = 1 rock)
@@ -129,19 +141,76 @@ initInput(canvas, {
     hud.setPauseVisible(game.paused);
   },
   onRespawn: () => {
-    if (!game.ship.alive) {
-      // Death penalty: some toughness is lost with the wreck
-      game.prog.maxHull = Math.max(100, game.prog.maxHull * 0.8);
-      game.st = shipStats(game.prog);
-      respawnShip(game);
-      hud.setDeathVisible(false);
-    }
+    if (game.ship.alive) return;
+    if (game.gameOver) { resetRun(); return; }
+    // A life was already spent at the moment of death; upgrades are KEPT.
+    respawnShip(game);
+    hud.setDeathVisible(false);
   },
   onTogglePredict: () => { game.predict = !game.predict; },
+  onUpgradePick: (i) => applyPick(i),
 });
 
+// Apply the chosen card (small upgrade or tier-up path), then unfreeze.
+function applyPick(i) {
+  if (!game.choosingUpgrade || !game.upgradeChoices) return;
+  const choice = game.upgradeChoices[i];
+  if (!choice) return;
+  consumePickCost(game.prog);
+  if (game.upgradeKind === 'path') {
+    applyPath(game.prog, choice.id);
+    game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+    game.st = shipStats(game.prog);
+    game.lastTier = game.st.tier;
+    hud.message(`TIER UP — you now command ${game.st.label.toUpperCase()}. ${choice.name} path chosen. +1 life.`, 6);
+  } else {
+    applyUpgrade(game.prog, choice.id);
+    game.prog.picksThisTier++;
+    game.st = shipStats(game.prog);
+    const rank = game.prog.upgrades[choice.id];
+    hud.message(`${choice.name.toUpperCase()} ${rank > 1 ? `rank ${rank}` : 'acquired'}.`, 3.5);
+  }
+  sfxUpgrade();
+  game.choosingUpgrade = false;
+  game.upgradeChoices = null;
+  game.upgradeKind = null;
+  hud.setUpgradeVisible(game, null, null, null);
+}
+
+// Open the choice modal for the next owed pick (small or milestone) and freeze.
+function openUpgrade() {
+  const prog = game.prog;
+  if (pickIsMilestone(prog)) {
+    game.upgradeKind = 'path';
+    game.upgradeChoices = PATHS.slice();
+  } else {
+    game.upgradeKind = 'upgrade';
+    game.upgradeChoices = pickChoices(prog, 2);
+    if (!game.upgradeChoices.length) { consumePickCost(prog); return; }   // nothing left to offer
+  }
+  game.choosingUpgrade = true;
+  hud.setUpgradeVisible(game, game.upgradeChoices, game.upgradeKind, applyPick);
+}
+
+// Game over -> fresh run: wipe the build, regenerate the world, restart.
+function resetRun() {
+  game.prog = newProgress();
+  game.st = shipStats(game.prog);
+  game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
+  game.flares.length = 0; game.bolts.length = 0; game.critters.length = 0;
+  game.orbit.length = 0; game.held = null; game.pickups.length = 0;
+  game.gameOver = false; game.deathShown = false; game.deathCause = '';
+  game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
+  game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false };
+  generateWorld(game);   // rebuilds bodies + spawn, calls respawnShip
+  game.st = shipStats(game.prog);
+  game.cam.x = game.ship.x; game.cam.y = game.ship.y;
+  hud.setDeathVisible(false);
+  hud.setGameOverVisible(false);
+}
+
 // Opening guidance
-setTimeout(() => hud.message('You are in orbit inside the belt. The ship follows your mouse — W forward, S reverse.', 6), 800);
+setTimeout(() => hud.message('You are in orbit inside the belt. The ship follows your mouse — hold W to thrust forward.', 6), 800);
 setTimeout(() => {
   if (!game.tut.grabbed) hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
 }, 9000);
@@ -161,10 +230,13 @@ function update(dtReal) {
     const zoomTarget = 1.15 / game.st.zoomOut;
     game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
     applyZoom();
-    if (game.st.tier > game.lastTier) {
-      game.lastTier = game.st.tier;
-      const orbitNote = ` Your orbit now holds ${game.st.orbitLabel.toLowerCase()}.`;
-      hud.message(`BEAM STRENGTHENED: you can now grab ${game.st.label.toUpperCase()}.${orbitNote}`, 6);
+
+    // Roguelite pick: XP crossing a threshold opens the choice modal, which
+    // freezes the sim (frame() gate) until the player picks. In headless
+    // (window.tick) there is no input, so window.autoUpgrade auto-resolves.
+    if (!game.choosingUpgrade && game.ship.alive && owesPick(game.prog)) {
+      openUpgrade();
+      if (game.autoUpgrade && game.choosingUpgrade) applyPick(0);
     }
 
     // Per-frame inputs & AI
@@ -246,10 +318,8 @@ function update(dtReal) {
         // modest assists routine, and the old numbers inflated low-level
         // engine growth into a runaway
         if (!game.sling.thrusted && gain > 90) {
-          game.prog.dv += gain * 5;   // counts as delta-v earned, not spent
-          game.prog.thrust = Math.min(GROWTH.THRUST_MAX,
-            GROWTH.THRUST_BASE + GROWTH.THRUST_SCALE * Math.sqrt(game.prog.dv / GROWTH.THRUST_DIV));
-          hud.message(`SLINGSHOT! +${gain} speed — the gravity assist feeds your engines.`, 3);
+          addXp(game, gain * PROG.XP_SLING);   // clean flying earns XP
+          hud.message(`SLINGSHOT! +${gain} speed — clean flying earns XP.`, 3);
         }
         game.sling = null;
       }
@@ -257,13 +327,15 @@ function update(dtReal) {
       game.sling = null;
     }
 
-    // Shield recharges after a quiet spell; the hull only heals from scrap
-    if (s.alive && game.time - game.lastDamage > CFG.SHIP_REGEN_DELAY && s.shield < game.st.shieldMax) {
-      s.shield = Math.min(game.st.shieldMax, s.shield + CFG.SHIP_REGEN * dtReal);
+    // Shield recharges after a quiet spell; the hull only heals from scrap.
+    // Delay/rate scale with the Shield Regen upgrade (st.regenDelay/st.regen).
+    if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
+      s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
     if (s.shieldHitT > 0) s.shieldHitT -= dtReal;
 
     replenishWorld(game, dtReal);
+    updateLifePods(dtReal);
 
     // Oort cloud proximity warning
     if (game.oortWarnT > 0) game.oortWarnT -= dtReal;
@@ -293,7 +365,7 @@ function update(dtReal) {
     // Lead-point solve for the UI. The throw itself always goes at the
     // cursor — these are the ✕ markers showing where a release WOULD hit
     // each nearby mover, plus which one the current aim already satisfies.
-    if (s.alive && (game.held || game.volleyCharging)) {
+    if (s.alive && game.st.hasTargeting && (game.held || game.volleyCharging)) {
       game.lock = aimSolutions(game);
       game.lockTarget = game.lock.hot ? game.lock.hot.target : null;
     } else {
@@ -507,7 +579,13 @@ function update(dtReal) {
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
-      hud.setDeathVisible(true, game.deathCause);
+      game.prog.lives--;   // a life is spent per death (upgrades are kept)
+      if (game.prog.lives <= 0) {
+        game.gameOver = true;
+        hud.setGameOverVisible(true, game.deathCause);
+      } else {
+        hud.setDeathVisible(true, game.deathCause, game.prog.lives);
+      }
     }
     if (s.alive && game.deathShown) game.deathShown = false;
 
@@ -518,13 +596,45 @@ function update(dtReal) {
     game.shake *= Math.exp(-7 * dtReal);
 }
 
+// Life pods: sparse drifting collectibles. Fly into one for +1 life; when the
+// buffer is full they cash out as scrap instead. A slow timer trickles new
+// pods in while you're below MAX_LIVES (world.js places them beyond the view).
+function updateLifePods(dt) {
+  const s = game.ship;
+  for (let i = game.pickups.length - 1; i >= 0; i--) {
+    const p = game.pickups[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.phase = (p.phase || 0) + dt;
+    if (s.alive && Math.hypot(p.x - s.x, p.y - s.y) < PROG.LIFE_R + s.radius) {
+      game.pickups.splice(i, 1);
+      if (game.prog.lives < PROG.MAX_LIVES) {
+        game.prog.lives++;
+        hud.message(`EXTRA LIFE recovered — ${game.prog.lives} lives.`, 4);
+      } else {
+        addXp(game, 200);
+        hud.message('Life pod converted to XP — lives already full.', 3.5);
+      }
+      sfxCollect();
+    }
+  }
+  game.lifeTimer -= dt;
+  if (game.lifeTimer <= 0) {
+    game.lifeTimer = PROG.LIFE_RESPAWN * (0.6 + Math.random() * 0.8);
+    if (game.prog.lives < PROG.MAX_LIVES && game.pickups.length < PROG.LIFE_MAX_ACTIVE) {
+      spawnLifePod(game);
+    }
+  }
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
   const dtReal = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  if (!game.paused) update(dtReal);
-  else { setThrust(false); applyZoom(); }   // a resize while paused must still reframe
+  // The sim freezes while paused OR while an upgrade card is open; rendering
+  // and the HUD keep running so the frozen world sits under the modal.
+  if (!game.paused && !game.choosingUpgrade) update(dtReal);
+  else { setThrust(false); applyZoom(); }   // a resize while frozen must still reframe
 
   render(game);
   hud.updateHud(game);
