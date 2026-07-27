@@ -12,12 +12,15 @@ import { updateCritters } from './critters.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
-import { setThrust, sfxUpgrade, sfxCollect } from './sfx.js';
+import { initAudio, setThrust, setSoundEnabled, sfxUpgrade, sfxCollect } from './sfx.js';
 import { lerp } from './util.js';
 
 const game = {
   time: 0,
+  started: false,          // false → splash screen; the sim doesn't run until START
   paused: false,
+  settingsOpen: false,     // settings overlay (over splash or pause); freezes the sim
+  soundOn: true,           // front-end audio toggle (persisted; see loadSettings)
   ship: new Ship(),
   bodies: [],
   aliens: [],
@@ -70,6 +73,25 @@ const canvas = document.getElementById('game');
 const view = initRender(canvas);
 hud.initHud(game);
 
+// Persisted front-end settings. localStorage is host-agnostic (works the same
+// over serve.py and inside the Electron shell), so src/ stays packaging-blind.
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem('ss_settings') || '{}');
+    if (typeof s.sound === 'boolean') game.soundOn = s.sound;
+    if (typeof s.predict === 'boolean') game.predict = s.predict;
+  } catch (e) { /* fall back to defaults */ }
+}
+function saveSettings() {
+  try {
+    localStorage.setItem('ss_settings', JSON.stringify({ sound: game.soundOn, predict: game.predict }));
+  } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
+}
+loadSettings();
+// Only act on a persisted MUTE here — the default (on) must init lazily inside
+// the first user gesture, or Web Audio starts suspended and never resumes.
+if (!game.soundOn) setSoundEnabled(false);
+
 // Fair view: fold the canvas-size normalization into cam.zoom itself —
 // mouseWorld, viewR, render culling, and the /zoom UI-stroke idiom all read
 // cam.zoom, so this one assignment keeps every consumer consistent.
@@ -88,9 +110,13 @@ function fireVolley() {
   game.volleyCharging = false;
 }
 
+// The player may only touch the sim while actually flying — not on the splash,
+// in the pause menu, mid-settings, or while an upgrade card is open.
+const menuBlocking = () => !game.started || game.paused || game.settingsOpen || game.choosingUpgrade;
+
 initInput(canvas, {
   onGrab: () => {
-    if (game.paused || game.choosingUpgrade || !game.ship.alive) return;
+    if (menuBlocking() || !game.ship.alive) return;
     if (tryGrab(game)) {
       // Anything that fits your orbit is captured into it automatically
       const b = game.held;
@@ -112,7 +138,7 @@ initInput(canvas, {
     }
   },
   onFling: () => {
-    if (game.choosingUpgrade) return;
+    if (menuBlocking()) return;
     if (game.held) {
       releaseHeld(game, true);
       if (!game.tut.flung) {
@@ -122,7 +148,7 @@ initInput(canvas, {
     }
   },
   onRmbDown: () => {
-    if (game.choosingUpgrade) return;
+    if (menuBlocking()) return;
     if (game.held) {
       // Send the held rock (back) into your orbit; too big -> gentle drop
       if (!addToOrbit(game)) releaseHeld(game, false);
@@ -132,14 +158,12 @@ initInput(canvas, {
     if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => {
+    if (menuBlocking()) { game.volleyCharging = false; return; }
     // Release fires whatever the hold has armed (a tap = 1 rock)
     if (game.volleyCharging && game.orbit.length && game.ship.alive) fireVolley();
     game.volleyCharging = false;
   },
-  onTogglePause: () => {
-    game.paused = !game.paused;
-    hud.setPauseVisible(game.paused);
-  },
+  onMenuKey: () => toggleMenu(),
   onRespawn: () => {
     if (game.ship.alive) return;
     if (game.gameOver) { resetRun(); return; }
@@ -147,8 +171,92 @@ initInput(canvas, {
     respawnShip(game);
     hud.setDeathVisible(false);
   },
-  onTogglePredict: () => { game.predict = !game.predict; },
+  onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
+});
+
+// ---- Front-end shell: splash / pause / settings transitions ----
+// The sim runs only while game.started && !paused && !settingsOpen (frame gate);
+// these just flip those flags. hud.syncMenus derives the visible overlay from them.
+let firstStart = true;
+let tipTimer = null;
+
+function startGame() {
+  game.started = true;
+  game.paused = false;
+  game.settingsOpen = false;
+  // Drop the splash's wide framing onto the ship; the sim's zoom ramp + the
+  // clearing blur then read as a dive from the establishing shot into play.
+  game.cam.x = game.ship.x; game.cam.y = game.ship.y;
+  // Opening guidance fires on the first START, not on page load, so it doesn't
+  // burn down while the player is still reading the splash screen.
+  if (firstStart) {
+    firstStart = false;
+    hud.message('You are in orbit inside the belt. The ship follows your mouse — hold W to thrust forward.', 6);
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => {
+      if (game.started && !game.paused && !game.tut.grabbed) {
+        hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
+      }
+    }, 8000);
+  }
+}
+function pauseGame() { if (game.started) game.paused = true; }
+function resumeGame() { game.paused = false; }
+function openSettings() { game.settingsOpen = true; }
+function closeSettings() { game.settingsOpen = false; saveSettings(); }
+function toMainMenu() { game.paused = false; game.settingsOpen = false; game.started = false; }
+
+// ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
+function toggleMenu() {
+  if (game.choosingUpgrade) return;
+  if (game.settingsOpen) { closeSettings(); return; }
+  // Nothing to toggle on the splash, or over the death / game-over panel (both
+  // are centered .panels — a pause menu would stack on top of them).
+  if (!game.started || game.gameOver || !game.ship.alive) return;
+  if (game.paused) resumeGame(); else pauseGame();
+}
+function toggleSound() { game.soundOn = !game.soundOn; setSoundEnabled(game.soundOn); saveSettings(); }
+
+function exitGame() {
+  // Desktop (Electron): closes the app window → quits the app. In a plain
+  // browser tab window.close() is a no-op (a tab the script didn't open can't
+  // close itself); the game ships primarily as a desktop app, where Exit is
+  // meaningful, and this keeps src/ host-agnostic (no Electron/Node calls).
+  window.close();
+}
+
+// Living title backdrop. The sim is frozen on the splash, so nothing moves on
+// its own — we keep it alive two cheap ways: advance the COSMETIC render clock
+// (sun corona, star twinkle, ring spins all read game.time; the sim never runs,
+// so bodies don't actually orbit) and fly a slow, wide establishing shot of the
+// inner system. The camera orbits the sun (at the origin) well zoomed-out so the
+// star and its nearest planets sweep through frame; the ship spawns way out in
+// the belt, so it stays off-screen here (no title-screen HUD, no spawn blink).
+// startGame snaps the camera back to the ship, so the sim's zoom ramp reads as a
+// dive from this wide shot down into your ship.
+const SPLASH_ZOOM = 0.17;   // zoomCur for the wide shot (gameplay tier-0 is ~1.15)
+function driftSplash(dt) {
+  game.time += dt;
+  game.splashT = (game.splashT || 0) + dt;
+  const t = game.splashT;
+  game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
+  const a = t * 0.06;                                            // slow orbit of the sun
+  game.cam.x = Math.cos(a) * 4400;
+  game.cam.y = Math.sin(a) * 4400;
+}
+
+hud.initMenus({
+  // The START / settings clicks are the user gesture that unlocks Web Audio.
+  onStart: () => { initAudio(); startGame(); },
+  onResume: resumeGame,
+  onPause: pauseGame,
+  onMainMenu: toMainMenu,
+  onOpenSettings: openSettings,
+  onCloseSettings: closeSettings,
+  onExit: exitGame,
+  onToggleSound: () => { initAudio(); toggleSound(); },
+  onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
 });
 
 // Apply the chosen card (small upgrade or tier-up path), then unfreeze.
@@ -208,12 +316,6 @@ function resetRun() {
   hud.setDeathVisible(false);
   hud.setGameOverVisible(false);
 }
-
-// Opening guidance
-setTimeout(() => hud.message('You are in orbit inside the belt. The ship follows your mouse — hold W to thrust forward.', 6), 800);
-setTimeout(() => {
-  if (!game.tut.grabbed) hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
-}, 9000);
 
 let last = performance.now();
 let acc = 0;
@@ -631,10 +733,15 @@ function frame(now) {
   const dtReal = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  // The sim freezes while paused OR while an upgrade card is open; rendering
-  // and the HUD keep running so the frozen world sits under the modal.
-  if (!game.paused && !game.choosingUpgrade) update(dtReal);
-  else { setThrust(false); applyZoom(); }   // a resize while frozen must still reframe
+  // The sim freezes on the splash, while paused, while settings is open, or
+  // while an upgrade card is open; rendering and the HUD keep running so the
+  // frozen world sits as a living backdrop under whichever overlay is up.
+  if (game.started && !game.paused && !game.settingsOpen && !game.choosingUpgrade) update(dtReal);
+  else {
+    setThrust(false);
+    if (!game.started) driftSplash(dtReal);   // living title backdrop
+    applyZoom();                              // a resize while frozen must still reframe
+  }
 
   render(game);
   hud.updateHud(game);
@@ -645,6 +752,7 @@ requestAnimationFrame(frame);
 // Debug/testing hooks: poke at state or step the sim from devtools
 window.game = game;
 window.tick = (seconds) => {
+  game.started = true;   // headless soaks bypass the splash and run the sim
   const dt = 1 / 60;
   for (let t = 0; t < seconds; t += dt) update(dt);
   render(game);

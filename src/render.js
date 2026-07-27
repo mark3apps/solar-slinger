@@ -1678,9 +1678,10 @@ function drawAlien(game, al) {
 }
 
 function drawPrediction(game) {
-  // The Trajectory Plotter is an upgrade; the throw line also hides while an
-  // upgrade card is open (frozen sim)
-  if (!game.predict || game.paused || game.choosingUpgrade || !game.st.hasPredict) return;
+  // The Trajectory Plotter is an upgrade; the throw line also hides while the
+  // sim is frozen behind any overlay (splash, settings, pause, or upgrade card)
+  if (!game.predict || !game.started || game.paused || game.settingsOpen ||
+      game.choosingUpgrade || !game.st.hasPredict) return;
   const { shipPts, heldPts, shipHit, heldHit } = predictPaths(game);
   const z = game.cam.zoom;
 
@@ -2099,7 +2100,7 @@ export function render(game) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 12 / game.cam.zoom, 0, TAU); ctx.stroke();
   }
 
-  drawMinimap(game);
+  if (game.started) drawMinimap(game);   // no HUD on the splash — just the backdrop
 
   // Screen-space overlays
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

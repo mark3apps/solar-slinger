@@ -25,7 +25,11 @@ export function initHud(game) {
   for (const id of ['hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'msg', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2',
-    'upgradeScreen', 'upTitle', 'upList', 'upHint']) {
+    'upgradeScreen', 'upTitle', 'upList', 'upHint',
+    // Front-end shell: splash / pause / settings menus + the in-game menu button
+    'topleft', 'splashScreen', 'settingsScreen', 'menuBtn', 'setSound', 'setPredict',
+    'btnStart', 'btnSplashSettings', 'btnSplashExit',
+    'btnResume', 'btnPauseSettings', 'btnMainMenu', 'btnPauseExit', 'btnSettingsBack']) {
     el[id] = document.getElementById(id);
   }
   // Tick period on the XP bar = one upgrade pick (tracks PICKS_PER_TIER)
@@ -44,7 +48,59 @@ export function message(text, dur = 3.5) {
   msgTimer = setTimeout(() => el.msg.classList.add('hidden'), dur * 1000);
 }
 
-export function setPauseVisible(v) { el.pauseScreen.classList.toggle('hidden', !v); }
+// Wire the front-end shell once. main.js owns the transitions (it holds the
+// game state); hud only routes the clicks — mirroring the upgrade-modal split.
+export function initMenus(handlers) {
+  const bind = (id, fn) => { if (el[id]) el[id].addEventListener('click', fn); };
+  bind('btnStart', handlers.onStart);
+  bind('btnResume', handlers.onResume);
+  bind('menuBtn', handlers.onPause);
+  bind('btnMainMenu', handlers.onMainMenu);
+  bind('btnSplashExit', handlers.onExit);
+  bind('btnPauseExit', handlers.onExit);
+  bind('btnSplashSettings', handlers.onOpenSettings);
+  bind('btnPauseSettings', handlers.onOpenSettings);
+  bind('btnSettingsBack', handlers.onCloseSettings);
+  bind('setSound', handlers.onToggleSound);
+  bind('setPredict', handlers.onTogglePredict);
+}
+
+// Reflect a switch's on/off state (only touches the DOM on a real change).
+function setToggle(node, on) {
+  if (!node || node.classList.contains('on') === !!on) return;
+  node.classList.toggle('on', !!on);
+  node.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+// Derive which shell overlay is showing from the game flags, and keep the
+// settings switches in step with live state. Called every frame from updateHud
+// (guarded so the DOM is only touched when something actually flips).
+let menuSig = '';
+function syncMenus(game) {
+  // Settings is a modal that fully REPLACES the panel it was opened over
+  // (splash or pause), so both hide while it's up — otherwise the panel beneath
+  // peeks out around its edges.
+  const settings = !!game.settingsOpen;
+  const splash = !game.started && !settings;
+  const pause = game.started && game.paused && !settings;
+  const menuBtn = game.started && !game.paused && !settings &&
+    !game.choosingUpgrade && !game.gameOver && game.ship.alive;
+  const sig = `${+splash}${+pause}${+settings}${+menuBtn}${+game.started}`;
+  if (sig !== menuSig) {
+    menuSig = sig;
+    el.splashScreen.classList.toggle('hidden', !splash);
+    el.pauseScreen.classList.toggle('hidden', !pause);
+    el.settingsScreen.classList.toggle('hidden', !settings);
+    el.menuBtn.classList.toggle('hidden', !menuBtn);
+    // The gameplay HUD is meaningless on the title screen — hide it until START.
+    el.topleft.classList.toggle('hidden', !game.started);
+    // Blur the frozen world into a soft backdrop behind the splash (incl. the
+    // settings modal opened from it); cleared the instant the game begins.
+    document.body.classList.toggle('preGame', !game.started);
+  }
+  setToggle(el.setSound, game.soundOn);
+  setToggle(el.setPredict, game.predict);
+}
 
 export function setDeathVisible(v, cause = '', lives = 0) {
   el.deathScreen.classList.toggle('hidden', !v);
@@ -96,6 +152,7 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
 }
 
 export function updateHud(game) {
+  syncMenus(game);
   const s = game.ship;
   const st = game.st;
   const prog = game.prog;

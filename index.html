@@ -28,6 +28,7 @@
     <div id="xpBar"><span id="xpFill"></span></div>
     <div id="upList2"></div>
   </div>
+  <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
   <div id="msg" class="hidden"></div>
 </div>
 
@@ -49,9 +50,53 @@
   <p class="small" id="upHint">Press 1 or 2 &mdash; or click a card</p>
 </div>
 
-<div id="pauseScreen" class="panel hidden">
-  <h1>PAUSED</h1>
-  <p class="small">Press P to resume</p>
+<div id="splashScreen" class="panel menu">
+  <div class="gametitle">SOLAR <span>SLINGER</span></div>
+  <p class="tagline">A gravity sandbox. Fly a little ship through a living solar system &mdash; grab things with your tractor beam, and fling them.</p>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnStart">START GAME</button>
+    <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
+    <button class="menubtn" id="btnSplashExit">EXIT</button>
+  </div>
+  <p class="small">Mouse steers &middot; W thrust &middot; hold LEFT MOUSE to grab &amp; fling</p>
+</div>
+
+<div id="pauseScreen" class="panel menu hidden">
+  <h1 class="menuhdr">PAUSED</h1>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnResume">RESUME</button>
+    <button class="menubtn" id="btnPauseSettings">SETTINGS</button>
+    <button class="menubtn" id="btnMainMenu">MAIN MENU</button>
+    <button class="menubtn" id="btnPauseExit">EXIT</button>
+  </div>
+  <p class="small">Press ESC to resume</p>
+</div>
+
+<div id="settingsScreen" class="panel menu hidden">
+  <h2>SETTINGS</h2>
+  <div class="setlist">
+    <div class="setrow">
+      <span class="setname">Sound</span>
+      <button class="toggle" id="setSound" role="switch" aria-checked="true"><span class="knob"></span></button>
+    </div>
+    <div class="setrow">
+      <span class="setname">Trajectory prediction</span>
+      <button class="toggle" id="setPredict" role="switch" aria-checked="true"><span class="knob"></span></button>
+    </div>
+  </div>
+  <div class="ctrlref">
+    <div class="ctrlhd">CONTROLS</div>
+    <div class="ctrlrow"><span>Steer</span><span>Mouse</span></div>
+    <div class="ctrlrow"><span>Thrust / reverse</span><span>W / S</span></div>
+    <div class="ctrlrow"><span>Grab &amp; fling</span><span>Left mouse</span></div>
+    <div class="ctrlrow"><span>Orbit / shotgun</span><span>Right mouse</span></div>
+    <div class="ctrlrow"><span>Pause menu</span><span>Esc</span></div>
+    <div class="ctrlrow"><span>Trajectory prediction</span><span>T</span></div>
+    <div class="ctrlrow"><span>Respawn / new run</span><span>R</span></div>
+  </div>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnSettingsBack">BACK</button>
+  </div>
 </div>
 
 <script type="module" src="src/main.js"></script>

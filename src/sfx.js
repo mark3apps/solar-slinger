@@ -47,6 +47,17 @@ export function setBeam(on) {
   beamGain.gain.setTargetAtTime(on ? 0.05 : 0, ctx.currentTime, 0.05);
 }
 
+// Front-end sound toggle. `enabled` also gates initAudio, so turning sound OFF
+// before any gesture keeps the context from ever being built (stays silent);
+// turning it ON is only ever called from a click, so initAudio here creates the
+// context inside that gesture (a context built without a gesture starts
+// suspended and never resumes — never call this with `on` at page load).
+export function setSoundEnabled(on) {
+  enabled = on;
+  if (on) initAudio();
+  if (master && ctx) master.gain.setTargetAtTime(on ? 0.5 : 0, ctx.currentTime, 0.02);
+}
+
 function blip(freq, dur, type = 'sine', vol = 0.2, slideTo = null) {
   if (!ctx) return;
   try {
