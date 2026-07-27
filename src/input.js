@@ -11,7 +11,7 @@ export function initInput(canvas, handlers) {
     if (e.repeat) return;
     initAudio();
     input.keys.add(e.code);
-    if (e.code === 'KeyP') handlers.onTogglePause();
+    if (e.code === 'Escape' || e.code === 'KeyP') handlers.onMenuKey();
     if (e.code === 'KeyR') handlers.onRespawn();
     if (e.code === 'KeyT') handlers.onTogglePredict();
     // Upgrade-card selection (only acts while the choice modal is open)

@@ -57,8 +57,10 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
 
 ### The loop (main.js)
 
-- `frame(now)` → `dtReal = min(0.05, delta)` (clamps tab-switch stalls) → `update(dtReal)` when not
-  paused → always `render(game)` + `hud.updateHud(game)`. Rendering continues while paused; the sim freezes.
+- `frame(now)` → `dtReal = min(0.05, delta)` (clamps tab-switch stalls) → `update(dtReal)` **only while
+  `game.started && !paused && !settingsOpen && !choosingUpgrade`** → always `render(game)` +
+  `hud.updateHud(game)`. Rendering continues while frozen; the sim freezes. The frozen world is the
+  living backdrop behind every menu overlay.
 - Physics runs on a **fixed substep** via an accumulator: `while (acc >= CFG.DT) { updateTractor; updateOrbit; step(game, CFG.DT); cam follow; acc -= CFG.DT }` with `CFG.DT = 1/120`.
 - **Gameplay math goes inside the `CFG.DT` loop.** Cosmetic easing with no quantized target
   (shake decay, the zoom ramp) rides `dtReal`. Frame-rate-independent easing idiom: `lerp(a, b, 1 - Math.exp(-k*dt))`.
@@ -66,6 +68,25 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
   (the ship) advances in quantized DT chunks; a `dtReal`-chased camera beats against that quantization as
   the substeps-per-frame count wobbles, and the ship visibly jerks back and forth around screen centre
   (worse the higher the zoom). Phase-locking ship and camera to one clock is what keeps flight smooth.
+
+### The front-end shell (splash / pause / settings)
+
+The game boots to a **splash screen**, not straight into play — three flags on `game` gate it, and the
+sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
+`paused` (pause menu), `settingsOpen` (settings modal). `choosingUpgrade` still freezes independently.
+- **Transitions live in main.js** (it owns the state); **hud.js only routes the clicks** and derives which
+  overlay is visible from those flags every frame in `syncMenus` (guarded, so the DOM is touched only when
+  a flag flips) — same owner-split as the upgrade modal. `hud.initMenus(handlers)` wires the buttons once.
+- **ESC / P** are one context-sensitive handler (`toggleMenu`): resume↔pause in-game, back out of settings,
+  never dismiss an upgrade card, no-op on the splash or over the death/game-over panels. The on-screen **☰
+  button** (top-right, below the minimap) just calls `pauseGame`. Player input (grab/fling/RMB) is gated
+  behind `menuBlocking()` so nothing reaches the sim through a menu.
+- **Settings** (Sound, Trajectory prediction) persist to `localStorage['ss_settings']` — host-agnostic, so
+  it works identically under serve.py and Electron. **Sound**: the Web Audio context must first be created
+  *inside* a user gesture (a context built at page load starts suspended and never resumes), so `sfx.setSoundEnabled`
+  is only ever called with `on` from a click, and the loader touches audio only to honor a persisted MUTE.
+- **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
+- `window.tick` sets `started = true` so headless soaks bypass the splash.
 
 ## Conventions
 
