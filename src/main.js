@@ -8,7 +8,7 @@ import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './worl
 import { step } from './physics.js';
 import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
-import { updateCritters } from './critters.js';
+import { updateGlow } from './glow.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
@@ -24,7 +24,7 @@ const game = {
   ship: new Ship(),
   bodies: [],
   aliens: [],
-  critters: [],            // bioluminescent belt shoals (cosmetic, critters.js)
+  glowPockets: [],         // healing glow-mote pockets, orbiting the sun (glow.js)
   debris: [],
   particles: [],
   flares: [],              // solar plasma in flight
@@ -62,7 +62,7 @@ const game = {
   volleySel: 0,            // how many orbiters the shotgun charge has armed
   volleyCharging: false,
   lockTarget: null,
-  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false },
+  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false },
 };
 
 game.st = shipStats(game.prog);
@@ -305,11 +305,11 @@ function resetRun() {
   game.prog = newProgress();
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
-  game.flares.length = 0; game.bolts.length = 0; game.critters.length = 0;
+  game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
   game.orbit.length = 0; game.held = null; game.pickups.length = 0;
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
-  game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false };
+  game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
   generateWorld(game);   // rebuilds bodies + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
@@ -389,8 +389,8 @@ function update(dtReal) {
       const t = Math.min(1, Math.max(0, (Math.log10(Math.max(1e-6, mag)) - 0.08) / 2.2));
       game.compassPhase = ((game.compassPhase || 0) + (0.25 + 0.5 * t) * dtReal) % 1;
     }
-    // Belt shoals — cosmetic, so dtReal (see critters.js)
-    updateCritters(game, dtReal);
+    // Glow pockets — proximity-collected like life pods, so dtReal (see glow.js)
+    updateGlow(game, dtReal);
 
     // GRAVITY BILLIARDS combo: the window ticks down on real time; when it
     // lapses the chain resets (the count itself is racked up in physics.shatter)
@@ -429,8 +429,8 @@ function update(dtReal) {
       game.sling = null;
     }
 
-    // Shield recharges after a quiet spell; the hull only heals from scrap.
-    // Delay/rate scale with the Shield Regen upgrade (st.regenDelay/st.regen).
+    // Shield recharges after a quiet spell; the hull never self-heals (it mends
+    // only at glow pockets — glow.js). Delay/rate scale with Shield Regen.
     if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
@@ -545,6 +545,13 @@ function update(dtReal) {
       if (!game.tut.cache) {
         game.tut.cache = true;
         hud.message('SALVAGE CACHE cracked — scrap and shield ammo. Watch the lanes for more canisters.', 5.5);
+      }
+    }
+    if (game.glowMsg) {
+      game.glowMsg = false;
+      if (!game.tut.glow) {
+        game.tut.glow = true;
+        hud.message('GLOW POCKET — fly through the motes to mend your hull. These pockets are the only place it heals.', 6);
       }
     }
     if (game.nestKilled) {
