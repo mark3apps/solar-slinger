@@ -119,9 +119,9 @@ sim runs only when all are clear (the `frame()` gate above): `started` (false �
   pods** (`game.pickups`, seeded in `generateWorld` + trickled by
   `main.updateLifePods`/`world.spawnLifePod`, capped at `PROG.MAX_LIVES`) and +1 per tier-up
   milestone. Life pods are real objects → SOLID stroke (render `drawPickups`).
-- **No scrap currency — debris chunks are XP pickups.** There is NO scrap counter and NO hull heal:
-  collecting a debris chunk pays `d.value * PROG.XP_SCRAP` and nothing else (hull only resets on
-  respawn; shield recharges). Which kills DROP chunks is still gated — only a player throw or a
+- **No scrap currency — debris chunks are XP pickups.** There is NO scrap counter, and debris chunks
+  don't heal: collecting a debris chunk pays `d.value * PROG.XP_SCRAP` and nothing else (the hull mends
+  only at glow pockets — below; shield recharges). Which kills DROP chunks is still gated — only a player throw or a
   shield-rock hit (`physics.collisionCredit` → `earnsScrap`) mints them; belt traffic, a rogue
   clipping a moon, a ram, an absorption, or star heat shatter with NO drop. A direct throw-kill
   (`'player-throw'`) additionally pays combat XP. Don't reintroduce unconditional `dropScrap` on death.
@@ -262,10 +262,10 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **Ship health is split:** hull ≈ 2/3 of the pool, does NOT heal mid-life (only resets to full on
-  respawn); shield ≈ 1/3, absorbs first, recharges after quiet time. The **Shield Cells** upgrade
-  shifts the split toward shield; **Shield Regen** speeds the recharge (`st.regen`/`st.regenDelay`).
-  Separate HULL/SHLD HUD bars.
+- **Ship health is split:** hull ≈ 2/3 of the pool, does NOT self-heal — it mends ONLY by collecting
+  glow-pocket motes (below), and otherwise resets to full only on respawn; shield ≈ 1/3, absorbs first,
+  recharges after quiet time. The **Shield Cells** upgrade shifts the split toward shield; **Shield
+  Regen** speeds the recharge (`st.regen`/`st.regenDelay`). Separate HULL/SHLD HUD bars.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
@@ -278,9 +278,18 @@ code "works."
     ONLY, never moons/planets) killing the next, keeps it going. 2+ shouts a multiplier + bonus scrap.
   - **Ice-moon geysers** (world.js): ice-type moons vent catchable ammo like the far ice planets, but
     close-in and faster — an early harvesting loop.
-  - **Belt shoals** (`game.critters`, critters.js): bioluminescent drifters that flee thrust and drift
-    toward a lit beam. Pure cosmetic — no mass, no collisions, no scrap, never touch the sim; updated on
-    dtReal, drawn additively in `drawCritters`.
+  - **Glow pockets** (`game.glowPockets`, glow.js): sparse WIDE FIELDS of small bioluminescent motes that
+    ride the belt's prograde orbit (a circular rail, `w` matched to the flow at their radius), scattered
+    thin across the mid system — a field (`GLOW_SPREAD`) is wide enough that you SWEEP the ship through it,
+    scooping several in a pass, and its green region-halo makes it easy to spot. Motes are SLIGHTLY
+    MAGNETIC — near the ship (`GLOW_MAGNET`) they home in and POP a hair before the hull touches
+    (`GLOW_*` tuning in config.js) for a little hull + XP. **The ONLY mid-life
+    hull heal** (see the split-health law above). No in-place refill — a drained pocket vanishes and a
+    fresh full one fades in ELSEWHERE (never within view), so `game.glowPockets` holds a steady
+    `PROG.GLOW_POCKETS` and the healing supply constantly relocates. Seeded deterministically off the
+    world rng in `world.seedGlowPockets`; collected on dtReal in `glow.updateGlow` (a proximity test like
+    the life pods, NOT the fixed step); drawn additively in `drawGlow` (a green region-halo + motes,
+    healing-green palette). Never touches bodies/rails/velocities — purely additive to the sim.
 
 ### Canvas discipline
 

@@ -141,7 +141,8 @@ export const CFG = {
   VIEW_REF_DIAG: Math.hypot(1920, 1080),
 
   SHIP_TURN: 9,            // rad/s — the nose tracks the mouse
-  // The SHIELD recharges after a quiet spell; the hull only heals from scrap
+  // The SHIELD recharges after a quiet spell; the HULL never self-heals — it
+  // mends only by collecting glow-pocket motes (glow.js)
   SHIP_REGEN: 9,           // shield/s once recharging
   SHIP_REGEN_DELAY: 5,     // seconds without damage before recharge starts
 
@@ -251,6 +252,26 @@ export const PROG = {
   LIFE_R: 62,              // collect radius
   LIFE_MAX_ACTIVE: 1,      // at most this many adrift at once
   LIFE_RESPAWN: 150,       // avg seconds between respawns (only while under MAX_LIVES)
+  // Glow pockets (glow.js): sparse clusters of small bioluminescent motes that
+  // ride the belt's prograde orbit, scattered thin across the whole mid system.
+  // Motes are SLIGHTLY MAGNETIC — drift near one and it leaps into the ship,
+  // popping just BEFORE the hull touches it, for a little hull + XP. Glow pockets
+  // are the ONLY place the hull heals mid-life (design law; it otherwise only
+  // resets on respawn). Pockets never refill where you stand: as one is drained
+  // it vanishes and a fresh pocket fades in ELSEWHERE, so the healing supply
+  // constantly relocates and you're always flying on to the next one.
+  GLOW_POCKETS: 48,        // active pockets kept scattered across the system
+  GLOW_RMIN: 4200,         // orbital band they scatter through — just above the graveyard ring
+  GLOW_RMAX: 31000,        // ...out to the far ice belt
+  GLOW_SPREAD: 480,        // field radius — WIDE, so you sweep the ship through it (and it's easy to spot)
+  GLOW_MOTES: 9,           // motes in a fresh pocket (more, to keep the wide field dense enough to scoop)
+  GLOW_R: 6,               // pop gap beyond the hull — the mote flies ALL the way in and pops AT the ship
+  GLOW_MAGNET: 170,        // capture range — once the ship is this close a mote commits and vacuums in
+  GLOW_HOME_MIN: 240,      // homing speed the instant a mote is captured...
+  GLOW_HOME_MAX: 900,      // ...ramping up to this — faster than the ship, so it always reaches the hull
+  GLOW_HOME_ACCEL: 1600,   // homing acceleration (u/s²): the vacuum ramp from MIN to MAX
+  GLOW_HEAL: 4,            // hull points mended per mote (small — there are many)
+  GLOW_XP: 3,              // XP per mote
 };
 
 // The upgrade catalog. Each entry: id, display, icon, max rank, the tier
@@ -420,7 +441,7 @@ export function shipStats(prog) {
     thrust: 180 + 30 * tier + 105 * engineR,
     fling: 430 + 55 * tier + 190 * flingR,
     maxHull: Math.round(maxHull),
-    // Pool splits hull (scrap-heal only) / shield (recharges); shieldCap shifts it
+    // Pool splits hull (mends only at glow pockets) / shield (recharges); shieldCap shifts it
     hullMax,
     shieldMax: Math.round(maxHull) - hullMax,
     // Orbit shield is LOCKED until the orbitShield upgrade (rank 0 -> no slots)

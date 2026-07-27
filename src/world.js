@@ -1,5 +1,6 @@
 import { CFG, PROG, addXp } from './config.js';
 import { Body, railBody, railEllipse } from './entities.js';
+import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 import { sfxPing } from './sfx.js';
 
@@ -570,6 +571,9 @@ export function generateWorld(game, seed = 20260721) {
   game.pickups = [];
   game.lifeTimer = PROG.LIFE_RESPAWN;
   spawnLifePod(game, sun.x + 2400, sun.y - sr - 1100);
+  // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
+  // they reset with the world). Seeded off the same world rng — see glow.js.
+  seedGlowPockets(game, rng);
   respawnShip(game);
 }
 

@@ -1,4 +1,4 @@
-import { CFG } from './config.js';
+import { CFG, PROG } from './config.js';
 import { predictPaths } from './physics.js';
 import { volleyPick } from './tractor.js';
 import { TAU, lerp, mulberry32 } from './util.js';
@@ -726,22 +726,41 @@ function drawCacheSprite(game, b) {
   ctx.restore();
 }
 
-// Belt shoals (critters.js): additive bioluminescent motes with a soft halo
-function drawCritters(game) {
-  const cr = game.critters;
-  if (!cr || !cr.length) return;
+// Glow pockets (glow.js): sun-orbiting clusters of HEALING motes. A faint green
+// pool marks a pocket from range (the only mid-life heal — worth spotting); each
+// mote is an additive biolum spark with a soft corona. Healing-green palette so
+// it reads as "mend here". Additive pass, closed by save/restore (canvas rule).
+function drawGlow(game) {
+  const pockets = game.glowPockets;
+  if (!pockets || !pockets.length) return;
+  const m = PROG.GLOW_SPREAD + 80;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  for (const c of cr) {
-    const pulse = 0.55 + 0.45 * Math.sin(c.ph);
-    const r = c.sz * (1.0 + 0.3 * pulse);
-    const col = `hsla(${c.hue | 0}, 90%, 68%,`;
-    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, r * 4.5);
-    g.addColorStop(0, col + (0.45 * pulse) + ')'); g.addColorStop(1, col + '0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(c.x, c.y, r * 4.5, 0, TAU); ctx.fill();
-    ctx.fillStyle = col + '0.9)';
-    ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, TAU); ctx.fill();
+  for (const p of pockets) {
+    if (!p.motes.length) continue;
+    if (p.cx < view.x0 - m || p.cx > view.x1 + m || p.cy < view.y0 - m || p.cy > view.y1 + m) continue;
+    // Cluster halo — a soft green pool that marks the pocket from afar. Constant
+    // breathe speed, so time*speed is safe here (no phase teleport).
+    const breathe = 0.5 + 0.5 * Math.sin(game.time * 1.3 + p.ang * 7);
+    const R = PROG.GLOW_SPREAD * 1.15;
+    const pool = ctx.createRadialGradient(p.cx, p.cy, 0, p.cx, p.cy, R);
+    pool.addColorStop(0, `rgba(120, 255, 175, ${0.08 + 0.05 * breathe})`);
+    pool.addColorStop(1, 'rgba(120, 255, 175, 0)');
+    ctx.fillStyle = pool;
+    ctx.beginPath(); ctx.arc(p.cx, p.cy, R, 0, TAU); ctx.fill();
+    for (const c of p.motes) {
+      const cx = p.cx + c.lx;
+      const cy = p.cy + c.ly;
+      const pulse = 0.55 + 0.45 * Math.sin(c.ph);
+      const r = c.sz * (1.4 + 0.4 * pulse);
+      const col = `hsla(${c.hue | 0}, 90%, 70%,`;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 5);
+      g.addColorStop(0, col + (0.5 * pulse) + ')'); g.addColorStop(1, col + '0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 5, 0, TAU); ctx.fill();
+      ctx.fillStyle = col + '0.95)';
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -1855,7 +1874,7 @@ export function render(game) {
   drawShipRings(game);
   drawPrediction(game);
   for (const b of game.bodies) if (b.alive && bodyOnScreen(b)) drawBody(game, b);
-  drawCritters(game);
+  drawGlow(game);
   drawApproach(game);
 
   // Scrap debris — glinting gold
