@@ -1,4 +1,4 @@
-import { PROG, xpForPick, upgradeById, UPGRADES } from './config.js';
+import { PROG, xpForPick, abilityById, ABILITIES } from './config.js';
 
 const el = {};
 let msgTimer = null;
@@ -115,8 +115,9 @@ export function setGameOverVisible(v, cause = '') {
   if (v) el.gameoverCause.textContent = cause || 'Your ship broke apart.';
 }
 
-// Build (or hide) the upgrade-choice modal. `choices` are the actual UPGRADE or
-// PATH objects; `kind` is 'upgrade' (2 cards) or 'path' (3 milestone cards).
+// Build (or hide) the choice modal. `kind` is 'spec' (run-opening specialization
+// cards), 'tier' (a new ability at a tier-up), or 'upgrade' (deepen an owned one).
+const UP_TITLES = { spec: 'CHOOSE YOUR SPECIALIZATION', tier: 'TIER UP — CHOOSE AN ABILITY', upgrade: 'CHOOSE AN UPGRADE' };
 export function setUpgradeVisible(game, choices, kind, onPick) {
   if (!choices || !choices.length) {
     el.upgradeScreen.classList.add('hidden');
@@ -125,17 +126,17 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
     return;
   }
   pickCb = onPick;
-  const isPath = kind === 'path';
-  el.upTitle.textContent = isPath ? 'TIER UP — CHOOSE A PATH' : 'CHOOSE AN UPGRADE';
+  const isSpec = kind === 'spec';
+  el.upTitle.textContent = UP_TITLES[kind] || 'CHOOSE AN UPGRADE';
   el.upHint.textContent = `Press ${choices.map((_, i) => i + 1).join(' / ')} — or click a card`;
   el.upList.innerHTML = '';
   choices.forEach((c, i) => {
     const row = document.createElement('div');
-    row.className = 'uprow' + (isPath ? ' path' : '');
+    row.className = 'uprow' + (isSpec ? ' path' : '');
     let sub;
-    if (isPath) {
-      const g = c.grant ? upgradeById(c.grant) : null;
-      sub = `<div class="uplevel">Grants ${g ? g.name : 'a bonus'} + steers your upgrade pool</div>`;
+    if (isSpec) {
+      const kit = (c.start || []).map((id) => abilityById(id)?.name).filter(Boolean).join(' · ');
+      sub = `<div class="uplevel">Start: ${kit}</div>`;
     } else {
       const cur = game.prog.upgrades[c.id] || 0;
       sub = `<div class="uplevel">${cur > 0 ? `Rank ${cur} → ${cur + 1}` : 'New ability'} · max ${c.max}</div>`;
@@ -157,18 +158,22 @@ export function updateHud(game) {
   const st = game.st;
   const prog = game.prog;
   const shield = Math.max(0, s.shield || 0);
+  const hasShield = st.shieldMax > 0;   // the shield is an upgrade — no bar until it's unlocked
   const hullFrac = Math.max(0, Math.min(1, s.hull / st.hullMax));
-  const shieldFrac = st.shieldMax > 0 ? Math.max(0, Math.min(1, shield / st.shieldMax)) : 0;
+  const shieldFrac = hasShield ? Math.max(0, Math.min(1, shield / st.shieldMax)) : 0;
   setWidth(el.hullFill, `${hullFrac * 100}%`);
   setWidth(el.shieldFill, `${shieldFrac * 100}%`);
   setText(el.hullNum, `${Math.max(0, Math.ceil(s.hull))}/${st.hullMax}`);
   setText(el.shieldNum, `${Math.ceil(shield)}/${st.shieldMax}`);
   el.hullBar.classList.toggle('low', hullFrac < 0.35);
+  // The SHLD bar exists only once the shield is unlocked — hide it entirely
+  // otherwise, or a shieldMax of 0 would read as a permanently "down" shield.
+  el.shieldBar.classList.toggle('hidden', !hasShield);
   // Charging shimmer while the recharge is actually running; alarm when down
-  const charging = s.alive && shield < st.shieldMax &&
+  const charging = hasShield && s.alive && shield < st.shieldMax &&
     game.time - game.lastDamage > st.regenDelay;
   el.shieldBar.classList.toggle('charging', charging);
-  el.shieldBar.classList.toggle('down', shield <= 0.5);
+  el.shieldBar.classList.toggle('down', hasShield && shield <= 0.5);
   // White flash on the bar that just took the hit
   if (s.hull < prevHull - 0.4) flash(el.hullBar);
   if (shield < prevShield - 0.4) flash(el.shieldBar);
@@ -179,20 +184,26 @@ export function updateHud(game) {
   const lives = Math.max(0, prog.lives);
   setText(el.livesText, '♥'.repeat(lives) + '♡'.repeat(Math.max(0, PROG.MAX_LIVES - lives)));
 
-  // XP bar spans the WHOLE current tier: each earned pick advances it by one
-  // tick, a full bar is the tier-up milestone. At max tier it loops per pick.
+  // XP bar spans the WHOLE current tier and climbs right up to the tier-up. The
+  // span is PICKS_PER_TIER small picks PLUS the milestone pick itself (+1): the
+  // milestone costs its own pick's XP, so without that +1 the bar would hit full
+  // after the last small pick and then PIN there — no feedback — while the
+  // milestone's XP silently accrues (that read as "it stops upgrading"). With it,
+  // a FULL bar is exactly the tier-up. At max tier there's no milestone, so it
+  // just loops every PICKS_PER_TIER picks.
   const perTier = PROG.PICKS_PER_TIER;
   const pickFrac = Math.max(0, Math.min(1, prog.xp / xpForPick(prog)));
   const atMax = st.tier >= 5;
+  const span = atMax ? perTier : perTier + 1;
   const done = atMax ? (prog.picksThisTier % perTier) : prog.picksThisTier;
-  const barFrac = Math.min(1, (done + pickFrac) / perTier);
+  const barFrac = Math.min(1, (done + pickFrac) / span);
   setWidth(el.xpFill, `${barFrac * 100}%`);
 
-  // Acquired upgrades — a detailed list; rebuild only when the build changes
-  const sig = UPGRADES.map((u) => prog.upgrades[u.id] || 0).join(',');
+  // Acquired abilities — a detailed list; rebuild only when the build changes
+  const sig = ABILITIES.map((u) => prog.upgrades[u.id] || 0).join(',');
   if (sig !== iconSig) {
     iconSig = sig;
-    const owned = UPGRADES.filter((u) => (prog.upgrades[u.id] || 0) > 0);
+    const owned = ABILITIES.filter((u) => (prog.upgrades[u.id] || 0) > 0);
     const rows = owned.map((u) => {
       const rk = prog.upgrades[u.id];
       const rankEl = u.max > 1
@@ -203,7 +214,7 @@ export function updateHud(game) {
         `<span class="ui-nm">${u.name}</span>${rankEl}</div>`;
     }).join('');
     el.upList2.innerHTML = owned.length
-      ? `<div class="ulhead">UPGRADES</div>${rows}`
+      ? `<div class="ulhead">ABILITIES</div>${rows}`
       : '';
   }
 }

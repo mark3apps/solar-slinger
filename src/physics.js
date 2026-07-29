@@ -66,11 +66,61 @@ function orbitalFlow(game, x, y) {
 function earnsScrap(credit) { return credit === 'player' || credit === 'player-throw'; }
 function collisionCredit(target, other) {
   if (other.thrownBy === 'player' && other.thrownTimer > 0) return 'player-throw';
+  // Cluster-Rounds shrapnel scores a player kill (scrap) but NOT 'player-throw',
+  // so a shard-kill can't re-trigger Cluster Rounds — no exponential shard chain.
+  if (other.thrownBy === 'shard' && other.thrownTimer > 0) return 'player';
   if ((target.thrownBy === 'player' && target.thrownTimer > 0)
       || target.heldBy === 'orbit' || other.heldBy === 'orbit') return 'player';
   if ((other.thrownBy === 'alien' && other.thrownTimer > 0)
       || (target.thrownBy === 'alien' && target.thrownTimer > 0)) return 'alien';
   return null;
+}
+
+// BRAWLER throw-kill effects (Cluster Rounds / Shockwave / Demolition). Called
+// from shatter ONLY on a 'player-throw' kill. Iterates a SNAPSHOT of the body
+// list so the shrapnel it spawns — and any Demolition chain-kills — don't feed
+// back into this same blast. Demolition damages with credit 'player' (drops
+// scrap but does NOT re-enter here), so the chain is bounded, never infinite.
+function brawlerThrowKill(game, body) {
+  const st = game.st;
+  if (st.cluster > 0 && game.bodies.length < 460) {   // body-count cap like the spall path
+    const n = st.cluster + 1;
+    for (let i = 0; i < n; i++) {
+      const th = (i / n) * TAU + Math.random() * 0.7;
+      const sp = 260 + Math.random() * 200;
+      const shard = spawnAsteroid(game.bodies,
+        body.x + Math.cos(th) * (body.radius + 4), body.y + Math.sin(th) * (body.radius + 4),
+        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, 140 + Math.random() * 220);
+      // 'shard' (NOT 'player') so a shard-kill can't re-cluster (see collisionCredit)
+      shard.thrownBy = 'shard'; shard.thrownTimer = 1.2; shard.color = '#ffb98a';
+    }
+  }
+  if (st.shockwave > 0 || st.demolition > 0) {
+    const R = 240 + 90 * Math.max(st.shockwave, st.demolition);
+    const push = 130 * st.shockwave;
+    const dmg = 16 * st.demolition * (1 + st.tier * 0.4);
+    let hits = 0;
+    for (const nb of game.bodies.slice()) {   // snapshot — shards/chain-kills don't recurse
+      // ONLY loose asteroids (belt rocks + fragments). Never moons/planets/
+      // installations/wrecks/comets — the blast must not derail a railed
+      // celestial or damage one past its invariant-3 protections; and skip our
+      // own shrapnel so a blast can't blow up the shards it just spawned.
+      if (nb === body || !nb.alive || nb.type !== 'asteroid' || nb.thrownBy === 'shard' || nb.heldBy) continue;
+      const ddx = nb.x - body.x, ddy = nb.y - body.y;
+      const dd = Math.hypot(ddx, ddy);
+      if (dd > R || dd < 1) continue;
+      const falloff = 1 - dd / R;
+      if (push > 0) {
+        const imp = push * falloff * Math.min(1, 3000 / nb.mass);
+        nb.vx += (ddx / dd) * imp; nb.vy += (ddy / dd) * imp;
+        if (imp > 70) derail(nb);              // only a real shove derails — limits belt sandblasting
+      }
+      if (dmg > 0) damageBody(game, nb, dmg * falloff, 'player', body.x, body.y);
+      if (++hits >= 24) break;                 // cap the blast's reach
+    }
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
+    addShake(game, 5 + 3 * Math.max(st.shockwave, st.demolition));
+  }
 }
 
 export function shatter(game, body, credit = null) {
@@ -150,6 +200,7 @@ export function shatter(game, body, credit = null) {
   // XP: only a direct throw-kill pays combat XP (not your own projectile
   // shattering or a shield brush — those still pay scrap, above)
   if (credit === 'player-throw') {
+    brawlerThrowKill(game, body);   // Cluster Rounds / Shockwave / Demolition (no-op unless owned)
     addXp(game, PROG.XP_SMASH + (isBig ? 12 : 0));
     game.prog.smashes++;
     // GRAVITY BILLIARDS: throw-kills chained within the window rack up a
@@ -272,6 +323,7 @@ export function damageShip(game, dmg, cause) {
   if (s.hull <= 0) {
     s.alive = false;
     game.held = null;
+    game.held2 = null;   // Twin Grip: drop the second rock too
     game.deathCause = cause;
     addParticles(game, s.x, s.y, s.vx * 0.3, s.vy * 0.3, 60, '#9fd6ff', 280, 1.6, 4);
     sfx.sfxBoom(3);
@@ -382,6 +434,8 @@ function collideBodies(game, a, b) {
   const aOwn = (a.thrownBy === 'player' && a.thrownTimer > 0) || a.heldBy === 'player';
   const bOwn = (b.thrownBy === 'player' && b.thrownTimer > 0) || b.heldBy === 'player';
   if ((a.heldBy === 'orbit' && bOwn) || (b.heldBy === 'orbit' && aOwn)) return;
+  // Twin Grip: your two beam-held rocks don't grind against each other
+  if (a.heldBy === 'player' && b.heldBy === 'player') return;
   const dx = b.x - a.x, dy = b.y - a.y;
   const rr = a.radius + b.radius;
   const d2 = dx * dx + dy * dy;
@@ -425,6 +479,18 @@ function collideBodies(game, a, b) {
       ((a.heldBy === 'orbit' && b.thrownBy === 'alien' && b.thrownTimer > 0) ||
        (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
     addXp(game, PROG.XP_BLOCK);
+    // AEGIS REFLECTOR (hauler): don't just block — hurl the enemy rock straight
+    // back out as YOUR shot (marked player-thrown, so it can smash the alien).
+    // Once reflected it's no longer 'alien', so this can't re-fire on it.
+    if (game.st.aegis > 0) {
+      const rock = a.thrownBy === 'alien' ? a : b;
+      const sh = game.ship;
+      const rdx = rock.x - sh.x, rdy = rock.y - sh.y, rd = Math.hypot(rdx, rdy) || 1;
+      const spd = 320 + 130 * game.st.aegis;
+      rock.vx = sh.vx + (rdx / rd) * spd; rock.vy = sh.vy + (rdy / rd) * spd;
+      rock.thrownBy = 'player'; rock.thrownTimer = 3;
+      derail(rock);
+    }
   }
 
   // No surface-hugging: a small body drifting gently onto a much bigger one
@@ -685,7 +751,11 @@ function collideShipBody(game, s, b, dt) {
       b.vx += nx * bKick; b.vy += ny * bKick;
     }
     const effB = Math.max(0, closing - 100);
-    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2;
+    // RAM PROW / JUGGERNAUT boost the ram (st.ramMul); BERSERKER adds more as the
+    // ship's hull drops. Both are brawler-only (ramMul 1 / berserk 0 otherwise).
+    const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
+    const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.3 * (1 - ramHullFrac) : 1);
+    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
     // Ramming is "running into things", not a throw — it damages the body but
     // pays out NO scrap and no fling growth (credit 'ram', not 'player').
     if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'ram', s.x, s.y);
@@ -697,7 +767,9 @@ function collideShipBody(game, s, b, dt) {
     // The saturation knee grows with beam tier: a dreadnought shrugs off
     // the pebbles that used to sting the scout — big slams always hurt.
     const massSat = b.mass / (b.mass + 1500 * (1 + game.st.tier * 1.2));
-    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown,
+    // RAM PROW / JUGGERNAUT: a reinforced prow takes less from impacts (ramArmor
+    // <= 1; exactly 1 for non-ram builds, so nothing else changes).
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
       game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
       damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
@@ -881,14 +953,19 @@ export function step(game, dt) {
     const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
 
-    const th = game.st.thrust;
+    let th = game.st.thrust;
     const c = game.controls;
     // Flare EMP: fried engines answer to nobody for a few seconds
     if (s.engineOutT > 0) s.engineOutT -= dt;
+    // AFTERBURNER (scout): hold Shift to overdrive — extra thrust here + a higher
+    // speed ceiling in the governor below. Dead (flare-EMP'd) engines can't burn.
+    const boosting = c.boost && game.st.afterburner > 0 && s.engineOutT <= 0;
+    if (boosting) th *= 1 + 0.55 * game.st.afterburner;
     // Reverse thrust is an UPGRADE (Retro Thrusters) — until unlocked, S does
     // nothing and only forward thrust drives the ship.
     const back = game.st.hasReverse ? c.b : 0;
-    const throttle = s.engineOutT > 0 ? 0 : c.f - back;
+    let throttle = s.engineOutT > 0 ? 0 : c.f - back;
+    if (boosting) throttle = Math.max(throttle, 1);   // Shift alone dashes forward
     s.thrusting = throttle > 0;
     s.braking = throttle < 0;
     const tx = Math.cos(s.angle) * th * throttle;
@@ -1079,7 +1156,9 @@ export function step(game, dt) {
     // to the local orbital flow (orbitalFlow) — the current carries the ship
     // and the engine buys maxSpeed of deviation in any direction. Excess bleeds
     // off; the hard cap stops any assist chain from outrunning the bleed.
-    const cap = game.st.maxSpeed;
+    let cap = game.st.maxSpeed;
+    // AFTERBURNER raises the ceiling too, so a boosted dash actually reaches speed.
+    if (game.controls.boost && game.st.afterburner > 0 && s.engineOutT <= 0) cap *= 1 + 0.4 * game.st.afterburner;
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);

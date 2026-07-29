@@ -262,10 +262,13 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **Ship health is split:** hull ≈ 2/3 of the pool, does NOT self-heal — it mends ONLY by collecting
-  glow-pocket motes (below), and otherwise resets to full only on respawn; shield ≈ 1/3, absorbs first,
-  recharges after quiet time. The **Shield Cells** upgrade shifts the split toward shield; **Shield
-  Regen** speeds the recharge (`st.regen`/`st.regenDelay`). Separate HULL/SHLD HUD bars.
+- **The shield is an UPGRADE, not base:** you start with NO shield — the whole health pool is hull,
+  which does NOT self-heal (it mends ONLY by collecting glow-pocket motes, below, and otherwise resets
+  to full on respawn). The **Shield Cells** upgrade UNLOCKS a regenerating shield (rank 0 → `shieldFrac`/
+  `shieldMax` 0, no SHLD bar) and grows it — ranks 1..6 carve 30%→55% of the fixed pool into a shield
+  that absorbs first and recharges after quiet time (a net survivability gain, since only the shield
+  regens). **Shield Regen** speeds that recharge (`st.regen`/`st.regenDelay`). The SHLD HUD bar appears
+  only once the shield is unlocked; below that the HULL bar stands alone.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking

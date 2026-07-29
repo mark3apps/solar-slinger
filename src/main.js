@@ -1,12 +1,12 @@
 import {
-  CFG, PROG, PATHS, newProgress, shipStats,
-  addXp, owesPick, xpForPick, pickIsMilestone, pickChoices,
-  consumePickCost, applyUpgrade, applyPath,
+  CFG, PROG, SPECS, newProgress, shipStats,
+  addXp, owesPick, xpForPick, pickIsMilestone, tierChoices, rankChoices,
+  consumePickCost, applyAbility, applySpec, applyTierUp,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
 import { step } from './physics.js';
-import { updateTractor, updateOrbit, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
+import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import { initRender, render } from './render.js';
@@ -32,16 +32,21 @@ const game = {
   prog: newProgress(),     // roguelite build: xp / level / tier / upgrades / lives
   st: null,
   pickups: [],             // drifting life pods (world.js seeds/replenishes)
-  choosingUpgrade: false,  // sim frozen while an upgrade card is open
+  choosingUpgrade: false,  // sim frozen while a spec/ability card is open
   upgradeChoices: null,
-  upgradeKind: null,       // 'upgrade' (2 cards) | 'path' (3 milestone cards)
+  upgradeKind: null,       // 'spec' | 'tier' (new ability) | 'upgrade' (rank-up)
   gameOver: false,
   lifeTimer: PROG.LIFE_RESPAWN,
   held: null,
+  held2: null,             // Twin Grip (hauler): a second held rock
+  flingDelayT: 0,          // >0 briefly after a fling — holds the upgrade modal back so a
+                           // pick threshold crossed mid-throw doesn't freeze the sim mid-aim
   orbit: [],               // bodies circling the ship as a shield
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
-  controls: { f: 0, b: 0 },
+  controls: { f: 0, b: 0, boost: 0 },   // boost = Afterburner (hold Shift)
+  evadeT: 0,                            // Evasion Roll cooldown (scout)
+  warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
   shake: 0,
@@ -118,9 +123,10 @@ initInput(canvas, {
   onGrab: () => {
     if (menuBlocking() || !game.ship.alive) return;
     if (tryGrab(game)) {
-      // Anything that fits your orbit is captured into it automatically
+      // Anything that fits your orbit is captured into it automatically — but a
+      // Twin Grip SECOND grab (held2 filled) is a big rock held alongside, kept in hand.
       const b = game.held;
-      if (b.mass <= game.st.orbitCap && game.orbit.length < game.st.maxOrbiters) {
+      if (!game.held2 && b.mass <= game.st.orbitCap && game.orbit.length < game.st.maxOrbiters) {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
@@ -173,6 +179,28 @@ initInput(canvas, {
   },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
+  // EVASION ROLL (scout): tap Space -> dash toward the cursor with brief i-frames.
+  onEvade: () => {
+    if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
+    const s = game.ship;
+    const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+    const burst = 340 + 80 * game.st.evasion;
+    s.vx += Math.cos(ang) * burst; s.vy += Math.sin(ang) * burst;
+    s.invuln = Math.max(s.invuln, 0.35 + 0.1 * game.st.evasion);
+    game.evadeT = Math.max(0.6, 1.7 - 0.25 * game.st.evasion);
+    sfxCollect();
+  },
+  // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
+  onWarp: () => {
+    if (menuBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
+    const s = game.ship;
+    const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+    s.x += Math.cos(ang) * 950; s.y += Math.sin(ang) * 950;
+    game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
+    s.invuln = Math.max(s.invuln, 0.5);
+    game.warpT = 3.5;
+    sfxCollect();
+  },
 });
 
 // ---- Front-end shell: splash / pause / settings transitions ----
@@ -188,18 +216,11 @@ function startGame() {
   // Drop the splash's wide framing onto the ship; the sim's zoom ramp + the
   // clearing blur then read as a dive from the establishing shot into play.
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
-  // Opening guidance fires on the first START, not on page load, so it doesn't
-  // burn down while the player is still reading the splash screen.
-  if (firstStart) {
-    firstStart = false;
-    hud.message('You are in orbit inside the belt. The ship follows your mouse — hold W to thrust forward.', 6);
-    clearTimeout(tipTimer);
-    tipTimer = setTimeout(() => {
-      if (game.started && !game.paused && !game.tut.grabbed) {
-        hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
-      }
-    }, 8000);
-  }
+  // The run OPENS on a SPECIALIZATION choice, which sets your starting kit and
+  // gates your ability tree. openSpec freezes the sim behind the card; the flight
+  // guidance fires once a spec is chosen (applyPick 'spec' branch). Headless soaks
+  // drive window.tick, which bypasses startGame and auto-picks a default spec.
+  if (!game.choosingUpgrade && !game.prog.spec) openSpec();
 }
 function pauseGame() { if (game.started) game.paused = true; }
 function resumeGame() { game.paused = false; }
@@ -259,24 +280,32 @@ hud.initMenus({
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
 });
 
-// Apply the chosen card (small upgrade or tier-up path), then unfreeze.
+// Apply the chosen card (spec / tier-up ability / small rank-up), then unfreeze.
 function applyPick(i) {
   if (!game.choosingUpgrade || !game.upgradeChoices) return;
   const choice = game.upgradeChoices[i];
   if (!choice) return;
-  consumePickCost(game.prog);
-  if (game.upgradeKind === 'path') {
-    applyPath(game.prog, choice.id);
+  if (game.upgradeKind === 'spec') {
+    // Free run-opener: lock the specialization, grant its starting kit, begin play.
+    applySpec(game.prog, choice.id);
+    game.st = shipStats(game.prog);
+    beginRunGuidance(choice);
+  } else if (game.upgradeKind === 'tier') {
+    // Milestone: dividend + tier bump FIRST, then the chosen new ability comes in
+    // fresh at rank 1 (so the dividend doesn't double-count it), plus a life.
+    consumePickCost(game.prog);
+    applyTierUp(game.prog);
+    applyAbility(game.prog, choice.id);
     game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
     game.st = shipStats(game.prog);
     game.lastTier = game.st.tier;
-    hud.message(`TIER UP — you now command ${game.st.label.toUpperCase()}. ${choice.name} path chosen. +1 life.`, 6);
-  } else {
-    applyUpgrade(game.prog, choice.id);
+    hud.message(`TIER UP — ${game.st.label.toUpperCase()}. ${choice.name} acquired. +1 life.`, 6);
+  } else {   // 'upgrade' — small pick: deepen an ability you already own
+    consumePickCost(game.prog);
+    applyAbility(game.prog, choice.id);
     game.prog.picksThisTier++;
     game.st = shipStats(game.prog);
-    const rank = game.prog.upgrades[choice.id];
-    hud.message(`${choice.name.toUpperCase()} ${rank > 1 ? `rank ${rank}` : 'acquired'}.`, 3.5);
+    hud.message(`${choice.name.toUpperCase()} rank ${game.prog.upgrades[choice.id]}.`, 3.5);
   }
   sfxUpgrade();
   game.choosingUpgrade = false;
@@ -285,16 +314,53 @@ function applyPick(i) {
   hud.setUpgradeVisible(game, null, null, null);
 }
 
-// Open the choice modal for the next owed pick (small or milestone) and freeze.
+// Run start: choose a specialization. Freezes the sim behind the card.
+function openSpec() {
+  game.upgradeKind = 'spec';
+  game.upgradeChoices = SPECS.slice();
+  game.choosingUpgrade = true;
+  hud.setUpgradeVisible(game, game.upgradeChoices, 'spec', applyPick);
+}
+
+// One-shot flight guidance, fired the first time a spec is chosen.
+function beginRunGuidance(spec) {
+  if (!firstStart) return;
+  firstStart = false;
+  hud.message(`${spec.name} — ${spec.desc} Hold W to thrust; hold LEFT MOUSE near a rock to grab and fling.`, 7);
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => {
+    if (game.started && !game.paused && !game.tut.grabbed) {
+      hud.message('HOLD LEFT MOUSE near an asteroid to tractor-grab it.', 5);
+    }
+  }, 9000);
+}
+
+// The next owed pick: a TIER-UP (choose a new spec ability) at a milestone,
+// otherwise a SMALL pick (deepen an owned ability). Freezes the sim behind it.
 function openUpgrade() {
   const prog = game.prog;
+  if (!prog.spec) return;   // no picks until a spec is chosen
   if (pickIsMilestone(prog)) {
-    game.upgradeKind = 'path';
-    game.upgradeChoices = PATHS.slice();
+    game.upgradeKind = 'tier';
+    game.upgradeChoices = tierChoices(prog, 2);
+    if (!game.upgradeChoices.length) {   // spec pool exhausted -> tier up with no new ability
+      consumePickCost(prog);
+      applyTierUp(prog);
+      game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+      game.st = shipStats(game.prog);
+      game.lastTier = game.st.tier;
+      sfxUpgrade();
+      hud.message(`TIER UP — ${game.st.label.toUpperCase()}. +1 life.`, 5);
+      return;
+    }
   } else {
     game.upgradeKind = 'upgrade';
-    game.upgradeChoices = pickChoices(prog, 2);
-    if (!game.upgradeChoices.length) { consumePickCost(prog); return; }   // nothing left to offer
+    game.upgradeChoices = rankChoices(prog, 2);
+    if (!game.upgradeChoices.length) {   // nothing left to deepen (all owned abilities maxed) —
+      consumePickCost(prog);             // still advance toward the tier-up so it isn't stuck,
+      prog.picksThisTier++;              // where a NEW ability (and fresh rank-up fodder) waits
+      return;
+    }
   }
   game.choosingUpgrade = true;
   hud.setUpgradeVisible(game, game.upgradeChoices, game.upgradeKind, applyPick);
@@ -306,7 +372,7 @@ function resetRun() {
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
   game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
-  game.orbit.length = 0; game.held = null; game.pickups.length = 0;
+  game.orbit.length = 0; game.held = null; game.held2 = null; game.pickups.length = 0;
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
   game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
@@ -315,6 +381,8 @@ function resetRun() {
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
   hud.setDeathVisible(false);
   hud.setGameOverVisible(false);
+  firstStart = true;     // re-arm the flight guidance for the fresh run
+  openSpec();            // fresh run opens on a new specialization choice
 }
 
 let last = performance.now();
@@ -336,7 +404,11 @@ function update(dtReal) {
     // Roguelite pick: XP crossing a threshold opens the choice modal, which
     // freezes the sim (frame() gate) until the player picks. In headless
     // (window.tick) there is no input, so window.autoUpgrade auto-resolves.
-    if (!game.choosingUpgrade && game.ship.alive && owesPick(game.prog)) {
+    // NOT while a rock is in the beam, nor for ~2s after a fling (flingDelayT):
+    // freezing the sim mid-aim/mid-throw feels awful. The owed pick isn't lost —
+    // owesPick stays true until consumed, so it opens the moment the throw settles.
+    if (!game.choosingUpgrade && game.prog.spec && game.ship.alive && !game.held &&
+        game.flingDelayT <= 0 && owesPick(game.prog)) {
       openUpgrade();
       if (game.autoUpgrade && game.choosingUpgrade) applyPick(0);
     }
@@ -366,6 +438,7 @@ function update(dtReal) {
     while (acc >= CFG.DT) {
       updateTractor(game, CFG.DT);
       updateOrbit(game, CFG.DT);
+      updateTethers(game, CFG.DT);   // Recovery Tether: thrown rocks curve home (hauler)
       step(game, CFG.DT);
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);
@@ -399,6 +472,9 @@ function update(dtReal) {
     if (game.scrapeT > 0) game.scrapeT -= dtReal;
     if (game.gasDiveT > 0) game.gasDiveT -= dtReal;
     if (game.gasEnterT > 0) game.gasEnterT -= dtReal;
+    if (game.flingDelayT > 0) game.flingDelayT -= dtReal;   // post-fling grace before the pick modal
+    if (game.evadeT > 0) game.evadeT -= dtReal;             // Evasion Roll cooldown
+    if (game.warpT > 0) game.warpT -= dtReal;               // Slipstream cooldown
 
     // SLINGSHOT: pass through a planet's well without touching the throttle
     // and leave faster than you entered — clean flying feeds the engines.
@@ -760,6 +836,9 @@ requestAnimationFrame(frame);
 window.game = game;
 window.tick = (seconds) => {
   game.started = true;   // headless soaks bypass the splash and run the sim
+  // ...and bypass the spec modal: default to the first spec if none chosen, so
+  // the ability tree + picks work headlessly (override game.prog.spec first to test others).
+  if (!game.prog.spec) { applySpec(game.prog, SPECS[0].id); game.st = shipStats(game.prog); }
   const dt = 1 / 60;
   for (let t = 0; t < seconds; t += dt) update(dt);
   render(game);
