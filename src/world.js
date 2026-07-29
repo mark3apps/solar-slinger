@@ -933,7 +933,8 @@ export function replenishWorld(game, dt) {
       const d = Math.hypot(p.x - s.x, p.y - s.y);
       // SURVEY: reading a world's nameplate (the approach zone) charts it —
       // exploring IS the mechanic, no extra button.
-      if (!p.surveyed && d < p.radius * 5 + 600) {
+      // RECON DRONE (scout) auto-charts worlds from much farther than the nameplate zone.
+      if (!p.surveyed && d < p.radius * 5 + 600 + (game.st.recon || 0) * 2600) {
         p.surveyed = true;
         game.prog.surveyed++;
         addXp(game, PROG.XP_SURVEY);   // charting a world pays XP

@@ -1619,6 +1619,8 @@ function drawShip(game) {
   if (game.held) {
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     drawBeam(game, s.x + Math.cos(ang) * r, s.y + Math.sin(ang) * r, game.held, '#5ac8ff');
+    // Twin Grip: a second beam to the flanking second rock
+    if (game.held2) drawBeam(game, s.x + Math.cos(ang + 0.5) * r, s.y + Math.sin(ang + 0.5) * r, game.held2, '#5ac8ff');
   }
 }
 

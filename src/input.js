@@ -18,6 +18,10 @@ export function initInput(canvas, handlers) {
     if (e.code === 'Digit1') handlers.onUpgradePick(0);
     if (e.code === 'Digit2') handlers.onUpgradePick(1);
     if (e.code === 'Digit3') handlers.onUpgradePick(2);
+    // SCOUT mobility: tap SPACE to dash (Evasion Roll), F to warp (Slipstream).
+    // Both no-op unless the ability is owned + off cooldown (main.js gates them).
+    if (e.code === 'Space') handlers.onEvade();
+    if (e.code === 'KeyF') handlers.onWarp();
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));
@@ -52,6 +56,7 @@ export function readControls(game) {
   const k = input.keys;
   game.controls.f = k.has('KeyW') ? 1 : 0;
   game.controls.b = k.has('KeyS') ? 1 : 0;
+  game.controls.boost = (k.has('ShiftLeft') || k.has('ShiftRight')) ? 1 : 0;   // Afterburner (scout)
 }
 
 // Mouse position in world coordinates given the current camera

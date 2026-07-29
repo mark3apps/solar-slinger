@@ -3,10 +3,11 @@ import { derail } from './entities.js';
 import { clamp, angDiff, TAU } from './util.js';
 import * as sfx from './sfx.js';
 
-// Where the held object is pulled to: offset from the ship toward the cursor
-function holdPoint(game, body) {
+// Where the held object is pulled to: offset from the ship toward the cursor.
+// angOff flanks a Twin Grip second rock to the side so the two don't overlap.
+function holdPoint(game, body, angOff = 0) {
   const s = game.ship;
-  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+  const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x) + angOff;
   const d = s.radius + body.radius + 46;
   return { x: s.x + Math.cos(ang) * d, y: s.y + Math.sin(ang) * d };
 }
@@ -85,6 +86,12 @@ function flingSpeedFor(game, mass) {
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (mass * 4), 0.25), 0.3, 1);
   let speed = st.fling * massFactor;
+  // BERSERKER (brawler): the lower your hull, the harder you throw — read the
+  // ship's CURRENT hull fraction at release time, so it's a live risk/reward.
+  if (st.berserk > 0 && game.ship.alive) {
+    const hullFrac = clamp(game.ship.hull / Math.max(1, st.maxHull), 0, 1);
+    speed *= 1 + st.berserk * 0.3 * (1 - hullFrac);
+  }
   game.tetherMul = 1;
   if (st.tier >= 2 && game.controls.f > 0 && game.ship.alive) {
     const sp = Math.hypot(game.ship.vx, game.ship.vy);
@@ -92,7 +99,9 @@ function flingSpeedFor(game, mass) {
     speed *= mul;
     game.tetherMul = mul;
   }
-  return speed;
+  // Hard cap the throw speed — Kinetic Sling 6 × tether × Berserker could reach
+  // ~4900, fast enough to tunnel through small targets and inject absurd impulse.
+  return Math.min(speed, 3000);
 }
 
 // The rock flies from ITS OWN position straight through the cursor point —
@@ -110,13 +119,18 @@ export function computeFlingVelocity(game, body) {
 }
 
 export function tryGrab(game) {
-  if (!game.ship.alive || game.held) return false;
+  if (!game.ship.alive) return false;
+  // Twin Grip lets a SECOND rock go into game.held2; without it (or both full) no grab.
+  const canSecond = game.st.twinGrip && game.held && !game.held2;
+  if (game.held && !canSecond) return false;
   const s = game.ship;
   const st = game.st;
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
-    // Nests are a siege target, not cargo, and Bastion forts repel the beam
-    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.heldBy === 'orbit') continue;
+    // Nests are a siege target, not cargo, and Bastion forts repel the beam;
+    // never re-grab a rock you're already holding.
+    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort ||
+        b.heldBy === 'orbit' || b === game.held || b === game.held2) continue;
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
     if (dCursor > b.radius + st.grabSlack) continue;
@@ -137,7 +151,7 @@ export function tryGrab(game) {
   }
   best.heldBy = 'player';
   derail(best);
-  game.held = best;
+  if (game.held) game.held2 = best; else game.held = best;   // Twin Grip: fill the open slot
 
   // XP: every catch pays. Heavy catches (relative to current capacity) pay
   // most; re-catching the same rock pays less each time so you can't farm one
@@ -162,16 +176,19 @@ export function tryGrab(game) {
 export function releaseHeld(game, fling) {
   const b = game.held;
   if (!b) return;
-  game.held = null;
+  game.held = game.held2 || null;   // Twin Grip: the second rock becomes primary
+  game.held2 = null;
   b.heldBy = null;
   b.extAx = 0; b.extAy = 0;
-  sfx.setBeam(false);
+  if (!game.held) sfx.setBeam(false);
   if (!b.alive) return;
   if (fling) {
     const v = computeFlingVelocity(game, b);
     b.vx = v.vx; b.vy = v.vy;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
+    game.flingDelayT = 2;   // hold any owed upgrade pick back ~2s so it can't freeze the throw
     if (game.tetherMul > 1.15) game.tetherShow = game.tetherMul;   // main.js announces
     sfx.sfxFling();
   } else {
@@ -179,19 +196,23 @@ export function releaseHeld(game, fling) {
   }
 }
 
-// Spring-damper pull toward the hold point; runs every physics substep.
+// Spring-damper pull toward the hold point; runs every physics substep. Twin Grip
+// springs a second rock (game.held2) to a flanking hold point.
 export function updateTractor(game, dt) {
-  const b = game.held;
+  springHeld(game, game.held, dt, 0);
+  if (game.held2) springHeld(game, game.held2, dt, 1);
+}
+
+function springHeld(game, b, dt, slot) {
   if (!b) return;
   const s = game.ship;
   const st = game.st;
-
-  if (!b.alive || !s.alive) { releaseHeld(game, false); return; }
-
-  const d = Math.hypot(b.x - s.x, b.y - s.y);
-  if (d > st.range * 1.6 + b.radius) { releaseHeld(game, false); return; }
-
-  const hp = holdPoint(game, b);
+  // A dead / too-far rock auto-drops from ITS slot.
+  if (!b.alive || !s.alive || Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius) {
+    dropSlot(game, slot);
+    return;
+  }
+  const hp = holdPoint(game, b, slot ? 0.5 : 0);
   const relX = hp.x - b.x, relY = hp.y - b.y;
   const desVx = relX * 7 + s.vx, desVy = relY * 7 + s.vy;
   let ax = (desVx - b.vx) * 5, ay = (desVy - b.vy) * 5;
@@ -200,12 +221,23 @@ export function updateTractor(game, dt) {
   if (am > cap) { ax *= cap / am; ay *= cap / am; }
   b.extAx = ax; b.extAy = ay;
 
-  // Equal-and-opposite tug on the ship (capped so it stays flyable)
+  // Equal-and-opposite tug on the ship (capped so it stays flyable). With Twin
+  // Grip both rocks tug, so halve the per-rock cap — combined stays at the 150
+  // the design law allows.
   const fx = ax * b.mass, fy = ay * b.mass;
   let sax = -fx / 2500, say = -fy / 2500;
+  const tugCap = game.held2 ? 75 : 150;
   const sm = Math.hypot(sax, say);
-  if (sm > 150) { sax *= 150 / sm; say *= 150 / sm; }
+  if (sm > tugCap) { sax *= tugCap / sm; say *= tugCap / sm; }
   s.vx += sax * dt; s.vy += say * dt;
+}
+
+// Auto-drop the rock in the given slot (it died or drifted out of range).
+function dropSlot(game, slot) {
+  if (slot === 0) { releaseHeld(game, false); return; }   // drops held, promotes held2
+  const b = game.held2;
+  game.held2 = null;
+  if (b) { b.heldBy = null; b.extAx = 0; b.extAy = 0; }
 }
 
 // ---------- orbit shield ----------
@@ -233,7 +265,8 @@ export function addToOrbit(game) {
   const st = game.st;
   if (!b || !b.alive || b.type === 'nest') return false;   // nests never orbit you
   if (st.orbitCap <= 0 || b.mass > st.orbitCap || game.orbit.length >= st.maxOrbiters) return false;
-  game.held = null;
+  game.held = game.held2 || null;   // Twin Grip: promote the second rock
+  game.held2 = null;
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
   // The tractor capture spins the rock up — captured bodies visibly whirl
@@ -244,6 +277,39 @@ export function addToOrbit(game) {
   sfx.setBeam(false);
   sfx.sfxCollect();
   return true;
+}
+
+// RECOVERY TETHER (hauler): a rock you throw flies out, then curves back and
+// drops into your orbit shield if a slot fits — a boomerang. Runs every substep.
+export function updateTethers(game, dt) {
+  const s = game.ship, st = game.st;
+  if (!st.tether) return;   // no tethered rocks exist unless you have the ability
+  for (const b of game.bodies) {
+    if (!b.tether) continue;
+    if (!b.alive || b.heldBy) { b.tether = 0; continue; }   // dead / re-grabbed / already orbited
+    b.tetherT = (b.tetherT || 0) + dt;
+    if (b.tetherT < 0.7) continue;                          // let it fly out first
+    const dx = s.x - b.x, dy = s.y - b.y;
+    const d = Math.hypot(dx, dy) || 1;
+    if (d < s.radius + 90) {                                // home — capture into orbit if there's room
+      b.tether = 0;
+      if (s.alive && st.orbitCap > 0 && b.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters) {
+        b.thrownBy = null; b.thrownTimer = 0; b.heldBy = 'orbit';
+        b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
+        game.orbit.push(b);
+        sfx.sfxCollect();
+      }
+      continue;                                             // no room -> it just drifts free
+    }
+    // Steer toward the ship at a BOUNDED return speed (spring-damper toward a
+    // desired velocity, like the tractor hold) — it converges like a boomerang
+    // and never accumulates speed, so a tether that never lands can't sandblast
+    // the belt. Faster return with rank.
+    const returnSpd = 300 + 120 * b.tether;
+    const desVx = (dx / d) * returnSpd + s.vx, desVy = (dy / d) * returnSpd + s.vy;
+    b.vx += (desVx - b.vx) * 3 * dt; b.vy += (desVy - b.vy) * 3 * dt;
+    if (b.tetherT > 6) b.tether = 0;                        // give up eventually
+  }
 }
 
 // LMB with nothing under the cursor: take the orbiter nearest your aim back
@@ -298,6 +364,7 @@ export function flingAllFromOrbit(game, count = Infinity) {
     b.thrownBy = 'player';
     b.thrownTimer = 4;
   });
+  if (n) game.flingDelayT = 2;   // same post-fling grace as a single throw (see releaseHeld)
   sfx.sfxFling();
   sfx.sfxBoom(1.5);
   return n;

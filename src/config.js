@@ -225,20 +225,28 @@ export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
 // SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
 export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
 
-// ROGUELITE PROGRESSION. Nothing grows passively any more: doing good things
-// (grab, smash, skim, kill, collect, survey, slingshot, shield-block) grants
-// XP; crossing a threshold PAUSES the game and offers a CHOICE of 2 upgrades.
-// Every PICKS_PER_TIER small picks the next choice is a TIER-UP milestone —
-// a 3-way specialization-path card plus a full-ship boost. You start with only
-// the tractor beam and a single held rock; every other ability is an upgrade.
-// Death spends a life (upgrades kept); 0 lives = game over and a fresh run.
+// ROGUELITE PROGRESSION (spec-based). The RUN OPENS on a SPECIALIZATION choice
+// (SPECS — main.startGame -> the 'spec' modal); it sets your starting kit and gates
+// which named ABILITIES you can be offered. The core grab/throw/fly loop is base
+// (shipStats), so every spec is playable at once. Doing good things (grab, smash,
+// skim, kill, collect, survey, slingshot, shield-block) grants XP; crossing a
+// threshold PAUSES the game for a pick. SMALL picks (rankChoices) only DEEPEN
+// abilities you already own. Every PICKS_PER_TIER small picks the next pick is a
+// TIER-UP milestone: choose 1 of 2 random NEW abilities from your spec's pool
+// (tierChoices — soft-floored by minTier), and the tier-up also auto-levels your
+// whole learned build once (applyTierUp) + a life. Death spends a life (build
+// kept); 0 lives = game over and a fresh spec choice.
 export const PROG = {
   START_LIVES: 3,
   MAX_LIVES: 5,
-  PICKS_PER_TIER: 5,       // small picks before a tier-up milestone
-  // XP-to-next-pick rises with level: BASE + STEP * level
-  XP_BASE: 90,
-  XP_STEP: 26,
+  PICKS_PER_TIER: 3,       // small picks before a tier-up milestone
+  // XP-to-next-pick rises with level: BASE + STEP * level. Tuned so that a tier
+  // (3 small + 1 milestone = 4 picks) costs the SAME total XP the old 5-per-tier
+  // curve did (old tier t = 930 + 936*t XP; solving 4*BASE + STEP*(16t+6) for
+  // that gives BASE 145 / STEP 58, within ~1% of every tier). Fewer, meatier
+  // picks — the grind per tier is unchanged.
+  XP_BASE: 145,
+  XP_STEP: 58,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
@@ -274,62 +282,79 @@ export const PROG = {
   GLOW_XP: 3,              // XP per mote
 };
 
-// The upgrade catalog. Each entry: id, display, icon, max rank, the tier
-// RANGE it can appear in (guides the pool — narrow early, widening later),
-// and a base draw weight. shipStats() reads the earned ranks to derive stats;
-// several upgrades are ABILITY UNLOCKS (rank 1 turns the ability on).
-export const UPGRADES = [
-  // core stat upgrades (broad availability)
-  { id: 'beamReach', name: 'Beam Reach', icon: '⤢', max: 3, tiers: [0, 5], weight: 1.0,
-    desc: 'Extend tractor range and grab forgiveness.' },
-  { id: 'catchStrength', name: 'Beam Power', icon: '✦', max: 3, tiers: [0, 5], weight: 1.0,
-    desc: 'Grab heavier rocks within your tier.' },
-  { id: 'hullPlate', name: 'Hull Plating', icon: '▤', max: 5, tiers: [0, 5], weight: 1.1,
-    desc: 'Raise maximum hull.' },
-  { id: 'engine', name: 'Engine Tuning', icon: '⏩', max: 4, tiers: [0, 5], weight: 1.0,
-    desc: 'Faster thrust and a higher speed ceiling.' },
-  { id: 'flingPower', name: 'Fling Power', icon: '➹', max: 4, tiers: [1, 5], weight: 1.0,
-    desc: 'Throw and shotgun rocks harder.' },
-  { id: 'shieldCap', name: 'Shield Cells', icon: '⛨', max: 3, tiers: [1, 5], weight: 0.9,
-    desc: 'Shift more of your health pool into regenerating shield.' },
-  { id: 'scrapMagnet', name: 'Scrap Magnet', icon: '⦿', max: 3, tiers: [2, 5], weight: 0.8,
-    desc: 'Pull in scrap from farther away.' },
-  { id: 'regen', name: 'Shield Regen', icon: '♻', max: 3, tiers: [3, 5], weight: 0.8,
-    desc: 'Shield recharges sooner and faster.' },
-  // ability unlocks (rank 1 unlocks; higher ranks improve)
-  { id: 'reverse', name: 'Retro Thrusters', icon: '◂', max: 1, tiers: [0, 5], weight: 1.3,
-    desc: 'Unlock reverse thrust (S).' },
-  { id: 'targeting', name: 'Targeting Computer', icon: '⊕', max: 3, tiers: [0, 5], weight: 1.2,
-    desc: 'Unlock aim lead-markers; ranks add reach and markers.' },
-  { id: 'predict', name: 'Trajectory Plotter', icon: '⋯', max: 3, tiers: [1, 5], weight: 1.1,
-    desc: 'Unlock your flight-path forecast; ranks see farther.' },
-  { id: 'orbitShield', name: 'Orbit Shield', icon: '◍', max: 4, tiers: [1, 5], weight: 1.2,
-    desc: 'Stow rocks into a defensive orbit; ranks add slots.' },
-  { id: 'compass', name: 'Gravity Compass', icon: '✧', max: 2, tiers: [2, 5], weight: 1.0,
-    desc: 'Unlock the world-gravity chevrons at your ship.' },
-  { id: 'crashWarn', name: 'Collision Alert', icon: '⚠', max: 1, tiers: [2, 5], weight: 1.0,
-    desc: 'Mark where your path will hit (needs the plotter).' },
-  { id: 'volley', name: 'Shotgun Array', icon: '☄', max: 3, tiers: [3, 5], weight: 1.1,
-    desc: 'Unlock the right-click orbit shotgun; ranks charge faster.' },
-  { id: 'sensor', name: 'Deep Sensors', icon: '◈', max: 3, tiers: [3, 5], weight: 0.9,
-    desc: 'See farther on the map and extend the forecast.' },
-];
-
-// Tier-up specialization paths. Choosing one grants a free rank of its
-// signature upgrade and biases the small-pick pool for the coming tier.
-export const PATHS = [
+// SPECIALIZATIONS. You pick ONE at the start of a run (main.startGame -> the 'spec'
+// modal). It sets your starting kit and gates which named ABILITIES you can be
+// offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats
+// bases), so every spec is playable from the first frame; the kit + tree layer on.
+export const SPECS = [
   { id: 'brawler', name: 'BRAWLER', icon: '※',
-    desc: 'Built for the smash. Fling, hull, and shotgun favored.',
-    grant: 'flingPower', bias: { flingPower: 2.2, hullPlate: 1.8, volley: 1.9, catchStrength: 1.4 } },
+    desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
+    start: ['kineticSling', 'reinforcedHull'] },
   { id: 'hauler', name: 'HAULER', icon: '◎',
-    desc: 'Master of the beam. Capacity, reach, and the orbit shield favored.',
-    grant: 'orbitShield', bias: { orbitShield: 2.2, catchStrength: 2.0, beamReach: 1.7, scrapMagnet: 1.6 } },
+    desc: 'Master of the beam — long reach, big hauls, orbit shields.',
+    start: ['longArmTractor', 'salvageMagnet'] },
   { id: 'scout', name: 'SCOUT', icon: '◇',
-    desc: 'Eyes everywhere. Engines, targeting, plotter, and sensors favored.',
-    grant: 'engine', bias: { engine: 2.0, targeting: 2.0, predict: 1.8, sensor: 1.8, compass: 1.6 } },
+    desc: 'Eyes and speed — sensors, precision, and mobility.',
+    start: ['tunedThrusters', 'retroJets'] },
 ];
 
-export function upgradeById(id) { return UPGRADES.find((u) => u.id === id); }
+// The named-ability catalog. Each ability belongs to ONE spec, has ranks (small
+// picks deepen it), and a `minTier` soft-floor (it can't be OFFERED until you've
+// reached that tier). `channel` is the stat bucket it feeds — shipStats sums each
+// owned ability's rank into its channel and derives everything from those totals,
+// so several abilities can stack the same channel. BRAWLER's runtime abilities
+// (Ram Prow, Cluster Rounds, Shockwave, Berserker, Demolition, Juggernaut) are
+// live — their hooks live in physics.js (collideShipBody + brawlerThrowKill) and
+// tractor.js (Berserker fling). HAULER's: Recovery Tether + Twin Grip (tractor.js)
+// and Aegis Reflector (physics collideBodies). SCOUT's: Afterburner (physics ship
+// control + governor), Evasion Roll + Slipstream (main.js input handlers), and
+// Recon Drone (world.js survey). All three specs' runtime abilities are now live.
+export const ABILITIES = [
+  // 🥊 BRAWLER
+  { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
+  { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
+  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
+  { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Rounds',   icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
+  { id: 'bulwarkRing',    spec: 'brawler', name: 'Bulwark Ring',   icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
+  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A regenerating combat shield.' },
+  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Ram bodies for damage and take less from impacts.' },
+  { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
+  { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 3, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
+  { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 3, minTier: 3, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
+  { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 3, minTier: 3, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
+  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 3, minTier: 3, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
+
+  // 📡 HAULER
+  { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
+  { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
+  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
+  { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab heavier masses.' },
+  { id: 'deflectorCells', spec: 'hauler', name: 'Deflector Cells',  icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A regenerating shield.' },
+  { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
+  { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
+  { id: 'rapidRecharge',  spec: 'hauler', name: 'Rapid Recharge',   icon: '♻', channel: 'regen',  max: 6, minTier: 0, weight: 0.9, desc: 'Shield recharges sooner and faster.' },
+  { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, weight: 0.9, desc: 'Haul planet-scale masses.' },
+  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
+  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 1, minTier: 3, weight: 0.9, desc: 'Hold and throw two rocks at once.' },
+
+  // 🔭 SCOUT
+  { id: 'tunedThrusters', spec: 'scout', name: 'Tuned Thrusters', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Faster thrust and a higher speed ceiling.' },
+  { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 1, minTier: 0, weight: 1.0, desc: 'Unlock reverse thrust (S).' },
+  { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 1, minTier: 0, weight: 1.0, desc: 'World-pull chevrons at your ship.' },
+  { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 3, minTier: 0, weight: 1.1, desc: 'Your flight-path forecast.' },
+  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
+  { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
+  { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
+  { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, weight: 0.9, desc: 'Long-range map and forecast.' },
+  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, weight: 1.0, desc: 'Hold SHIFT to overdrive the engine.' },
+  { id: 'evasionRoll',    spec: 'scout', name: 'Evasion Roll',   icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap SPACE to dash toward the cursor (brief i-frames).' },
+  { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
+  { id: 'slipstream',     spec: 'scout', name: 'Slipstream',     icon: '➸', channel: 'slipstream',  max: 1, minTier: 3, weight: 0.9, desc: 'Tap F to warp forward toward the cursor.' },
+];
+
+export function abilityById(id) { return ABILITIES.find((a) => a.id === id); }
+export function specById(id) { return SPECS.find((s) => s.id === id); }
 
 export function newProgress() {
   return {
@@ -337,8 +362,8 @@ export function newProgress() {
     level: 0,              // total pick-events taken
     tier: 0,               // 0..5 — driven by milestones, NOT capacity
     picksThisTier: 0,      // toward the next tier-up milestone
-    upgrades: {},          // { id: rank } — the whole build
-    path: null,            // last chosen specialization (biases the pool)
+    spec: null,            // chosen at run start (applySpec seeds the starting kit)
+    upgrades: {},          // { abilityId: rank } — empty until a spec is chosen
     lives: PROG.START_LIVES,
     // flavor counters (stats only, not read by shipStats)
     catches: 0,
@@ -364,64 +389,106 @@ export function consumePickCost(prog) {
   prog.xp = Math.max(0, prog.xp - xpForPick(prog));
   prog.level++;
 }
-export function applyUpgrade(prog, id) {
-  prog.upgrades[id] = (prog.upgrades[id] || 0) + 1;
+// Add one rank to an ability (capped at its max). New abilities come in at rank 1.
+export function applyAbility(prog, id) {
+  const a = abilityById(id);
+  if (!a) return;
+  const cur = prog.upgrades[id] || 0;
+  if (cur < a.max) prog.upgrades[id] = cur + 1;
 }
-export function applyPath(prog, id) {
-  prog.path = id;
-  const p = PATHS.find((x) => x.id === id);
-  if (p && p.grant) {
-    const u = upgradeById(p.grant);
-    if (u && (prog.upgrades[p.grant] || 0) < u.max) applyUpgrade(prog, p.grant);
+// Run start: lock in the spec and grant its starting kit at rank 1.
+export function applySpec(prog, id) {
+  const s = specById(id);
+  if (!s) return;
+  prog.spec = id;
+  for (const aid of s.start) prog.upgrades[aid] = Math.max(1, prog.upgrades[aid] || 0);
+}
+// TIER-UP DIVIDEND + bump. Every ability already LEARNED ranks up once (capped) —
+// the tier's power spike, on top of whichever NEW ability the milestone grants
+// (main.js grants that AFTER this, so it comes in fresh at rank 1). (Object.keys
+// is a snapshot; the loop only bumps existing keys, so mutating mid-iterate is safe.)
+export function applyTierUp(prog) {
+  for (const id of Object.keys(prog.upgrades)) {
+    const a = abilityById(id);
+    if (a && prog.upgrades[id] > 0 && prog.upgrades[id] < a.max) prog.upgrades[id]++;
   }
   prog.tier = Math.min(TIERS.caps.length - 1, prog.tier + 1);
   prog.picksThisTier = 0;
 }
 
-// Weighted, no-replacement draw of `n` eligible upgrades for the choice cards.
-// Eligibility = within the current tier's pool and not yet maxed; path bias
-// nudges the odds toward the chosen specialization. Runtime randomness
+// One weighted, no-replacement draw from a bag of { u, w }: roulette-wheel on
+// total weight, splice the winner out, return its upgrade. Runtime randomness
 // (Math.random) is intentional per the determinism rules.
-export function pickChoices(prog, n = 2) {
-  const path = PATHS.find((p) => p.id === prog.path);
-  const bag = UPGRADES
-    .filter((u) => prog.tier >= u.tiers[0] && prog.tier <= u.tiers[1] &&
-      (prog.upgrades[u.id] || 0) < u.max)
-    .map((u) => ({ u, w: u.weight * ((path && path.bias[u.id]) || 1) }));
+function drawWeighted(bag) {
+  let total = 0; for (const e of bag) total += e.w;
+  let r = Math.random() * total, idx = 0;
+  for (; idx < bag.length - 1; idx++) { r -= bag[idx].w; if (r <= 0) break; }
+  return bag.splice(idx, 1)[0].u;
+}
+
+// TIER-UP cards: `n` random NEW abilities from your spec's pool that you don't own
+// yet and whose soft-floor (minTier) has been reached. Weighted, no-replacement.
+export function tierChoices(prog, n = 2) {
+  const bag = ABILITIES
+    .filter((a) => a.spec === prog.spec && !(prog.upgrades[a.id] > 0) && prog.tier >= (a.minTier || 0))
+    .map((a) => ({ u: a, w: a.weight || 1 }));
   const chosen = [];
-  while (chosen.length < n && bag.length) {
-    let total = 0; for (const e of bag) total += e.w;
-    let r = Math.random() * total, idx = 0;
-    for (; idx < bag.length - 1; idx++) { r -= bag[idx].w; if (r <= 0) break; }
-    chosen.push(bag[idx].u);
-    bag.splice(idx, 1);
-  }
+  while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));
+  return chosen;
+}
+// SMALL-PICK cards: `n` random abilities you already OWN that can still rank up —
+// between-tier picks only deepen what you've learned, never introduce new abilities.
+export function rankChoices(prog, n = 2) {
+  const bag = ABILITIES
+    .filter((a) => a.spec === prog.spec && (prog.upgrades[a.id] || 0) > 0 && (prog.upgrades[a.id] || 0) < a.max)
+    .map((a) => ({ u: a, w: a.weight || 1 }));
+  const chosen = [];
+  while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));
   return chosen;
 }
 
-// Derived ship stats. Everything is a function of tier + earned upgrade ranks
-// (no accumulators). The st field names match the old ones so every consumer
-// is untouched; the new gate fields (has*/…Lvl) turn abilities on/scale them.
+// Derived ship stats. The UNIVERSAL BASE (tier-scaled) is the old tier-0..5
+// baseline — the core grab/throw/fly loop that EVERY spec has from frame one.
+// Owned ABILITIES then add on top: each ability's rank is summed into its
+// `channel`, and the stats below read those channel totals. The st field names
+// are unchanged, so every consumer (render/physics/tractor/hud) is untouched.
 export function shipStats(prog) {
   const tier = prog.tier;
   const u = prog.upgrades || {};
-  const r = (id) => u[id] || 0;
-  const catchR = r('catchStrength'), beamR = r('beamReach'), hullR = r('hullPlate'),
-    engineR = r('engine'), flingR = r('flingPower'), shieldR = r('shieldCap'),
-    orbitR = r('orbitShield'), targR = r('targeting'), predR = r('predict'),
-    compR = r('compass'), volR = r('volley'), magR = r('scrapMagnet'),
-    senR = r('sensor'), regR = r('regen'), crashR = r('crashWarn'), revR = r('reverse');
+  // Sum owned ability ranks into their channels.
+  const ch = {};
+  for (const a of ABILITIES) { const rk = u[a.id] || 0; if (rk > 0) ch[a.channel] = (ch[a.channel] || 0) + rk; }
+  const c = (k) => ch[k] || 0;
 
-  const capacity = TIERS.caps[tier] * (1 + 0.22 * catchR);
-  const orbitLvl = orbitR;   // drives ring layout / interceptor reach in tractor.js
-  const maxHull = 120 + 40 * tier + 60 * hullR;
-  const shieldFrac = Math.min(0.55, (1 / 3) + 0.06 * shieldR);
+  const catchC = c('catch'), reachC = c('reach'), engineC = c('engine'), flingC = c('fling'),
+    hullC = c('hull'), shieldC = c('shield'), regenC = c('regen'), magnetC = c('magnet'),
+    orbitLvl = c('orbit'), volC = c('volley');
+  // BRAWLER runtime channels (ram = Ram Prow + Juggernaut; the rest are 1:1).
+  const ramC = c('ram'), berserkC = c('berserk'), clusterC = c('cluster'),
+    shockC = c('shockwave'), demoC = c('demolition');
+  // HAULER runtime channels.
+  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin');
+  // SCOUT runtime channels.
+  const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'), slipC = c('slipstream');
+  // Sensor chain — each is its own ability/channel now (Scout tree).
+  const compassC = c('compass'), plotterC = c('plotter'), collisionC = c('collision'),
+    targetingC = c('targeting'), deepC = c('deep');
+  const hasCompass = compassC > 0, hasPredict = plotterC > 0, hasTargeting = targetingC > 0,
+    hasDeepSensors = deepC > 0, hasCrashWarn = collisionC > 0 && hasPredict;
+
+  const capacity = TIERS.caps[tier] * (1 + 0.22 * catchC);
+  const maxHull = 120 + 40 * tier + 55 * hullC + 30 * ramC;   // ram armor beefs the hull too
+  // The regenerating shield is an UPGRADE (War Plating / Deflector Cells): no
+  // shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD bar. Rank 1
+  // unlocks it at 30% of the fixed pool, growing to the 0.55 cap. It trades some
+  // max hull for a recharging layer — a net survivability gain, only shield regens.
+  const shieldFrac = shieldC > 0 ? Math.min(0.55, 0.30 + 0.05 * (shieldC - 1)) : 0;
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
 
-  // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it
-  // in the old ~0..25 band so combat/physics balance is preserved.
-  const rankSum = catchR + beamR + hullR + engineR + flingR + shieldR + orbitR +
-    targR + predR + compR + volR + magR + senR + regR + crashR + revR;
+  // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it in
+  // the old ~0..25 band so combat/physics balance is preserved: it's just the sum
+  // of every owned ability rank (each channel total), weighted like before.
+  const rankSum = Object.values(ch).reduce((s, v) => s + v, 0);
   const totalLevel = Math.min(25, tier * 2 + Math.round(rankSum * 0.6));
 
   return {
@@ -429,48 +496,65 @@ export function shipStats(prog) {
     tier,
     label: TIERS.labels[tier],
     shipName: SHIP_NAMES[tier],
-    // Beam reach base is sized against SHIP_ZOOM so the ring stays on-screen at
-    // every tier; beamReach/orbit ranks extend it. The base is the old
-    // [200,265,350,490,560,630] ladder tapered by a shrink that runs from -20%
-    // at tier 0 to 0% at tier 5 (0.80 + 0.04*tier) — a tighter starting beam
-    // that grows back to the same top-tier reach.
-    range: [160, 223, 308, 451, 538, 630][tier] + 40 * beamR + 30 * orbitLvl,
-    grabSlack: 70 + 22 * beamR,
+    // Beam-reach base is sized against SHIP_ZOOM so the ring stays on-screen at
+    // every tier; reach abilities + the orbit ring extend it.
+    range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 30 * orbitLvl,
+    grabSlack: 70 + 22 * reachC,
     force: capacity * 55 * (0.6 + 0.12 * tier),
-    maxSpeed: 280 + 40 * tier + 85 * engineR,
-    thrust: 180 + 30 * tier + 105 * engineR,
-    fling: 430 + 55 * tier + 190 * flingR,
+    maxSpeed: 280 + 40 * tier + 80 * engineC,
+    thrust: 180 + 30 * tier + 95 * engineC,
+    fling: 430 + 55 * tier + 150 * flingC,
     maxHull: Math.round(maxHull),
-    // Pool splits hull (mends only at glow pockets) / shield (recharges); shieldCap shifts it
+    // Pool splits hull (mends only at glow pockets) / shield (recharges)
     hullMax,
     shieldMax: Math.round(maxHull) - hullMax,
-    // Orbit shield is LOCKED until the orbitShield upgrade (rank 0 -> no slots)
-    orbitCap: orbitR > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0,
+    // Orbit shield is LOCKED until an orbit ability (rank 0 -> no slots)
+    orbitCap: orbitLvl > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0,
     orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks',
-    maxOrbiters: orbitR > 0 ? 2 * orbitR - 1 : 0,   // 1, 3, 5, 7 slots
+    // 1/3/5/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital Sling +
+    // Expanded Bay), so uncapped it could hit 15; higher ranks still grow orbitCap/range.
+    maxOrbiters: orbitLvl > 0 ? Math.min(7, 2 * orbitLvl - 1) : 0,
     orbitLvl,
     // Kept for render (engine-flare size, chart-length) — indexed like the old levels
-    levels: { beam: tier, orbit: orbitLvl, fling: flingR, hull: hullR, thrust: engineR, chart: senR },
-    // ---- ability gates (new) ----
-    hasReverse: revR > 0,
-    hasTargeting: targR > 0,
-    targetLvl: targR,
-    targetReach: 0.6 + 0.25 * targR,     // x LOCK_T, when targeting is on
-    targetMarkers: 2 + 2 * targR,        // how many ✕ markers show
-    hasPredict: predR > 0,
-    predictLvl: predR,
-    hasCrashWarn: crashR > 0,
-    hasCompass: compR > 0,
-    compassLvl: compR,
-    hasVolley: volR > 0,
-    volleyLvl: volR,
-    // ---- scaled passives (new) ----
-    magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magR),
-    sensorMul: 1 + 0.3 * senR,
-    regen: CFG.SHIP_REGEN * (1 + 0.35 * regR),
-    regenDelay: CFG.SHIP_REGEN_DELAY * (1 - 0.1 * regR),
-    // Forecast horizon: only meaningful once the plotter is unlocked
-    predictBoost: 1 + Math.min(1.1, 0.3 * Math.max(0, predR - 1) + 0.12 * senR),
+    levels: { beam: tier, orbit: orbitLvl, fling: flingC, hull: hullC, thrust: engineC, chart: deepC },
+    // ---- ability gates (Scout sensor chain + shared unlocks) ----
+    hasReverse: c('reverse') > 0,
+    hasTargeting,
+    targetLvl: targetingC,
+    targetReach: 0.6 + 0.25 * targetingC,   // x LOCK_T, when targeting is on
+    targetMarkers: 2 + 2 * targetingC,      // how many ✕ markers show
+    hasPredict,
+    predictLvl: plotterC,
+    hasCrashWarn,
+    hasCompass,
+    compassLvl: compassC,
+    hasVolley: volC > 0,
+    volleyLvl: volC,
+    // ---- BRAWLER runtime abilities (read by physics/tractor) ----
+    ramMul: 1 + 0.45 * ramC,                      // ram damage DEALT to bodies (Ram Prow/Juggernaut)
+    ramArmor: Math.max(0.45, 1 - 0.11 * ramC),    // impact damage TAKEN (lower = tougher)
+    berserk: berserkC,                            // fling/ram scale up as hull drops (runtime hull read)
+    cluster: clusterC,                            // shrapnel shards spawned on a throw-kill
+    shockwave: shockC,                            // knockback impulse on a throw-kill
+    demolition: demoC,                            // AoE damage on a throw-kill
+    // ---- HAULER runtime abilities ----
+    tether: tetherC,                              // Recovery Tether: thrown rocks home back to orbit
+    aegis: aegisC,                                // Aegis Reflector: orbit rocks reflect intercepted fire
+    twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
+    maxHeld: twinC > 0 ? 2 : 1,
+    // ---- SCOUT runtime abilities ----
+    afterburner: afterburnerC,                    // hold Shift: thrust + speed-ceiling overdrive (physics)
+    evasion: evasionC,                            // tap Space: dash burst + i-frames (main.onEvade)
+    recon: reconC,                                // Recon Drone: auto-survey reach (world.js)
+    slipstream: slipC > 0,                        // tap F: short warp (main.onWarp)
+    // ---- scaled passives ----
+    magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magnetC),
+    sensorMul: 1 + 0.3 * deepC,             // Deep Array widens the map reveal
+    regen: CFG.SHIP_REGEN * (1 + 0.35 * regenC),
+    regenDelay: CFG.SHIP_REGEN_DELAY * (1 - 0.1 * regenC),
+    // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
+    // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
+    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC,
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],
