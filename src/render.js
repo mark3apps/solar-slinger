@@ -15,7 +15,11 @@ export function initRender(cv) {
   ctx = canvas.getContext('2d', { alpha: false });
   const resize = () => {
     dpr = Math.min(2, window.devicePixelRatio || 1);
-    vw = window.innerWidth; vh = window.innerHeight;
+    // A zero-sized window (hidden pane, minimized-at-launch shell) must never
+    // reach the math: vw=vh=0 makes cam.zoom 0 and mouseWorld 0/0 -> NaN aim,
+    // which NaN-poisons the ship and then (via the ship-anchored local
+    // spawner) the whole sim. Fall back to a nominal size until a real one.
+    vw = window.innerWidth || 1280; vh = window.innerHeight || 720;
     canvas.width = vw * dpr; canvas.height = vh * dpr;
   };
   resize();
@@ -94,6 +98,7 @@ function worldTransform(game, shakeX, shakeY) {
 function drawStarfield(game) {
   const { cam } = game;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#cdd8ff';
   for (const layer of starLayers) {
     const ox = cam.x * layer.parallax, oy = cam.y * layer.parallax;
     for (const p of layer.pts) {
@@ -101,7 +106,6 @@ function drawStarfield(game) {
       const y = ((p.y - oy) % 4000 + 4000) % 4000 - (4000 - vh) / 2;
       if (x < -10 || x > vw + 10 || y < -10 || y > vh + 10) continue;
       ctx.globalAlpha = p.b * 0.8;
-      ctx.fillStyle = '#cdd8ff';
       ctx.fillRect(x, y, p.s, p.s);
     }
   }
@@ -1047,7 +1051,6 @@ function drawApproach(game) {
   }
 }
 
-// Faint hints: beam reach (blue) and the shield-orbit ring (green)
 // Life pods: drifting extra-life collectibles (roguelite lives). A real object,
 // so SOLID strokes — a soft green halo around a pulsing "+" cross.
 function drawPickups(game) {
@@ -1524,6 +1527,9 @@ function drawShip(game) {
     }
     // (Shield down = nothing drawn at all: a naked hull IS the indicator.
     // The HUD bar's blinking SHLD label carries the alarm.)
+    // st.regenDelay, not the CFG base: Rapid Recharge shortens the delay, and
+    // the sweep must appear the moment the recharge actually starts (hud.js
+    // gates its charging shimmer on the same stat).
     const charging = s.alive && sf < 1 &&
       game.time - game.lastDamage > game.st.regenDelay;
     if (charging) {

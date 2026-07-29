@@ -387,9 +387,25 @@ function resetRun() {
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
   game.burnerFuel = 1; game.burnerOn = false;
-  game.evadeT = 0; game.dashT = 0; game.autoEvadeT = 0; game.jinkT = 0; game.warpT = 0;
+  game.dashT = 0; game.autoEvadeT = 0; game.jinkT = 0;   // (evadeT/warpT reset below)
   game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
-  generateWorld(game);   // rebuilds bodies + spawn, calls respawnShip
+  // Run-scoped world state must reset with the world, or it leaks between
+  // runs: time drives the alien first-wave peace window and the once-per-run
+  // visitor gate; lastDamage must move with time or the shield-regen delta
+  // goes negative; the event timers re-seed via their `?? default` idiom.
+  game.time = 0; game.lastDamage = -99;
+  game.storm = null; game.stormTimer = undefined;
+  game.visitor = null; game.visitorDone = false;
+  game.vesperRespawnT = null; game.shepherdRespawnT = null; game.shepherdPlayerKilled = false;
+  game.rogueTimer = undefined; game.moonTimer = undefined;
+  game.flareTimer = undefined; game.cometTimer = undefined; game.wrightTimer = undefined;
+  game.alienTimer = 0; game.asteroidTimer = 10;
+  game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
+  game.predictRef = null; game.lock = null; game.lockTarget = null; game.tooHeavy = null;
+  game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
+  game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
+  game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
+  generateWorld(game);   // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
   hud.setDeathVisible(false);
@@ -397,6 +413,94 @@ function resetRun() {
   firstStart = true;     // re-arm the flight guidance for the fresh run
   openSpec();            // fresh run opens on a new specialization choice
 }
+
+// One-shot event messages — the "Event-flag messaging" convention (CLAUDE.md):
+// a subsystem sets game[flag] (true, or a payload like a world name) and
+// update() drains it here exactly once per firing. `tut` names a game.tut
+// boolean: with only `first` the message shows a single time ever; with
+// `repeat` too, later firings get the shorter wording. Each entry is
+// [text, seconds]; text may be a function of the drained payload. When two
+// events fire the same frame the LAST entry wins the single HUD slot, so the
+// table keeps the order of the if-chain it replaced.
+const EVENT_MSGS = [
+  { flag: 'alienWarn', tut: 'alienSeen',
+    first: ['WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5] },
+  { flag: 'rogueIncoming',
+    first: ['SENSOR ALERT: a rogue planet has entered the sector.', 4.5] },
+  { flag: 'tetherShow', tut: 'tether',
+    first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
+    repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
+  { flag: 'jinkWarn', tut: 'jink',
+    first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
+  { flag: 'cometWarn', tut: 'comet',
+    first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
+    repeat: ['COMET SHOWER inbound!', 3] },
+  { flag: 'flareWarn', tut: 'flare',
+    first: ['SOLAR FLARE — the sun is erupting at you. MOVE!', 4.5],
+    repeat: ['SOLAR FLARE INBOUND!', 2.5] },
+  { flag: 'magmaWarn', tut: 'magma',
+    first: ['MAGMA EJECTION — lava worlds hurl molten rock. It cools into dense fling ammo.', 5] },
+  { flag: 'geyserWarn', tut: 'geyser',
+    first: ['Cryo-geyser! Ice worlds pop free shield ammo into low orbit.', 5] },
+  { flag: 'comboShow',
+    first: [(v) => `GRAVITY BILLIARDS ×${v}! +${8 * v} scrap`, 2] },
+  { flag: 'coreFound', tut: 'core',
+    first: ['MINERAL CORE exposed — dense salvage. Catch it to fatten your beam, or smash it for scrap.', 5.5] },
+  { flag: 'cacheCracked', tut: 'cache',
+    first: ['SALVAGE CACHE cracked — scrap and shield ammo. Watch the lanes for more canisters.', 5.5] },
+  { flag: 'glowMsg', tut: 'glow',
+    first: ['GLOW POCKET — fly through the motes to mend your hull. These pockets are the only place it heals.', 6] },
+  { flag: 'nestKilled',
+    first: ['ALIEN NEST DESTROYED — this region of space is quiet now.', 6] },
+  { flag: 'wrightWarn', tut: 'wright',
+    first: ['WRECKWRIGHT — a scavenger is harvesting your battle debris. Kill it before it finishes building.', 5.5],
+    repeat: ['WRECKWRIGHT descending on the debris field!', 3] },
+  { flag: 'golemWarn',
+    first: ['SCRAP-GOLEM assembled — your leftovers are hunting you.', 4.5] },
+  { flag: 'fortShieldDownName',
+    first: [(v) => `FORTRESS SHIELD DOWN at ${v} — smash the turrets!`, 4] },
+  { flag: 'fortLiberatedName',
+    first: [(v) => `${v.toUpperCase()} LIBERATED — the Bastion fort is destroyed. Salvage is yours.`, 5] },
+  { flag: 'emberWarn', tut: 'ember',
+    first: ['EMBERKIN ARTILLERY — this world is colonized. Icy rocks smother the reefs.', 5.5] },
+  { flag: 'emberSeededName',
+    first: [(v) => `The Emberkin have seeded ${v} — the bloom is spreading.`, 5.5] },
+  { flag: 'emberCleansedName',
+    first: [(v) => `${v} cleansed — the Emberkin bloom is extinguished.`, 5] },
+  // ---- discovery-layer events ----
+  { flag: 'vesperWarn', tut: 'vesper',
+    first: ['COMET VESPER — a long-period wanderer, falling sunward. Its tail blooms at perihelion. Catch it if you can.', 6] },
+  { flag: 'visitorWarn',
+    first: ['DEEP-SPACE CONTACT: an interstellar object is crossing the system. It will not come back.', 6] },
+  { flag: 'visitorGone',
+    first: ['The interstellar visitor has left the system — forever.', 5.5] },
+  { flag: 'stormWarn', tut: 'storm',
+    first: ['SOLAR STORM — the sun has loosed a charged wave across the whole system. Watch the skies of nearby worlds.', 6],
+    repeat: ['SOLAR STORM — a charged wave is sweeping the system.', 3.5] },
+  { flag: 'auroraName', tut: 'aurora',
+    first: [(v) => `AURORA — the storm wave is lighting up ${v}'s sky.`, 5],
+    repeat: [(v) => `AURORA over ${v}.`, 3] },
+  { flag: 'eclipseName',
+    first: [(v) => `MOONSHADOW — a lunar eclipse is sweeping across ${v}.`, 5] },
+  { flag: 'surveyMsg', first: [(v) => v, 4.5] },
+  { flag: 'echoMsg', first: [(v) => v, 7.5] },
+  { flag: 'graveyardWarn', tut: 'graveyard',
+    first: ['GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6] },
+  { flag: 'ghostWarn', tut: 'ghost',
+    first: ['UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6] },
+  { flag: 'ringDecayName',
+    first: [(v) => `The shepherd moon is gone — ${v}'s ring is beginning to scatter.`, 6] },
+  { flag: 'volcWarn', tut: 'volc',
+    first: ['FORGE MOON — this moon is volcanically alive. Its ejecta cools into dense slinging rock.', 5.5] },
+  { flag: 'heatWarn', tut: 'heat',
+    first: ['MELTDOWN WARNING — the heat is liquefying your hull. Turn back!', 4.5] },
+  { flag: 'gasDiveWarn', tut: 'gasdive',
+    first: ['CRUSH DEPTH — the atmosphere is collapsing your hull. The core will finish the job. CLIMB!', 5] },
+  { flag: 'flareHitWarn',
+    first: ['FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5] },
+  { flag: 'scrapeWarn', tut: 'scrape',
+    first: ["HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5] },
+];
 
 let last = performance.now();
 let acc = 0;
@@ -582,223 +686,27 @@ function update(dtReal) {
       game.lockTarget = null;
     }
 
-    // Timers & one-shot messages
+    // Timers & one-shot event messages (drained from the EVENT_MSGS table)
     if (game.tooHeavyT > 0) game.tooHeavyT -= dtReal;
-    if (game.alienWarn > 0) {
-      if (!game.tut.alienSeen) {
-        game.tut.alienSeen = true;
-        hud.message('WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5);
-      }
-      game.alienWarn = 0;
-    }
-    if (game.rogueIncoming) {
-      game.rogueIncoming = 0;
-      hud.message('SENSOR ALERT: a rogue planet has entered the sector.', 4.5);
-    }
-    if (game.tetherShow) {
-      hud.message(game.tut.tether
-        ? `TETHER THROW! ×${game.tetherShow.toFixed(2)}`
-        : `TETHER THROW ×${game.tetherShow.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`,
-      game.tut.tether ? 1.8 : 4.5);
-      game.tut.tether = true;
-      game.tetherShow = 0;
-    }
-    if (game.jinkWarn) {
-      game.jinkWarn = false;
-      if (!game.tut.jink) {
-        game.tut.jink = true;
-        hud.message('REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5);
-      }
-    }
-    if (game.cometWarn) {
-      game.cometWarn = false;
-      hud.message(game.tut.comet
-        ? 'COMET SHOWER inbound!'
-        : 'COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.',
-      game.tut.comet ? 3 : 5.5);
-      game.tut.comet = true;
-    }
-    if (game.flareWarn) {
-      game.flareWarn = false;
-      hud.message(game.tut.flare
-        ? 'SOLAR FLARE INBOUND!'
-        : 'SOLAR FLARE — the sun is erupting at you. MOVE!', game.tut.flare ? 2.5 : 4.5);
-      game.tut.flare = true;
-    }
-    if (game.magmaWarn) {
-      game.magmaWarn = false;
-      if (!game.tut.magma) {
-        game.tut.magma = true;
-        hud.message('MAGMA EJECTION — lava worlds hurl molten rock. It cools into dense fling ammo.', 5);
-      }
-    }
-    if (game.geyserWarn) {
-      game.geyserWarn = false;
-      if (!game.tut.geyser) {
-        game.tut.geyser = true;
-        hud.message('Cryo-geyser! Ice worlds pop free shield ammo into low orbit.', 5);
-      }
-    }
+    // skimT is a decaying timer set in physics, not a drain-once flag — the
+    // one event condition that doesn't fit the table's shape.
     if (game.skimT > 0 && !game.tut.skim) {
       game.tut.skim = true;
       hud.message("CLOUD SKIMMING — the cloud tops sling you forward. Don't dip too deep.", 5);
     }
-    if (game.comboShow) {
-      hud.message(`GRAVITY BILLIARDS ×${game.comboShow}! +${8 * game.comboShow} scrap`, 2);
-      game.comboShow = 0;
-    }
-    if (game.coreFound) {
-      game.coreFound = false;
-      if (!game.tut.core) {
-        game.tut.core = true;
-        hud.message('MINERAL CORE exposed — dense salvage. Catch it to fatten your beam, or smash it for scrap.', 5.5);
+    for (const e of EVENT_MSGS) {
+      const v = game[e.flag];
+      if (!v) continue;
+      game[e.flag] = null;
+      let m = e.first;
+      if (e.tut) {
+        if (game.tut[e.tut]) {
+          if (!e.repeat) continue;   // first-time-only event, already shown
+          m = e.repeat;
+        }
+        game.tut[e.tut] = true;
       }
-    }
-    if (game.cacheCracked) {
-      game.cacheCracked = false;
-      if (!game.tut.cache) {
-        game.tut.cache = true;
-        hud.message('SALVAGE CACHE cracked — scrap and shield ammo. Watch the lanes for more canisters.', 5.5);
-      }
-    }
-    if (game.glowMsg) {
-      game.glowMsg = false;
-      if (!game.tut.glow) {
-        game.tut.glow = true;
-        hud.message('GLOW POCKET — fly through the motes to mend your hull. These pockets are the only place it heals.', 6);
-      }
-    }
-    if (game.nestKilled) {
-      game.nestKilled = false;
-      hud.message('ALIEN NEST DESTROYED — this region of space is quiet now.', 6);
-    }
-    if (game.wrightWarn) {
-      game.wrightWarn = false;
-      hud.message(game.tut.wright
-        ? 'WRECKWRIGHT descending on the debris field!'
-        : 'WRECKWRIGHT — a scavenger is harvesting your battle debris. Kill it before it finishes building.',
-      game.tut.wright ? 3 : 5.5);
-      game.tut.wright = true;
-    }
-    if (game.golemWarn) {
-      game.golemWarn = false;
-      hud.message('SCRAP-GOLEM assembled — your leftovers are hunting you.', 4.5);
-    }
-    if (game.fortShieldDownName) {
-      hud.message(`FORTRESS SHIELD DOWN at ${game.fortShieldDownName} — smash the turrets!`, 4);
-      game.fortShieldDownName = null;
-    }
-    if (game.fortLiberatedName) {
-      hud.message(`${game.fortLiberatedName.toUpperCase()} LIBERATED — the Bastion fort is destroyed. Salvage is yours.`, 5);
-      game.fortLiberatedName = null;
-    }
-    if (game.emberWarn) {
-      game.emberWarn = false;
-      if (!game.tut.ember) {
-        game.tut.ember = true;
-        hud.message('EMBERKIN ARTILLERY — this world is colonized. Icy rocks smother the reefs.', 5.5);
-      }
-    }
-    if (game.emberSeededName) {
-      hud.message(`The Emberkin have seeded ${game.emberSeededName} — the bloom is spreading.`, 5.5);
-      game.emberSeededName = null;
-    }
-    if (game.emberCleansedName) {
-      hud.message(`${game.emberCleansedName} cleansed — the Emberkin bloom is extinguished.`, 5);
-      game.emberCleansedName = null;
-    }
-    // ---- discovery-layer events ----
-    if (game.vesperWarn) {
-      game.vesperWarn = false;
-      if (!game.tut.vesper) {
-        game.tut.vesper = true;
-        hud.message('COMET VESPER — a long-period wanderer, falling sunward. Its tail blooms at perihelion. Catch it if you can.', 6);
-      }
-    }
-    if (game.visitorWarn) {
-      game.visitorWarn = false;
-      hud.message('DEEP-SPACE CONTACT: an interstellar object is crossing the system. It will not come back.', 6);
-    }
-    if (game.visitorGone) {
-      game.visitorGone = false;
-      hud.message('The interstellar visitor has left the system — forever.', 5.5);
-    }
-    if (game.stormWarn) {
-      game.stormWarn = false;
-      hud.message(game.tut.storm
-        ? 'SOLAR STORM — a charged wave is sweeping the system.'
-        : 'SOLAR STORM — the sun has loosed a charged wave across the whole system. Watch the skies of nearby worlds.',
-      game.tut.storm ? 3.5 : 6);
-      game.tut.storm = true;
-    }
-    if (game.auroraName) {
-      hud.message(game.tut.aurora
-        ? `AURORA over ${game.auroraName}.`
-        : `AURORA — the storm wave is lighting up ${game.auroraName}'s sky.`, game.tut.aurora ? 3 : 5);
-      game.tut.aurora = true;
-      game.auroraName = null;
-    }
-    if (game.eclipseName) {
-      hud.message(`MOONSHADOW — a lunar eclipse is sweeping across ${game.eclipseName}.`, 5);
-      game.eclipseName = null;
-    }
-    if (game.surveyMsg) {
-      hud.message(game.surveyMsg, 4.5);
-      game.surveyMsg = null;
-    }
-    if (game.echoMsg) {
-      hud.message(game.echoMsg, 7.5);
-      game.echoMsg = null;
-    }
-    if (game.graveyardWarn) {
-      game.graveyardWarn = false;
-      if (!game.tut.graveyard) {
-        game.tut.graveyard = true;
-        hud.message('GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6);
-      }
-    }
-    if (game.ghostWarn) {
-      game.ghostWarn = false;
-      if (!game.tut.ghost) {
-        game.tut.ghost = true;
-        hud.message('UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6);
-      }
-    }
-    if (game.ringDecayName) {
-      hud.message(`The shepherd moon is gone — ${game.ringDecayName}'s ring is beginning to scatter.`, 6);
-      game.ringDecayName = null;
-    }
-    if (game.volcWarn) {
-      game.volcWarn = false;
-      if (!game.tut.volc) {
-        game.tut.volc = true;
-        hud.message('FORGE MOON — this moon is volcanically alive. Its ejecta cools into dense slinging rock.', 5.5);
-      }
-    }
-    if (game.heatWarn) {
-      game.heatWarn = false;
-      if (!game.tut.heat) {
-        game.tut.heat = true;
-        hud.message('MELTDOWN WARNING — the heat is liquefying your hull. Turn back!', 4.5);
-      }
-    }
-    if (game.gasDiveWarn) {
-      game.gasDiveWarn = false;
-      if (!game.tut.gasdive) {
-        game.tut.gasdive = true;
-        hud.message('CRUSH DEPTH — the atmosphere is collapsing your hull. The core will finish the job. CLIMB!', 5);
-      }
-    }
-    if (game.flareHitWarn) {
-      game.flareHitWarn = false;
-      hud.message('FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5);
-    }
-    if (game.scrapeWarn) {
-      game.scrapeWarn = false;
-      if (!game.tut.scrape) {
-        game.tut.scrape = true;
-        hud.message("HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5);
-      }
+      hud.message(typeof m[0] === 'function' ? m[0](v) : m[0], m[1]);
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
