@@ -55,5 +55,14 @@ it touches, why it's a risk, and the minimal fix. Separate **Blocking** (weakens
 **Worth checking** (subtler / needs a balance run). If a change looks safe, say so plainly and note which
 invariants you verified. Do NOT rewrite the code yourself — you review and advise.
 
-If the change is non-trivial, recommend the user run the `balance-test` skill (`window.tick(600)` + death
-log) and state exactly which pass criteria this change puts at risk.
+If the change is non-trivial, recommend the user run the `balance-test` skill — one call:
+`window.soak(600, { idle: true })` returns `{ planets, moons, deaths, impacts, nanEvents }` — and state
+exactly which pass criteria this change puts at risk. If the change touches player-facing mechanics
+(tractor, picks, shield, abilities), also recommend the `mechanics-test` skill — `window.mechTest()`
+is a ~1.5s fixed-seed suite asserting the core verbs and design laws. For failures worth watching live,
+mention `window.speed(10)` (live fast-forward) + `window.goto('<name>')` (teleport to the trouble spot).
+
+One extra thing to guard: the dev time-scale path (`updateScaled` in main.js) must keep stepping
+`update()` in 1x-sized chunks (≤1/60). Flag any change that passes one big scaled dt into `update()`
+directly — AI, timers, and easing assume normal per-step dt, and physics semantics at speed must stay
+identical to 1x.

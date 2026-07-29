@@ -24,6 +24,10 @@ export function initInput(canvas, handlers) {
     if (e.code === 'KeyA') handlers.onDash(-1);
     if (e.code === 'KeyD') handlers.onDash(1);
     if (e.code === 'KeyF') handlers.onWarp();
+    // Dev sim-speed keys — no-ops unless ?dev=1 (main.js gates them)
+    if (e.code === 'Minus') handlers.onSpeedAdjust(-1);
+    if (e.code === 'Equal') handlers.onSpeedAdjust(1);
+    if (e.code === 'Digit0') handlers.onSpeedAdjust(0);
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));

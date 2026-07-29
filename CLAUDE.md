@@ -41,6 +41,7 @@ variable-timestep presentation loop.
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Web Audio synthesis. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`). |
+| [devtest.js](src/devtest.js) | The scripted mechanics test suite (`window.mechTest`). Lazy-loaded only when invoked — normal play never imports it. |
 
 The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
 draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull fraction) in the
@@ -385,21 +386,54 @@ about it — this is a hard rule.
   gets packaged and the installer targets. App icons live in `build/` (`icon.icns/.ico/.png`,
   generated from `build/icon-src/`).
 
-## Testing (headless, no framework)
+## Testing (headless + live fast-forward, no framework)
 
-There is no test runner. Verify balance and physics with the console hooks:
+There is no test runner. Verify balance and physics with the console hooks (all defined at the bottom
+of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
+- `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
+  `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
+  `{ planets: "17/17", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
+  sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
-  `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes.
+  `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes. The raw primitive under
+  `soak` — use it directly when you need custom instrumentation between chunks.
+- `window.mechTest({seed, reset, download})` — **the scripted mechanics suite** (devtest.js,
+  lazy-loaded): a fixed set of player actions against a fixed-seed fresh run, asserting each core
+  mechanic and several design laws (fling-at-cursor/no-recoil, deferred picks, split-health, orbit
+  gating, NaN containment…). **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
+  for a seeded RNG for the duration — so same code ⇒ identical report. Returns
+  `{ passed, failed, results, logs }` (also `window.lastMechReport`; `{download: true}` saves the
+  JSON). ~1.5s wall. See the `mechanics-test` skill for the check list and judging rules.
+- `window.freshRun(specIdx, seed)` — repeatable fresh run: full reset onto the given world seed with
+  the spec auto-picked and the sim armed. The world layout is bit-identical per seed.
+- `window.speed(n)` — **live fast-forward**: runs the *visible* game at n× real time (0.25–50).
+  `updateScaled` steps `update()` in 1x-sized chunks (the tick idiom) so AI/timers/easing see normal
+  per-step dt, with a ~24ms wall-clock budget per frame — an unreachable target degrades gracefully and
+  the amber HUD badge shows target + achieved rate (`game.speedActual`). 0.25 is slow-mo for watching a
+  collision frame-by-frame-ish. `?dev=1` on the URL adds hotkeys: `-` halve, `=` double, `0` reset.
+  Picks still open (and freeze) normally at speed — set `game.autoUpgrade = true` to blast through them.
+  For truly unbounded fast-forward use `tick`/`soak` (headless, no render — ~35x+ on a laptop).
+- `window.goto('vesper')` / `window.goto(x, y)` — teleport the ship beside a named body (velocity
+  matched, parked outside its radius, brief invuln, camera snapped) or to coordinates.
+  `window.locate('name'|'type')` returns the body itself.
+- `window.god(on)` — ship ignores all damage (`damageShip` early-out) for poking at the corona,
+  forts, or gas cores without respawn loops.
 - `window.game` — the live state handle.
-- `game.autoUpgrade = true` — headless helper: auto-resolves each pick (picks card 0) so a
-  `window.tick` soak doesn't stall on the choice modal. Drive a climb by pumping `game.prog.xp`.
+- `game.autoUpgrade = true` — auto-resolves each pick (picks card 0) so soaks never stall. Drive a
+  climb by pumping `game.prog.xp`.
 - **Specs headlessly:** `window.tick` bypasses the spec modal by seeding `SPECS[0]` when
   `game.prog.spec` is null. To soak a different spec (or a specific build), assign `game.prog`
   wholesale — `{ xp, level, tier, picksThisTier, spec, upgrades: { abilityId: rank }, lives, … }` —
   then `window.tick(1/60)` once to rebuild `game.st` before measuring.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
+- `game.nanEvents` — count of NaN-tripwire firings (body culls / ship resets). Any nonzero value is
+  a real upstream bug to root-cause, even though the tripwire contained it.
 
 Run these from `javascript_tool` against the preview (the pane suspends rAF when hidden, so `window.tick`
-is the way to advance the sim). See the `balance-test` skill for the full workflow and pass criteria.
+/`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
+actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
+runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
+17-planet/45-moon baseline).
