@@ -2,8 +2,6 @@ export const TAU = Math.PI * 2;
 
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
-export function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
-export function angTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
 
 // Smallest signed angle from a to b, in (-PI, PI]
 export function angDiff(a, b) {

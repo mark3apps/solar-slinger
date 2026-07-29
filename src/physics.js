@@ -1,5 +1,5 @@
 import { CFG, PROG, addXp } from './config.js';
-import { makeScrap, scrapValue, massToHp, railBody, derail, keplerStep } from './entities.js';
+import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
 import { TAU, clamp, angDiff } from './util.js';
@@ -841,6 +841,10 @@ function collideAlienBody(game, al, b) {
 
 const _sweep = [];       // collision broad-phase scratch (reused every substep)
 const _attractors = [];  // attractor list scratch (reused every substep)
+// Hoisted sort comparator — the sweep sorts every substep; an inline arrow
+// would allocate a fresh closure 120 times a second for nothing.
+const _byLeftEdge = (a, b) => (a.x - a.radius) - (b.x - b.radius);
+let nanWarned = false;   // the NaN tripwire below warns once per session
 
 export function step(game, dt) {
   const bodies = game.bodies;
@@ -1172,6 +1176,21 @@ export function step(game, dt) {
     }
   }
 
+  // NaN containment tripwire: a non-finite body is always an upstream bug,
+  // but left alive ONE of them annihilates the whole system within a few
+  // substeps — NaN comparisons defeat every broad-phase reject, so it "hits"
+  // everything, and if it's an attractor it NaN-poisons every live body's
+  // gravity. Contain the blast radius to the buggy body: cull it, warn once.
+  for (const b of bodies) {
+    if (b.alive && !isFinite(b.x + b.y + b.vx + b.vy)) {
+      b.alive = false;
+      if (!nanWarned) {
+        nanWarned = true;
+        console.warn('Solar Slinger: culled non-finite body (upstream bug)', b.type, b.id);
+      }
+    }
+  }
+
   if (s.alive) {
     s.vx += shipAx * dt; s.vy += shipAy * dt;
     // Speed governor (CFG.SPEED_*): the ceiling is maxSpeed measured RELATIVE
@@ -1193,6 +1212,25 @@ export function step(game, dt) {
     }
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.invuln > 0) s.invuln -= dt;
+
+    // Ship half of the NaN tripwire (post-integration, pre-collision): a NaN
+    // ship never dies "honestly" — NaN comparisons skip all damage — but the
+    // `|| 0.001` distance fallback in the gas-dive check reads NaN as zero
+    // distance and insta-crushes it at the first gas giant tested. Snap the
+    // kinematics back to the spawn point instead (recoverable, no free heal)
+    // and patch NaN pools so the HUD and regen math stay sane.
+    if (!isFinite(s.x + s.y + s.vx + s.vy)) {
+      s.x = game.spawn.x; s.y = game.spawn.y;
+      s.vx = game.spawn.vx; s.vy = game.spawn.vy;
+      s.invuln = Math.max(s.invuln, 2);
+      if (!nanWarned) {
+        nanWarned = true;
+        console.warn('Solar Slinger: reset non-finite ship (upstream bug)');
+      }
+    }
+    if (!isFinite(s.angle)) s.angle = 0;
+    if (!isFinite(s.hull)) s.hull = Math.max(1, game.st.hullMax * 0.5);
+    if (!isFinite(s.shield)) s.shield = 0;
   }
 
   for (const al of game.aliens) {
@@ -1217,7 +1255,7 @@ export function step(game, dt) {
   const sweep = _sweep;
   sweep.length = 0;
   for (const b of bodies) if (b.alive) sweep.push(b);
-  sweep.sort((a, b) => (a.x - a.radius) - (b.x - b.radius));
+  sweep.sort(_byLeftEdge);
   for (let i = 0; i < sweep.length; i++) {
     const a = sweep[i];
     if (!a.alive) continue;
@@ -1230,11 +1268,13 @@ export function step(game, dt) {
     }
   }
 
-  // Ship & alien collisions with bodies
+  // Ship & alien collisions with bodies (aliens are usually absent — skip
+  // spinning up an iterator per body for an empty list at 120Hz)
+  const aliens = game.aliens;
   for (const b of bodies) {
     if (!b.alive) continue;
     if (s.alive) collideShipBody(game, s, b, dt);
-    for (const al of game.aliens) if (al.alive) collideAlienBody(game, al, b);
+    if (aliens.length) for (const al of aliens) if (al.alive) collideAlienBody(game, al, b);
   }
 
   // Alien-ship ramming

@@ -279,6 +279,10 @@ function addBelt(bodies, rng, star, beltR, spread, count) {
 export function generateWorld(game, seed = 20260721) {
   const rng = mulberry32(seed);
   const bodies = game.bodies;
+  // Fresh world = fresh array contents. resetRun regenerates into the SAME
+  // array (everything holds game.bodies by reference) — without this clear, a
+  // second sun + full system stacked onto the old one on every game over.
+  bodies.length = 0;
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
@@ -631,8 +635,8 @@ export function replenishWorld(game, dt) {
   }
 
   // Moons — destroyed ones are eventually replaced around big planets.
-  // 60s cadence (was 90) pairs with the doubled sun mass: the stronger tide
-  // claims derailed moons faster, and replenishment must keep the sky full.
+  // 60s cadence (was 90): the sun's tide claims derailed moons steadily, and
+  // replenishment must keep the sky full.
   game.moonTimer = (game.moonTimer ?? 60) - dt;
   if (game.moonTimer <= 0) {
     game.moonTimer = 60;
@@ -644,8 +648,7 @@ export function replenishWorld(game, dt) {
         const orbitR = Math.hypot(p.x - game.homeStar.x, p.y - game.homeStar.y);
         const { minR, maxR } = moonZone(game.homeStar, p, orbitR);
         if (maxR > minR + 50) {
-          const fakeRng = () => rng();
-          spawnMoon(game.bodies, fakeRng, p, minR + (maxR - minR) * rng());
+          spawnMoon(game.bodies, rng, p, minR + (maxR - minR) * rng());
         }
       }
     }

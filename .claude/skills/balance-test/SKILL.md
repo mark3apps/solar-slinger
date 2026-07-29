@@ -45,16 +45,23 @@ is seeded, so the starting layout is identical every run.
 
 3. **Read the result and judge against the pass criteria below.**
 
-## Pass criteria (baseline from a known-good build)
+## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 17 planets, 45 moons)
 
-- **Planet survival:** ~12/13+ planets survive 10 idle sim-minutes. Losing **one** planet to a rogue
-  drive-by is *intended drama*. Losing several — or any loss labeled `vaporized by star` for a
-  star-anchored planet/moon — is a regression (a broken gravity/rails/boundary invariant).
+- **Idle-sky stability (the cleanest signal):** kill the ship first (`game.ship.alive = false`) and
+  soak — **17/17 planets and 45/45 moons must survive 10 idle sim-minutes.** The idle sky is nearly
+  deterministic: a few seeded moon absorptions around t≈210-275 and two seeded rogues meeting the sun
+  around t≈578 are the known-good fingerprint. Any planet loss in an IDLE soak is a regression.
+- **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
+  ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
+  rail into the corona). 15/17+ is normal; losses of OUTER planets, or several at once, are regressions.
 - **Moon survival:** moons should essentially all survive; they're railed and orbits are exact by
   construction. A moon `shattered` against its own planet points at invariant #1 or #2 (energy pumping
   in tight pairs).
 - **No runaway death cascade:** deaths should be a handful of discrete events, not a steadily climbing
   count. A rising death rate over time = the systems are sandblasting themselves (invariant #3).
+- **No NaN tripwire warnings:** `Solar Slinger: culled non-finite body` (or `reset non-finite ship`)
+  in the console means something upstream produced a NaN — the tripwire in physics.js contained it,
+  but the source is a real bug. Treat any tripwire warning as a failure to root-cause.
 - **Combat (with enemies engaged):** the orbit shield should intercept most thrown-rock volleys
   (~5/6). Enemy density is deliberately sparse — most planets stay free.
 
