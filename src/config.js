@@ -13,11 +13,12 @@ export const CFG = {
   // The ship feels amplified gravity from everything — big suns and planets
   // should really pull on YOU (thrown objects and NPCs use normal G).
   SHIP_GRAV: 1.45,
-  // SKY-SPEED COMPENSATION: the sun's mass was doubled (world.js) so every
-  // sun-anchored orbit sweeps ~1.4x faster — a livelier sky. This amp was
-  // HALVED at the same time so the ship-felt sun pull (mass x amp) and the
-  // spawn-orbit speed are numerically unchanged. These two tune together:
-  // never touch one without the other or the ship's flight feel shifts.
+  // How hard the sun grabs the SHIP (multiplies SHIP_GRAV for stars only).
+  // Tunes as a pair with the sun's mass (world.js, 1.42e7): the ship-felt sun
+  // pull and its cruise speed both scale with mass x this amp. It was
+  // deliberately NOT raised when the sun mass was lowered to calm the sky —
+  // slower cruise SHOULD come with a gentler pull (see the sky-speed notes in
+  // world.js and on SHIP_ZOOM). Never touch one without considering the other.
   STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this)
