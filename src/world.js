@@ -839,7 +839,7 @@ export function replenishWorld(game, dt) {
           p.x + Math.cos(ang) * (p.radius + 14), p.y + Math.sin(ang) * (p.radius + 14),
           p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
           350 + rng() * 550);
-        m.magma = 8; m.color = '#ff8040';
+        m.magma = 8; m.magmaBorn = true; m.color = '#ff8040';
         game.volcWarn = true;
       }
     } else if (p.ptype === 'lava' || p.ember > 0.01) {
@@ -859,7 +859,7 @@ export function replenishWorld(game, dt) {
           p.x + Math.cos(ang) * (p.radius + 30), p.y + Math.sin(ang) * (p.radius + 30),
           p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
           700 + rng() * 1200);
-        m.magma = 7; m.color = '#ff8040';
+        m.magma = 7; m.magmaBorn = true; m.color = '#ff8040';
         if (infested) game.emberWarn = true; else game.magmaWarn = true;
       }
     } else if (p.ptype === 'ice') {

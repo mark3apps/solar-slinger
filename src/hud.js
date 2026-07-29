@@ -23,6 +23,7 @@ function flash(bar) {
 
 export function initHud(game) {
   for (const id of ['hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
+    'burnBar', 'burnFill', 'burnNum',
     'msg', 'speedBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
@@ -189,6 +190,19 @@ export function updateHud(game) {
   if (s.hull < prevHull - 0.4) flash(el.hullBar);
   if (shield < prevShield - 0.4) flash(el.shieldBar);
   prevHull = s.hull; prevShield = shield;
+
+  // Afterburner fuel (scout): the BURN bar exists only once the ability is
+  // owned — main.js owns the tank (game.burnerFuel / burnerOn).
+  const hasBurner = st.afterburner > 0;
+  el.burnBar.classList.toggle('hidden', !hasBurner);
+  if (hasBurner) {
+    const fuel = Math.max(0, Math.min(1, game.burnerFuel ?? 1));
+    setWidth(el.burnFill, `${fuel * 100}%`);
+    setText(el.burnNum, `${Math.round(fuel * 100)}%`);
+    el.burnBar.classList.toggle('burning', !!game.burnerOn);
+    // Below the engage threshold the tank can't light — dim it so the wait reads
+    el.burnBar.classList.toggle('low', !game.burnerOn && fuel < 0.25);
+  }
 
   // Progression: tier + ship class, lives (hearts)
   setText(el.tierLabel, `TIER ${st.tier} · ${(st.shipName || '').toUpperCase()}`);

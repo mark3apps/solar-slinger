@@ -139,16 +139,26 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   - BRAWLER — Ram Prow / Juggernaut / Berserker in `physics.collideShipBody` (`st.ramMul`,
     `st.ramArmor`, `st.berserk`; Berserker also scales `tractor.flingSpeedFor`); Cluster Rounds /
     Shockwave / Demolition in `physics.brawlerThrowKill`, called ONLY from `shatter`'s
-    `'player-throw'` branch.
+    `'player-throw'` branch. The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
+    protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
+    NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots
+    through the wake), and its `orbitCap` is clamped to MOON CLASS (`TIERS.caps[1]`) at every
+    tier (config.shipStats) — shotgun ammo, never a planet garage.
   - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
     (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
-    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render).
-  - SCOUT — Afterburner (`game.controls.boost`, read in the physics ship-control AND the speed
-    governor), Evasion Roll + Slipstream (`main.onEvade` / `onWarp`, cooldowns `game.evadeT`/`warpT`),
-    Recon Drone (survey radius in world.js).
-- **Controls the abilities add:** hold **Shift** = Afterburner, tap **Space** = Evasion Roll, tap **F** =
-  Slipstream. All three no-op unless the ability is owned and off cooldown, and are gated behind
-  `menuBlocking()` like every other player input.
+    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render), Rockwall (orbit-held
+    rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`).
+  - SCOUT — Afterburner is a FUEL TANK, not a free hold: main.js owns `game.burnerFuel`/`game.burnerOn`
+    (engage needs >0.25 tank, hysteresis; drains over `st.burnTime`, refills at `st.burnRefill` — the
+    HUD BURN bar), and physics reads **`game.burnerOn`, never raw Shift**, for both the thrust boost
+    AND the governor ceiling — reading Shift directly desyncs thrust from the tank. Dash Jets
+    (`main.onDash`, cooldown `game.evadeT`) darts perpendicular to the NOSE (`angle ± π/2`). Reflex
+    Jink is the auto-dodge closest-approach scan in `physics.step` (recharge `game.autoEvadeT`,
+    ticked in main.js); Slipstream (`main.onWarp`, `game.warpT`); Recon Drone (survey radius, world.js).
+- **Controls the abilities add:** hold **Shift** = Afterburner (spends the BURN tank), tap **A / D** =
+  Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
+  cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
+  other player input.
 - **Test hooks:** `game.autoUpgrade = true` auto-resolves each card (picks index 0) so a `window.tick`
   soak never stalls; `window.tick` also auto-seeds `SPECS[0]` when no spec is chosen (set
   `game.prog.spec` + rebuild `game.st` first to soak a different spec).
@@ -303,15 +313,20 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **The shield is an ABILITY, not base:** you start with NO shield — the whole health pool is hull,
-  which does NOT self-heal (it mends ONLY by collecting glow-pocket motes, below, and otherwise resets
-  to full on respawn). A `shield`-channel ability (BRAWLER **War Plating** / HAULER **Deflector Cells**)
-  UNLOCKS the regenerating shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar) and grows it —
-  ranks 1..6 carve 30%→55% of the fixed pool into a shield that absorbs first and recharges after quiet
-  time (a net survivability gain, since only the shield regens). HAULER's **Rapid Recharge**
-  (`regen` channel) speeds that recharge (`st.regen`/`st.regenDelay`). The SHLD HUD bar appears only
-  once the shield is unlocked; below that the HULL bar stands alone. **SCOUT has neither** — by design,
-  its survivability is the mobility kit (Evasion Roll / Slipstream / Afterburner).
+- **The shield is an ABILITY, not base — and its SHAPE is spec DNA:** you start with NO shield — the
+  whole health pool is hull, which does NOT self-heal (it mends ONLY by collecting glow-pocket motes,
+  below, and otherwise resets to full on respawn). A `shield`-channel ability UNLOCKS the regenerating
+  shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
+  quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
+  - **BRAWLER (War Plating)** — STRONG (38%→65% of the pool) but **FRONT ARC ONLY** (`shieldArc` π/2):
+    a directional hit from behind (`hitAng` in `physics.damageShip`) skips the shield entirely — the
+    tail is bare, so facing the threat matters. Directionless damage (heat/crush/Oort — no `hitAng`)
+    always soaks. Render clips every shield visual to the covered wedge — the bare tail must READ.
+  - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability.
+  - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
+    Cargo Plating armors the hull); never add a `shield`-channel ability to its pool.
+  The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
