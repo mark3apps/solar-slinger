@@ -23,7 +23,7 @@ function flash(bar) {
 
 export function initHud(game) {
   for (const id of ['hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
-    'msg', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
+    'msg', 'speedBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
@@ -154,6 +154,17 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
 
 export function updateHud(game) {
   syncMenus(game);
+  // Dev sim-speed badge (window.speed / ?dev hotkeys): hidden at 1x so normal
+  // play never shows it; while fast-forwarding it also owns up to the achieved
+  // rate whenever the machine can't keep up with the target.
+  const scale = game.timeScale || 1;
+  el.speedBadge.classList.toggle('hidden', scale === 1);
+  if (scale !== 1) {
+    const act = game.speedActual || scale;
+    const lag = act < scale * 0.9;
+    setText(el.speedBadge, lag ? `SIM ×${scale} — running ×${act.toFixed(1)}` : `SIM ×${scale}`);
+    el.speedBadge.classList.toggle('lag', lag);
+  }
   const s = game.ship;
   const st = game.st;
   const prog = game.prog;

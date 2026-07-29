@@ -305,7 +305,9 @@ export function killAlien(game, alien) {
 
 export function damageShip(game, dmg, cause) {
   const s = game.ship;
-  if (!s.alive || s.invuln > 0) return;
+  // godMode is the window.god() dev/test hook — every ship-damage path funnels
+  // through here, so this one early-out is the whole feature
+  if (!s.alive || s.invuln > 0 || game.godMode) return;
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull
   let rem = dmg;
@@ -1162,6 +1164,9 @@ export function step(game, dt) {
   for (const b of bodies) {
     if (b.alive && !isFinite(b.x + b.y + b.vx + b.vy)) {
       b.alive = false;
+      // Counter for headless soaks (window.soak) — the console warn fires once
+      // per session, but a soak needs the tally to flag the regression
+      game.nanEvents = (game.nanEvents || 0) + 1;
       if (!nanWarned) {
         nanWarned = true;
         console.warn('Solar Slinger: culled non-finite body (upstream bug)', b.type, b.id);
@@ -1201,6 +1206,7 @@ export function step(game, dt) {
       s.x = game.spawn.x; s.y = game.spawn.y;
       s.vx = game.spawn.vx; s.vy = game.spawn.vy;
       s.invuln = Math.max(s.invuln, 2);
+      game.nanEvents = (game.nanEvents || 0) + 1;   // soak-visible tally (window.soak)
       if (!nanWarned) {
         nanWarned = true;
         console.warn('Solar Slinger: reset non-finite ship (upstream bug)');

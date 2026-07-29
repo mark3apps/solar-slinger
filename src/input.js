@@ -22,6 +22,10 @@ export function initInput(canvas, handlers) {
     // Both no-op unless the ability is owned + off cooldown (main.js gates them).
     if (e.code === 'Space') handlers.onEvade();
     if (e.code === 'KeyF') handlers.onWarp();
+    // Dev sim-speed keys — no-ops unless ?dev=1 (main.js gates them)
+    if (e.code === 'Minus') handlers.onSpeedAdjust(-1);
+    if (e.code === 'Equal') handlers.onSpeedAdjust(1);
+    if (e.code === 'Digit0') handlers.onSpeedAdjust(0);
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));

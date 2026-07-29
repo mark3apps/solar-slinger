@@ -116,6 +116,18 @@ html, body {
 .uprow2 .ui-rk .rp.on { background: #7dffb8; border-color: rgba(120, 255, 180, .7); box-shadow: 0 0 4px rgba(120, 255, 180, .6); }
 .uprow2 .ui-on { font-size: 9px; color: #7dffb8; letter-spacing: 1px; }
 
+/* Dev-only sim-speed badge (game.timeScale ≠ 1). Amber marks it as helper/
+   debug UI — same family as the aiming assists — and it must stay hidden in
+   normal 1x play. .lag = the machine can't hit the requested speed. */
+#speedBadge {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; letter-spacing: 2px; padding: 3px 10px;
+  color: #ffd27a; border: 1px solid rgba(255, 200, 110, .5);
+  border-radius: 6px; background: rgba(40, 28, 8, .55);
+  text-shadow: 0 0 6px rgba(255, 190, 90, .5);
+}
+#speedBadge.lag { color: #ff9a6c; border-color: rgba(255, 150, 100, .6); }
+
 #msg {
   position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
   font-size: 20px; letter-spacing: 2px; text-align: center;
