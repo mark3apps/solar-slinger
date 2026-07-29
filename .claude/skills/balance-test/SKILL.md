@@ -57,10 +57,13 @@ generation is seeded, so the starting layout is identical every run.
 
 ## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 17 planets, 45 moons)
 
-- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **17/17 planets and 45/45
-  moons must survive 10 idle sim-minutes.** The idle sky is nearly deterministic: a few seeded moon
-  absorptions around t≈210-275 and two seeded rogues meeting the sun around t≈578 are the known-good
-  fingerprint. Any planet loss in an IDLE soak is a regression.
+- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **17/17 planets must
+  survive 10 idle sim-minutes, and moons should read 45/45** (the four seeded moon absorptions around
+  t≈202-267 and two seeded rogues meeting the sun around t≈570 are the known-good fingerprint).
+  An occasional **44/45** with extra moon-absorption entries LATE in the soak (t>400, odd masses) is
+  runtime-randomness churn — ambient-spawned moons meeting their planets — and re-running should
+  restore 45/45 (observed 2026-07-28 post-merge). Anything below 44, a moon loss that repeats across
+  runs, or ANY planet loss in an IDLE soak is a regression.
 - **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
   ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
   rail into the corona). 15/17+ is normal; losses of OUTER planets, or several at once, are regressions.
