@@ -29,7 +29,7 @@ variable-timestep presentation loop.
 | Module | Owns |
 |---|---|
 | [main.js](src/main.js) | Orchestrator + the `game` object + the rAF/`update`/`render` loop. Runs at import time (no `init()` wrapper). |
-| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `PROG`), the roguelite `UPGRADES`/`PATHS` catalog, and the pure `newProgress()` / `shipStats(prog)` / `pickChoices` / `addXp` derivations. |
+| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `PROG`), the `SPECS` + `ABILITIES` catalog, and the pure `newProgress()` / `shipStats(prog)` / `tierChoices` / `rankChoices` / `applySpec` / `applyTierUp` / `addXp` derivations. |
 | [entities.js](src/entities.js) | The only classes: `Body`, `Ship`, `Alien`. Plus `railBody`/`derail`, `scrapValue`, `makeScrap`. |
 | [world.js](src/world.js) | `generateWorld` (seeded), `respawnShip`, `replenishWorld`, `spawnAsteroid`. |
 | [physics.js](src/physics.js) | `step` — N-body integration, collisions/damage, rails, the trajectory predictor. **The load-bearing file.** |
@@ -73,7 +73,9 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
 
 The game boots to a **splash screen**, not straight into play — three flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), `settingsOpen` (settings modal). `choosingUpgrade` still freezes independently.
+`paused` (pause menu), `settingsOpen` (settings modal). `choosingUpgrade` still freezes independently —
+and START goes straight into it: `startGame` calls `openSpec`, so the first thing after the splash is the
+**specialization choice**, held over the frozen just-started world. `resetRun` re-arms it for a fresh run.
 - **Transitions live in main.js** (it owns the state); **hud.js only routes the clicks** and derives which
   overlay is visible from those flags every frame in `syncMenus` (guarded, so the DOM is touched only when
   a flag flips) — same owner-split as the upgrade modal. `hud.initMenus(handlers)` wires the buttons once.
@@ -97,22 +99,57 @@ sim runs only when all are clear (the `frame()` gate above): `started` (false �
 - **Comments are load-bearing — they explain *why*, and most guard a real past bug.** Preserve the
   rationale comment when you touch a tuned constant or a physics decision. Do not delete a "don't regress"
   comment without understanding the bug it names.
-- **Roguelite progression (XP + pick-one-of-two).** There is NO passive leveling. Good play
-  (catch, smash, skim/skate, kill, collect scrap, survey, slingshot, shield-block) grants XP via
-  `addXp(game, amount)` — the per-action awards live in `PROG.XP_*` (config.js). Crossing
-  `xpForPick(prog)` sets `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) while a modal
-  offers a CHOICE of 2 upgrades (`pickChoices`, drawn from the tier-gated `UPGRADES` pool — narrow
-  early, widening by tier). Every `PROG.PICKS_PER_TIER` small picks the next choice is a **tier-up
-  milestone**: a 3-way specialization-path card (`PATHS`) that bumps `prog.tier`, grants a signature
-  upgrade, biases the pool, and +1 life. `shipStats(prog)` derives `game.st` from `prog.tier` +
-  earned upgrade RANKS (not accumulators) — the `st.*` field names are unchanged, plus new ability
-  gates (`hasReverse/hasTargeting/hasPredict/hasCrashWarn/hasCompass/hasVolley`, `maxOrbiters`
-  starts 0). **You start with ONLY the tractor beam + one held rock**; reverse thrust, targeting
-  markers, the trajectory plotter, collision alerts, the gravity compass, the orbit shield, and the
-  RMB shotgun are all upgrades gated on those `st` flags (checked in physics/render/main/tractor).
-  `totalLevel` = `min(25, tier*2 + round(rankSum*0.6))` — kept in the old 0–25 band because it still
-  feeds enemy scaling (ai.js) and ship mass (physics.js). Tune XP rates / pool / ranks in config.js;
-  the auto-resolve test hook is `game.autoUpgrade = true` (picks card 0 headlessly).
+- **Roguelite progression is SPECIALIZATION-based.** There is NO passive leveling. The run OPENS on a
+  choice of one of three **specs** (`SPECS` in config.js — BRAWLER / HAULER / SCOUT; `main.openSpec`
+  from `startGame`). `applySpec` locks `prog.spec` and grants that spec's two **starting-kit**
+  abilities at rank 1. The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
+  XP bar starts empty (a paid opener read as "it skipped my first upgrade").
+- **Named abilities, spec-scoped, one currency.** `ABILITIES` (config.js) is the whole catalog: each
+  entry belongs to ONE `spec`, has `max` ranks, a `weight`, and a **`minTier` soft floor** (it can't be
+  OFFERED until you reach that tier — capstones sit at 3). `channel` is the stat bucket it feeds;
+  `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one
+  channel (e.g. HAULER's Orbital Sling + Expanded Bay both feed `orbit`). Add an ability by adding a
+  catalog row + reading its channel in `shipStats` — nothing else needs to know it exists.
+- **Two kinds of pick.** Good play (catch, smash, skim/skate, kill, collect scrap, survey, slingshot,
+  shield-block) grants XP via `addXp(game, amount)` (`PROG.XP_*`). Crossing `xpForPick(prog)` sets
+  `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) for a card:
+  - **TIER-UP milestone** (every `PROG.PICKS_PER_TIER` small picks): `tierChoices(prog, 2)` offers 2
+    random **NEW** abilities from your spec's pool that clear their `minTier`. Taking one runs
+    `applyTierUp` (the **dividend**: every already-learned ability ranks up once, capped) and bumps
+    `prog.tier`, THEN grants the chosen ability fresh at rank 1 — that order matters, or the dividend
+    double-bumps it. Plus +1 life.
+  - **SMALL pick** (between tiers): `rankChoices(prog, 2)` only DEEPENS abilities you already own —
+    small picks never introduce a new ability.
+  Both empty-pool branches must keep progression moving: an empty `rankChoices` still advances
+  `picksThisTier` (else a spec whose abilities are all maxed can never reach its tier-up — this
+  stalled SCOUT at tier 2), and an empty `tierChoices` tiers up anyway.
+- **The pick modal is deferred, never lost.** It won't open while a rock is in the beam
+  (`game.held`) nor for ~2s after any fling (`game.flingDelayT`, set in `releaseHeld` /
+  `flingAllFromOrbit`) — freezing the sim mid-aim feels awful. `owesPick` stays true until consumed,
+  so the pick just waits.
+- **`shipStats(prog)` = universal base + channels.** The base is tier-scaled and equals the old
+  tier-0..5 baseline, so **the core grab / throw / fly loop works for every spec from frame one**;
+  owned abilities add on top. All `st.*` field names are unchanged, so render/physics/tractor/hud
+  consumers never needed touching. `totalLevel` = `min(25, tier*2 + round(rankSum*0.6))` — keep it in
+  the 0–25 band, it still feeds enemy scaling (ai.js) and ship mass (physics.js).
+- **Runtime abilities live outside config.** Most abilities are pure `shipStats` numbers, but each spec
+  has real mechanics wired into the sim — keep the hook and the catalog row in sync:
+  - BRAWLER — Ram Prow / Juggernaut / Berserker in `physics.collideShipBody` (`st.ramMul`,
+    `st.ramArmor`, `st.berserk`; Berserker also scales `tractor.flingSpeedFor`); Cluster Rounds /
+    Shockwave / Demolition in `physics.brawlerThrowKill`, called ONLY from `shatter`'s
+    `'player-throw'` branch.
+  - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
+    (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
+    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render).
+  - SCOUT — Afterburner (`game.controls.boost`, read in the physics ship-control AND the speed
+    governor), Evasion Roll + Slipstream (`main.onEvade` / `onWarp`, cooldowns `game.evadeT`/`warpT`),
+    Recon Drone (survey radius in world.js).
+- **Controls the abilities add:** hold **Shift** = Afterburner, tap **Space** = Evasion Roll, tap **F** =
+  Slipstream. All three no-op unless the ability is owned and off cooldown, and are gated behind
+  `menuBlocking()` like every other player input.
+- **Test hooks:** `game.autoUpgrade = true` auto-resolves each card (picks index 0) so a `window.tick`
+  soak never stalls; `window.tick` also auto-seeds `SPECS[0]` when no spec is chosen (set
+  `game.prog.spec` + rebuild `game.st` first to soak a different spec).
 - **Lives, not a death penalty.** `prog.lives` starts at `PROG.START_LIVES` (3). A death spends one
   life and respawns with ALL upgrades kept; 0 lives → `game.gameOver` + the GAME OVER panel, and R
   calls `resetRun()` (fresh `newProgress()`, world regenerated). Extra lives come from sparse **life
@@ -198,8 +235,10 @@ give directions by). Rules that keep it from breaking the invariants above:
   Auroras, tail-brightening, and the front visual are render-side. A storm touching rails or celestial
   velocities is an invariant-3-style regression waiting to happen.
 - **Survey/CHART**: flying into a world's nameplate zone charts it (`replenishWorld` scan) and pays
-  `PROG.XP_SURVEY`. Forecast horizon (`st.predictBoost`) and sensor/minimap reach (`st.sensorMul`) now
-  come from the **Deep Sensors** and **Trajectory Plotter** upgrades, not from a passive survey track.
+  `PROG.XP_SURVEY`. That zone is widened by the SCOUT **Recon Drone** ability (`st.recon`), which charts
+  worlds from far outside it. Forecast horizon (`st.predictBoost`) and sensor/minimap reach
+  (`st.sensorMul`) come from the SCOUT **Nav Plotter** and **Deep Array** abilities, not from a passive
+  survey track.
 - **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
@@ -262,13 +301,15 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **The shield is an UPGRADE, not base:** you start with NO shield — the whole health pool is hull,
+- **The shield is an ABILITY, not base:** you start with NO shield — the whole health pool is hull,
   which does NOT self-heal (it mends ONLY by collecting glow-pocket motes, below, and otherwise resets
-  to full on respawn). The **Shield Cells** upgrade UNLOCKS a regenerating shield (rank 0 → `shieldFrac`/
-  `shieldMax` 0, no SHLD bar) and grows it — ranks 1..6 carve 30%→55% of the fixed pool into a shield
-  that absorbs first and recharges after quiet time (a net survivability gain, since only the shield
-  regens). **Shield Regen** speeds that recharge (`st.regen`/`st.regenDelay`). The SHLD HUD bar appears
-  only once the shield is unlocked; below that the HULL bar stands alone.
+  to full on respawn). A `shield`-channel ability (BRAWLER **War Plating** / HAULER **Deflector Cells**)
+  UNLOCKS the regenerating shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar) and grows it —
+  ranks 1..6 carve 30%→55% of the fixed pool into a shield that absorbs first and recharges after quiet
+  time (a net survivability gain, since only the shield regens). HAULER's **Rapid Recharge**
+  (`regen` channel) speeds that recharge (`st.regen`/`st.regenDelay`). The SHLD HUD bar appears only
+  once the shield is unlocked; below that the HULL bar stands alone. **SCOUT has neither** — by design,
+  its survivability is the mobility kit (Evasion Roll / Slipstream / Afterburner).
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
@@ -335,8 +376,12 @@ There is no test runner. Verify balance and physics with the console hooks:
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
   `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes.
 - `window.game` — the live state handle.
-- `game.autoUpgrade = true` — headless helper: auto-resolves each upgrade pick (picks card 0) so a
+- `game.autoUpgrade = true` — headless helper: auto-resolves each pick (picks card 0) so a
   `window.tick` soak doesn't stall on the choice modal. Drive a climb by pumping `game.prog.xp`.
+- **Specs headlessly:** `window.tick` bypasses the spec modal by seeding `SPECS[0]` when
+  `game.prog.spec` is null. To soak a different spec (or a specific build), assign `game.prog`
+  wholesale — `{ xp, level, tier, picksThisTier, spec, upgrades: { abilityId: rank }, lives, … }` —
+  then `window.tick(1/60)` once to rebuild `game.st` before measuring.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
 
