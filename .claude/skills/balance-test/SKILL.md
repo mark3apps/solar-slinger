@@ -58,12 +58,27 @@ generation is seeded, so the starting layout is identical every run.
 ## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 17 planets, 45 moons)
 
 - **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **17/17 planets must
-  survive 10 idle sim-minutes, and moons should read 45/45** (the four seeded moon absorptions around
-  t≈202-267 and two seeded rogues meeting the sun around t≈570 are the known-good fingerprint).
-  An occasional **44/45** with extra moon-absorption entries LATE in the soak (t>400, odd masses) is
-  runtime-randomness churn — ambient-spawned moons meeting their planets — and re-running should
-  restore 45/45 (observed 2026-07-28 post-merge). Anything below 44, a moon loss that repeats across
-  runs, or ANY planet loss in an IDLE soak is a regression.
+  survive 10 idle sim-minutes, and moons should read 45/45.** Two seeded rogues meeting the sun
+  around t≈570 are the known-good fingerprint. There are **NO deterministic moon deaths**: the
+  earlier fingerprint of four moon absorptions at t≈202-267 (masses 9062/9772/7389/4013) was a
+  worldgen defect — two of Tantal's seeded ellipse pairs had overlapping radial ranges, so they
+  crossed, collided (t≈151/176), derailed, and sank into the planet. Fixed by the sibling-slot
+  eccentricity clamp in world.js `spawnMoon`/`addPlanet`. **If absorptions return in the first ~5
+  minutes at repeatable times and masses, that clamp has regressed.**
+  Two moon losses ARE expected and fine:
+  - `moon absorbed @447s (m=5016)` — Quorra's id147. The seeded rogues are on deterministic
+    trajectories, so this repeats every run: one rogue's approach trips `RAIL_DISTURB` at t≈434 and
+    derails the moon, and the second (m=300000, 60× its mass) swallows it at t≈447. A rogue eating
+    something on a flyby is the rogue system working as designed, not a crossing-orbit failure —
+    tell them apart by WHAT is nearby at death (a rogue vs. the moon's own parent/sibling).
+  - An occasional **44/45** from other late churn (t>400, odd masses), or the runtime view-local rock
+    field near the ship spawn knocking Ossia (it re-rails) or sending its moon (m=6972) sunward around
+    t≈150-250. These vary run to run; re-running should restore 45/45.
+
+  `replenishWorld` refills a lost moon within ~60s, so the census usually still reads 45/45 even when
+  a moon died — **judge moon health by the death list, not the alive-count alone** (that masking is
+  what hid the crossing-orbit bug for so long). Anything below 44, a NEW repeatable early loss, or
+  ANY planet loss in an IDLE soak is a regression.
 - **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
   ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
   rail into the corona). 15/17+ is normal; losses of OUTER planets, or several at once, are regressions.
