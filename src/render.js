@@ -15,7 +15,14 @@ export function initRender(cv) {
   ctx = canvas.getContext('2d', { alpha: false });
   const resize = () => {
     dpr = Math.min(2, window.devicePixelRatio || 1);
-    vw = window.innerWidth; vh = window.innerHeight;
+    // Floor the dims: a hidden/headless host can report a 0x0 (or undefined)
+    // window at load. vw=vh=0 folds cam.zoom to 0 (main.js applyZoom), then
+    // mouseWorld divides 0/0 into game.aim and the NaN cascades through the
+    // ship's angle/accel into every body it touches — NaN comparisons fall
+    // straight through the `d2 >= rr*rr` collision early-outs, and the whole
+    // world "vaporizes" against the star within sim-seconds. A real resize
+    // event restores the true size the moment the host reports one.
+    vw = Math.max(1, window.innerWidth || 1); vh = Math.max(1, window.innerHeight || 1);
     canvas.width = vw * dpr; canvas.height = vh * dpr;
   };
   resize();
