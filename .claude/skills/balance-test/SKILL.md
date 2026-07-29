@@ -48,9 +48,17 @@ is seeded, so the starting layout is identical every run.
 ## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 17 planets, 45 moons)
 
 - **Idle-sky stability (the cleanest signal):** kill the ship first (`game.ship.alive = false`) and
-  soak — **17/17 planets and 45/45 moons must survive 10 idle sim-minutes.** The idle sky is nearly
-  deterministic: a few seeded moon absorptions around t≈210-275 and two seeded rogues meeting the sun
-  around t≈578 are the known-good fingerprint. Any planet loss in an IDLE soak is a regression.
+  soak — **17/17 planets and 45/45 moons must survive 10 idle sim-minutes.** Two seeded rogues meeting
+  the sun around t≈570-580 are the known-good fingerprint. There are NO deterministic moon deaths:
+  the old fingerprint of four moon absorptions at t≈202-267 (masses 9062/9772/7389/4013) was Tantal's
+  two crossing seeded ellipse pairs colliding — a worldgen defect, fixed by the sibling-slot
+  eccentricity clamp in world.js `spawnMoon`/`addPlanet`. If moon absorptions in the first ~5 minutes
+  come back at repeatable times/masses, that clamp has regressed. Known CHAOTIC (Math.random,
+  some-runs-only) events that are NOT regressions: the runtime view-local rock field near the ship
+  spawn can knock Ossia (it re-rails) or send its moon (m=6972) sunward around t≈150-250, and the
+  t≈440-490 rogue drive-by through Quorra/Pell can claim a derailed moon; replenishWorld refills a
+  lost moon within ~60s, so judge moon health by deathLog, not the alive-count alone. Any planet
+  loss in an IDLE soak is a regression.
 - **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
   ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
   rail into the corona). 15/17+ is normal; losses of OUTER planets, or several at once, are regressions.
