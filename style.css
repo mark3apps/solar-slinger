@@ -168,16 +168,6 @@ html, body {
 .upname { font-size: 14px; color: #d6ecff; letter-spacing: 1px; }
 .updesc { font-size: 11px; color: rgba(160, 195, 240, .65); margin-top: 3px; }
 .uplevel { font-size: 11px; color: #7dffb8; margin-top: 3px; }
-.upbtn {
-  font-family: inherit; font-size: 12px; letter-spacing: 1px;
-  padding: 8px 14px; min-width: 110px;
-  color: #ffd76a; background: rgba(60, 45, 10, .5);
-  border: 1px solid rgba(255, 200, 90, .55); border-radius: 5px;
-  cursor: pointer;
-}
-.upbtn:hover:not(:disabled) { background: rgba(120, 90, 20, .6); box-shadow: 0 0 12px rgba(255, 200, 80, .4); }
-.upbtn:disabled { opacity: .35; cursor: default; }
-.upbtn.maxed { color: #7dffb8; border-color: rgba(120, 255, 180, .5); }
 
 /* ---- Front-end menus: splash / pause / settings ---- */
 /* These panels are the game's shell; like the upgrade modal they must take
