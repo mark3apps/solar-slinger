@@ -45,7 +45,13 @@ const game = {
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
   controls: { f: 0, b: 0, boost: 0 },   // boost = Afterburner (hold Shift)
-  evadeT: 0,                            // Evasion Roll cooldown (scout)
+  burnerFuel: 1,                        // Afterburner tank 0..1 (the BURN bar; refills slowly)
+  burnerOn: false,                      // actually burning right now (physics reads this, not raw Shift)
+  evadeT: 0,                            // Dash Jets cooldown (scout, A/D)
+  dashT: 0,                             // brief side-jet flash after a dash (render)
+  dashDir: 0,                           // which way the last dash went (-1 left / +1 right)
+  autoEvadeT: 0,                        // Reflex Jink recharge (scout auto-dodge, physics.step)
+  jinkT: 0,                             // brief flash ring after an auto-dodge (render)
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
@@ -130,7 +136,9 @@ initInput(canvas, {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
-          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
+          hud.message(game.st.trailStow
+            ? 'Racked in your wake! Trailing rocks are shotgun ammo. Hold RIGHT MOUSE to charge — longer hold arms more rocks.'
+            : 'Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
         }
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
@@ -179,15 +187,18 @@ initInput(canvas, {
   },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
-  // EVASION ROLL (scout): tap Space -> dash toward the cursor with brief i-frames.
-  onEvade: () => {
+  // DASH JETS (scout): tap A / D -> dart hard to the ship's left/right with
+  // brief i-frames. Sideways relative to the NOSE (angle ± 90°), not the
+  // cursor — a positioning twitch, not a lunge.
+  onDash: (dir) => {
     if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
     const s = game.ship;
-    const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    const burst = 340 + 80 * game.st.evasion;
+    const ang = s.angle + dir * Math.PI / 2;
+    const burst = 380 + 70 * game.st.evasion;
     s.vx += Math.cos(ang) * burst; s.vy += Math.sin(ang) * burst;
-    s.invuln = Math.max(s.invuln, 0.35 + 0.1 * game.st.evasion);
-    game.evadeT = Math.max(0.6, 1.7 - 0.25 * game.st.evasion);
+    s.invuln = Math.max(s.invuln, 0.25 + 0.08 * game.st.evasion);
+    game.evadeT = Math.max(0.45, 1.2 - 0.2 * game.st.evasion);
+    game.dashT = 0.22; game.dashDir = dir;   // render: side-jet flash
     sfxCollect();
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
@@ -375,6 +386,8 @@ function resetRun() {
   game.orbit.length = 0; game.held = null; game.held2 = null; game.pickups.length = 0;
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
+  game.burnerFuel = 1; game.burnerOn = false;
+  game.dashT = 0; game.autoEvadeT = 0; game.jinkT = 0;   // (evadeT/warpT reset below)
   game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
   // Run-scoped world state must reset with the world, or it leaks between
   // runs: time drives the alien first-wave peace window and the once-per-run
@@ -417,6 +430,8 @@ const EVENT_MSGS = [
   { flag: 'tetherShow', tut: 'tether',
     first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
+  { flag: 'jinkWarn', tut: 'jink',
+    first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
   { flag: 'cometWarn', tut: 'comet',
     first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
     repeat: ['COMET SHOWER inbound!', 3] },
@@ -517,6 +532,20 @@ function update(dtReal) {
 
     // Per-frame inputs & AI
     readControls(game);
+    // AFTERBURNER fuel (scout): a slow-refilling tank — the BURN bar. Engaging
+    // needs a quarter tank (hysteresis, so an empty tank doesn't stutter the
+    // burn on/off at the threshold); once lit it burns down to dry. Physics
+    // reads game.burnerOn, never raw Shift, so thrust and tank always agree.
+    if (game.st.afterburner > 0) {
+      const want = game.controls.boost && game.ship.alive && game.ship.engineOutT <= 0;
+      if (game.burnerOn && (!want || game.burnerFuel <= 0)) game.burnerOn = false;
+      else if (!game.burnerOn && want && game.burnerFuel > 0.25) game.burnerOn = true;
+      game.burnerFuel = game.burnerOn
+        ? Math.max(0, game.burnerFuel - dtReal / game.st.burnTime)
+        : Math.min(1, game.burnerFuel + dtReal * game.st.burnRefill);
+    } else {
+      game.burnerOn = false;
+    }
     const { vw, vh } = view.getView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
@@ -575,7 +604,10 @@ function update(dtReal) {
     if (game.gasDiveT > 0) game.gasDiveT -= dtReal;
     if (game.gasEnterT > 0) game.gasEnterT -= dtReal;
     if (game.flingDelayT > 0) game.flingDelayT -= dtReal;   // post-fling grace before the pick modal
-    if (game.evadeT > 0) game.evadeT -= dtReal;             // Evasion Roll cooldown
+    if (game.evadeT > 0) game.evadeT -= dtReal;             // Dash Jets cooldown
+    if (game.dashT > 0) game.dashT -= dtReal;               // dash side-jet flash
+    if (game.autoEvadeT > 0) game.autoEvadeT -= dtReal;     // Reflex Jink recharge
+    if (game.jinkT > 0) game.jinkT -= dtReal;               // jink flash ring
     if (game.warpT > 0) game.warpT -= dtReal;               // Slipstream cooldown
 
     // SLINGSHOT: pass through a planet's well without touching the throttle
@@ -608,7 +640,8 @@ function update(dtReal) {
     }
 
     // Shield recharges after a quiet spell; the hull never self-heals (it mends
-    // only at glow pockets — glow.js). Delay/rate scale with Shield Regen.
+    // only at glow pockets — glow.js). Scout's Phase Screen recharges faster
+    // (spec-derived st.regen / st.regenDelay — see config.shipStats).
     if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
