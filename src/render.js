@@ -1497,6 +1497,20 @@ function drawShip(game) {
     // collision radius — on a titan those differ by almost 2x. It tracks the
     // tier-morph scale so it grows with the art instead of snapping.
     const R = visR * morphScale * 1.08 + 5 / z;
+    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI):
+    // clip every shield visual — glow, recharge sweep, absorb ripple — to
+    // the covered wedge so the bare tail reads at a glance. The wedge tracks
+    // the nose, so the calm-rim design law still holds within it.
+    const arc = game.st.shieldArc ?? Math.PI;
+    const partial = arc < Math.PI - 0.01;
+    if (partial) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.arc(s.x, s.y, R * 2.6, s.angle - arc, s.angle + arc);
+      ctx.closePath();
+      ctx.clip();
+    }
     if (sf > 0.02) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
       let a = 0.12 + 0.30 * sf;
@@ -1532,6 +1546,16 @@ function drawShip(game) {
       ctx.fillStyle = `rgba(150, 225, 255, ${(1 - k) * 0.16})`;
       ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
     }
+    if (partial) ctx.restore();
+  }
+
+  // REFLEX JINK flash: one expanding mint ring the instant the auto-dodge
+  // fires — EVENT motion, like the absorb ripple (game.jinkT, main.js decay).
+  if (game.jinkT > 0) {
+    const k = 1 - game.jinkT / 0.3;
+    ctx.strokeStyle = `rgba(160, 255, 230, ${(1 - k) * 0.85})`;
+    ctx.lineWidth = 2.5 / game.cam.zoom;
+    ctx.beginPath(); ctx.arc(s.x, s.y, visR * (1 + k * 1.6), 0, TAU); ctx.stroke();
   }
 
   // Corona/lava heat: the hull glows toward melting (game.heatT 0..1, set
@@ -1579,9 +1603,12 @@ function drawShip(game) {
   // collision radius — the art's rear moves aft as the hulls grow.
   const rearX = -tG.rear * r / tG.bR, noseX = tG.nose * r / tG.bR;
   if (s.thrusting) {
-    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15);
+    const burner = !!game.burnerOn;
+    // The afterburner plume is nearly twice the flame — the burn should LOOK
+    // like an event (it's spending a slow-refilling tank, not a free hold).
+    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1);
     const g = ctx.createLinearGradient(rearX, 0, rearX - r * 1.9 * f, 0);
-    g.addColorStop(0, 'rgba(120, 200, 255, 0.9)');
+    g.addColorStop(0, burner ? 'rgba(160, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath();
@@ -1589,6 +1616,27 @@ function drawShip(game) {
     ctx.lineTo(rearX - r * 1.9 * f, 0);
     ctx.lineTo(rearX * 0.92, 5 + lv.thrust);
     ctx.closePath(); ctx.fill();
+    if (burner) {
+      // White-hot core lance + shock diamonds down the plume
+      const core = ctx.createLinearGradient(rearX, 0, rearX - r * 1.4 * f, 0);
+      core.addColorStop(0, 'rgba(240, 252, 255, 0.95)');
+      core.addColorStop(1, 'transparent');
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.moveTo(rearX * 0.95, -2.5 - lv.thrust * 0.5);
+      ctx.lineTo(rearX - r * 1.4 * f, 0);
+      ctx.lineTo(rearX * 0.95, 2.5 + lv.thrust * 0.5);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(225, 245, 255, 0.85)';
+      for (let i = 1; i <= 3; i++) {
+        const px = rearX - r * (0.5 * i + 0.25) * f;
+        const dz = Math.max(0.8, r * 0.1) * (1.1 - i * 0.24);
+        ctx.beginPath();
+        ctx.moveTo(px + dz * 1.6, 0); ctx.lineTo(px, -dz);
+        ctx.lineTo(px - dz * 1.6, 0); ctx.lineTo(px, dz);
+        ctx.closePath(); ctx.fill();
+      }
+    }
   }
   if (s.braking) {
     // Retro puffs firing forward
@@ -1599,6 +1647,22 @@ function drawShip(game) {
     ctx.lineTo(noseX + r * (0.45 + 0.3 * f), 0);
     ctx.lineTo(noseX * 0.92, 4);
     ctx.closePath(); ctx.fill();
+  }
+
+  // DASH JETS flash (A/D dart): three quick puffs firing off the side the
+  // ship dashed AWAY from — exhaust opposite the dart (game.dashT, main.js).
+  if (game.dashT > 0) {
+    const k = game.dashT / 0.22;
+    const side = -(game.dashDir || 1);   // local +y is the ship's right
+    ctx.fillStyle = `rgba(150, 235, 255, ${0.75 * k})`;
+    const jy = side * r * 0.85;
+    for (const jx of [rearX * 0.45, 0, noseX * 0.45]) {
+      ctx.beginPath();
+      ctx.moveTo(jx - r * 0.16, jy);
+      ctx.lineTo(jx, jy + side * r * (0.7 + 0.5 * k));
+      ctx.lineTo(jx + r * 0.16, jy);
+      ctx.closePath(); ctx.fill();
+    }
   }
 
   // Flare EMP: dead engines don't flame — they SPUTTER, arcing little

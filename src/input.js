@@ -18,10 +18,16 @@ export function initInput(canvas, handlers) {
     if (e.code === 'Digit1') handlers.onUpgradePick(0);
     if (e.code === 'Digit2') handlers.onUpgradePick(1);
     if (e.code === 'Digit3') handlers.onUpgradePick(2);
-    // SCOUT mobility: tap SPACE to dash (Evasion Roll), F to warp (Slipstream).
-    // Both no-op unless the ability is owned + off cooldown (main.js gates them).
-    if (e.code === 'Space') handlers.onEvade();
+    // SCOUT mobility: tap A / D to dart sideways (Dash Jets), F to warp
+    // (Slipstream). All no-op unless the ability is owned + off cooldown
+    // (main.js gates them).
+    if (e.code === 'KeyA') handlers.onDash(-1);
+    if (e.code === 'KeyD') handlers.onDash(1);
     if (e.code === 'KeyF') handlers.onWarp();
+    // Dev sim-speed keys — no-ops unless ?dev=1 (main.js gates them)
+    if (e.code === 'Minus') handlers.onSpeedAdjust(-1);
+    if (e.code === 'Equal') handlers.onSpeedAdjust(1);
+    if (e.code === 'Digit0') handlers.onSpeedAdjust(0);
     if (['KeyW', 'KeyS', 'Space'].includes(e.code)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => input.keys.delete(e.code));

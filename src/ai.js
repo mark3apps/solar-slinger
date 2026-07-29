@@ -254,7 +254,8 @@ function updateForts(game, dt) {
       let dead = bo.life <= 0;
       const sr = s.radius + 6;
       if (!dead && s.alive && (bo.x - s.x) ** 2 + (bo.y - s.y) ** 2 < sr * sr) {
-        damageShip(game, 10, 'Shot down by a Bastion gatling battery.');
+        damageShip(game, 10, 'Shot down by a Bastion gatling battery.',
+          Math.atan2(bo.y - s.y, bo.x - s.x));
         dead = true;
       }
       if (!dead) {

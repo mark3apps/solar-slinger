@@ -264,6 +264,9 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     }
     return;
   }
+  // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
+  // wall survives the intercepts it exists to make. Loose rocks are untouched.
+  if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.2 * game.st.rockwall;
   derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
@@ -303,13 +306,23 @@ export function killAlien(game, alien) {
   game.alienKills++;
 }
 
-export function damageShip(game, dmg, cause) {
+export function damageShip(game, dmg, cause, hitAng) {
   const s = game.ship;
-  if (!s.alive || s.invuln > 0) return;
+  // godMode is the window.god() dev/test hook — every ship-damage path funnels
+  // through here, so this one early-out is the whole feature
+  if (!s.alive || s.invuln > 0 || game.godMode) return;
   game.lastDamage = game.time;
-  // The shield eats damage first; only the overflow bites the hull
+  // The shield eats damage first; only the overflow bites the hull. Coverage
+  // is spec DNA (st.shieldArc, config.shipStats): BRAWLER's War Plating wraps
+  // only the FRONT arc, so a directional hit (hitAng = world angle from ship
+  // to impact) landing outside it skips the shield entirely — the tail is
+  // bare. Directionless damage (heat, crush, Oort grinding: no hitAng) always
+  // soaks: it bathes the whole hull, covered arc included.
+  const arc = game.st.shieldArc ?? Math.PI;
+  const covered = hitAng === undefined || arc > Math.PI - 0.01 ||
+    Math.abs(angDiff(hitAng, s.angle)) <= arc;
   let rem = dmg;
-  if (s.shield > 0 && rem > 0) {
+  if (s.shield > 0 && rem > 0 && covered) {
     const absorbed = Math.min(s.shield, rem);
     s.shield -= absorbed;
     rem -= absorbed;
@@ -511,9 +524,21 @@ function collideBodies(game, a, b) {
   }
 
   // In very lopsided collisions the heavy body is immovable — otherwise the
-  // constant rain of ambient asteroid bumps random-walks planet orbits.
-  const aMoves = a.mass < b.mass * 20;
-  const bMoves = b.mass < a.mass * 20;
+  // constant rain of ambient asteroid bumps random-walks planet orbits. The
+  // 20x rule alone stopped covering that once boulder-class rocks (2600-6000)
+  // and magma bombs (700-1900) joined the belt: vs the small inner worlds
+  // (2e4/4e4) they sit INSIDE 20x, and one fast hit — or a SILENT
+  // sub-DMG_THRESH bump (closing 25-240: no damage, no log, full impulse) —
+  // kicks ~30-70 u/s off a ~150 u/s orbit. Artillery fallback shells and
+  // bomb-caromed boulders sun-dived the r=3600/5000 lava worlds in ship-alive
+  // soaks ("vaporized by star" ~3 min in). So: NO un-thrown asteroid ever
+  // moves a celestial, at any mass ratio. Thrown rocks keep full impulse
+  // (planet billiards stay glorious), and rogue drive-bys / celestial-vs-
+  // celestial crunches keep their damped shoves — those are intended drama.
+  const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
+  const natRock = (x) => x.type === 'asteroid' && x.thrownTimer <= 0;
+  const aMoves = a.mass < b.mass * 20 && !(celestial(a) && natRock(b));
+  const bMoves = b.mass < a.mass * 20 && !(celestial(b) && natRock(a));
 
   // Positional separation (mass-weighted among movers)
   const total = (aMoves ? a.mass : 0) + (bMoves ? b.mass : 0) || 1;
@@ -544,8 +569,10 @@ function collideBodies(game, a, b) {
     // It ALSO damps natural hits on Vesper from plain rocks: an undamped
     // belt-asteroid strike moved Vesper ~100 u/s per hit, and crossing two
     // belts twice per orbit random-walked its perihelion into the sun.
+    // (Both plain-rock cases are now fully shadowed by the stronger natRock
+    // immovability above — un-thrown asteroids can't move any celestial,
+    // Vesper included. This damp still matters for celestial-vs-celestial.)
     // Player throws (thrownTimer) keep full impulse in every case.
-    const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
     if (a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
         ((celestial(a) && celestial(b)) || a.majorComet || b.majorComet)) {
       j *= 0.25;
@@ -595,6 +622,14 @@ function collideBodies(game, a, b) {
       dmgToA = Math.min(dmgToA, a.hp * 0.7);
       dmgToB = Math.min(dmgToB, b.hp * 0.7);
     }
+    // Magma-born ordnance (planet artillery, forge plumes — world.js
+    // magmaBorn) doesn't wound celestials on its own either: damageBody
+    // derails on ANY chip, and a lava world slowly shelling itself apart (or
+    // ambient bombs chewing a Bastion fort) is the same regression in slow
+    // motion. Thrown bombs are ordinary rocks — the dense-sling-rock loot
+    // loop keeps full effect. The bomb itself still takes full damage.
+    if (celestial(a) && b.magmaBorn && b.thrownTimer <= 0) dmgToA = 0;
+    if (celestial(b) && a.magmaBorn && a.thrownTimer <= 0) dmgToB = 0;
     // Debug tap: set game.collisionLog = [] from devtools to record impacts
     if (game.collisionLog && (dmgToA > 2 || dmgToB > 2)) {
       game.collisionLog.push({
@@ -695,8 +730,10 @@ function collideShipBody(game, s, b, dt) {
     }
     return;
   }
+  // Direction of this contact (ship -> body), for the front-arc shield check
+  const hitAng = Math.atan2(dy, dx);
   // Touching a live Bastion shield zaps you on top of the normal bounce
-  if (b.fort && b.fort.shield > 0) damageShip(game, 10, 'Zapped by a Bastion fortress shield.');
+  if (b.fort && b.fort.shield > 0) damageShip(game, 10, 'Zapped by a Bastion fortress shield.', hitAng);
   if (b === game.held) return;      // held object can't crush you
   if (b.heldBy === 'orbit') return; // your own shield can't crush you either
   if (b.thrownBy === 'player' && b.thrownTimer > 0) return; // your own throws pass through you
@@ -718,7 +755,7 @@ function collideShipBody(game, s, b, dt) {
     const vT = Math.hypot(tvx, tvy);
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
       const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
-      damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`);
+      damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
       addXp(game, grind * PROG.XP_SKIM);   // skating a surface is risky XP
 
       game.scrapeT = 0.18;                                       // render: contact glow
@@ -774,7 +811,7 @@ function collideShipBody(game, s, b, dt) {
     if (dmg > 1.5 && closing > 25) {
       damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
-        `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`);
+        `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
     }
   }
 }
@@ -961,10 +998,12 @@ export function step(game, dt) {
     const c = game.controls;
     // Flare EMP: fried engines answer to nobody for a few seconds
     if (s.engineOutT > 0) s.engineOutT -= dt;
-    // AFTERBURNER (scout): hold Shift to overdrive — extra thrust here + a higher
-    // speed ceiling in the governor below. Dead (flare-EMP'd) engines can't burn.
-    const boosting = c.boost && game.st.afterburner > 0 && s.engineOutT <= 0;
-    if (boosting) th *= 1 + 0.55 * game.st.afterburner;
+    // AFTERBURNER (scout): a FUEL-TANK burn, not a free hold — main.js drains
+    // game.burnerFuel and sets game.burnerOn (never read raw Shift here, or
+    // thrust and the BURN bar disagree). The burn is much harder than the old
+    // hold-Shift overdrive because the tank makes it scarce.
+    const boosting = game.burnerOn && s.engineOutT <= 0;
+    if (boosting) th *= 1.75 + 0.35 * game.st.afterburner;
     // Reverse thrust is an UPGRADE (Retro Thrusters) — until unlocked, S does
     // nothing and only forward thrust drives the ship.
     const back = game.st.hasReverse ? c.b : 0;
@@ -974,6 +1013,58 @@ export function step(game, dt) {
     s.braking = throttle < 0;
     const tx = Math.cos(s.angle) * th * throttle;
     const ty = Math.sin(s.angle) * th * throttle;
+
+    // Afterburner exhaust wash: hot particles streaming off the stern.
+    // Throttled cadence — this runs at 120Hz (render adds the plume art).
+    if (boosting && s.thrusting) {
+      game.burnFxT = (game.burnFxT ?? 0) - dt;
+      if (game.burnFxT <= 0) {
+        game.burnFxT = 0.035;
+        addParticles(game,
+          s.x - Math.cos(s.angle) * s.radius * 1.7,
+          s.y - Math.sin(s.angle) * s.radius * 1.7,
+          s.vx * 0.35 - Math.cos(s.angle) * 340,
+          s.vy * 0.35 - Math.sin(s.angle) * 340,
+          2, Math.random() < 0.55 ? '#9fd6ff' : '#ffd27a', 130, 0.5, 2.5);
+      }
+    }
+
+    // REFLEX JINK (scout): when the charge is ready and a rock is about to
+    // hit, the ship sidesteps ON ITS OWN — brief i-frames, slow recharge
+    // (game.autoEvadeT, ticked down in main.js). Closest-approach test, not
+    // just proximity: only things genuinely on a collision course trigger it,
+    // and only fast ones — slow drift bounces harmlessly anyway (DMG thresh).
+    if (game.st.autoEvade > 0 && game.autoEvadeT <= 0 && s.invuln <= 0) {
+      for (const b of bodies) {
+        if (!b.alive || b.heldBy || b.type === 'star') continue;
+        if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;  // passes through us anyway
+        if (b.mass < 200) continue;                                  // too light to matter
+        const dx = b.x - s.x, dy = b.y - s.y;
+        if (dx > 1100 || dx < -1100 || dy > 1100 || dy < -1100) continue;
+        const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
+        const v2 = rvx * rvx + rvy * rvy;
+        if (v2 < 210 * 210) continue;
+        const tc = -(dx * rvx + dy * rvy) / v2;      // time of closest approach
+        if (tc <= 0 || tc > 0.45) continue;          // not inbound / not imminent
+        const mx = dx + rvx * tc, my = dy + rvy * tc;
+        const rr = b.radius + s.radius + 8;
+        if (mx * mx + my * my > rr * rr) continue;   // clean miss — let it pass
+        // Sidestep AWAY from the pass line; a dead-center shot picks a side.
+        const mm = Math.hypot(mx, my);
+        const vm = Math.sqrt(v2);
+        const ux = mm > 4 ? -mx / mm : -rvy / vm;
+        const uy = mm > 4 ? -my / mm : rvx / vm;
+        const burst = 430 + 70 * game.st.autoEvade;
+        s.vx += ux * burst; s.vy += uy * burst;
+        s.invuln = Math.max(s.invuln, 0.3);
+        game.autoEvadeT = 15 - 3.5 * game.st.autoEvade;   // 11.5 / 8 / 4.5s recharge
+        game.jinkT = 0.3;                                 // render: flash ring
+        game.jinkWarn = true;                             // main.js: first-time message
+        addParticles(game, s.x, s.y, s.vx * 0.4, s.vy * 0.4, 14, '#9fffe8', 180, 0.6, 3);
+        sfx.sfxCollect();
+        break;
+      }
+    }
 
     // The ship feels amplified gravity — big bodies really grab at you,
     // worlds doubly so and the sun hardest of all
@@ -1162,6 +1253,9 @@ export function step(game, dt) {
   for (const b of bodies) {
     if (b.alive && !isFinite(b.x + b.y + b.vx + b.vy)) {
       b.alive = false;
+      // Counter for headless soaks (window.soak) — the console warn fires once
+      // per session, but a soak needs the tally to flag the regression
+      game.nanEvents = (game.nanEvents || 0) + 1;
       if (!nanWarned) {
         nanWarned = true;
         console.warn('Solar Slinger: culled non-finite body (upstream bug)', b.type, b.id);
@@ -1176,8 +1270,9 @@ export function step(game, dt) {
     // and the engine buys maxSpeed of deviation in any direction. Excess bleeds
     // off; the hard cap stops any assist chain from outrunning the bleed.
     let cap = game.st.maxSpeed;
-    // AFTERBURNER raises the ceiling too, so a boosted dash actually reaches speed.
-    if (game.controls.boost && game.st.afterburner > 0 && s.engineOutT <= 0) cap *= 1 + 0.4 * game.st.afterburner;
+    // AFTERBURNER raises the ceiling too, so the burn actually reaches speed
+    // (gated on the fuel tank via game.burnerOn, same as the thrust boost).
+    if (game.burnerOn && s.engineOutT <= 0) cap *= 1.35 + 0.25 * game.st.afterburner;
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
@@ -1201,6 +1296,7 @@ export function step(game, dt) {
       s.x = game.spawn.x; s.y = game.spawn.y;
       s.vx = game.spawn.vx; s.vy = game.spawn.vy;
       s.invuln = Math.max(s.invuln, 2);
+      game.nanEvents = (game.nanEvents || 0) + 1;   // soak-visible tally (window.soak)
       if (!nanWarned) {
         nanWarned = true;
         console.warn('Solar Slinger: reset non-finite ship (upstream bug)');
@@ -1266,7 +1362,8 @@ export function step(game, dt) {
       s.vx += nx * 180; s.vy += ny * 180;
       al.vx -= nx * 180; al.vy -= ny * 180;
       damageShip(game, al.contactDmg || CFG.ALIEN_CONTACT_DMG,
-        al.kind === 'golem' ? 'Crushed by a scrap-golem.' : 'Rammed by an alien grabber.');
+        al.kind === 'golem' ? 'Crushed by a scrap-golem.' : 'Rammed by an alien grabber.',
+        Math.atan2(al.y - s.y, al.x - s.x));
       al.hp -= 12;
       if (al.hp <= 0) killAlien(game, al);
     }
@@ -1300,7 +1397,8 @@ export function step(game, dt) {
       f.life -= dt;
       const fr = f.radius + s.radius;
       if (s.alive && (f.x - s.x) ** 2 + (f.y - s.y) ** 2 < fr * fr) {
-        damageShip(game, CFG.FLARE_DMG, 'Scorched by a solar flare.');
+        damageShip(game, CFG.FLARE_DMG, 'Scorched by a solar flare.',
+          Math.atan2(f.y - s.y, f.x - s.x));
         s.vx += f.vx * 0.18; s.vy += f.vy * 0.18;
         addParticles(game, s.x, s.y, f.vx * 0.3, f.vy * 0.3, 18, '#ffb35c', 220, 1, 4);
         // EMP SURGE: a direct hit is an EVENT — engines dead for a beat,
