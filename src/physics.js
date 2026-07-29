@@ -511,9 +511,21 @@ function collideBodies(game, a, b) {
   }
 
   // In very lopsided collisions the heavy body is immovable — otherwise the
-  // constant rain of ambient asteroid bumps random-walks planet orbits.
-  const aMoves = a.mass < b.mass * 20;
-  const bMoves = b.mass < a.mass * 20;
+  // constant rain of ambient asteroid bumps random-walks planet orbits. The
+  // 20x rule alone stopped covering that once boulder-class rocks (2600-6000)
+  // and magma bombs (700-1900) joined the belt: vs the small inner worlds
+  // (2e4/4e4) they sit INSIDE 20x, and one fast hit — or a SILENT
+  // sub-DMG_THRESH bump (closing 25-240: no damage, no log, full impulse) —
+  // kicks ~30-70 u/s off a ~150 u/s orbit. Artillery fallback shells and
+  // bomb-caromed boulders sun-dived the r=3600/5000 lava worlds in ship-alive
+  // soaks ("vaporized by star" ~3 min in). So: NO un-thrown asteroid ever
+  // moves a celestial, at any mass ratio. Thrown rocks keep full impulse
+  // (planet billiards stay glorious), and rogue drive-bys / celestial-vs-
+  // celestial crunches keep their damped shoves — those are intended drama.
+  const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
+  const natRock = (x) => x.type === 'asteroid' && x.thrownTimer <= 0;
+  const aMoves = a.mass < b.mass * 20 && !(celestial(a) && natRock(b));
+  const bMoves = b.mass < a.mass * 20 && !(celestial(b) && natRock(a));
 
   // Positional separation (mass-weighted among movers)
   const total = (aMoves ? a.mass : 0) + (bMoves ? b.mass : 0) || 1;
@@ -544,8 +556,10 @@ function collideBodies(game, a, b) {
     // It ALSO damps natural hits on Vesper from plain rocks: an undamped
     // belt-asteroid strike moved Vesper ~100 u/s per hit, and crossing two
     // belts twice per orbit random-walked its perihelion into the sun.
+    // (Both plain-rock cases are now fully shadowed by the stronger natRock
+    // immovability above — un-thrown asteroids can't move any celestial,
+    // Vesper included. This damp still matters for celestial-vs-celestial.)
     // Player throws (thrownTimer) keep full impulse in every case.
-    const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
     if (a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
         ((celestial(a) && celestial(b)) || a.majorComet || b.majorComet)) {
       j *= 0.25;
@@ -595,6 +609,14 @@ function collideBodies(game, a, b) {
       dmgToA = Math.min(dmgToA, a.hp * 0.7);
       dmgToB = Math.min(dmgToB, b.hp * 0.7);
     }
+    // Magma-born ordnance (planet artillery, forge plumes — world.js
+    // magmaBorn) doesn't wound celestials on its own either: damageBody
+    // derails on ANY chip, and a lava world slowly shelling itself apart (or
+    // ambient bombs chewing a Bastion fort) is the same regression in slow
+    // motion. Thrown bombs are ordinary rocks — the dense-sling-rock loot
+    // loop keeps full effect. The bomb itself still takes full damage.
+    if (celestial(a) && b.magmaBorn && b.thrownTimer <= 0) dmgToA = 0;
+    if (celestial(b) && a.magmaBorn && a.thrownTimer <= 0) dmgToB = 0;
     // Debug tap: set game.collisionLog = [] from devtools to record impacts
     if (game.collisionLog && (dmgToA > 2 || dmgToB > 2)) {
       game.collisionLog.push({
