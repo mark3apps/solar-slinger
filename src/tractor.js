@@ -275,7 +275,7 @@ export function addToOrbit(game) {
   game.orbit.push(b);
   addXp(game, PROG.XP_ORBIT);   // stowing a rock into the shield pays XP
   sfx.setBeam(false);
-  sfx.sfxCollect();
+  sfx.sfxOrbitCapture();
   return true;
 }
 
@@ -297,7 +297,7 @@ export function updateTethers(game, dt) {
         b.thrownBy = null; b.thrownTimer = 0; b.heldBy = 'orbit';
         b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
         game.orbit.push(b);
-        sfx.sfxCollect();
+        sfx.sfxOrbitCapture();
       }
       continue;                                             // no room -> it just drifts free
     }

@@ -195,7 +195,8 @@ export function shatter(game, body, credit = null) {
   addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3,
     isBig ? 50 : 16, body.color, isBig ? 260 : 140, isBig ? 1.6 : 0.9, isBig ? 5 : 3);
   addShake(game, isBig ? 14 : 4);
-  sfx.sfxBoom(isBig ? 3 : 1);
+  // Distance-scaled: far belt traffic crunching itself stays a murmur
+  sfx.sfxBoom(isBig ? 3 : 1, sfx.distVol(game, body.x, body.y));
 
   // XP: only a direct throw-kill pays combat XP (not your own projectile
   // shattering or a shield brush — those still pay scrap, above)
@@ -247,7 +248,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
       if (tur.hp <= 0) {
         f.turrets.splice(f.turrets.indexOf(tur), 1);
         addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 16, '#ffb35c', 200, 1);
-        sfx.sfxBoom(1);
+        sfx.sfxBoom(1, sfx.distVol(game, body.x, body.y));
         if (!f.turrets.length) {
           body.fort = null;
           dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200);
@@ -287,7 +288,7 @@ function vaporize(game, body) {
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'vaporized by star', type: body.type, mass: Math.round(body.mass) });
   if (body.heldBy === 'player' && game.held === body) game.held = null;
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
-  sfx.sfxBoom(1.5);
+  sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
 }
 
 export function killAlien(game, alien) {
@@ -302,7 +303,7 @@ export function killAlien(game, alien) {
     CFG.ALIEN_SCRAP + (alien.hoard || 0));
   addParticles(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3, 30, '#8aff6a', 200, 1.2, 4);
   addShake(game, 6);
-  sfx.sfxBoom(2);
+  sfx.sfxBoom(2, sfx.distVol(game, alien.x, alien.y));
   game.alienKills++;
 }
 
@@ -331,7 +332,8 @@ export function damageShip(game, dmg, cause, hitAng) {
   s.hull -= rem;
   if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
     addShake(game, Math.min(18, dmg * 0.5));
-    sfx.sfxHit();
+    // Shield ate the whole hit → energy zap; anything reached the hull → metal
+    if (rem <= 0) sfx.sfxShieldHit(); else sfx.sfxHit();
   }
   if (s.hull <= 0) {
     s.alive = false;
@@ -339,7 +341,7 @@ export function damageShip(game, dmg, cause, hitAng) {
     game.held2 = null;   // Twin Grip: drop the second rock too
     game.deathCause = cause;
     addParticles(game, s.x, s.y, s.vx * 0.3, s.vy * 0.3, 60, '#9fd6ff', 280, 1.6, 4);
-    sfx.sfxBoom(3);
+    sfx.sfxShipDeath();
     addShake(game, 22);
   }
 }
@@ -776,6 +778,11 @@ function collideShipBody(game, s, b, dt) {
     const mEff = Math.min(b.mass, 4e5);
     const kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
     s.vx -= nx * kick; s.vy -= ny * kick;
+
+    // Audible contact even when the bounce does no damage — gentle hits are
+    // damage-free by design (invariant 3), but the clank must still say
+    // "you touched it". sfxBump self-throttles against substep repeats.
+    sfx.sfxBump((closing / 300) * (0.35 + 0.65 * (b.mass / (b.mass + 2000))));
 
     // NEWTON'S OTHER HALF: the impact moves and damages the BODY too. The
     // ship's effective ram mass grows with level — a scout nudges pebbles,
@@ -1283,6 +1290,15 @@ export function step(game, dt) {
       if (rsp * f > hard) f = hard / rsp;
       s.vx = flow.vx + rvx * f; s.vy = flow.vy + rvy * f;
     }
+    // Stashed for the audio layer (sfx speed voice + engine cruise/settle):
+    // how close the ship is to its flow-RELATIVE ceiling ALONG THE NOSE — the
+    // forward component of the deviation, over the same cap the governor
+    // brakes on. Direction matters: drifting sideways or backwards at speed
+    // must not read as "hitting max" (a bounce or fling recoil isn't cruise).
+    // Post-bleed, so a clean burn can kiss >1 briefly; floored at 0 when the
+    // deviation points behind the nose.
+    game.speedFrac = Math.min(1.2, Math.max(0,
+      ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / cap));
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.invuln > 0) s.invuln -= dt;
 

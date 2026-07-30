@@ -12,7 +12,8 @@ import { updateGlow } from './glow.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
-import { initAudio, setThrust, setSoundEnabled, sfxUpgrade, sfxCollect } from './sfx.js';
+import * as sfx from './sfx.js';
+import * as music from './music.js';
 import { lerp } from './util.js';
 
 const game = {
@@ -20,7 +21,9 @@ const game = {
   started: false,          // false → splash screen; the sim doesn't run until START
   paused: false,
   settingsOpen: false,     // settings overlay (over splash or pause); freezes the sim
-  soundOn: true,           // front-end audio toggle (persisted; see loadSettings)
+  musicVol: 0.85,          // volume sliders (persisted; zero = mute, there are no
+  sfxVol: 0.5,             //   toggles) — music high / SFX low by default: quiet
+                           //   ambient tracks vs hot sample packs
   ship: new Ship(),
   bodies: [],
   aliens: [],
@@ -96,19 +99,23 @@ hud.initHud(game);
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem('ss_settings') || '{}');
-    if (typeof s.sound === 'boolean') game.soundOn = s.sound;
+    if (typeof s.musicVol === 'number') game.musicVol = Math.max(0, Math.min(1, s.musicVol));
+    if (typeof s.sfxVol === 'number') game.sfxVol = Math.max(0, Math.min(1, s.sfxVol));
     if (typeof s.predict === 'boolean') game.predict = s.predict;
   } catch (e) { /* fall back to defaults */ }
 }
 function saveSettings() {
   try {
-    localStorage.setItem('ss_settings', JSON.stringify({ sound: game.soundOn, predict: game.predict }));
+    localStorage.setItem('ss_settings', JSON.stringify({
+      musicVol: game.musicVol, sfxVol: game.sfxVol, predict: game.predict,
+    }));
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
 }
 loadSettings();
-// Only act on a persisted MUTE here — the default (on) must init lazily inside
-// the first user gesture, or Web Audio starts suspended and never resumes.
-if (!game.soundOn) setSoundEnabled(false);
+// Volume levels are safe pre-gesture — both modules just store them (the audio
+// context itself still only ever gets built inside a user gesture: initAudio).
+sfx.setSfxVolume(game.sfxVol);
+music.setMusicVolume(game.musicVol);
 
 // Fair view: fold the canvas-size normalization into cam.zoom itself —
 // mouseWorld, viewR, render culling, and the /zoom UI-stroke idiom all read
@@ -206,7 +213,7 @@ initInput(canvas, {
     s.invuln = Math.max(s.invuln, 0.25 + 0.08 * game.st.evasion);
     game.evadeT = Math.max(0.45, 1.2 - 0.2 * game.st.evasion);
     game.dashT = 0.22; game.dashDir = dir;   // render: side-jet flash
-    sfxCollect();
+    sfx.sfxEvade();
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
   onWarp: () => {
@@ -217,7 +224,7 @@ initInput(canvas, {
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
     s.invuln = Math.max(s.invuln, 0.5);
     game.warpT = 3.5;
-    sfxCollect();
+    sfx.sfxWarp();
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
   // 1x. They only set the multiplier — updateScaled applies it — so they're
@@ -248,10 +255,10 @@ function startGame() {
   // drive window.tick, which bypasses startGame and auto-picks a default spec.
   if (!game.choosingUpgrade && !game.prog.spec) openSpec();
 }
-function pauseGame() { if (game.started) game.paused = true; }
-function resumeGame() { game.paused = false; }
-function openSettings() { game.settingsOpen = true; }
-function closeSettings() { game.settingsOpen = false; saveSettings(); }
+function pauseGame() { if (game.started && !game.paused) { game.paused = true; sfx.sfxMenuOpen(); } }
+function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
+function openSettings() { game.settingsOpen = true; sfx.sfxMenuOpen(); }
+function closeSettings() { game.settingsOpen = false; saveSettings(); sfx.sfxMenuClose(); }
 function toMainMenu() { game.paused = false; game.settingsOpen = false; game.started = false; }
 
 // ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
@@ -263,7 +270,6 @@ function toggleMenu() {
   if (!game.started || game.gameOver || !game.ship.alive) return;
   if (game.paused) resumeGame(); else pauseGame();
 }
-function toggleSound() { game.soundOn = !game.soundOn; setSoundEnabled(game.soundOn); saveSettings(); }
 
 function exitGame() {
   // Desktop (Electron): closes the app window → quits the app. In a plain
@@ -293,17 +299,23 @@ function driftSplash(dt) {
   game.cam.y = Math.sin(a) * 4400;
 }
 
+// Every menu button is a user gesture — init Web Audio first so the very
+// click that unlocks the context also gets its tick.
+const ui = (fn) => () => { sfx.initAudio(); sfx.sfxUiClick(); fn(); };
 hud.initMenus({
-  // The START / settings clicks are the user gesture that unlocks Web Audio.
-  onStart: () => { initAudio(); startGame(); },
-  onResume: resumeGame,
-  onPause: pauseGame,
-  onMainMenu: toMainMenu,
-  onOpenSettings: openSettings,
-  onCloseSettings: closeSettings,
+  onStart: ui(startGame),
+  onResume: ui(resumeGame),
+  onPause: ui(pauseGame),
+  onMainMenu: ui(toMainMenu),
+  onOpenSettings: ui(openSettings),
+  onCloseSettings: ui(closeSettings),
   onExit: exitGame,
-  onToggleSound: () => { initAudio(); toggleSound(); },
-  onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
+  onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
+  // Volume sliders: live on drag (a drag is a gesture, so initAudio is safe);
+  // the release preview tick lets the SFX level be judged from the menu.
+  onMusicVol: (v) => { sfx.initAudio(); game.musicVol = v; music.setMusicVolume(v); saveSettings(); },
+  onSfxVol: (v) => { sfx.initAudio(); game.sfxVol = v; sfx.setSfxVolume(v); saveSettings(); },
+  onSfxPreview: () => sfx.sfxUiClick(),
 });
 
 // Apply the chosen card (spec / tier-up ability / small rank-up), then unfreeze.
@@ -315,6 +327,7 @@ function applyPick(i) {
     // Free run-opener: lock the specialization, grant its starting kit, begin play.
     applySpec(game.prog, choice.id);
     game.st = shipStats(game.prog);
+    sfx.sfxTierUp();
     beginRunGuidance(choice);
   } else if (game.upgradeKind === 'tier') {
     // Milestone: dividend + tier bump FIRST, then the chosen new ability comes in
@@ -325,15 +338,16 @@ function applyPick(i) {
     game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
     game.st = shipStats(game.prog);
     game.lastTier = game.st.tier;
+    sfx.sfxTierUp();
     hud.message(`TIER UP — ${game.st.label.toUpperCase()}. ${choice.name} acquired. +1 life.`, 6);
   } else {   // 'upgrade' — small pick: deepen an ability you already own
     consumePickCost(game.prog);
     applyAbility(game.prog, choice.id);
     game.prog.picksThisTier++;
     game.st = shipStats(game.prog);
+    sfx.sfxUpgrade();
     hud.message(`${choice.name.toUpperCase()} rank ${game.prog.upgrades[choice.id]}.`, 3.5);
   }
-  sfxUpgrade();
   game.choosingUpgrade = false;
   game.upgradeChoices = null;
   game.upgradeKind = null;
@@ -375,7 +389,7 @@ function openUpgrade() {
       game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
       game.st = shipStats(game.prog);
       game.lastTier = game.st.tier;
-      sfxUpgrade();
+      sfx.sfxTierUp();
       hud.message(`TIER UP — ${game.st.label.toUpperCase()}. +1 life.`, 5);
       return;
     }
@@ -437,84 +451,87 @@ function resetRun(seed) {
 // `repeat` too, later firings get the shorter wording. Each entry is
 // [text, seconds]; text may be a function of the drained payload. When two
 // events fire the same frame the LAST entry wins the single HUD slot, so the
-// table keeps the order of the if-chain it replaced.
+// table keeps the order of the if-chain it replaced. `snd` (optional) plays
+// with the message — the audio grammar is: sfxAlarm = the ship itself is in
+// danger NOW; sfxWarnLow = hostile contact / bad news; sfxChime = discovery,
+// lore, or opportunity; sfxLife = triumph.
 const EVENT_MSGS = [
-  { flag: 'alienWarn', tut: 'alienSeen',
+  { flag: 'alienWarn', tut: 'alienSeen', snd: sfx.sfxWarnLow,
     first: ['WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5] },
-  { flag: 'rogueIncoming',
+  { flag: 'rogueIncoming', snd: sfx.sfxWarnLow,
     first: ['SENSOR ALERT: a rogue planet has entered the sector.', 4.5] },
-  { flag: 'tetherShow', tut: 'tether',
+  { flag: 'tetherShow', tut: 'tether', snd: sfx.sfxChime,
     first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
-  { flag: 'jinkWarn', tut: 'jink',
+  { flag: 'jinkWarn', tut: 'jink', snd: sfx.sfxChime,
     first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
-  { flag: 'cometWarn', tut: 'comet',
+  { flag: 'cometWarn', tut: 'comet', snd: sfx.sfxWarnLow,
     first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
     repeat: ['COMET SHOWER inbound!', 3] },
-  { flag: 'flareWarn', tut: 'flare',
+  { flag: 'flareWarn', tut: 'flare', snd: sfx.sfxAlarm,
     first: ['SOLAR FLARE — the sun is erupting at you. MOVE!', 4.5],
     repeat: ['SOLAR FLARE INBOUND!', 2.5] },
-  { flag: 'magmaWarn', tut: 'magma',
+  { flag: 'magmaWarn', tut: 'magma', snd: sfx.sfxWarnLow,
     first: ['MAGMA EJECTION — lava worlds hurl molten rock. It cools into dense fling ammo.', 5] },
-  { flag: 'geyserWarn', tut: 'geyser',
+  { flag: 'geyserWarn', tut: 'geyser', snd: sfx.sfxChime,
     first: ['Cryo-geyser! Ice worlds pop free shield ammo into low orbit.', 5] },
-  { flag: 'comboShow',
+  { flag: 'comboShow', snd: sfx.sfxChime,
     first: [(v) => `GRAVITY BILLIARDS ×${v}! +${8 * v} scrap`, 2] },
-  { flag: 'coreFound', tut: 'core',
+  { flag: 'coreFound', tut: 'core', snd: sfx.sfxChime,
     first: ['MINERAL CORE exposed — dense salvage. Catch it to fatten your beam, or smash it for scrap.', 5.5] },
-  { flag: 'cacheCracked', tut: 'cache',
+  { flag: 'cacheCracked', tut: 'cache', snd: sfx.sfxChime,
     first: ['SALVAGE CACHE cracked — scrap and shield ammo. Watch the lanes for more canisters.', 5.5] },
-  { flag: 'glowMsg', tut: 'glow',
+  { flag: 'glowMsg', tut: 'glow', snd: sfx.sfxChime,
     first: ['GLOW POCKET — fly through the motes to mend your hull. These pockets are the only place it heals.', 6] },
   { flag: 'nestKilled',
     first: ['ALIEN NEST DESTROYED — this region of space is quiet now.', 6] },
-  { flag: 'wrightWarn', tut: 'wright',
+  { flag: 'wrightWarn', tut: 'wright', snd: sfx.sfxWarnLow,
     first: ['WRECKWRIGHT — a scavenger is harvesting your battle debris. Kill it before it finishes building.', 5.5],
     repeat: ['WRECKWRIGHT descending on the debris field!', 3] },
-  { flag: 'golemWarn',
+  { flag: 'golemWarn', snd: sfx.sfxWarnLow,
     first: ['SCRAP-GOLEM assembled — your leftovers are hunting you.', 4.5] },
-  { flag: 'fortShieldDownName',
+  { flag: 'fortShieldDownName', snd: sfx.sfxWarnLow,
     first: [(v) => `FORTRESS SHIELD DOWN at ${v} — smash the turrets!`, 4] },
-  { flag: 'fortLiberatedName',
+  { flag: 'fortLiberatedName', snd: sfx.sfxLife,
     first: [(v) => `${v.toUpperCase()} LIBERATED — the Bastion fort is destroyed. Salvage is yours.`, 5] },
-  { flag: 'emberWarn', tut: 'ember',
+  { flag: 'emberWarn', tut: 'ember', snd: sfx.sfxWarnLow,
     first: ['EMBERKIN ARTILLERY — this world is colonized. Icy rocks smother the reefs.', 5.5] },
-  { flag: 'emberSeededName',
+  { flag: 'emberSeededName', snd: sfx.sfxWarnLow,
     first: [(v) => `The Emberkin have seeded ${v} — the bloom is spreading.`, 5.5] },
-  { flag: 'emberCleansedName',
+  { flag: 'emberCleansedName', snd: sfx.sfxChime,
     first: [(v) => `${v} cleansed — the Emberkin bloom is extinguished.`, 5] },
   // ---- discovery-layer events ----
-  { flag: 'vesperWarn', tut: 'vesper',
+  { flag: 'vesperWarn', tut: 'vesper', snd: sfx.sfxChime,
     first: ['COMET VESPER — a long-period wanderer, falling sunward. Its tail blooms at perihelion. Catch it if you can.', 6] },
-  { flag: 'visitorWarn',
+  { flag: 'visitorWarn', snd: sfx.sfxChime,
     first: ['DEEP-SPACE CONTACT: an interstellar object is crossing the system. It will not come back.', 6] },
   { flag: 'visitorGone',
     first: ['The interstellar visitor has left the system — forever.', 5.5] },
-  { flag: 'stormWarn', tut: 'storm',
+  { flag: 'stormWarn', tut: 'storm', snd: sfx.sfxAlarm,
     first: ['SOLAR STORM — the sun has loosed a charged wave across the whole system. Watch the skies of nearby worlds.', 6],
     repeat: ['SOLAR STORM — a charged wave is sweeping the system.', 3.5] },
-  { flag: 'auroraName', tut: 'aurora',
+  { flag: 'auroraName', tut: 'aurora', snd: sfx.sfxChime,
     first: [(v) => `AURORA — the storm wave is lighting up ${v}'s sky.`, 5],
     repeat: [(v) => `AURORA over ${v}.`, 3] },
-  { flag: 'eclipseName',
+  { flag: 'eclipseName', snd: sfx.sfxChime,
     first: [(v) => `MOONSHADOW — a lunar eclipse is sweeping across ${v}.`, 5] },
-  { flag: 'surveyMsg', first: [(v) => v, 4.5] },
-  { flag: 'echoMsg', first: [(v) => v, 7.5] },
-  { flag: 'graveyardWarn', tut: 'graveyard',
+  { flag: 'surveyMsg', snd: sfx.sfxChime, first: [(v) => v, 4.5] },
+  { flag: 'echoMsg', snd: sfx.sfxChime, first: [(v) => v, 7.5] },
+  { flag: 'graveyardWarn', tut: 'graveyard', snd: sfx.sfxChime,
     first: ['GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6] },
-  { flag: 'ghostWarn', tut: 'ghost',
+  { flag: 'ghostWarn', tut: 'ghost', snd: sfx.sfxWarnLow,
     first: ['UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6] },
-  { flag: 'ringDecayName',
+  { flag: 'ringDecayName', snd: sfx.sfxChime,
     first: [(v) => `The shepherd moon is gone — ${v}'s ring is beginning to scatter.`, 6] },
-  { flag: 'volcWarn', tut: 'volc',
+  { flag: 'volcWarn', tut: 'volc', snd: sfx.sfxChime,
     first: ['FORGE MOON — this moon is volcanically alive. Its ejecta cools into dense slinging rock.', 5.5] },
-  { flag: 'heatWarn', tut: 'heat',
+  { flag: 'heatWarn', tut: 'heat', snd: sfx.sfxAlarm,
     first: ['MELTDOWN WARNING — the heat is liquefying your hull. Turn back!', 4.5] },
-  { flag: 'gasDiveWarn', tut: 'gasdive',
+  { flag: 'gasDiveWarn', tut: 'gasdive', snd: sfx.sfxAlarm,
     first: ['CRUSH DEPTH — the atmosphere is collapsing your hull. The core will finish the job. CLIMB!', 5] },
-  { flag: 'flareHitWarn',
+  { flag: 'flareHitWarn', snd: sfx.sfxAlarm,
     first: ['FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5] },
-  { flag: 'scrapeWarn', tut: 'scrape',
+  { flag: 'scrapeWarn', tut: 'scrape', snd: sfx.sfxWarnLow,
     first: ["HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5] },
 ];
 
@@ -672,6 +689,7 @@ function update(dtReal) {
       const rc = Math.hypot(s.x, s.y);
       if (rc > CFG.WORLD_R - CFG.OORT_WARN && game.oortWarnT <= 0) {
         game.oortWarnT = 12;
+        sfx.sfxAlarm();
         hud.message(rc > CFG.WORLD_R
           ? 'HULL GRINDING — you are inside the Oort cloud. Turn back!'
           : 'WARNING: Oort cloud ahead — it will tear your ship apart.', 4.5);
@@ -723,12 +741,14 @@ function update(dtReal) {
         game.tut[e.tut] = true;
       }
       hud.message(typeof m[0] === 'function' ? m[0](v) : m[0], m[1]);
+      if (e.snd) e.snd();
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
       game.prog.lives--;   // a life is spent per death (upgrades are kept)
       if (game.prog.lives <= 0) {
         game.gameOver = true;
+        sfx.sfxGameOver();
         hud.setGameOverVisible(true, game.deathCause);
       } else {
         hud.setDeathVisible(true, game.deathCause, game.prog.lives);
@@ -736,7 +756,18 @@ function update(dtReal) {
     }
     if (s.alive && game.deathShown) game.deathShown = false;
 
-    setThrust(s.alive && (s.thrusting || s.braking));
+    // Continuous ambience loops ride live game state every frame. The speed
+    // voice gates on the throttle too — with no thrust applied EVERY engine
+    // noise stops, even at full coasting speed.
+    const engineOn = s.alive && (s.thrusting || s.braking);
+    // Boost sound follows game.burnerOn (the fuel-gated truth physics thrusts
+    // with), never raw Shift — an empty tank must not SOUND boosted.
+    sfx.setThrust(engineOn, !!game.burnerOn, game.speedFrac || 0);
+    sfx.setSpeed(engineOn ? (game.speedFrac || 0) : 0);
+    sfx.setHeat(s.alive ? (game.heatT || 0) : 0);
+    sfx.setScrape(s.alive && game.scrapeT > 0 ? 1 : (s.alive && game.skimT > 0 ? 0.5 : 0));
+    sfx.setCharge(game.volleyCharging
+      ? 0.2 + 0.8 * Math.min(1, game.volleyT / CFG.VOLLEY_TIME) : 0);
 
     // Camera follows the ship inside the fixed-step loop above (see there);
     // only the cosmetic shake decay rides the variable frame time here.
@@ -761,7 +792,7 @@ function updateLifePods(dt) {
         addXp(game, 200);
         hud.message('Life pod converted to XP — lives already full.', 3.5);
       }
-      sfxCollect();
+      sfx.sfxLife();
     }
   }
   game.lifeTimer -= dt;
@@ -806,10 +837,19 @@ function frame(now) {
   // frozen world sits as a living backdrop under whichever overlay is up.
   if (game.started && !game.paused && !game.settingsOpen && !game.choosingUpgrade) updateScaled(dtReal);
   else {
-    setThrust(false);
+    // The sim is frozen — every state-driven loop must fall silent with it
+    sfx.setThrust(false);
+    sfx.setSpeed(0);
+    sfx.setHeat(0);
+    sfx.setScrape(0);
+    sfx.setCharge(0);
     if (!game.started) driftSplash(dtReal);   // living title backdrop
     applyZoom();                              // a resize while frozen must still reframe
   }
+
+  // The music director runs EVERY frame, frozen or not — menus duck it, and
+  // it needs dtReal for its own smoothing even while the sim holds still.
+  music.updateMusic(game, dtReal);
 
   render(game);
   hud.updateHud(game);
@@ -819,13 +859,16 @@ requestAnimationFrame(frame);
 
 // Debug/testing hooks: poke at state or step the sim from devtools
 window.game = game;
+window.musicState = music.musicState;   // live mood vector + bed gains
 window.tick = (seconds) => {
   game.started = true;   // headless soaks bypass the splash and run the sim
   // ...and bypass the spec modal: default to the first spec if none chosen, so
   // the ability tree + picks work headlessly (override game.prog.spec first to test others).
   if (!game.prog.spec) { applySpec(game.prog, SPECS[0].id); game.st = shipStats(game.prog); }
   const dt = 1 / 60;
-  for (let t = 0; t < seconds; t += dt) update(dt);
+  // Music mood advances with the sim so soaks can assert on it (the rAF loop
+  // is suspended in hidden tabs, where tick is the only clock).
+  for (let t = 0; t < seconds; t += dt) { update(dt); music.updateMusic(game, dt); }
   render(game);
   hud.updateHud(game);
 };
