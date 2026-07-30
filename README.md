@@ -80,7 +80,18 @@ Celestial bodies ride precomputed **rails** (circular or Kepler ellipses) until 
 The game exposes hooks in the devtools console:
 
 - `game` — the entire game state, live. Poke at `game.prog`, `game.bodies`, `game.st`…
+- `speed(n)` — run the live game at n× real time (0.25–50): fast-forward long stretches, or slow-mo a
+  collision. An amber `SIM ×n` badge shows while it's active; `speed(1)` (or the `0` key with `?dev=1`
+  on the URL) returns to normal. `?dev=1` also enables `-` / `=` to halve / double the speed.
+- `mechTest()` — the scripted mechanics suite: a fixed-seed, fully repeatable run through grab, fling,
+  orbit, picks, shield, death/respawn, and more; returns a pass/fail report with all the logs
+  (`mechTest({download: true})` saves it as JSON).
+- `freshRun(specIdx, seed)` — restart into a repeatable fresh run (same seed = same world).
 - `tick(seconds)` — advance the simulation headlessly (used for balance soaks).
+- `soak(seconds, {idle: true})` — one-call balance soak: records deaths/impacts and returns a summary
+  (`{idle: true}` removes the ship first for a pure sky-stability run).
+- `goto('vesper')` / `locate('vesper')` — teleport the ship beside a named body / grab the body itself.
+- `god(true)` — the ship ignores all damage while you investigate somewhere lethal.
 - `game.autoUpgrade = true` — auto-resolve upgrade picks so a long `tick()` never stalls on a choice.
 - `game.collisionLog = []` / `game.deathLog = []` — start recording impact and destruction events.
 

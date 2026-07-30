@@ -187,7 +187,8 @@ body.preGame #hud::before { opacity: 0; }
 #hullBar.low .statwell {
   background: linear-gradient(0deg, rgba(255, 100, 70, .12), rgba(255, 100, 70, .12)), rgba(8, 4, 20, .6);
 }
-.statwell::after {
+/* Point-cells belong to the HIT-POINT pool only — the fuel bar has none */
+#hullBar .statwell::after, #shieldBar .statwell::after {
   content: ''; position: absolute; inset: 0; pointer-events: none;
   background: repeating-linear-gradient(90deg,
     transparent 0 calc(var(--cell, 33px) - 2px),
@@ -227,6 +228,27 @@ body.preGame #hud::before { opacity: 0; }
   to   { background-position: -130% 0, 0 0; }
 }
 #shieldBar.charging #shieldFill { animation: gaugeSheen 1.2s linear infinite; }
+
+/* Afterburner fuel (scout) — hidden until the ability is owned (hud.js).
+   Same frameless stick language as hull/shield, in throttle AMBER; a fuel
+   tank isn't part of the hit-point pool, so it gets no point-cells and a
+   shorter run. .burning = fast sheen; .low = tank can't light yet. */
+#burnBar { width: 220px; }
+#burnBar .statlabel { color: #ffcf8a; text-shadow: 0 0 8px rgba(255, 190, 110, .8); }
+#burnBar .statnum { text-shadow: 0 0 9px rgba(255, 190, 110, .65), 0 1px 2px rgba(0, 0, 0, .9); }
+#burnBar .statwell { background: linear-gradient(0deg, rgba(255, 170, 70, .1), rgba(255, 170, 70, .1)), rgba(8, 4, 20, .6); }
+#burnFill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px;
+  transition: width .12s linear;
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .25) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #ffd88a, #ff9a3c 55%, #d96f18);
+  box-shadow: 0 0 12px rgba(255, 170, 70, .8), inset 0 1px 0 rgba(255, 255, 255, .5);
+  animation: gaugeSheen 4.5s linear infinite;
+}
+#burnBar.burning #burnFill { animation: gaugeSheen .6s linear infinite; }
+#burnBar.low #burnFill { opacity: .55; }
 #shieldBar.down .statlabel { animation: shieldBlink 1s steps(2) infinite; color: #ff8a6c; }
 @keyframes shieldBlink { 50% { opacity: .3; } }
 .statbar.hit .stattrack { animation: barHit .25s ease; }
@@ -356,6 +378,19 @@ body.preGame #hud::before { opacity: 0; }
   color: #e0d0ff; letter-spacing: 3px; font-size: 10px;
   text-shadow: 0 0 8px rgba(176, 112, 255, .8), 0 1px 2px rgba(0, 0, 0, .9);
 }
+
+/* Dev-only sim-speed badge (game.timeScale ≠ 1). Amber marks it as helper/
+   debug UI — same family as the aiming assists — and it must stay hidden in
+   normal 1x play. Sits BELOW the tier line (the XP bar owns the top edge).
+   .lag = the machine can't hit the requested speed. */
+#speedBadge {
+  position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; letter-spacing: 2px; padding: 3px 12px;
+  color: #ffd27a; border: 1px solid rgba(255, 200, 110, .5);
+  border-radius: 999px; background: rgba(40, 28, 8, .6);
+  text-shadow: 0 0 6px rgba(255, 190, 90, .5);
+}
+#speedBadge.lag { color: #ff9a6c; border-color: rgba(255, 150, 100, .6); }
 
 /* ---------------------------------------------------------------------------
    Transmission line: winged callout text, no box (it sits over live play)

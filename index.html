@@ -26,6 +26,13 @@
       </span>
       <span class="stattrack"><span class="statwell"><span id="shieldFill"></span></span></span>
     </div>
+    <div class="statbar hidden" id="burnBar">
+      <span class="stathead">
+        <span class="statlabel">BURN</span>
+        <span class="statnum" id="burnNum"></span>
+      </span>
+      <span class="stattrack"><span class="statwell"><span id="burnFill"></span></span></span>
+    </div>
   </div>
   <div id="xpBar"><span id="xpFill"></span></div>
   <div id="tierLabel" class="hidden">TIER 0 &middot; SCOUT</div>
@@ -39,6 +46,7 @@
   <div id="combo" class="hidden"></div>
   <canvas id="radar" width="200" height="200"></canvas>
   <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
+  <div id="speedBadge" class="hidden"></div>
   <div id="msg" class="hidden"></div>
 </div>
 
@@ -109,8 +117,8 @@
     <div class="ctrlrow"><span>Reverse <em>(ability)</em></span><span>S</span></div>
     <div class="ctrlrow"><span>Grab &amp; fling</span><span>Left mouse</span></div>
     <div class="ctrlrow"><span>Orbit / shotgun</span><span>Right mouse</span></div>
-    <div class="ctrlrow"><span>Afterburner <em>(ability)</em></span><span>Shift</span></div>
-    <div class="ctrlrow"><span>Evasion roll <em>(ability)</em></span><span>Space</span></div>
+    <div class="ctrlrow"><span>Afterburner <em>(ability)</em></span><span>Hold Shift</span></div>
+    <div class="ctrlrow"><span>Dash left / right <em>(ability)</em></span><span>A / D</span></div>
     <div class="ctrlrow"><span>Slipstream <em>(ability)</em></span><span>F</span></div>
     <div class="ctrlrow"><span>Pause menu</span><span>Esc</span></div>
     <div class="ctrlrow"><span>Trajectory prediction</span><span>T</span></div>

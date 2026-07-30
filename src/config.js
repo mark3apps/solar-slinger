@@ -312,18 +312,20 @@ export const SPECS = [
 // so several abilities can stack the same channel. BRAWLER's runtime abilities
 // (Ram Prow, Cluster Rounds, Shockwave, Berserker, Demolition, Juggernaut) are
 // live — their hooks live in physics.js (collideShipBody + brawlerThrowKill) and
-// tractor.js (Berserker fling). HAULER's: Recovery Tether + Twin Grip (tractor.js)
-// and Aegis Reflector (physics collideBodies). SCOUT's: Afterburner (physics ship
-// control + governor), Evasion Roll + Slipstream (main.js input handlers), and
-// Recon Drone (world.js survey). All three specs' runtime abilities are now live.
+// tractor.js (Berserker fling). HAULER's: Recovery Tether + Twin Grip (tractor.js),
+// Aegis Reflector (physics collideBodies), Rockwall (physics damageBody hardening
+// + tractor orbit spin). SCOUT's: Afterburner (fuel tank in main.js, thrust +
+// governor in physics), Dash Jets (A/D — main.onDash), Reflex Jink (the
+// auto-dodge scan in physics.step), Slipstream (main.onWarp), Recon Drone
+// (world.js survey). All three specs' runtime abilities are live.
 export const ABILITIES = [
   // 🥊 BRAWLER
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
   { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
   { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Rounds',   icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
-  { id: 'bulwarkRing',    spec: 'brawler', name: 'Bulwark Ring',   icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
-  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A regenerating combat shield.' },
+  { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
+  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A heavy regenerating shield — FRONT ARC ONLY. Your tail stays bare.' },
   { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Ram bodies for damage and take less from impacts.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 3, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
@@ -336,10 +338,12 @@ export const ABILITIES = [
   { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
   { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
   { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab heavier masses.' },
-  { id: 'deflectorCells', spec: 'hauler', name: 'Deflector Cells',  icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A regenerating shield.' },
+  // HAULER has NO energy shield ON PURPOSE (design law): the orbit rock wall IS
+  // its protection — Rockwall/Cargo Plating harden that identity instead.
+  { id: 'cargoPlating',   spec: 'hauler', name: 'Cargo Plating',    icon: '▤', channel: 'hull',   max: 4, minTier: 0, weight: 0.9, desc: 'Armor the freighter hull.' },
   { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
   { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
-  { id: 'rapidRecharge',  spec: 'hauler', name: 'Rapid Recharge',   icon: '♻', channel: 'regen',  max: 6, minTier: 0, weight: 0.9, desc: 'Shield recharges sooner and faster.' },
+  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
   { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, weight: 0.9, desc: 'Haul planet-scale masses.' },
   { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
   { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
@@ -354,8 +358,10 @@ export const ABILITIES = [
   { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
   { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
   { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, weight: 0.9, desc: 'Long-range map and forecast.' },
-  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, weight: 1.0, desc: 'Hold SHIFT to overdrive the engine.' },
-  { id: 'evasionRoll',    spec: 'scout', name: 'Evasion Roll',   icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap SPACE to dash toward the cursor (brief i-frames).' },
+  { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 3, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
+  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
+  { id: 'evasionRoll',    spec: 'scout', name: 'Dash Jets',      icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap A / D to dart sideways (brief i-frames).' },
+  { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 3, minTier: 2, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
   { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
   { id: 'slipstream',     spec: 'scout', name: 'Slipstream',     icon: '➸', channel: 'slipstream',  max: 1, minTier: 3, weight: 0.9, desc: 'Tap F to warp forward toward the cursor.' },
 ];
@@ -468,15 +474,16 @@ export function shipStats(prog) {
   const c = (k) => ch[k] || 0;
 
   const catchC = c('catch'), reachC = c('reach'), engineC = c('engine'), flingC = c('fling'),
-    hullC = c('hull'), shieldC = c('shield'), regenC = c('regen'), magnetC = c('magnet'),
+    hullC = c('hull'), shieldC = c('shield'), magnetC = c('magnet'),
     orbitLvl = c('orbit'), volC = c('volley');
   // BRAWLER runtime channels (ram = Ram Prow + Juggernaut; the rest are 1:1).
   const ramC = c('ram'), berserkC = c('berserk'), clusterC = c('cluster'),
     shockC = c('shockwave'), demoC = c('demolition');
   // HAULER runtime channels.
-  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin');
+  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'), rockwallC = c('rockwall');
   // SCOUT runtime channels.
-  const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'), slipC = c('slipstream');
+  const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'),
+    slipC = c('slipstream'), autoevadeC = c('autoevade');
   // Sensor chain — each is its own ability/channel now (Scout tree).
   const compassC = c('compass'), plotterC = c('plotter'), collisionC = c('collision'),
     targetingC = c('targeting'), deepC = c('deep');
@@ -485,12 +492,37 @@ export function shipStats(prog) {
 
   const capacity = TIERS.caps[tier] * (1 + 0.22 * catchC);
   const maxHull = 120 + 40 * tier + 55 * hullC + 30 * ramC;   // ram armor beefs the hull too
-  // The regenerating shield is an UPGRADE (War Plating / Deflector Cells): no
-  // shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD bar. Rank 1
-  // unlocks it at 30% of the fixed pool, growing to the 0.55 cap. It trades some
-  // max hull for a recharging layer — a net survivability gain, only shield regens.
-  const shieldFrac = shieldC > 0 ? Math.min(0.55, 0.30 + 0.05 * (shieldC - 1)) : 0;
+  // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
+  // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
+  // bar. BRAWLER (War Plating) carves a BIG slice of the pool but covers the
+  // FRONT ARC ONLY — shieldArc is the half-angle around the nose; hits from
+  // behind skip the shield entirely (physics.damageShip). SCOUT (Phase Screen)
+  // is a THIN full wrap that recharges fast (regen/regenDelay below). HAULER
+  // has no shield ability at all — the orbit rock wall is its protection.
+  // It trades max hull for a recharging layer; only the shield regens.
+  let shieldFrac = 0, shieldArc = Math.PI;
+  if (shieldC > 0) {
+    if (prog.spec === 'brawler') {
+      shieldFrac = Math.min(0.65, 0.38 + 0.055 * (shieldC - 1));
+      shieldArc = Math.PI / 2;   // the front half — the tail is bare
+    } else {
+      shieldFrac = Math.min(0.28, 0.16 + 0.05 * (shieldC - 1));
+    }
+  }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
+
+  // Stow cap: one tier below the beam (or 45% of capacity), unlocked by an
+  // orbit ability. The FORMATION is spec DNA like the shield: HAULER's stow
+  // orbits and protects; BRAWLER's trails BEHIND the ship (trailStow — an
+  // ammo train, not a shield) and is CAPPED AT MOON CLASS forever, however
+  // high the beam tier climbs — the rack is shotgun ammo, not a planet garage.
+  const trailStow = prog.spec === 'brawler';
+  let orbitCap = orbitLvl > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0;
+  let orbitLabel = tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks';
+  if (trailStow && orbitCap > TIERS.caps[1]) {
+    orbitCap = TIERS.caps[1];
+    orbitLabel = TIERS.labels[1];
+  }
 
   // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it in
   // the old ~0..25 band so combat/physics balance is preserved: it's just the sum
@@ -515,9 +547,11 @@ export function shipStats(prog) {
     // Pool splits hull (mends only at glow pockets) / shield (recharges)
     hullMax,
     shieldMax: Math.round(maxHull) - hullMax,
-    // Orbit shield is LOCKED until an orbit ability (rank 0 -> no slots)
-    orbitCap: orbitLvl > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0,
-    orbitLabel: tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks',
+    // Stow is LOCKED until an orbit ability (rank 0 -> no slots); see the
+    // trailStow/moon-cap derivation above for the brawler differences.
+    orbitCap,
+    orbitLabel,
+    trailStow,
     // 1/3/5/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital Sling +
     // Expanded Bay), so uncapped it could hit 15; higher ranks still grow orbitCap/range.
     maxOrbiters: orbitLvl > 0 ? Math.min(7, 2 * orbitLvl - 1) : 0,
@@ -544,21 +578,30 @@ export function shipStats(prog) {
     cluster: clusterC,                            // shrapnel shards spawned on a throw-kill
     shockwave: shockC,                            // knockback impulse on a throw-kill
     demolition: demoC,                            // AoE damage on a throw-kill
+    // Shield coverage half-angle around the nose (PI = full wrap). Brawler's
+    // front-arc plating sets PI/2; physics.damageShip + render both read it.
+    shieldArc,
     // ---- HAULER runtime abilities ----
     tether: tetherC,                              // Recovery Tether: thrown rocks home back to orbit
     aegis: aegisC,                                // Aegis Reflector: orbit rocks reflect intercepted fire
     twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
     maxHeld: twinC > 0 ? 2 : 1,
+    rockwall: rockwallC,                          // Rockwall: hardened, faster-spinning orbit rocks
     // ---- SCOUT runtime abilities ----
-    afterburner: afterburnerC,                    // hold Shift: thrust + speed-ceiling overdrive (physics)
-    evasion: evasionC,                            // tap Space: dash burst + i-frames (main.onEvade)
+    afterburner: afterburnerC,                    // hold Shift: fuel-tank overdrive (main.js drains, physics burns)
+    burnTime: 3.5 + 1.5 * afterburnerC,           // seconds a FULL tank burns for
+    burnRefill: 1 / (55 - 10 * afterburnerC),     // tank/s while idle — a slow 45/35/25s refill
+    evasion: evasionC,                            // tap A/D: sideways dash burst + i-frames (main.onDash)
+    autoEvade: autoevadeC,                        // Reflex Jink: auto-dodge scan (physics.step)
     recon: reconC,                                // Recon Drone: auto-survey reach (world.js)
     slipstream: slipC > 0,                        // tap F: short warp (main.onWarp)
     // ---- scaled passives ----
     magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magnetC),
     sensorMul: 1 + 0.3 * deepC,             // Deep Array widens the map reveal
-    regen: CFG.SHIP_REGEN * (1 + 0.35 * regenC),
-    regenDelay: CFG.SHIP_REGEN_DELAY * (1 - 0.1 * regenC),
+    // Scout's Phase Screen is thin but SNAPPY — it recharges sooner and faster
+    // (that speed is the ability's identity; the other specs keep the base rate).
+    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
+    regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
     predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC,

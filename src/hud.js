@@ -35,7 +35,8 @@ function setVar(node, name, value) {
 export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
-    'msg', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
+    'burnBar', 'burnFill', 'burnNum',
+    'msg', 'speedBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2', 'bottomleft',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
@@ -173,6 +174,17 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
 
 export function updateHud(game) {
   syncMenus(game);
+  // Dev sim-speed badge (window.speed / ?dev hotkeys): hidden at 1x so normal
+  // play never shows it; while fast-forwarding it also owns up to the achieved
+  // rate whenever the machine can't keep up with the target.
+  const scale = game.timeScale || 1;
+  el.speedBadge.classList.toggle('hidden', scale === 1);
+  if (scale !== 1) {
+    const act = game.speedActual || scale;
+    const lag = act < scale * 0.9;
+    setText(el.speedBadge, lag ? `SIM ×${scale} — running ×${act.toFixed(1)}` : `SIM ×${scale}`);
+    el.speedBadge.classList.toggle('lag', lag);
+  }
   const s = game.ship;
   const st = game.st;
   const prog = game.prog;
@@ -228,6 +240,19 @@ export function updateHud(game) {
   // vignette, and cluster can all react together (CSS keys off them).
   el.hud.classList.toggle('lowhull', game.started && s.alive && hullFrac < 0.35);
   el.hud.classList.toggle('heat', game.started && s.alive && (game.heatT || 0) > 0.45);
+
+  // Afterburner fuel (scout): the BURN bar exists only once the ability is
+  // owned — main.js owns the tank (game.burnerFuel / burnerOn).
+  const hasBurner = st.afterburner > 0;
+  el.burnBar.classList.toggle('hidden', !hasBurner);
+  if (hasBurner) {
+    const fuel = Math.max(0, Math.min(1, game.burnerFuel ?? 1));
+    setWidth(el.burnFill, `${fuel * 100}%`);
+    setText(el.burnNum, `${Math.round(fuel * 100)}%`);
+    el.burnBar.classList.toggle('burning', !!game.burnerOn);
+    // Below the engage threshold the tank can't light — dim it so the wait reads
+    el.burnBar.classList.toggle('low', !game.burnerOn && fuel < 0.25);
+  }
 
   // Combo stamp: throw-kill chains slam a multiplier onto the screen
   const comboLive = game.started && (game.combo || 0) >= 2 && game.comboT > 0;

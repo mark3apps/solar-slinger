@@ -1513,6 +1513,20 @@ function drawShip(game) {
     // collision radius — on a titan those differ by almost 2x. It tracks the
     // tier-morph scale so it grows with the art instead of snapping.
     const R = visR * morphScale * 1.08 + 5 / z;
+    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI):
+    // clip every shield visual — glow, recharge sweep, absorb ripple — to
+    // the covered wedge so the bare tail reads at a glance. The wedge tracks
+    // the nose, so the calm-rim design law still holds within it.
+    const arc = game.st.shieldArc ?? Math.PI;
+    const partial = arc < Math.PI - 0.01;
+    if (partial) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.arc(s.x, s.y, R * 2.6, s.angle - arc, s.angle + arc);
+      ctx.closePath();
+      ctx.clip();
+    }
     if (sf > 0.02) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
       let a = 0.12 + 0.30 * sf;
@@ -1548,6 +1562,16 @@ function drawShip(game) {
       ctx.fillStyle = `rgba(150, 225, 255, ${(1 - k) * 0.16})`;
       ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
     }
+    if (partial) ctx.restore();
+  }
+
+  // REFLEX JINK flash: one expanding mint ring the instant the auto-dodge
+  // fires — EVENT motion, like the absorb ripple (game.jinkT, main.js decay).
+  if (game.jinkT > 0) {
+    const k = 1 - game.jinkT / 0.3;
+    ctx.strokeStyle = `rgba(160, 255, 230, ${(1 - k) * 0.85})`;
+    ctx.lineWidth = 2.5 / game.cam.zoom;
+    ctx.beginPath(); ctx.arc(s.x, s.y, visR * (1 + k * 1.6), 0, TAU); ctx.stroke();
   }
 
   // Corona/lava heat: the hull glows toward melting (game.heatT 0..1, set
@@ -1591,20 +1615,48 @@ function drawShip(game) {
   // scale, so the swap reads as the ship growing into its new class.
   ctx.scale(morphScale, morphScale);
 
-  // Flames anchor to the tier's actual engine mouth / nose tip, not the
-  // collision radius — the art's rear moves aft as the hulls grow.
-  const rearX = -tG.rear * r / tG.bR, noseX = tG.nose * r / tG.bR;
+  // Flames anchor to the tier's actual engine mouth / nose tip. Since the
+  // hitbox change, r (collision) is LARGER than the drawn body disc — art
+  // anchors must use the same footprint normalization as drawShipHull, and
+  // art-proportional sizes scale off the DRAWN disc (bodyR), never r.
+  const uG = r / (SHIP_HIT_FRAC * shipReach(tG));
+  const bodyR = tG.bR * uG;   // the drawn body disc radius
+  const rearX = -tG.rear * uG, noseX = tG.nose * uG;
   if (s.thrusting) {
-    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15);
-    const g = ctx.createLinearGradient(rearX, 0, rearX - r * 1.9 * f, 0);
-    g.addColorStop(0, 'rgba(120, 200, 255, 0.9)');
+    const burner = !!game.burnerOn;
+    // The afterburner plume is nearly twice the flame — the burn should LOOK
+    // like an event (it's spending a slow-refilling tank, not a free hold).
+    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1);
+    const g = ctx.createLinearGradient(rearX, 0, rearX - bodyR * 1.9 * f, 0);
+    g.addColorStop(0, burner ? 'rgba(160, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.moveTo(rearX * 0.92, -5 - lv.thrust);
-    ctx.lineTo(rearX - r * 1.9 * f, 0);
+    ctx.lineTo(rearX - bodyR * 1.9 * f, 0);
     ctx.lineTo(rearX * 0.92, 5 + lv.thrust);
     ctx.closePath(); ctx.fill();
+    if (burner) {
+      // White-hot core lance + shock diamonds down the plume
+      const core = ctx.createLinearGradient(rearX, 0, rearX - bodyR * 1.4 * f, 0);
+      core.addColorStop(0, 'rgba(240, 252, 255, 0.95)');
+      core.addColorStop(1, 'transparent');
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.moveTo(rearX * 0.95, -2.5 - lv.thrust * 0.5);
+      ctx.lineTo(rearX - bodyR * 1.4 * f, 0);
+      ctx.lineTo(rearX * 0.95, 2.5 + lv.thrust * 0.5);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(225, 245, 255, 0.85)';
+      for (let i = 1; i <= 3; i++) {
+        const px = rearX - bodyR * (0.5 * i + 0.25) * f;
+        const dz = Math.max(0.8, bodyR * 0.1) * (1.1 - i * 0.24);
+        ctx.beginPath();
+        ctx.moveTo(px + dz * 1.6, 0); ctx.lineTo(px, -dz);
+        ctx.lineTo(px - dz * 1.6, 0); ctx.lineTo(px, dz);
+        ctx.closePath(); ctx.fill();
+      }
+    }
   }
   if (s.braking) {
     // Retro puffs firing forward
@@ -1612,9 +1664,25 @@ function drawShip(game) {
     const f = 1 + Math.sin(game.time * 50) * 0.4;
     ctx.beginPath();
     ctx.moveTo(noseX * 0.92, -4);
-    ctx.lineTo(noseX + r * (0.45 + 0.3 * f), 0);
+    ctx.lineTo(noseX + bodyR * (0.45 + 0.3 * f), 0);
     ctx.lineTo(noseX * 0.92, 4);
     ctx.closePath(); ctx.fill();
+  }
+
+  // DASH JETS flash (A/D dart): three quick puffs firing off the side the
+  // ship dashed AWAY from — exhaust opposite the dart (game.dashT, main.js).
+  if (game.dashT > 0) {
+    const k = game.dashT / 0.22;
+    const side = -(game.dashDir || 1);   // local +y is the ship's right
+    ctx.fillStyle = `rgba(150, 235, 255, ${0.75 * k})`;
+    const jy = side * bodyR * 0.85;
+    for (const jx of [rearX * 0.45, 0, noseX * 0.45]) {
+      ctx.beginPath();
+      ctx.moveTo(jx - bodyR * 0.16, jy);
+      ctx.lineTo(jx, jy + side * bodyR * (0.7 + 0.5 * k));
+      ctx.lineTo(jx + bodyR * 0.16, jy);
+      ctx.closePath(); ctx.fill();
+    }
   }
 
   // Flare EMP: dead engines don't flame — they SPUTTER, arcing little
@@ -1624,8 +1692,8 @@ function drawShip(game) {
     if (Math.sin(game.time * 29) > -0.3) {
       ctx.fillStyle = `rgba(255, 205, 130, ${0.3 + 0.5 * Math.random()})`;
       ctx.beginPath();
-      ctx.arc(rearX * (0.9 + Math.random() * 0.25), (Math.random() - 0.5) * r * 0.8,
-        Math.max(1.2, r * 0.09), 0, TAU);
+      ctx.arc(rearX * (0.9 + Math.random() * 0.25), (Math.random() - 0.5) * bodyR * 0.8,
+        Math.max(1.2, bodyR * 0.09), 0, TAU);
       ctx.fill();
     }
   }
@@ -1639,10 +1707,11 @@ function drawShip(game) {
   ctx.restore();
 
   if (game.held) {
+    // Beams sprout from the DRAWN hull edge (bodyR), not the larger hitbox
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    drawBeam(game, s.x + Math.cos(ang) * r, s.y + Math.sin(ang) * r, game.held, '#5ac8ff');
+    drawBeam(game, s.x + Math.cos(ang) * bodyR, s.y + Math.sin(ang) * bodyR, game.held, '#5ac8ff');
     // Twin Grip: a second beam to the flanking second rock
-    if (game.held2) drawBeam(game, s.x + Math.cos(ang + 0.5) * r, s.y + Math.sin(ang + 0.5) * r, game.held2, '#5ac8ff');
+    if (game.held2) drawBeam(game, s.x + Math.cos(ang + 0.5) * bodyR, s.y + Math.sin(ang + 0.5) * bodyR, game.held2, '#5ac8ff');
   }
 }
 

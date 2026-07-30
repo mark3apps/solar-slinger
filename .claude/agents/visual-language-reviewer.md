@@ -41,6 +41,9 @@ enough surrounding context to judge them.
 - Five progression tracks (BEAM, ORBIT, FLING, HULL, ENGINE) with 6 pips each; pips rebuild only when the
   level signature changes. HULL heals from scrap (green); at `<0.35` it goes `.low` (orange/red). SHLD has
   `.charging` shimmer and `.down` blink. Keep the split-bar semantics.
+- The `#speedBadge` (`SIM ×n`) is DEV-ONLY helper UI: amber (the helper/aiming family), and it must stay
+  hidden whenever `game.timeScale` is 1 — normal play must never show it. Flag any change that makes it
+  visible at 1x, restyles it as a "real" game element, or moves game-facing information into it.
 
 ## How to report
 
