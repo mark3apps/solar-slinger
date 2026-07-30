@@ -1,11 +1,48 @@
+/* ============================================================================
+   Solar Slinger — UI shell. Design language: VIOLET NEON CONSOLE.
+   Chrome (frames, panels, buttons, chips, radar rim) is hot violet neon with
+   thin GOLD trim accents; silhouettes are octagon-chamfered slabs and
+   pointed hex pills; bars carry white-hot cores with colored bloom. Data
+   keeps its in-world semantic colors — hull green, shield blue, lives pink,
+   alerts ember — so instruments still read at a glance inside purple chrome.
+   Hard rule carried over from the game's design laws:
+     - NO dashed borders anywhere (dashes are reserved for in-canvas aim UI).
+   ========================================================================= */
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  /* Display face for titles/buttons; data face for instruments & numbers */
+  --font-ui: "Avenir Next", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --font-data: "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
+
+  --space: #04060d;
+  --ink: #e2d9ff;
+  --ink-dim: rgba(196, 180, 240, .68);
+  --chrome: #b070ff;        /* the violet neon everything-chrome */
+  --chrome-soft: #d9b3ff;
+  --gold: #ffc964;          /* thin trim accent riding alongside the violet */
+  --cyan: #3ee0ff;          /* semantic: shield / sensors */
+  --cyan-soft: #9fe2ff;
+  --amber: #ffd76a;
+  --ember: #ff7a5c;
+  --green: #7dffb8;
+  --violet: #b78bff;
+
+  /* Octagon slab (all four corners cut) and pointed hex pill */
+  --clip-oct: polygon(var(--ch) 0, calc(100% - var(--ch)) 0, 100% var(--ch),
+                      100% calc(100% - var(--ch)), calc(100% - var(--ch)) 100%,
+                      var(--ch) 100%, 0 calc(100% - var(--ch)), 0 var(--ch));
+  --clip-hexpill: polygon(var(--hx) 0, calc(100% - var(--hx)) 0, 100% 50%,
+                          calc(100% - var(--hx)) 100%, var(--hx) 100%, 0 50%);
+}
 
 html, body {
   width: 100%; height: 100%;
   overflow: hidden;
-  background: #04060d;
-  font-family: "SF Mono", "Menlo", "Consolas", monospace;
-  color: #cfe3ff;
+  background: var(--space);
+  font-family: var(--font-data);
+  color: var(--ink);
   user-select: none;
 }
 
@@ -15,184 +52,591 @@ html, body {
 
 #hud { position: fixed; inset: 0; pointer-events: none; }
 
-#topleft {
-  position: absolute; top: 14px; left: 16px;
-  display: flex; flex-direction: column; gap: 6px;
-  text-shadow: 0 0 6px rgba(80, 160, 255, .6);
-  font-size: 13px; letter-spacing: 1px;
+/* NOTE: the HUD once carried a 3D "cockpit canopy" (per-element perspective
+   tilts + flight sway) — it was removed on request ("not really working").
+   The HUD is flat screen-space; don't reintroduce transforms here. */
+
+/* Cockpit frame: soft glowing corner arcs on the viewport itself — you're
+   flying the machine. A masked rounded border shows only near the corners.
+   --fr is the frame color; alarm states on #hud repaint it (low hull → ember). */
+#hud { --fr: var(--chrome); }
+#hud::before {
+  content: ''; position: absolute; inset: 10px; opacity: .38;
+  border: 1px solid var(--fr);
+  border-radius: 28px;
+  -webkit-mask:
+    radial-gradient(circle at 0 0,       #000 0 34px, transparent 86px) top left     / 140px 140px no-repeat,
+    radial-gradient(circle at 100% 0,    #000 0 34px, transparent 86px) top right    / 140px 140px no-repeat,
+    radial-gradient(circle at 0 100%,    #000 0 34px, transparent 86px) bottom left  / 140px 140px no-repeat,
+    radial-gradient(circle at 100% 100%, #000 0 34px, transparent 86px) bottom right / 140px 140px no-repeat;
+  mask:
+    radial-gradient(circle at 0 0,       #000 0 34px, transparent 86px) top left     / 140px 140px no-repeat,
+    radial-gradient(circle at 100% 0,    #000 0 34px, transparent 86px) top right    / 140px 140px no-repeat,
+    radial-gradient(circle at 0 100%,    #000 0 34px, transparent 86px) bottom left  / 140px 140px no-repeat,
+    radial-gradient(circle at 100% 100%, #000 0 34px, transparent 86px) bottom right / 140px 140px no-repeat;
+  box-shadow: 0 0 12px var(--fr);
+}
+/* Pre-game there is no cockpit yet — the frame belongs to flying */
+body.preGame #hud::before { opacity: 0; }
+#hud.lowhull { --fr: #ff5c48; }
+#hud.lowhull::before { opacity: .85; animation: framePulse 1.6s ease-in-out infinite; }
+#hud.heat:not(.lowhull) { --fr: var(--amber); }
+#hud.heat:not(.lowhull)::before { opacity: .6; }
+@keyframes framePulse { 50% { opacity: .35; } }
+
+/* ---------------------------------------------------------------------------
+   #fx — the full-screen reaction layer. The world hits back through it:
+   one-shot flashes on ::before (hurt / shield ripple), sustained alarms on
+   ::after (low hull, corona heat), keyed off classes hud.js sets each frame.
+   ------------------------------------------------------------------------ */
+#fx { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+#fx::before, #fx::after { content: ''; position: absolute; inset: 0; opacity: 0; }
+#fx.shieldHit::before {
+  background: radial-gradient(115% 85% at 50% 50%, transparent 58%, rgba(62, 224, 255, .32) 100%);
+  animation: fxFlash .4s ease-out forwards;
+}
+#fx.hurt::before {
+  background: radial-gradient(118% 88% at 50% 50%, transparent 52%, rgba(255, 40, 20, .4) 100%);
+  animation: fxFlash .45s ease-out forwards;
+}
+@keyframes fxFlash { from { opacity: 1; } to { opacity: 0; } }
+#hud.heat #fx::after {
+  opacity: 1;
+  background: radial-gradient(115% 85% at 50% 50%, transparent 55%, rgba(255, 150, 40, .26) 100%);
+}
+#hud.lowhull #fx::after {
+  opacity: 1;
+  background: radial-gradient(115% 85% at 50% 50%, transparent 55%, rgba(255, 40, 20, .26) 100%);
+  animation: lowhullPulse 1.6s ease-in-out infinite;
+}
+@keyframes lowhullPulse { 50% { opacity: .45; } }
+
+/* Combo stamp: throw-kill chains slam their multiplier over the action */
+#combo {
+  position: absolute; top: 25%; left: 50%;
+  transform: translateX(-50%) skewX(-8deg);
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 62px; letter-spacing: 2px; z-index: 4;
+  color: #ffffff;
+  text-shadow: 0 0 26px var(--gold), 0 0 9px #ffb35c, 0 0 2px #ffffff;
+}
+#combo.pop { animation: comboPop .5s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes comboPop {
+  0% { transform: translateX(-50%) skewX(-8deg) scale(2.4); opacity: 0; }
+  55% { opacity: 1; }
+  100% { transform: translateX(-50%) skewX(-8deg) scale(1); }
 }
 
-/* Hull (scrap-heal only) and shield (recharges) get their own bars */
-.statbar { display: flex; align-items: center; gap: 7px; width: 260px; }
+/* ---------------------------------------------------------------------------
+   Top-left: the VITALS. Each instrument is a stencil header (label + hot
+   digits) over a bare SEGMENTED stick — no chrome box around the gauges
+   (a framed version was cut on request). Colors are SEMANTIC: green hull /
+   blue shield / red alarm.
+   ------------------------------------------------------------------------ */
+#topleft {
+  position: absolute; top: 18px; left: 20px; z-index: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+/* ---- Hull / shield: kit-style framed gauges. Each is a BOLD violet
+   hex-pill frame (2px luminous edge over deep-purple glass, heavy halo)
+   with a rounded ENERGY STICK floating inside on a visible gap — white-hot
+   core, colored bloom. Both share one points-per-pixel scale (widths set
+   from hud.js), so their lengths tell the story of the split pool. ---- */
+.statbar { display: block; }
+.stathead {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 3px; padding: 0 6px 0 4px;
+}
 .statlabel {
-  width: 52px; font-size: 10px; letter-spacing: 1px;
-  color: #bfe0ff; text-shadow: 0 0 5px rgba(80, 160, 255, .6);
+  font-size: 9px; letter-spacing: 4px;
+  color: var(--green); text-shadow: 0 0 8px rgba(120, 255, 180, .8);
 }
-#hullBar .statlabel { color: #9fe8bf; }
-#hullBar.low .statlabel { color: #ff8a6c; }
-#shieldBar .statlabel { color: #9fd6ff; }
+.statnum {
+  font-size: 14px; font-weight: bold; letter-spacing: 1px;
+  color: #eaffff; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 9px rgba(120, 255, 180, .65), 0 1px 2px rgba(0, 0, 0, .9);
+}
+#shieldBar .statlabel { color: var(--cyan-soft); text-shadow: 0 0 8px rgba(62, 224, 255, .8); }
+#shieldBar .statnum { text-shadow: 0 0 9px rgba(62, 224, 255, .65), 0 1px 2px rgba(0, 0, 0, .9); }
+#hullBar.low .statlabel {
+  color: #ff8a6c; text-shadow: 0 0 8px rgba(255, 122, 92, .9);
+  animation: shieldBlink .8s steps(2) infinite;
+}
+/* No frame — the gauge IS the stick. The track is just a dark well with a
+   whisper of the bar's own color, so the empty run stays readable without
+   any chrome box around it. */
 .stattrack {
-  position: relative; flex: 1; height: 11px;
-  border: 1px solid rgba(120, 190, 255, .45);
-  border-radius: 6px;
-  background: rgba(8, 16, 34, .72);
-  overflow: hidden;
+  position: relative; display: block; height: 12px;
 }
-.stattrack::after {   /* quarter ticks */
+/* The well fills the track; ::after slices the stick into SEGMENTS: one
+   divider every 20 points (--cell, set from hud.js off the shared
+   points-per-pixel scale). */
+.statwell {
+  position: absolute; inset: 0; display: block;
+  border-radius: 999px; overflow: hidden;
+  background: rgba(8, 4, 20, .6);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, .6);
+}
+#hullBar .statwell {
+  background: linear-gradient(0deg, rgba(60, 230, 130, .09), rgba(60, 230, 130, .09)), rgba(8, 4, 20, .6);
+}
+#shieldBar .statwell {
+  background: linear-gradient(0deg, rgba(60, 150, 255, .1), rgba(60, 150, 255, .1)), rgba(8, 4, 20, .6);
+}
+#hullBar.low .statwell {
+  background: linear-gradient(0deg, rgba(255, 100, 70, .12), rgba(255, 100, 70, .12)), rgba(8, 4, 20, .6);
+}
+/* Point-cells belong to the HIT-POINT pool only — the fuel bar has none */
+#hullBar .statwell::after, #shieldBar .statwell::after {
   content: ''; position: absolute; inset: 0; pointer-events: none;
   background: repeating-linear-gradient(90deg,
-    transparent 0, transparent calc(25% - 1px),
-    rgba(6, 12, 26, .9) calc(25% - 1px), rgba(6, 12, 26, .9) 25%);
+    transparent 0 calc(var(--cell, 33px) - 2px),
+    rgba(8, 4, 20, .9) calc(var(--cell, 33px) - 2px) var(--cell, 33px));
 }
 #hullFill, #shieldFill {
-  position: absolute; left: 0; top: 0; height: 100%; width: 100%;
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px;
   transition: width .12s ease;
 }
+/* Solid saturated bodies — hull GREEN, shield BLUE, no washed-out white
+   core: the two must be tellable apart at a glance. */
 #hullFill {
-  background: linear-gradient(180deg, #7dffb8, #1fd47a 55%, #14a35c);
-  box-shadow: 0 0 8px rgba(60, 255, 150, .35);
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .22) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #8dffc0, #22c96a 55%, #14934c);
+  box-shadow: 0 0 12px rgba(60, 230, 130, .9), inset 0 1px 0 rgba(255, 255, 255, .5);
+  animation: gaugeSheen 4.5s linear infinite;
 }
 #hullBar.low #hullFill {
-  background: linear-gradient(180deg, #ff9a6c, #d42f2f);
-  box-shadow: 0 0 8px rgba(255, 80, 60, .5);
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .22) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #ffb48c, #f04a30 55%, #b02418);
+  box-shadow: 0 0 12px rgba(255, 90, 60, .9), inset 0 1px 0 rgba(255, 255, 255, .4);
+  animation: gaugeSheen 4.5s linear infinite;
 }
 #shieldFill {
-  background: linear-gradient(90deg, #3fa8ff, #9fdcff, #3fa8ff);
-  background-size: 200% 100%;
-  box-shadow: 0 0 8px rgba(80, 180, 255, .45);
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .25) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #7cc8ff, #1f7ff0 55%, #1250b8);
+  box-shadow: 0 0 12px rgba(60, 150, 255, .9), inset 0 1px 0 rgba(255, 255, 255, .5);
+  animation: gaugeSheen 4.5s linear infinite;
 }
-#shieldBar.charging #shieldFill { animation: shieldFlow 1.1s linear infinite; }
-/* Afterburner fuel (scout) — hidden until the ability is owned (hud.js) */
-#burnBar .statlabel { color: #ffcf8a; }
+/* one sheen band drifts across every stick (first background layer) */
+@keyframes gaugeSheen {
+  from { background-position: 130% 0, 0 0; }
+  to   { background-position: -130% 0, 0 0; }
+}
+#shieldBar.charging #shieldFill { animation: gaugeSheen 1.2s linear infinite; }
+
+/* Afterburner fuel (scout) — hidden until the ability is owned (hud.js).
+   Same frameless stick language as hull/shield, in throttle AMBER; a fuel
+   tank isn't part of the hit-point pool, so it gets no point-cells and a
+   shorter run. .burning = fast sheen; .low = tank can't light yet. */
+#burnBar { width: 220px; }
+#burnBar .statlabel { color: #ffcf8a; text-shadow: 0 0 8px rgba(255, 190, 110, .8); }
+#burnBar .statnum { text-shadow: 0 0 9px rgba(255, 190, 110, .65), 0 1px 2px rgba(0, 0, 0, .9); }
+#burnBar .statwell { background: linear-gradient(0deg, rgba(255, 170, 70, .1), rgba(255, 170, 70, .1)), rgba(8, 4, 20, .6); }
 #burnFill {
-  position: absolute; left: 0; top: 0; height: 100%; width: 100%;
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px;
   transition: width .12s linear;
-  background: linear-gradient(90deg, #ff9a3c, #ffd88a, #ff9a3c);
-  background-size: 200% 100%;
-  box-shadow: 0 0 8px rgba(255, 170, 70, .4);
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .25) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #ffd88a, #ff9a3c 55%, #d96f18);
+  box-shadow: 0 0 12px rgba(255, 170, 70, .8), inset 0 1px 0 rgba(255, 255, 255, .5);
+  animation: gaugeSheen 4.5s linear infinite;
 }
-#burnBar.burning #burnFill { animation: shieldFlow .5s linear infinite; }
+#burnBar.burning #burnFill { animation: gaugeSheen .6s linear infinite; }
 #burnBar.low #burnFill { opacity: .55; }
-@keyframes shieldFlow { from { background-position: 200% 0; } to { background-position: 0% 0; } }
-#shieldBar.down .stattrack { border-color: rgba(255, 110, 90, .65); }
 #shieldBar.down .statlabel { animation: shieldBlink 1s steps(2) infinite; color: #ff8a6c; }
 @keyframes shieldBlink { 50% { opacity: .3; } }
-.statnum {
-  width: 46px; font-size: 10px; text-align: right;
-  color: #eaffff; text-shadow: 0 0 4px #000;
-}
 .statbar.hit .stattrack { animation: barHit .25s ease; }
 @keyframes barHit {
-  0% { filter: brightness(2.4); box-shadow: 0 0 14px rgba(255, 255, 255, .8); }
+  0% { filter: brightness(2.6); }
   100% { filter: brightness(1); }
 }
 
-/* Roguelite progression HUD: tier + lives, an XP bar, and acquired-upgrade icons */
-#progRow { display: flex; align-items: center; gap: 10px; margin-top: 2px; font-size: 11px; }
-#tierLabel { color: #8fd0ff; letter-spacing: 1px; }
-#livesText { color: #ff8aa0; text-shadow: 0 0 8px rgba(255, 100, 130, .7); letter-spacing: 2px; }
+/* ---------------------------------------------------------------------------
+   Bottom-left: the PILOT CARD — who you are this run. Spec pill, tier, lives,
+   then the ability loadout. Not a box: a luminous violet spine with rows
+   fading off it, angled up onto the canopy from below. Ignores the mouse.
+   ------------------------------------------------------------------------ */
+#bottomleft {
+  position: absolute; left: 20px; bottom: 18px; z-index: 0;
+  display: flex; flex-direction: column; gap: 7px;
+  width: 320px;
+  padding: 10px 16px 11px 14px;
+  border-left: 3px solid rgba(176, 112, 255, .75);
+  border-radius: 3px 16px 16px 3px;
+  background: linear-gradient(90deg, rgba(12, 6, 26, .76), rgba(12, 6, 26, .36) 55%, transparent);
+  text-shadow: 0 0 6px rgba(176, 112, 255, .5);
+  font-size: 13px; letter-spacing: 1px;
+}
 
-/* XP bar spans the WHOLE current tier; the ticks mark each intermediate
-   upgrade pick, and a full bar = the tier-up milestone. The tick period is
-   set inline (100 / PICKS_PER_TIER %) from hud.js so it tracks the constant. */
+/* Identity row: spec pill · tier · lives dots, one line */
+#progRow { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+/* The chosen specialization wears its own color (ac-* sets --acc) */
+#specLabel {
+  --acc: var(--chrome);
+  --hx: 9px;
+  font-size: 10px; letter-spacing: 1.5px; font-weight: bold;
+  padding: 3px 14px;
+  clip-path: var(--clip-hexpill);
+  color: color-mix(in srgb, var(--acc) 75%, white);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--acc) 45%, transparent) 0 1px, transparent 1px calc(100% - 1px), color-mix(in srgb, var(--acc) 45%, transparent) calc(100% - 1px)),
+    color-mix(in srgb, var(--acc) 20%, transparent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 80%, transparent);
+}
+/* Lives: glowing dots (spent ones stay as dim sockets); the last one pulses */
+#livesText { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; }
+#livesText .lp {
+  width: 8px; height: 8px; border-radius: 50%;
+  border: 1px solid rgba(255, 138, 160, .45);
+  background: rgba(60, 12, 26, .5);
+}
+#livesText .lp.on {
+  background: radial-gradient(circle at 35% 35%, #ffd4de, #ff5c7a 70%);
+  border-color: rgba(255, 170, 190, .9);
+  box-shadow: 0 0 9px rgba(255, 92, 122, .85);
+}
+#livesText .lp.on.last { animation: lastLife 1.2s ease-in-out infinite; }
+@keyframes lastLife { 50% { box-shadow: 0 0 3px rgba(255, 92, 122, .4); opacity: .55; } }
+
+/* Acquired upgrades — a detailed list (icon, name, rank dots) */
+#upList2 { display: flex; flex-direction: column; gap: 4px; margin-top: 1px; }
+#upList2 .ulhead {
+  font-size: 9px; letter-spacing: 3px; color: rgba(206, 170, 255, .75);
+  margin: 2px 0 1px; padding-top: 8px;
+  border-top: 1px solid rgba(176, 112, 255, .18);
+  font-family: var(--font-ui); font-weight: 600;
+  text-shadow: 0 0 6px rgba(176, 112, 255, .5);
+}
+.uprow2 { display: flex; align-items: center; gap: 7px; font-size: 11px; line-height: 1.35; }
+.uprow2 .ui-ic { width: 15px; text-align: center; color: var(--chrome-soft); text-shadow: 0 0 7px rgba(176, 112, 255, .9); }
+.uprow2 .ui-nm { flex: 1; color: #e8ddff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uprow2 .ui-rk { display: inline-flex; gap: 4px; }
+.uprow2 .ui-rk .rp {
+  width: 6px; height: 6px; border-radius: 50%;
+  border: 1px solid rgba(176, 112, 255, .4);
+  background: rgba(24, 12, 44, .6);
+}
+.uprow2 .ui-rk .rp.on {
+  background: radial-gradient(circle at 35% 35%, #d6ffe9, #2fd484 75%);
+  border-color: rgba(120, 255, 180, .9);
+  box-shadow: 0 0 6px rgba(120, 255, 180, .8);
+}
+.uprow2 .ui-on { font-size: 9px; color: var(--green); letter-spacing: 1px; text-shadow: 0 0 7px rgba(120, 255, 180, .7); }
+
+/* XP bar: promoted to the top centre of the canopy — the run's throughline.
+   A pointed hex pill with a white-hot violet core, straight from the kit.
+   It spans the WHOLE current tier; the ticks mark each intermediate upgrade
+   pick, and a full bar = the tier-up milestone. The tick period is set inline
+   (100 / PICKS_PER_TIER %) from hud.js so it tracks the constant. */
 #xpBar {
-  position: relative;
-  width: 260px; height: 9px; margin-top: 3px;
-  border: 1px solid rgba(150, 130, 255, .5); border-radius: 3px;
-  overflow: hidden; background: rgba(14, 12, 34, .7);
+  --hx: 13px;
+  position: absolute; top: 16px; left: 50%;
+  width: 440px; height: 17px;
+  padding: 5px 12px;
+  clip-path: var(--clip-hexpill);
+  overflow: hidden;
+  background: linear-gradient(155deg,
+    #f0e2ff, rgba(176, 112, 255, .8) 28%, rgba(176, 112, 255, .8) 72%, #e6d0ff);
+  filter: drop-shadow(0 0 10px rgba(150, 80, 255, .5));
+  transform: translateX(-50%);
 }
-#xpFill {
-  display: block; height: 100%; width: 0;
-  background: linear-gradient(90deg, #7d9bff, #b78bff);
-  box-shadow: 0 0 8px rgba(150, 130, 255, .5); transition: width .12s ease;
+#xpBar::before {   /* deep-purple glass, inset inside the 2px luminous rim */
+  content: ''; position: absolute; inset: 2px;
+  clip-path: var(--clip-hexpill);
+  background: linear-gradient(165deg, rgba(24, 13, 46, .96), rgba(11, 5, 24, .97));
 }
-#xpBar::after {   /* upgrade-pick tick marks (period set inline from hud.js) */
-  content: ''; position: absolute; inset: 0; pointer-events: none;
+#xpBar.gain { animation: xpGain .4s ease; }
+@keyframes xpGain {
+  0% { filter: brightness(2.4) drop-shadow(0 0 16px rgba(183, 139, 255, .95)); }
+  100% { filter: brightness(1) drop-shadow(0 0 10px rgba(150, 80, 255, .5)); }
+}
+#xpFill {   /* the floating stick: white-hot core, violet bloom */
+  display: block; position: relative; height: 100%; width: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #cfa6ff, #ffffff 36% 64%, #a35cff);
+  box-shadow: 0 0 14px rgba(176, 112, 255, .95), 0 0 3px #ffffff;
+  transition: width .12s ease;
+}
+#xpBar::after {   /* upgrade-pick thresholds (period set inline from hud.js) —
+                     BRIGHT lines, so they read on the empty well too */
+  content: ''; position: absolute; inset: 3px 11px; pointer-events: none;
   background: repeating-linear-gradient(90deg,
     transparent 0, transparent calc(var(--tick) - 2px),
-    rgba(214, 226, 255, .85) calc(var(--tick) - 2px), rgba(214, 226, 255, .85) var(--tick));
+    rgba(216, 180, 255, .55) calc(var(--tick) - 2px), rgba(216, 180, 255, .55) var(--tick));
 }
 
-/* Acquired upgrades — a detailed list (icon, name, rank pips) */
-#upList2 { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; max-width: 260px; }
-#upList2 .ulhead { font-size: 9px; letter-spacing: 1.5px; color: rgba(150, 200, 255, .6); margin-bottom: 1px; }
-.uprow2 { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.35; }
-.uprow2 .ui-ic { width: 14px; text-align: center; color: #bfe0ff; }
-.uprow2 .ui-nm { flex: 1; color: #d6ecff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.uprow2 .ui-rk { display: inline-flex; gap: 2px; }
-.uprow2 .ui-rk .rp {
-  width: 5px; height: 5px; border-radius: 1px;
-  border: 1px solid rgba(120, 200, 255, .4);
+/* Tier + ship class: seated right under the XP bar it measures */
+#tierLabel {
+  position: absolute; top: 38px; left: 50%; transform: translateX(-50%);
+  white-space: nowrap;
+  color: #e0d0ff; letter-spacing: 3px; font-size: 10px;
+  text-shadow: 0 0 8px rgba(176, 112, 255, .8), 0 1px 2px rgba(0, 0, 0, .9);
 }
-.uprow2 .ui-rk .rp.on { background: #7dffb8; border-color: rgba(120, 255, 180, .7); box-shadow: 0 0 4px rgba(120, 255, 180, .6); }
-.uprow2 .ui-on { font-size: 9px; color: #7dffb8; letter-spacing: 1px; }
 
 /* Dev-only sim-speed badge (game.timeScale ≠ 1). Amber marks it as helper/
    debug UI — same family as the aiming assists — and it must stay hidden in
-   normal 1x play. .lag = the machine can't hit the requested speed. */
+   normal 1x play. Sits BELOW the tier line (the XP bar owns the top edge).
+   .lag = the machine can't hit the requested speed. */
 #speedBadge {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-  font-size: 11px; letter-spacing: 2px; padding: 3px 10px;
+  position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; letter-spacing: 2px; padding: 3px 12px;
   color: #ffd27a; border: 1px solid rgba(255, 200, 110, .5);
-  border-radius: 6px; background: rgba(40, 28, 8, .55);
+  border-radius: 999px; background: rgba(40, 28, 8, .6);
   text-shadow: 0 0 6px rgba(255, 190, 90, .5);
 }
 #speedBadge.lag { color: #ff9a6c; border-color: rgba(255, 150, 100, .6); }
 
+/* ---------------------------------------------------------------------------
+   Transmission line: winged callout text, no box (it sits over live play)
+   ------------------------------------------------------------------------ */
 #msg {
-  position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
-  font-size: 20px; letter-spacing: 2px; text-align: center;
-  color: #bfe6ff; text-shadow: 0 0 14px rgba(90, 180, 255, .9);
+  position: absolute; top: 17%; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 18px;
+  max-width: 78vw;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 19px; letter-spacing: 3px; text-align: center;
+  color: #f4edff;
+  text-shadow: 0 0 16px rgba(176, 112, 255, .95), 0 0 4px rgba(0, 0, 0, .9);
   animation: msgfade .3s ease;
 }
+/* wing = a neon rule with a hot node at its outboard tip */
+#msg::before, #msg::after {
+  content: ''; flex: none; width: 56px; height: 5px;
+  background:
+    radial-gradient(circle at 2.5px 50%, #ffffff 0 1.2px, var(--chrome) 2px, transparent 3px)
+      left center / 6px 5px no-repeat,
+    linear-gradient(90deg, rgba(176, 112, 255, .9), rgba(176, 112, 255, 0))
+      6px center / calc(100% - 6px) 1px no-repeat;
+}
+#msg::after { transform: scaleX(-1); }
 @keyframes msgfade { from { opacity: 0; transform: translateX(-50%) translateY(-8px); } }
 
+/* ---------------------------------------------------------------------------
+   The violet console panel: an octagon slab. Its background IS the luminous
+   edge; ::before lays the deep-purple glass fill 1px inside; ::after carries
+   grid + scanlines + GOLD corner trim dashes + the energy line that sweeps
+   the top on a slow loop. drop-shadow hugs the octagon for the halo.
+   ------------------------------------------------------------------------ */
 .panel {
+  --ch: 16px;
+  --acc: var(--chrome);
+  --edge-a: rgba(230, 200, 255, .95);
+  --edge-b: rgba(150, 80, 255, .4);
+  --halo: rgba(150, 80, 255, .38);
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  min-width: 460px; max-width: 640px;
-  padding: 26px 34px;
-  background: rgba(6, 12, 26, .92);
-  border: 1px solid rgba(110, 180, 255, .5);
-  border-radius: 10px;
-  box-shadow: 0 0 40px rgba(40, 120, 255, .25), inset 0 0 60px rgba(20, 60, 140, .15);
+  isolation: isolate;
+  min-width: 470px; max-width: 660px;
+  padding: 30px 40px;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(155deg,
+    var(--edge-a), var(--edge-b) 26%, var(--edge-b) 74%, var(--edge-a));
+  filter: drop-shadow(0 0 22px var(--halo)) drop-shadow(0 0 2px var(--halo));
   text-align: center; z-index: 10;
+  animation: panelIn .28s cubic-bezier(.2, 1.1, .3, 1);
 }
-.panel h1 { font-size: 30px; letter-spacing: 4px; color: #ff6a5c; text-shadow: 0 0 18px rgba(255, 80, 60, .8); margin-bottom: 12px; }
-.panel h2 { font-size: 20px; letter-spacing: 3px; color: #9fd6ff; margin-bottom: 16px; text-shadow: 0 0 12px rgba(80, 170, 255, .8); }
+.panel::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-oct);
+  background:
+    radial-gradient(130% 90% at 50% -10%, rgba(90, 40, 170, .45), transparent 60%),
+    linear-gradient(165deg, rgba(16, 8, 34, .96), rgba(8, 4, 20, .97));
+}
+.panel::after {
+  content: ''; position: absolute; inset: 2px; pointer-events: none;
+  clip-path: var(--clip-oct);
+  background:
+    /* the energy line: a hot streak riding the top edge, slow sweep */
+    linear-gradient(90deg, transparent 20%, #f3e8ff 46%, var(--acc) 50%, #f3e8ff 54%, transparent 80%)
+      top left / 300% 2px no-repeat,
+    /* gold trim dashes hugging two opposite chamfers */
+    linear-gradient(135deg, transparent calc(50% - 1px), rgba(255, 201, 100, .9) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px))
+      6px 6px / 16px 16px no-repeat,
+    linear-gradient(135deg, transparent calc(50% - 1px), rgba(255, 201, 100, .9) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px))
+      calc(100% - 6px) calc(100% - 6px) / 16px 16px no-repeat,
+    /* the kit's doubled frame: an inner detail line that breaks at corners */
+    linear-gradient(rgba(176, 112, 255, .35), rgba(176, 112, 255, .35)) 9px 8px / calc(100% - 18px) 1px no-repeat,
+    linear-gradient(rgba(176, 112, 255, .35), rgba(176, 112, 255, .35)) 9px calc(100% - 9px) / calc(100% - 18px) 1px no-repeat,
+    linear-gradient(rgba(176, 112, 255, .35), rgba(176, 112, 255, .35)) 8px 9px / 1px calc(100% - 18px) no-repeat,
+    linear-gradient(rgba(176, 112, 255, .35), rgba(176, 112, 255, .35)) calc(100% - 9px) 9px / 1px calc(100% - 18px) no-repeat,
+    /* circuit grid, barely-there */
+    repeating-linear-gradient(90deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
+    /* scanlines */
+    repeating-linear-gradient(0deg, rgba(216, 180, 255, .028) 0 1px, transparent 1px 3px),
+    /* light spill from the top edge */
+    radial-gradient(120% 55% at 50% 0%, rgba(150, 80, 255, .13), transparent 65%);
+  animation: energyLine 5s linear infinite;
+}
+@keyframes energyLine {
+  from { background-position: 150% 0, 6px 6px, calc(100% - 6px) calc(100% - 6px),
+         9px 8px, 9px calc(100% - 9px), 8px 9px, calc(100% - 9px) 9px, 0 0, 0 0, 0 0, 0 0; }
+  to   { background-position: -250% 0, 6px 6px, calc(100% - 6px) calc(100% - 6px),
+         9px 8px, 9px calc(100% - 9px), 8px 9px, calc(100% - 9px) 9px, 0 0, 0 0, 0 0, 0 0; }
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.965); }
+}
+
+.panel h1 {
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 30px; letter-spacing: 7px;
+  color: #ffffff;
+  text-shadow: 0 0 22px rgba(255, 80, 60, .95), 0 0 7px rgba(255, 120, 90, .9);
+  margin-bottom: 12px;
+}
+.panel h2 {
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 19px; letter-spacing: 6px;
+  color: #f8f2ff; margin-bottom: 20px;
+  text-shadow: 0 0 16px rgba(176, 112, 255, .95), 0 0 5px rgba(176, 112, 255, .8);
+}
+.panel h2::after {   /* luminous underline, brightest at centre */
+  content: ''; display: block; height: 1px; margin: 10px auto 0; width: 72%;
+  background: linear-gradient(90deg,
+    transparent, var(--chrome) 30%, var(--chrome) 70%, transparent);
+  box-shadow: 0 0 8px rgba(176, 112, 255, .8);
+}
 .panel p { margin: 8px 0; }
-.panel .small { font-size: 11px; color: rgba(170, 200, 240, .6); margin-top: 14px; }
+.panel .small { font-size: 11px; color: var(--ink-dim); margin-top: 16px; letter-spacing: 1px; }
 
+/* Destruction screens: same slab, ember circuitry, pulsing header */
+.panel.alert {
+  --acc: var(--ember);
+  --edge-a: rgba(255, 150, 120, .95);
+  --edge-b: rgba(220, 60, 40, .38);
+  --halo: rgba(255, 90, 50, .35);
+}
+.panel.alert::before {
+  background:
+    repeating-linear-gradient(-45deg, rgba(255, 90, 60, .05) 0 14px, transparent 14px 28px),
+    radial-gradient(130% 90% at 50% -10%, rgba(150, 30, 20, .4), transparent 60%),
+    linear-gradient(165deg, rgba(24, 6, 10, .96), rgba(12, 3, 6, .97));
+}
+.panel.alert::after {
+  background:
+    linear-gradient(90deg, transparent 20%, #ffe9df 46%, var(--ember) 50%, #ffe9df 54%, transparent 80%)
+      top left / 300% 2px no-repeat,
+    linear-gradient(135deg, transparent calc(50% - 1px), rgba(255, 201, 100, .9) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px))
+      6px 6px / 16px 16px no-repeat,
+    linear-gradient(135deg, transparent calc(50% - 1px), rgba(255, 201, 100, .9) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px))
+      calc(100% - 6px) calc(100% - 6px) / 16px 16px no-repeat,
+    linear-gradient(rgba(255, 122, 92, .35), rgba(255, 122, 92, .35)) 9px 8px / calc(100% - 18px) 1px no-repeat,
+    linear-gradient(rgba(255, 122, 92, .35), rgba(255, 122, 92, .35)) 9px calc(100% - 9px) / calc(100% - 18px) 1px no-repeat,
+    linear-gradient(rgba(255, 122, 92, .35), rgba(255, 122, 92, .35)) 8px 9px / 1px calc(100% - 18px) no-repeat,
+    linear-gradient(rgba(255, 122, 92, .35), rgba(255, 122, 92, .35)) calc(100% - 9px) 9px / 1px calc(100% - 18px) no-repeat,
+    repeating-linear-gradient(90deg, rgba(255, 122, 92, .04) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(255, 122, 92, .04) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(255, 200, 180, .028) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 55% at 50% 0%, rgba(255, 90, 50, .14), transparent 65%);
+}
+.panel.alert h1 { animation: alertPulse 2.2s ease-in-out infinite; }
+@keyframes alertPulse {
+  0%, 100% { text-shadow: 0 0 22px rgba(255, 80, 60, .95), 0 0 7px rgba(255, 120, 90, .9); }
+  50% { text-shadow: 0 0 34px rgba(255, 90, 60, 1), 0 0 10px rgba(255, 170, 130, 1); }
+}
+
+/* ---------------------------------------------------------------------------
+   Upgrade / specialization modal
+   ------------------------------------------------------------------------ */
 /* The upgrade modal must receive clicks (the HUD layer is pointer-events:none) */
-#upgradeScreen { pointer-events: auto; }
-#upList { display: flex; flex-direction: column; gap: 10px; text-align: left; }
-.uprow {
-  display: flex; align-items: center; gap: 14px;
-  padding: 10px 14px;
-  border: 1px solid rgba(90, 150, 230, .3);
-  border-radius: 6px;
-  background: rgba(16, 28, 54, .6);
-  cursor: pointer; transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
-}
-.uprow:hover {
-  border-color: rgba(255, 200, 90, .6);
-  background: rgba(30, 42, 72, .72);
-  box-shadow: 0 0 14px rgba(120, 170, 255, .25);
-}
-.uprow.path { border-color: rgba(255, 200, 90, .4); background: rgba(40, 34, 20, .5); }
-.uprow.path:hover { border-color: rgba(255, 214, 100, .8); background: rgba(60, 48, 20, .6); }
-.upnum {
-  flex: none; width: 24px; height: 24px; border-radius: 4px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; color: #04060d; background: #8fd0ff; font-weight: bold;
-}
-.uprow.path .upnum { background: #ffd76a; }
-.upicon { flex: none; width: 26px; text-align: center; font-size: 20px; color: #bfe0ff; }
-.upinfo { flex: 1; }
-.upname { font-size: 14px; color: #d6ecff; letter-spacing: 1px; }
-.updesc { font-size: 11px; color: rgba(160, 195, 240, .65); margin-top: 3px; }
-.uplevel { font-size: 11px; color: #7dffb8; margin-top: 3px; }
+#upgradeScreen { pointer-events: auto; max-width: 720px; }
+#upgradeScreen:has(.speccols) { min-width: 640px; }
+#upList { display: flex; flex-direction: column; gap: 12px; text-align: left; }
 
-/* ---- Front-end menus: splash / pause / settings ---- */
+/* Cards: octagon slabs in the card's identity color (--acc via ac-*). */
+.uprow {
+  --ch: 10px;
+  --acc: var(--chrome);
+  position: relative; isolation: isolate;
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(155deg,
+    color-mix(in srgb, var(--acc) 80%, white 10%),
+    color-mix(in srgb, var(--acc) 24%, transparent) 30%,
+    color-mix(in srgb, var(--acc) 24%, transparent) 70%,
+    color-mix(in srgb, var(--acc) 65%, transparent));
+  cursor: pointer;
+  transition: transform .14s ease, filter .14s ease;
+}
+.uprow::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-oct);
+  background:
+    radial-gradient(120% 100% at 0% 0%, color-mix(in srgb, var(--acc) 16%, transparent), transparent 55%),
+    linear-gradient(165deg, rgba(14, 8, 30, .95), rgba(8, 4, 18, .96));
+}
+/* hover: the card floods with its own light */
+.uprow::after {
+  content: ''; position: absolute; inset: 2px; z-index: -1; pointer-events: none;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(165deg,
+    color-mix(in srgb, var(--acc) 26%, transparent),
+    color-mix(in srgb, var(--acc) 10%, transparent));
+  opacity: 0; transition: opacity .14s ease;
+}
+.uprow:hover { transform: translateY(-2px); filter: drop-shadow(0 0 12px color-mix(in srgb, var(--acc) 55%, transparent)); }
+.uprow:hover::after { opacity: 1; }
+.uprow:hover .upicon { transform: scale(1.12); }
+
+/* Per-spec identity colors (specs AND their abilities carry these classes) */
+.ac-brawler { --acc: #ff8a66; }
+.ac-hauler  { --acc: var(--amber); }
+.ac-scout   { --acc: #4fd8ff; }
+
+.upnum {
+  --ch: 6px;
+  flex: none; width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  clip-path: var(--clip-oct);
+  font-size: 12px; font-weight: 700; color: #0a0416;
+  background: var(--acc);
+}
+/* Icon sits in a glowing octagon badge — straight from the kit */
+.upicon {
+  --ch: 10px;
+  flex: none; width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  clip-path: var(--clip-oct);
+  font-size: 20px; color: #ffffff;
+  text-shadow: 0 0 10px var(--acc), 0 0 4px var(--acc);
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--acc) 45%, transparent), color-mix(in srgb, var(--acc) 12%, transparent) 75%),
+    linear-gradient(155deg, color-mix(in srgb, var(--acc) 60%, transparent), color-mix(in srgb, var(--acc) 20%, transparent));
+  transition: transform .14s ease;
+}
+.upinfo { flex: 1; }
+.upname {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 14px; color: #f6f0ff; letter-spacing: 2px;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 45%, transparent);
+}
+.updesc { font-size: 11px; color: var(--ink-dim); margin-top: 3px; line-height: 1.4; }
+.uplevel { font-size: 10.5px; color: var(--green); margin-top: 4px; letter-spacing: 1px; text-shadow: 0 0 6px rgba(120, 255, 180, .5); }
+
+/* Specialization pick: the run-opening showpiece — three tall banners */
+#upList.speccols { flex-direction: row; align-items: stretch; gap: 14px; }
+.speccols .uprow {
+  flex: 1 1 0; min-width: 0;
+  flex-direction: column; justify-content: flex-start; gap: 10px;
+  padding: 26px 14px 18px; text-align: center;
+}
+.speccols .upnum { position: absolute; top: 10px; left: 10px; }
+.speccols .upicon { width: 66px; height: 66px; font-size: 32px; --ch: 14px; }
+.speccols .upname { font-size: 16px; letter-spacing: 3px; }
+.speccols .updesc { margin-top: 5px; }
+.speccols .uplevel { margin-top: 8px; }
+.speccols .uprow:hover { transform: translateY(-4px); }
+
+/* ---------------------------------------------------------------------------
+   Front-end menus: splash / pause / settings
+   ------------------------------------------------------------------------ */
 /* These panels are the game's shell; like the upgrade modal they must take
    clicks (the #hud layer above them is pointer-events:none). */
 #splashScreen, #pauseScreen, #settingsScreen { pointer-events: auto; }
@@ -200,85 +644,216 @@ html, body {
 /* On the title screen the frozen (but drifting) world is a soft backdrop; the
    transition makes the game "focus in" when START clears the class. */
 #game { transition: filter .45s ease; }
-body.preGame #game { filter: blur(6px) brightness(0.82); }
-.panel.menu { min-width: 400px; }
+body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
+.panel.menu { min-width: 430px; }
+
+/* Title block: orbital deco spinning behind the wordmark. */
+.titleblock { position: relative; padding: 26px 0 10px; margin-bottom: 4px; }
+.orbitdeco { position: absolute; inset: 0; pointer-events: none; }
+.orbitdeco i {
+  position: absolute; left: 50%; top: 50%; display: block;
+  border-radius: 50%;
+}
+.od-sun {
+  width: 14px; height: 14px; margin: -7px 0 0 -7px;
+  background: radial-gradient(circle, #fff3d0 0%, var(--amber) 45%, rgba(255, 180, 80, 0) 75%);
+  box-shadow: 0 0 24px rgba(255, 200, 90, .9);
+}
+.od-ring {
+  border: 1px solid rgba(176, 112, 255, .38);
+  box-shadow: 0 0 12px rgba(150, 80, 255, .14), inset 0 0 12px rgba(150, 80, 255, .12);
+  animation: orbitSpin linear infinite;
+}
+.od-ring .od-orb {
+  position: absolute; top: 50%; left: -3px; width: 5px; height: 5px; margin-top: -2.5px;
+  border-radius: 50%; background: #f3e8ff;
+  box-shadow: 0 0 9px var(--chrome), 0 0 3px #ffffff;
+}
+.od-r1 { width: 170px; height: 170px; margin: -85px 0 0 -85px; animation-duration: 16s; }
+.od-r2 { width: 260px; height: 260px; margin: -130px 0 0 -130px; animation-duration: 34s; }
+.od-r2 .od-orb { background: #fff3d0; box-shadow: 0 0 9px var(--gold), 0 0 3px #ffffff; }
+@keyframes orbitSpin { to { transform: rotate(360deg); } }
 
 .gametitle {
-  font-size: 42px; letter-spacing: 8px; font-weight: bold;
-  color: #bfe6ff; text-shadow: 0 0 26px rgba(90, 180, 255, .9);
-  margin-bottom: 8px;
+  position: relative;
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 46px; letter-spacing: 11px;
+  background: linear-gradient(180deg, #ffffff 15%, var(--chrome-soft) 55%, #7a3fd8);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: var(--chrome-soft);
+  filter: drop-shadow(0 0 24px rgba(150, 80, 255, .7)) drop-shadow(0 0 3px rgba(216, 180, 255, .8));
+  margin-bottom: 2px;
 }
-.gametitle span { color: #ffd76a; text-shadow: 0 0 26px rgba(255, 200, 90, .8); }
+.gametitle span {
+  background: linear-gradient(180deg, #fff8e0 15%, var(--gold) 55%, #e0921f);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: var(--gold);
+}
+.subtitle {
+  position: relative;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 10px; letter-spacing: 7px; color: rgba(216, 180, 255, .9);
+  text-shadow: 0 0 8px rgba(176, 112, 255, .65);
+  margin-bottom: 4px;
+}
 .tagline {
-  font-size: 12px; line-height: 1.5; letter-spacing: 1px;
-  color: rgba(170, 200, 240, .75); max-width: 380px;
-  margin: 0 auto 22px;
+  font-size: 12px; line-height: 1.55; letter-spacing: .5px;
+  color: var(--ink-dim); max-width: 400px;
+  margin: 10px auto 22px;
+  text-wrap: balance;
 }
 /* Calmer header for PAUSED — the red .panel h1 is for destruction screens */
-.panel h1.menuhdr { color: #9fd6ff; text-shadow: 0 0 16px rgba(80, 170, 255, .8); }
+.panel h1.menuhdr {
+  color: #f8f2ff; letter-spacing: 9px;
+  text-shadow: 0 0 20px rgba(176, 112, 255, .95), 0 0 6px rgba(176, 112, 255, .8);
+}
 
-.menucol { display: flex; flex-direction: column; gap: 10px; align-items: stretch; margin: 4px auto 0; max-width: 340px; }
+.menucol { display: flex; flex-direction: column; gap: 11px; align-items: stretch; margin: 6px auto 0; max-width: 340px; }
+/* Buttons: pointed hex pills, violet edge, hot text; hover floods + sweeps */
 .menubtn {
-  font-family: inherit; font-size: 14px; letter-spacing: 2px;
-  padding: 12px 18px;
-  color: #cfe3ff; background: rgba(16, 28, 54, .6);
-  border: 1px solid rgba(110, 180, 255, .45); border-radius: 6px;
-  cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, color .12s ease;
+  --hx: 15px;
+  --acc: var(--chrome);
+  position: relative; isolation: isolate;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 13px; letter-spacing: 4px;
+  padding: 13px 26px;
+  color: #efe6ff;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 50%, transparent);
+  border: none; cursor: pointer;
+  clip-path: var(--clip-hexpill);
+  background: linear-gradient(120deg,
+    color-mix(in srgb, var(--acc) 90%, white 10%),
+    color-mix(in srgb, var(--acc) 32%, transparent) 30%,
+    color-mix(in srgb, var(--acc) 32%, transparent) 70%,
+    color-mix(in srgb, var(--acc) 80%, transparent));
+  transition: filter .14s ease, color .14s ease;
+}
+.menubtn::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-hexpill);
+  background: linear-gradient(165deg, rgba(14, 8, 30, .95), rgba(8, 4, 18, .96));
+}
+/* hover: the face floods with the accent's light + a sweep crosses it */
+.menubtn::after {
+  content: ''; position: absolute; inset: 2px; z-index: -1; pointer-events: none;
+  clip-path: var(--clip-hexpill);
+  background:
+    linear-gradient(105deg, transparent 42%, color-mix(in srgb, var(--acc) 45%, transparent) 50%, transparent 58%)
+      no-repeat 150% 0 / 300% 100%,
+    linear-gradient(120deg,
+      color-mix(in srgb, var(--acc) 30%, transparent),
+      color-mix(in srgb, var(--acc) 14%, transparent));
+  opacity: 0;
 }
 .menubtn:hover, .menubtn:focus-visible {
   outline: none;
-  border-color: rgba(120, 200, 255, .85);
-  background: rgba(30, 46, 82, .78);
-  box-shadow: 0 0 16px rgba(90, 170, 255, .35);
+  color: #ffffff;
+  text-shadow: 0 0 10px var(--acc), 0 0 3px #ffffff;
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--acc) 60%, transparent));
 }
-.menubtn.primary { color: #d6ffe9; border-color: rgba(120, 255, 180, .55); background: rgba(16, 40, 30, .55); }
-.menubtn.primary:hover, .menubtn.primary:focus-visible {
-  border-color: rgba(120, 255, 180, .9);
-  background: rgba(20, 54, 40, .72);
-  box-shadow: 0 0 18px rgba(90, 255, 170, .4);
+.menubtn:hover::after, .menubtn:focus-visible::after {
+  opacity: 1;
+  background-position: -150% 0, 0 0;
+  transition: background-position .5s ease, opacity .14s ease;
+}
+.menubtn:active { filter: brightness(1.4); }
+.menubtn.primary { --acc: var(--green); color: #e2ffee; }
+.menubtn.primary:hover, .menubtn.primary:focus-visible { color: #ffffff; }
+
+/* Splash footer: control hints as key chips */
+.keyhints {
+  display: flex; justify-content: center; gap: 16px; flex-wrap: wrap;
+  font-size: 10.5px; color: var(--ink-dim); margin-top: 18px; letter-spacing: 1px;
+}
+.keyhints kbd, .ctrlrow kbd {
+  font-family: var(--font-data); font-size: 9.5px; letter-spacing: 1px;
+  color: #efe6ff; padding: 2px 8px; margin-right: 5px;
+  background: rgba(120, 60, 220, .2);
+  border: 1px solid rgba(176, 112, 255, .55);
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(150, 80, 255, .25);
+  text-shadow: 0 0 6px rgba(176, 112, 255, .8);
 }
 
-/* The in-game menu button. Sits just BELOW the minimap (a 190px disc at top:14,
-   right-aligned) so the two form one top-right cluster instead of overlapping.
+/* The radar canvas (render.js draws it): top-right of the canopy, angled
+   inward to mirror the left cluster. Hidden on the splash — no cockpit yet.
+   Ignores the mouse. */
+#radar {
+  position: absolute; top: 12px; right: 12px;
+  width: 200px; height: 200px;
+  pointer-events: none;
+  transition: opacity .3s ease;
+}
+body.preGame #radar { opacity: 0; }
+
+/* The in-game menu button. Sits just BELOW the radar so the two form one
+   top-right cluster, and rides the same canopy tilt at a hair less depth.
    The HUD layer it lives in is pointer-events:none, so it re-enables its own. */
 #menuBtn {
-  position: absolute; top: 216px; right: 14px;
-  width: 40px; height: 34px; pointer-events: auto;
-  font-size: 18px; line-height: 1; color: #cfe3ff;
-  background: rgba(10, 20, 40, .55); border: 1px solid rgba(110, 180, 255, .4);
-  border-radius: 6px; cursor: pointer;
-  text-shadow: 0 0 6px rgba(80, 160, 255, .6);
-  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease;
+  --ch: 10px;
+  position: absolute; top: 222px; right: 14px; isolation: isolate;
+  width: 40px; height: 40px; pointer-events: auto;
+  font-size: 16px; line-height: 1; color: var(--chrome-soft);
+  border: none; cursor: pointer;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(120deg, rgba(176, 112, 255, .8), rgba(176, 112, 255, .28) 50%, rgba(176, 112, 255, .65));
+  text-shadow: 0 0 7px rgba(176, 112, 255, .8);
+  transition: filter .14s ease;
+}
+#menuBtn::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-oct);
+  background: rgba(12, 6, 26, .9);
 }
 #menuBtn:hover, #menuBtn:focus-visible {
   outline: none;
-  background: rgba(24, 40, 72, .82); border-color: rgba(120, 200, 255, .8);
-  box-shadow: 0 0 14px rgba(90, 170, 255, .35);
+  filter: brightness(1.35) drop-shadow(0 0 10px rgba(150, 80, 255, .6));
 }
 
-/* Settings: labelled toggle switches + a read-only controls reference */
-.setlist { display: flex; flex-direction: column; gap: 12px; margin-bottom: 4px; }
+/* ---------------------------------------------------------------------------
+   Settings: labelled toggle switches + a read-only controls reference
+   ------------------------------------------------------------------------ */
+.setlist { display: flex; flex-direction: column; gap: 13px; margin-bottom: 4px; }
 .setrow { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.vol { width: 150px; accent-color: #7dffb8; }
-.setname { font-size: 13px; letter-spacing: 1px; color: #d6ecff; }
+.vol { width: 150px; accent-color: var(--green); }
+.setname { font-family: var(--font-ui); font-weight: 500; font-size: 13px; letter-spacing: 1.5px; color: #e8ddff; }
 .toggle {
-  position: relative; flex: none; width: 50px; height: 26px;
+  position: relative; flex: none; width: 52px; height: 26px;
   border-radius: 14px; cursor: pointer;
-  border: 1px solid rgba(120, 190, 255, .45);
-  background: rgba(8, 16, 34, .8);
-  transition: background .15s ease, border-color .15s ease;
+  border: 1px solid rgba(176, 112, 255, .5);
+  background: rgba(10, 5, 22, .9);
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, .65);
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
 }
 .toggle .knob {
   position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
-  border-radius: 50%; background: #6f86a8;
+  border-radius: 50%; background: #7a6aa8;
   transition: left .15s ease, background .15s ease, box-shadow .15s ease;
 }
-.toggle.on { background: rgba(20, 70, 50, .7); border-color: rgba(120, 255, 180, .6); }
-.toggle.on .knob { left: 26px; background: #7dffb8; box-shadow: 0 0 8px rgba(120, 255, 180, .7); }
-.toggle:focus-visible { outline: none; border-color: rgba(120, 200, 255, .9); box-shadow: 0 0 12px rgba(90, 170, 255, .4); }
+.toggle.on {
+  background: rgba(10, 60, 40, .8);
+  border-color: rgba(120, 255, 180, .75);
+  box-shadow: inset 0 0 8px rgba(40, 200, 120, .35), 0 0 10px rgba(60, 255, 150, .25);
+}
+.toggle.on .knob { left: 28px; background: var(--green); box-shadow: 0 0 12px rgba(120, 255, 180, .9); }
+.toggle:focus-visible { outline: none; border-color: rgba(216, 180, 255, .95); box-shadow: 0 0 12px rgba(150, 80, 255, .45); }
 
-.ctrlref { text-align: left; margin: 16px 0 4px; border-top: 1px solid rgba(90, 150, 230, .2); padding-top: 12px; }
-.ctrlhd { font-size: 9px; letter-spacing: 2px; color: rgba(150, 200, 255, .6); margin-bottom: 6px; }
-.ctrlrow { display: flex; justify-content: space-between; font-size: 11px; color: rgba(190, 215, 245, .8); padding: 2px 0; }
-.ctrlrow span:last-child { color: #8fd0ff; }
+.ctrlref { text-align: left; margin: 18px 0 4px; border-top: 1px solid rgba(176, 112, 255, .3); padding-top: 13px; }
+.ctrlhd {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 9px; letter-spacing: 3px; color: rgba(206, 170, 255, .75); margin-bottom: 8px;
+  text-shadow: 0 0 6px rgba(176, 112, 255, .5);
+}
+.ctrlrow {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: rgba(214, 200, 245, .82); padding: 3px 0;
+}
+.ctrlrow em { font-style: normal; color: rgba(180, 160, 230, .55); font-size: 10px; }
+.ctrlrow span:last-child {
+  font-family: var(--font-data); font-size: 10px; letter-spacing: 1px;
+  color: #efe6ff; padding: 2px 9px;
+  background: rgba(120, 60, 220, .18);
+  border: 1px solid rgba(176, 112, 255, .45);
+  border-radius: 3px;
+  text-shadow: 0 0 6px rgba(176, 112, 255, .6);
+}
