@@ -62,7 +62,7 @@ function orbitVel(parent, x, y, dir = 1) {
   return { vx: parent.vx - Math.sin(th) * s, vy: parent.vy + Math.cos(th) * s };
 }
 
-function spawnMoon(bodies, rng, planet, mr) {
+function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // Archetype sets the palette + look and skews mass/size, so a moon family
   // spans ice, rock, iron, dust, sulfur, banded instead of pale clones.
   const mt = pickMoonType(rng);
@@ -82,14 +82,25 @@ function spawnMoon(bodies, rng, planet, mr) {
   m.moonType = mt.type;
   bodies.push(m);
   // ~55% of moons ride an ELLIPSE (railEllipse), the rest circular. mr is the
-  // semi-major axis; e is capped so periapsis always clears the planet, and
-  // kept moderate so neighbouring moon orbits rarely cross (a crossing that
-  // actually collides just derails + re-rails, but we keep it rare). Tight
+  // semi-major axis; e is capped so periapsis always clears the planet. Tight
   // inner slots fall back to circular. arg + phase are randomised so orbits
   // don't share an apsidal line.
+  //
+  // NEIGHBOUR CLEARANCE (exCap): callers pass the max radial excursion (e*mr,
+  // world units) this orbit may take without reaching a sibling's orbit. Two
+  // confocal orbits whose radial ranges overlap ALWAYS intersect in space, so
+  // an "overlapping" ellipse is a guaranteed crossing — and a crossing pair
+  // eventually collides. This was a real bug: the default seed spawned two
+  // crossing pairs in the inner gas giant's family; both pairs collided at
+  // t≈151s/176s, all four moons derailed, lost energy to the damped inelastic
+  // bounces, and sank into the planet ("absorbed" at t≈202-267s) — 4 of 45
+  // moons deterministically dead in the first 4.5 minutes of every run.
+  // e is DRAWN first and clamped after, so the seeded rng stream (and thus
+  // the rest of the generated world) is untouched by the clamp.
   const eCap = Math.min(0.34, 1 - (planet.radius + radius + 60) / mr);
   if (eCap > 0.08 && rng() < 0.55) {
-    railEllipse(m, planet, mr, rand(rng, 0.1, eCap), rng() * TAU, rng() * TAU, dir);
+    const e = Math.max(0, Math.min(rand(rng, 0.1, eCap), exCap / mr));
+    railEllipse(m, planet, mr, e, rng() * TAU, rng() * TAU, dir);
   } else {
     const mth = rng() * TAU;
     m.x = planet.x + Math.cos(mth) * mr;
@@ -129,14 +140,29 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   railBody(p, star);
 
   // Moons spread across the whole stable zone — big outer planets get wide,
-  // varied moon families instead of a tight string of pearls.
+  // varied moon families instead of a tight string of pearls. Each moon's
+  // radial excursion is confined to its own spawn slot (minus a 45u margin
+  // per side — covers both bodies' radii), so sibling orbits can never
+  // overlap radially, which is exactly the no-crossing condition (see the
+  // exCap rationale in spawnMoon). Only edges SHARED with a sibling are
+  // capped: the innermost moon's sunward reach is already guarded by the
+  // planet-clearance term in spawnMoon, and the outermost may spill past
+  // maxR like it always did (rails don't care). Keeping non-shared edges
+  // uncapped matters: it leaves every NON-crossing orbit bit-identical to
+  // the pre-fix worldgen — moons are attractors, so needlessly moving them
+  // perturbs every free-flyer's path and re-rolls the whole sky's fate.
   const count = opts.moons || 0;
   if (count > 0) {
     const { minR, maxR } = moonZone(star, p, orbitR);
     if (maxR > minR + 50) {
+      const slotW = (maxR - minR) / count;
       for (let i = 0; i < count; i++) {
         const t = (i + rand(rng, 0.1, 0.85)) / count;
-        spawnMoon(bodies, rng, p, minR + (maxR - minR) * t);
+        const mr = minR + (maxR - minR) * t;
+        const lo = minR + slotW * i;
+        const dLo = i > 0 ? mr - lo : Infinity;
+        const dHi = i < count - 1 ? lo + slotW - mr : Infinity;
+        spawnMoon(bodies, rng, p, mr, Math.min(dLo, dHi) - 45);
       }
     }
   }
@@ -648,7 +674,24 @@ export function replenishWorld(game, dt) {
         const orbitR = Math.hypot(p.x - game.homeStar.x, p.y - game.homeStar.y);
         const { minR, maxR } = moonZone(game.homeStar, p, orbitR);
         if (maxR > minR + 50) {
-          spawnMoon(game.bodies, rng, p, minR + (maxR - minR) * rng());
+          // Don't drop the newcomer onto (or across) a surviving sibling's
+          // orbit — overlapping confocal orbits always cross and a crossing
+          // pair eventually collides (see spawnMoon's exCap rationale). Gap
+          // is measured to each railed sibling's radial range; 90u covers
+          // both bodies' radii. A blocked draw just retries; a fully missed
+          // cycle only delays the refill by 60s.
+          for (let tries = 0; tries < 4; tries++) {
+            const mr = minR + (maxR - minR) * rng();
+            let gap = Infinity;
+            for (const m of game.bodies) {
+              if (!m.alive || m.type !== 'moon' || m.parent !== p || !m.onRails) continue;
+              const ell = m.rail.e !== undefined;
+              const a = ell ? m.rail.a : m.rail.r;
+              const ex = ell ? m.rail.e * a : 0;
+              gap = Math.min(gap, Math.abs(mr - a) - ex);
+            }
+            if (gap > 90) { spawnMoon(game.bodies, rng, p, mr, gap - 90); break; }
+          }
         }
       }
     }
@@ -839,7 +882,7 @@ export function replenishWorld(game, dt) {
           p.x + Math.cos(ang) * (p.radius + 14), p.y + Math.sin(ang) * (p.radius + 14),
           p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
           350 + rng() * 550);
-        m.magma = 8; m.color = '#ff8040';
+        m.magma = 8; m.magmaBorn = true; m.color = '#ff8040';
         game.volcWarn = true;
       }
     } else if (p.ptype === 'lava' || p.ember > 0.01) {
@@ -859,7 +902,7 @@ export function replenishWorld(game, dt) {
           p.x + Math.cos(ang) * (p.radius + 30), p.y + Math.sin(ang) * (p.radius + 30),
           p.vx + Math.cos(ang) * sp, p.vy + Math.sin(ang) * sp,
           700 + rng() * 1200);
-        m.magma = 7; m.color = '#ff8040';
+        m.magma = 7; m.magmaBorn = true; m.color = '#ff8040';
         if (infested) game.emberWarn = true; else game.magmaWarn = true;
       }
     } else if (p.ptype === 'ice') {

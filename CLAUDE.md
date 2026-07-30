@@ -42,6 +42,7 @@ variable-timestep presentation loop.
 | [sfx.js](src/sfx.js) | Audio engine: owns the AudioContext + the sfx/music buses. EVERY sound is a real CC0 recording (`assets/audio/sfx/` — Kenney + OpenGameArt, lazily decoded): one-shots via the `BANK` variant table, continuous state (thrust/beam/heat/scrape/charge) via the `LOOPS` table — loop-authored samples with game-driven gain/pitch. The synth blips at the bottom are decode-window fallbacks ONLY — the user explicitly rejected synth as the primary voice; never promote them back. |
 | [music.js](src/music.js) | Adaptive music director: ten Scott Buckley CC-BY tracks (`assets/audio/music/`, one composer so every mood shares one voice) in four mood PLAYLISTS — calm / world / sun / danger. **Exactly one track plays at a time** (they're full mixes, not stems — layering them sounded like songs on top of each other): the mood vector picks a playlist with enter/exit hysteresis + dwell, switches crossfade, and a track ending naturally rotates within its playlist. Streams via `<audio>` elements (never `decodeAudioData` — a 7-min track decodes to ~150 MB of PCM). Runs every frame, sim frozen or not (menus duck it). |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`). |
+| [devtest.js](src/devtest.js) | The scripted mechanics test suite (`window.mechTest`). Lazy-loaded only when invoked — normal play never imports it. |
 
 The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
 draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull fraction) in the
@@ -145,16 +146,26 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   - BRAWLER — Ram Prow / Juggernaut / Berserker in `physics.collideShipBody` (`st.ramMul`,
     `st.ramArmor`, `st.berserk`; Berserker also scales `tractor.flingSpeedFor`); Cluster Rounds /
     Shockwave / Demolition in `physics.brawlerThrowKill`, called ONLY from `shatter`'s
-    `'player-throw'` branch.
+    `'player-throw'` branch. The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
+    protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
+    NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots
+    through the wake), and its `orbitCap` is clamped to MOON CLASS (`TIERS.caps[1]`) at every
+    tier (config.shipStats) — shotgun ammo, never a planet garage.
   - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
     (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
-    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render).
-  - SCOUT — Afterburner (`game.controls.boost`, read in the physics ship-control AND the speed
-    governor), Evasion Roll + Slipstream (`main.onEvade` / `onWarp`, cooldowns `game.evadeT`/`warpT`),
-    Recon Drone (survey radius in world.js).
-- **Controls the abilities add:** hold **Shift** = Afterburner, tap **Space** = Evasion Roll, tap **F** =
-  Slipstream. All three no-op unless the ability is owned and off cooldown, and are gated behind
-  `menuBlocking()` like every other player input.
+    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render), Rockwall (orbit-held
+    rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`).
+  - SCOUT — Afterburner is a FUEL TANK, not a free hold: main.js owns `game.burnerFuel`/`game.burnerOn`
+    (engage needs >0.25 tank, hysteresis; drains over `st.burnTime`, refills at `st.burnRefill` — the
+    HUD BURN bar), and physics reads **`game.burnerOn`, never raw Shift**, for both the thrust boost
+    AND the governor ceiling — reading Shift directly desyncs thrust from the tank. Dash Jets
+    (`main.onDash`, cooldown `game.evadeT`) darts perpendicular to the NOSE (`angle ± π/2`). Reflex
+    Jink is the auto-dodge closest-approach scan in `physics.step` (recharge `game.autoEvadeT`,
+    ticked in main.js); Slipstream (`main.onWarp`, `game.warpT`); Recon Drone (survey radius, world.js).
+- **Controls the abilities add:** hold **Shift** = Afterburner (spends the BURN tank), tap **A / D** =
+  Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
+  cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
+  other player input.
 - **Test hooks:** `game.autoUpgrade = true` auto-resolves each card (picks index 0) so a `window.tick`
   soak never stalls; `window.tick` also auto-seeds `SPECS[0]` when no spec is chosen (set
   `game.prog.spec` + rebuild `game.st` first to soak a different spec).
@@ -317,15 +328,20 @@ code "works."
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
-- **The shield is an ABILITY, not base:** you start with NO shield — the whole health pool is hull,
-  which does NOT self-heal (it mends ONLY by collecting glow-pocket motes, below, and otherwise resets
-  to full on respawn). A `shield`-channel ability (BRAWLER **War Plating** / HAULER **Deflector Cells**)
-  UNLOCKS the regenerating shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar) and grows it —
-  ranks 1..6 carve 30%→55% of the fixed pool into a shield that absorbs first and recharges after quiet
-  time (a net survivability gain, since only the shield regens). HAULER's **Rapid Recharge**
-  (`regen` channel) speeds that recharge (`st.regen`/`st.regenDelay`). The SHLD HUD bar appears only
-  once the shield is unlocked; below that the HULL bar stands alone. **SCOUT has neither** — by design,
-  its survivability is the mobility kit (Evasion Roll / Slipstream / Afterburner).
+- **The shield is an ABILITY, not base — and its SHAPE is spec DNA:** you start with NO shield — the
+  whole health pool is hull, which does NOT self-heal (it mends ONLY by collecting glow-pocket motes,
+  below, and otherwise resets to full on respawn). A `shield`-channel ability UNLOCKS the regenerating
+  shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
+  quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
+  - **BRAWLER (War Plating)** — STRONG (38%→65% of the pool) but **FRONT ARC ONLY** (`shieldArc` π/2):
+    a directional hit from behind (`hitAng` in `physics.damageShip`) skips the shield entirely — the
+    tail is bare, so facing the threat matters. Directionless damage (heat/crush/Oort — no `hitAng`)
+    always soaks. Render clips every shield visual to the covered wedge — the bare tail must READ.
+  - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability.
+  - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
+    Cargo Plating armors the hull); never add a `shield`-channel ability to its pool.
+  The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
   - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
@@ -386,15 +402,43 @@ about it — this is a hard rule.
   gets packaged and the installer targets. App icons live in `build/` (`icon.icns/.ico/.png`,
   generated from `build/icon-src/`).
 
-## Testing (headless, no framework)
+## Testing (headless + live fast-forward, no framework)
 
-There is no test runner. Verify balance and physics with the console hooks:
+There is no test runner. Verify balance and physics with the console hooks (all defined at the bottom
+of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
+- `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
+  `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
+  `{ planets: "17/17", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
+  sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
-  `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes.
+  `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes. The raw primitive under
+  `soak` — use it directly when you need custom instrumentation between chunks.
+- `window.mechTest({seed, reset, download})` — **the scripted mechanics suite** (devtest.js,
+  lazy-loaded): a fixed set of player actions against a fixed-seed fresh run, asserting each core
+  mechanic and several design laws (fling-at-cursor/no-recoil, deferred picks, split-health, orbit
+  gating, NaN containment…). **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
+  for a seeded RNG for the duration — so same code ⇒ identical report. Returns
+  `{ passed, failed, results, logs }` (also `window.lastMechReport`; `{download: true}` saves the
+  JSON). ~1.5s wall. See the `mechanics-test` skill for the check list and judging rules.
+- `window.freshRun(specIdx, seed)` — repeatable fresh run: full reset onto the given world seed with
+  the spec auto-picked and the sim armed. The world layout is bit-identical per seed.
+- `window.speed(n)` — **live fast-forward**: runs the *visible* game at n× real time (0.25–50).
+  `updateScaled` steps `update()` in 1x-sized chunks (the tick idiom) so AI/timers/easing see normal
+  per-step dt, with a ~24ms wall-clock budget per frame — an unreachable target degrades gracefully and
+  the amber HUD badge shows target + achieved rate (`game.speedActual`). 0.25 is slow-mo for watching a
+  collision frame-by-frame-ish. `?dev=1` on the URL adds hotkeys: `-` halve, `=` double, `0` reset.
+  Picks still open (and freeze) normally at speed — set `game.autoUpgrade = true` to blast through them.
+  For truly unbounded fast-forward use `tick`/`soak` (headless, no render — ~35x+ on a laptop).
+- `window.goto('vesper')` / `window.goto(x, y)` — teleport the ship beside a named body (velocity
+  matched, parked outside its radius, brief invuln, camera snapped) or to coordinates.
+  `window.locate('name'|'type')` returns the body itself.
+- `window.god(on)` — ship ignores all damage (`damageShip` early-out) for poking at the corona,
+  forts, or gas cores without respawn loops.
 - `window.game` — the live state handle.
-- `game.autoUpgrade = true` — headless helper: auto-resolves each pick (picks card 0) so a
-  `window.tick` soak doesn't stall on the choice modal. Drive a climb by pumping `game.prog.xp`.
+- `game.autoUpgrade = true` — auto-resolves each pick (picks card 0) so soaks never stall. Drive a
+  climb by pumping `game.prog.xp`.
 - **Specs headlessly:** `window.tick` bypasses the spec modal by seeding `SPECS[0]` when
   `game.prog.spec` is null. To soak a different spec (or a specific build), assign `game.prog`
   wholesale — `{ xp, level, tier, picksThisTier, spec, upgrades: { abilityId: rank }, lives, … }` —
@@ -403,6 +447,11 @@ There is no test runner. Verify balance and physics with the console hooks:
   and per-bed gains/stream state. Mood advances under `window.tick` even with no AudioContext.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
+- `game.nanEvents` — count of NaN-tripwire firings (body culls / ship resets). Any nonzero value is
+  a real upstream bug to root-cause, even though the tripwire contained it.
 
 Run these from `javascript_tool` against the preview (the pane suspends rAF when hidden, so `window.tick`
-is the way to advance the sim). See the `balance-test` skill for the full workflow and pass criteria.
+/`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
+actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
+runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
+17-planet/45-moon baseline).

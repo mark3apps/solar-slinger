@@ -385,6 +385,45 @@ export function updateOrbit(game, dt) {
   if (!game.orbit.length) return;
 
   const n = game.orbit.length;
+
+  // BRAWLER TRAIL STOW (st.trailStow): captured rocks don't orbit — they hang
+  // in a loose staggered pack BEHIND the ship, packed nose-to-tail down the
+  // wake. It's an ammo train for the shotgun, NOT a shield: no interception
+  // (the brawler's protection is its front-arc plating — though the pack does
+  // incidentally eat shots that come in through the wake). Slots swing with
+  // the nose; the bounded approach speed below makes the tail drag through
+  // turns instead of snapping, which is the whole look.
+  if (game.st.trailStow) {
+    const bx = -Math.cos(s.angle), by = -Math.sin(s.angle);   // aft axis
+    const px = -by, py = bx;                                  // lateral axis
+    let dist = s.radius * 2 + 34;
+    for (let i = 0; i < n; i++) {
+      const b = game.orbit[i];
+      const phase = b.id * 1.73;
+      dist += b.radius;
+      // Stagger alternate rocks either side of the wake, with a soft organic
+      // sway (same breathing idiom as the ring slots).
+      const side = i % 2 === 0 ? 1 : -1;
+      const lat = side * (b.radius * 0.55 + 10) + Math.sin(game.time * 0.8 + phase) * 6;
+      const sway = Math.sin(game.time * 0.6 + phase * 2.1) * 8;
+      const tx = s.x + bx * (dist + sway) + px * lat;
+      const ty = s.y + by * (dist + sway) + py * lat;
+      dist += b.radius * 1.15 + 12;
+      // Same bounded spring as the ring path: capped approach speed, then
+      // capped acceleration authority scaled by the beam force vs rock mass.
+      let dvx = (tx - b.x) * 4.5, dvy = (ty - b.y) * 4.5;
+      const dm = Math.hypot(dvx, dvy);
+      if (dm > 380) { dvx *= 380 / dm; dvy *= 380 / dm; }
+      const desVx = dvx + s.vx, desVy = dvy + s.vy;
+      let ax = (desVx - b.vx) * 3.5, ay = (desVy - b.vy) * 3.5;
+      const cap = Math.min(900, Math.max(260, (game.st.force * 1.5) / b.mass));
+      const am = Math.hypot(ax, ay);
+      if (am > cap) { ax *= cap / am; ay *= cap / am; }
+      b.extAx = ax; b.extAy = ay;
+    }
+    return;
+  }
+
   const rings = orbiterRings(game);
 
   // Active interception: ANY loose rock closing on the ship gets met by the
@@ -438,8 +477,9 @@ export function updateOrbit(game, dt) {
     const Ri = rings.get(b) * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
     // Each ring spins at its own rate so the SLOT's linear speed stays
     // constant — a shared angular speed makes outer slots move faster than
-    // the approach cap and big rocks can never catch them.
-    const w = CFG.ORBIT_OMEGA * Math.min(1, 80 / Ri);
+    // the approach cap and big rocks can never catch them. ROCKWALL (hauler)
+    // spins the whole wall faster, so more of the sky is covered per second.
+    const w = CFG.ORBIT_OMEGA * (1 + 0.22 * (game.st.rockwall || 0)) * Math.min(1, 80 / Ri);
     b.orbitAng = (b.orbitAng ?? Math.atan2(b.y - s.y, b.x - s.x)) + w * dt;
     const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;

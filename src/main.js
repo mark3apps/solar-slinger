@@ -48,7 +48,13 @@ const game = {
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
   controls: { f: 0, b: 0, boost: 0 },   // boost = Afterburner (hold Shift)
-  evadeT: 0,                            // Evasion Roll cooldown (scout)
+  burnerFuel: 1,                        // Afterburner tank 0..1 (the BURN bar; refills slowly)
+  burnerOn: false,                      // actually burning right now (physics reads this, not raw Shift)
+  evadeT: 0,                            // Dash Jets cooldown (scout, A/D)
+  dashT: 0,                             // brief side-jet flash after a dash (render)
+  dashDir: 0,                           // which way the last dash went (-1 left / +1 right)
+  autoEvadeT: 0,                        // Reflex Jink recharge (scout auto-dodge, physics.step)
+  jinkT: 0,                             // brief flash ring after an auto-dodge (render)
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
@@ -70,8 +76,15 @@ const game = {
   volleySel: 0,            // how many orbiters the shotgun charge has armed
   volleyCharging: false,
   lockTarget: null,
+  timeScale: 1,            // dev sim speed (window.speed / ?dev hotkeys); 1 = normal play
+  speedActual: 1,          // achieved multiple when fast-forwarding (HUD badge honesty)
   tut: { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false },
 };
+
+// Dev mode (?dev=1) unlocks the sim-speed hotkeys. A plain query param works
+// identically over serve.py and the Electron app:// origin, so src/ stays
+// host-agnostic; the console hooks at the bottom work with or without it.
+game.devMode = new URLSearchParams(location.search).has('dev');
 
 game.st = shipStats(game.prog);
 generateWorld(game);
@@ -137,7 +150,9 @@ initInput(canvas, {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
-          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
+          hud.message(game.st.trailStow
+            ? 'Racked in your wake! Trailing rocks are shotgun ammo. Hold RIGHT MOUSE to charge — longer hold arms more rocks.'
+            : 'Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
         }
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
@@ -186,15 +201,18 @@ initInput(canvas, {
   },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
-  // EVASION ROLL (scout): tap Space -> dash toward the cursor with brief i-frames.
-  onEvade: () => {
+  // DASH JETS (scout): tap A / D -> dart hard to the ship's left/right with
+  // brief i-frames. Sideways relative to the NOSE (angle ± 90°), not the
+  // cursor — a positioning twitch, not a lunge.
+  onDash: (dir) => {
     if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
     const s = game.ship;
-    const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    const burst = 340 + 80 * game.st.evasion;
+    const ang = s.angle + dir * Math.PI / 2;
+    const burst = 380 + 70 * game.st.evasion;
     s.vx += Math.cos(ang) * burst; s.vy += Math.sin(ang) * burst;
-    s.invuln = Math.max(s.invuln, 0.35 + 0.1 * game.st.evasion);
-    game.evadeT = Math.max(0.6, 1.7 - 0.25 * game.st.evasion);
+    s.invuln = Math.max(s.invuln, 0.25 + 0.08 * game.st.evasion);
+    game.evadeT = Math.max(0.45, 1.2 - 0.2 * game.st.evasion);
+    game.dashT = 0.22; game.dashDir = dir;   // render: side-jet flash
     sfx.sfxEvade();
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
@@ -207,6 +225,14 @@ initInput(canvas, {
     s.invuln = Math.max(s.invuln, 0.5);
     game.warpT = 3.5;
     sfx.sfxWarp();
+  },
+  // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
+  // 1x. They only set the multiplier — updateScaled applies it — so they're
+  // harmless to press anywhere, menus included.
+  onSpeedAdjust: (dir) => {
+    if (!game.devMode) return;
+    const cur = game.timeScale || 1;
+    game.timeScale = dir === 0 ? 1 : Math.min(50, Math.max(0.25, dir > 0 ? cur * 2 : cur / 2));
   },
 });
 
@@ -381,7 +407,8 @@ function openUpgrade() {
 }
 
 // Game over -> fresh run: wipe the build, regenerate the world, restart.
-function resetRun() {
+// `seed` is a dev/test hook (window.freshRun): undefined = the default world.
+function resetRun(seed) {
   game.prog = newProgress();
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
@@ -389,6 +416,8 @@ function resetRun() {
   game.orbit.length = 0; game.held = null; game.held2 = null; game.pickups.length = 0;
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
+  game.burnerFuel = 1; game.burnerOn = false;
+  game.dashT = 0; game.autoEvadeT = 0; game.jinkT = 0;   // (evadeT/warpT reset below)
   game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
   // Run-scoped world state must reset with the world, or it leaks between
   // runs: time drives the alien first-wave peace window and the once-per-run
@@ -406,7 +435,7 @@ function resetRun() {
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
-  generateWorld(game);   // rebuilds bodies (cleared first) + spawn, calls respawnShip
+  generateWorld(game, seed);   // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
   hud.setDeathVisible(false);
@@ -434,6 +463,8 @@ const EVENT_MSGS = [
   { flag: 'tetherShow', tut: 'tether', snd: sfx.sfxChime,
     first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
+  { flag: 'jinkWarn', tut: 'jink', snd: sfx.sfxChime,
+    first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
   { flag: 'cometWarn', tut: 'comet', snd: sfx.sfxWarnLow,
     first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
     repeat: ['COMET SHOWER inbound!', 3] },
@@ -534,6 +565,20 @@ function update(dtReal) {
 
     // Per-frame inputs & AI
     readControls(game);
+    // AFTERBURNER fuel (scout): a slow-refilling tank — the BURN bar. Engaging
+    // needs a quarter tank (hysteresis, so an empty tank doesn't stutter the
+    // burn on/off at the threshold); once lit it burns down to dry. Physics
+    // reads game.burnerOn, never raw Shift, so thrust and tank always agree.
+    if (game.st.afterburner > 0) {
+      const want = game.controls.boost && game.ship.alive && game.ship.engineOutT <= 0;
+      if (game.burnerOn && (!want || game.burnerFuel <= 0)) game.burnerOn = false;
+      else if (!game.burnerOn && want && game.burnerFuel > 0.25) game.burnerOn = true;
+      game.burnerFuel = game.burnerOn
+        ? Math.max(0, game.burnerFuel - dtReal / game.st.burnTime)
+        : Math.min(1, game.burnerFuel + dtReal * game.st.burnRefill);
+    } else {
+      game.burnerOn = false;
+    }
     const { vw, vh } = view.getView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
@@ -592,7 +637,10 @@ function update(dtReal) {
     if (game.gasDiveT > 0) game.gasDiveT -= dtReal;
     if (game.gasEnterT > 0) game.gasEnterT -= dtReal;
     if (game.flingDelayT > 0) game.flingDelayT -= dtReal;   // post-fling grace before the pick modal
-    if (game.evadeT > 0) game.evadeT -= dtReal;             // Evasion Roll cooldown
+    if (game.evadeT > 0) game.evadeT -= dtReal;             // Dash Jets cooldown
+    if (game.dashT > 0) game.dashT -= dtReal;               // dash side-jet flash
+    if (game.autoEvadeT > 0) game.autoEvadeT -= dtReal;     // Reflex Jink recharge
+    if (game.jinkT > 0) game.jinkT -= dtReal;               // jink flash ring
     if (game.warpT > 0) game.warpT -= dtReal;               // Slipstream cooldown
 
     // SLINGSHOT: pass through a planet's well without touching the throttle
@@ -625,7 +673,8 @@ function update(dtReal) {
     }
 
     // Shield recharges after a quiet spell; the hull never self-heals (it mends
-    // only at glow pockets — glow.js). Delay/rate scale with Shield Regen.
+    // only at glow pockets — glow.js). Scout's Phase Screen recharges faster
+    // (spec-derived st.regen / st.regenDelay — see config.shipStats).
     if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
@@ -711,8 +760,9 @@ function update(dtReal) {
     // voice gates on the throttle too — with no thrust applied EVERY engine
     // noise stops, even at full coasting speed.
     const engineOn = s.alive && (s.thrusting || s.braking);
-    sfx.setThrust(engineOn, !!(game.controls.boost && game.st.afterburner),
-      game.speedFrac || 0);
+    // Boost sound follows game.burnerOn (the fuel-gated truth physics thrusts
+    // with), never raw Shift — an empty tank must not SOUND boosted.
+    sfx.setThrust(engineOn, !!game.burnerOn, game.speedFrac || 0);
     sfx.setSpeed(engineOn ? (game.speedFrac || 0) : 0);
     sfx.setHeat(s.alive ? (game.heatT || 0) : 0);
     sfx.setScrape(s.alive && game.scrapeT > 0 ? 1 : (s.alive && game.skimT > 0 ? 0.5 : 0));
@@ -754,6 +804,29 @@ function updateLifePods(dt) {
   }
 }
 
+// Dev time-scale (window.speed / the ?dev hotkeys): run the sim at
+// game.timeScale × real time by calling update() several times per frame in
+// 1x-sized chunks — the window.tick idiom — so everything riding dtReal
+// (AI, timers, glow, cosmetic easing) sees the same per-step dt it does at
+// 1x; only the step COUNT changes. A wall-clock budget drops the remainder
+// when the machine can't keep up (a 20x ask on a heavy scene degrades to
+// "as fast as this machine goes" instead of freezing the tab); speedActual
+// records the achieved multiple so the HUD badge never lies about it.
+function updateScaled(dtReal) {
+  const scale = game.timeScale > 0 ? game.timeScale : 1;
+  if (scale === 1) { update(dtReal); game.speedActual = 1; return; }
+  let simLeft = dtReal * scale;
+  let done = 0;
+  const t0 = performance.now();
+  while (simLeft > 1e-9) {
+    const d = Math.min(simLeft, 1 / 60);
+    update(d);
+    done += d; simLeft -= d;
+    if (performance.now() - t0 > 24) break;   // keep the frame interactive
+  }
+  game.speedActual = lerp(game.speedActual || 1, done / dtReal, 0.2);
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
   const dtReal = Math.min(0.05, (now - last) / 1000);
@@ -762,7 +835,7 @@ function frame(now) {
   // The sim freezes on the splash, while paused, while settings is open, or
   // while an upgrade card is open; rendering and the HUD keep running so the
   // frozen world sits as a living backdrop under whichever overlay is up.
-  if (game.started && !game.paused && !game.settingsOpen && !game.choosingUpgrade) update(dtReal);
+  if (game.started && !game.paused && !game.settingsOpen && !game.choosingUpgrade) updateScaled(dtReal);
   else {
     // The sim is frozen — every state-driven loop must fall silent with it
     sfx.setThrust(false);
@@ -798,4 +871,114 @@ window.tick = (seconds) => {
   for (let t = 0; t < seconds; t += dt) { update(dt); music.updateMusic(game, dt); }
   render(game);
   hud.updateHud(game);
+};
+
+// window.speed(n): run the LIVE game at n× real time (0.25–50; 1 = normal).
+// The watchable counterpart to window.tick — tick teleports the sim forward
+// headlessly, speed lets you WATCH a long stretch play out fast (or slow-mo a
+// collision at 0.25). Rendering still happens once per display frame; the HUD
+// badge shows the target and, when the machine can't keep up, the achieved
+// rate (the per-frame wall-clock budget in updateScaled is the real ceiling —
+// for truly unbounded fast-forward use window.tick / window.soak, which skip
+// rendering entirely).
+window.speed = (n = 1) => {
+  game.timeScale = Math.min(50, Math.max(0.25, +n || 1));
+  return game.timeScale;
+};
+
+// window.locate('vesper' | 'rogue'): first live body whose name contains the
+// string (else whose type equals it). Handy with window.goto and for poking
+// a specific body's state from the console.
+window.locate = (q) => {
+  q = String(q).toLowerCase();
+  const alive = game.bodies.filter((b) => b.alive);
+  return alive.find((b) => (b.name || '').toLowerCase().includes(q)) ||
+         alive.find((b) => b.type === q) || null;
+};
+
+// window.goto('vesper') / window.goto(x, y): teleport the ship beside a named
+// body — matching its velocity, parked just outside its radius — or to raw
+// coordinates. Snaps the camera and grants brief invulnerability so the
+// arrival isn't instantly punished. Doesn't resurrect a dead ship.
+window.goto = (target, y) => {
+  const s = game.ship;
+  if (typeof target === 'number') {
+    s.x = target; s.y = +y || 0; s.vx = 0; s.vy = 0;
+  } else {
+    const b = typeof target === 'string' ? window.locate(target) : target;
+    if (!b) return null;
+    s.x = b.x + b.radius + s.radius + 220; s.y = b.y;
+    s.vx = b.vx || 0; s.vy = b.vy || 0;
+  }
+  s.invuln = Math.max(s.invuln, 2);
+  game.cam.x = s.x; game.cam.y = s.y;
+  game.predictRef = null;   // let the frame-relative trajectory re-pick its anchor
+  return { x: Math.round(s.x), y: Math.round(s.y) };
+};
+
+// window.god(true/false): the ship ignores ALL damage (damageShip early-out,
+// physics.js). For poking at dangerous places — corona, forts, gas cores —
+// without respawn loops resetting the scene under you.
+window.god = (on = true) => { game.godMode = !!on; return game.godMode; };
+
+// window.freshRun(specIdx, seed): repeatable fresh run for dev/testing — a
+// full resetRun on the given world seed (undefined = the default world) with
+// the spec auto-picked (index into SPECS) and the sim armed. World layout is
+// bit-identical for a given seed; runtime spawns still use Math.random unless
+// window.mechTest's seeded-RNG swap is active.
+window.freshRun = (specIdx = 0, seed) => {
+  resetRun(seed);
+  applyPick(specIdx);   // resetRun ends on the spec card; this picks it
+  game.started = true;
+  return game.prog;
+};
+
+// window.mechTest({seed, reset, download}): the scripted MECHANICS suite
+// (devtest.js, lazy-loaded so normal play never pays for it). Fixed-seed
+// world + Math.random swapped for a seeded RNG for the duration, so a run is
+// repeatable end-to-end. Returns { passed, failed, results, logs } — also
+// stashed on window.lastMechReport; {download: true} saves the JSON.
+window.mechTest = async (opts = {}) => {
+  const { runMechTest } = await import('./devtest.js');
+  return runMechTest(game, {
+    freshRun: window.freshRun,
+    // The whole-game step (the tick idiom) so suite steps exercise the real
+    // update path — picks, timers, glow, AI — not just raw physics.
+    stepSim: (seconds) => { const dt = 1 / 60; for (let t = 0; t < seconds; t += dt) update(dt); },
+  }, opts);
+};
+
+// window.soak(seconds, {idle}): one-call balance/stability soak. Arms the
+// death/collision logs and the NaN counter, fast-forwards headlessly via
+// window.tick (autoUpgrade forced on so picks never stall it), and returns
+// the summary the balance-test skill judges against its pass criteria.
+// {idle: true} kills the ship first — the cleanest sky-stability signal
+// (no deathCause is set, so no life is spent and no death panel opens).
+window.soak = (seconds = 600, opts = {}) => {
+  if (opts.idle) game.ship.alive = false;
+  const wasAuto = game.autoUpgrade;
+  game.autoUpgrade = true;
+  game.collisionLog = []; game.deathLog = []; game.nanEvents = 0;
+  const census = () => {
+    const c = {};
+    for (const b of game.bodies) if (b.alive) c[b.type] = (c[b.type] || 0) + 1;
+    return c;
+  };
+  const before = census();
+  const t0 = performance.now();
+  window.tick(seconds);
+  const wallMs = Math.round(performance.now() - t0);
+  const after = census();
+  const frac = (t) => `${after[t] || 0}/${before[t] || 0}`;
+  const deaths = game.deathLog.map((d) => `${d.type} ${d.how} @${d.t}s (m=${d.mass})`);
+  game.autoUpgrade = wasAuto;
+  return {
+    simSeconds: seconds, wallMs,
+    planets: frac('planet'), moons: frac('moon'),
+    ship: game.ship.alive ? `alive, hull ${Math.round(game.ship.hull)}` : `dead${game.deathCause ? ` (${game.deathCause})` : ' (idle soak)'}`,
+    lives: game.prog.lives, tier: game.prog.tier,
+    deaths: deaths.length > 40 ? deaths.slice(0, 40).concat(`…+${deaths.length - 40} more`) : deaths,
+    impacts: game.collisionLog.length,
+    nanEvents: game.nanEvents,
+  };
 };
