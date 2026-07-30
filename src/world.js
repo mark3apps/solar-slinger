@@ -220,8 +220,9 @@ function spawnVesper(game, sun, th) {
   return c;
 }
 
-// Radius from mass. Shrunk to match the smaller starting hull (SHIP_RADIUS[0]
-// = 2.6): the old 1.6 + cbrt*0.78 bottomed out at ~3.5, so even a "pebble"
+// Radius from mass. Shrunk to match the small starting hull (the drawn scout
+// body disc, ~2.6 world units — NOT SHIP_RADIUS[0], which is now the larger
+// hitbox): the old 1.6 + cbrt*0.78 bottomed out at ~3.5, so even a "pebble"
 // out-sized the scout. This drops the floor and slope so common rocks land
 // ~1.7-3.3 (peer to / smaller than the ship) while boulders stay clearly
 // chunky (~9-12). Mass is untouched, so gravity, grab tiers, hp and scrap

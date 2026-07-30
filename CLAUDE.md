@@ -47,11 +47,15 @@ draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull frac
 ship's local frame, nose along +x, per the `SHIP_TIERS` spec table. Ring assemblies rotate in
 world space in the orbit shield's spin direction (+angle). Damage scars are seeded per
 (tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. The shield
-bubble wraps `shipVisualR(tier, r)` (the drawn art's reach), not the collision radius. The
-collision radius itself IS the drawn body disc: `shipStats` reads it straight from
-`SHIP_RADIUS[tier]` (config.js), whose values are derived so the drawn FOOTPRINT grows by an
-equal RATIO each tier (perceptual evenness) — keep that array and `SHIP_ZOOM` in sync with
-`SHIP_TIERS` proportions; the derivation rules live in the config.js comments.
+bubble wraps `shipVisualR(tier, r)` (the drawn art's reach = `r / SHIP_HIT_FRAC`), not the
+collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
+footprint on every tier: `shipStats` reads it from `SHIP_RADIUS[tier]` (config.js), derived as
+`SHIP_HIT_FRAC × footprint`, where the FOOTPRINT grows by an equal RATIO each tier (perceptual
+evenness). render.js normalizes the art to the footprint (`u = r / (SHIP_HIT_FRAC × reach)`),
+so tuning the fraction moves only the hitbox, never the drawn size. (History: the hitbox used
+to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
+match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with `SHIP_TIERS` proportions;
+the derivation rules live in the config.js comments.
 
 **Import rules:** named exports only (no default exports), explicit `.js` extensions on every
 import path (native browser ESM requires them), `config`/`util` are leaves.

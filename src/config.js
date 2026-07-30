@@ -196,25 +196,31 @@ export const TIERS = {
   labels: ['Asteroids', 'Moons', 'Minor planets', 'Planets', 'Gas giants', 'Anything but stars'],
 };
 
-// Per-tier collision radius (= the drawn hull's body disc; render.js
-// normalizes the art to it). These are DERIVED, not hand-picked: the ship's
-// full drawn FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the
-// SAME RATIO each tier (x1.62, from 6.0 to 67 world units), and each entry
-// divides that footprint by its tier design's art-reach ratio
-// (footprint/bodyR from render.js SHIP_TIERS: 2.33, 1.94, 1.82, 1.76, 1.71,
-// 1.76). Equal RATIOS, not equal increments: the eye judges size change
-// multiplicatively, so an increment ladder made the early tiers feel huge
-// and (paired with the zoom's growing ratio steps) tier 6 feel like an
-// explosion. Recompute if SHIP_TIERS proportions change.
-export const SHIP_RADIUS = [2.6, 5.0, 8.6, 14.5, 24.1, 38.0];
+// Per-tier collision radius. DERIVED, not hand-picked: the ship's full drawn
+// FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the SAME RATIO
+// each tier (x1.62, from 6.0 to 67 world units — equal RATIOS, not equal
+// increments: the eye judges size change multiplicatively), and the collision
+// circle is a UNIFORM fraction of that footprint on every tier:
+//   SHIP_RADIUS[t] = SHIP_HIT_FRAC × footprint[t]
+// History: the collision circle used to be the drawn body DISC only, which
+// covered 43% of the visual reach at tier 0 but ~57% at tier 5 — rocks
+// visibly sailed through the scout's nose, and the hitbox feel changed tier
+// to tier ("collision size doesn't match the ship"). 0.66 covers the solid
+// hull mass everywhere while leaving nose tips and thin ring arcs forgiving.
+// render.js normalizes the art to the footprint (r / SHIP_HIT_FRAC), so
+// changing the fraction moves ONLY the hitbox, never the drawn size.
+export const SHIP_HIT_FRAC = 0.66;
+export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
 
 // Per-tier camera zoom TARGET (the value cam zoom eases toward): a
 // geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
 // RATIO. The start value is DERIVED, not aesthetic: it makes the ship's
 // APPARENT on-screen size arc identical to the approved one (~15px-eq
 // scout -> ~40px-eq titan) while the ship's WORLD size shrank — small
-// ships look the same in the viewport but tiny next to planets. Change
-// SHIP_RADIUS and you must re-derive this. Zoom is driven by beam tier
+// ships look the same in the viewport but tiny next to planets. The pairing
+// anchor is the drawn FOOTPRINT ladder (SHIP_RADIUS ÷ SHIP_HIT_FRAC): change
+// THAT and you must re-derive this — retuning SHIP_HIT_FRAC alone moves only
+// the hitbox and needs no zoom change. Zoom is driven by beam tier
 // alone — other progression tracks don't pull the camera back.
 // NOTE: this tight tier-0 zoom is why the SKY SPEED is tuned low (the sun's
 // mass, world.js) — the world scrolls past ~2x faster per zoom unit, so a

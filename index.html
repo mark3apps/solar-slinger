@@ -10,35 +10,45 @@
 <canvas id="game"></canvas>
 
 <div id="hud">
+  <div id="fx"></div>
   <div id="topleft">
     <div class="statbar" id="hullBar">
-      <span class="statlabel">HULL</span>
-      <span class="stattrack"><span id="hullFill"></span></span>
-      <span class="statnum" id="hullNum">67/67</span>
+      <span class="stathead">
+        <span class="statlabel">HULL</span>
+        <span class="statnum" id="hullNum">67/67</span>
+      </span>
+      <span class="stattrack"><span class="statwell"><span id="hullFill"></span></span></span>
     </div>
     <div class="statbar" id="shieldBar">
-      <span class="statlabel">&#x26E8; SHLD</span>
-      <span class="stattrack"><span id="shieldFill"></span></span>
-      <span class="statnum" id="shieldNum">33/33</span>
+      <span class="stathead">
+        <span class="statlabel">SHIELD</span>
+        <span class="statnum" id="shieldNum">33/33</span>
+      </span>
+      <span class="stattrack"><span class="statwell"><span id="shieldFill"></span></span></span>
     </div>
+  </div>
+  <div id="xpBar"><span id="xpFill"></span></div>
+  <div id="tierLabel" class="hidden">TIER 0 &middot; SCOUT</div>
+  <div id="bottomleft">
     <div id="progRow">
-      <span id="tierLabel">TIER 0 &middot; SCOUT</span>
-      <span id="livesText">&#x2665;&#x2665;&#x2665;</span>
+      <span id="specLabel" class="hidden"></span>
+      <span id="livesText"></span>
     </div>
-    <div id="xpBar"><span id="xpFill"></span></div>
     <div id="upList2"></div>
   </div>
+  <div id="combo" class="hidden"></div>
+  <canvas id="radar" width="200" height="200"></canvas>
   <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
   <div id="msg" class="hidden"></div>
 </div>
 
-<div id="deathScreen" class="panel hidden">
+<div id="deathScreen" class="panel alert hidden">
   <h1>SHIP DESTROYED</h1>
   <p id="deathCause"></p>
   <p class="small" id="deathLives">Press R to respawn</p>
 </div>
 
-<div id="gameoverScreen" class="panel hidden">
+<div id="gameoverScreen" class="panel alert hidden">
   <h1>GAME OVER</h1>
   <p id="gameoverCause"></p>
   <p class="small">All lives lost &mdash; press R to start a new run</p>
@@ -51,14 +61,22 @@
 </div>
 
 <div id="splashScreen" class="panel menu">
-  <div class="gametitle">SOLAR <span>SLINGER</span></div>
-  <p class="tagline">A gravity sandbox. Fly a little ship through a living solar system &mdash; grab things with your tractor beam, and fling them.</p>
+  <div class="titleblock">
+    <div class="orbitdeco">
+      <i class="od-ring od-r1"><i class="od-orb"></i></i>
+      <i class="od-ring od-r2"><i class="od-orb"></i></i>
+      <i class="od-sun"></i>
+    </div>
+    <div class="gametitle">SOLAR <span>SLINGER</span></div>
+    <div class="subtitle">A LIVING GRAVITY SANDBOX</div>
+  </div>
+  <p class="tagline">Fly a little ship through a living solar system &mdash; grab things with your tractor beam, and fling them.</p>
   <div class="menucol">
     <button class="menubtn primary" id="btnStart">START GAME</button>
     <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
     <button class="menubtn" id="btnSplashExit">EXIT</button>
   </div>
-  <p class="small">Mouse steers &middot; W thrust &middot; hold LEFT MOUSE to grab &amp; fling</p>
+  <p class="keyhints"><span><kbd>MOUSE</kbd>steer</span><span><kbd>W</kbd>thrust</span><span><kbd>LMB</kbd>grab &amp; fling</span></p>
 </div>
 
 <div id="pauseScreen" class="panel menu hidden">

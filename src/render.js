@@ -1,9 +1,10 @@
-import { CFG, PROG } from './config.js';
+import { CFG, PROG, SHIP_HIT_FRAC } from './config.js';
 import { predictPaths } from './physics.js';
 import { volleyPick } from './tractor.js';
 import { TAU, lerp, mulberry32 } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
+let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
 let armedSet = null;   // orbiters the shotgun charge has armed this frame
 const starLayers = [];   // parallax background stars
 const oortSpecks = [];   // icy debris ring marking the world edge
@@ -21,7 +22,10 @@ export function initRender(cv) {
     // spawner) the whole sim. Fall back to a nominal size until a real one.
     vw = window.innerWidth || 1280; vh = window.innerHeight || 720;
     canvas.width = vw * dpr; canvas.height = vh * dpr;
+    radarCanvas.width = radarCanvas.height = RADAR_SIZE * dpr;
   };
+  radarCanvas = document.getElementById('radar');
+  rctx = radarCanvas.getContext('2d');   // alpha kept: the world shows through around the disc
   resize();
   window.addEventListener('resize', resize);
 
@@ -1184,9 +1188,11 @@ function shipScars(tier, dmg) {
 //   4 DREADNOUGHT near-closed ring, strut spokes, triple bell
 //   5 TITAN       double ring, five pod pairs, spokes everywhere — a class
 //                 above everything else
-// The tier size ladder lives in config.js SHIP_RADIUS (read by shipStats),
-// so the COLLISION circle is exactly the drawn body disc: here r arrives
-// pre-sized and u = r / bR normalizes the proportions.
+// The tier size ladder lives in config.js SHIP_RADIUS (read by shipStats).
+// The COLLISION circle is a uniform SHIP_HIT_FRAC of the drawn footprint on
+// every tier, so the art is normalized to the FOOTPRINT (u = r / (frac ×
+// reach)), NOT to the body disc — the drawn size never moves when the
+// hitbox fraction is tuned.
 const SHIP_TIERS = [
   { bR: 0.58, nose: 1.35, rear: 1.00, fins: true, core: 0, eng: 1 },
   { bR: 0.68, nose: 1.32, rear: 1.08, fins: true, wings: true, core: 1, eng: 2 },
@@ -1206,17 +1212,27 @@ const SHIP_TIERS = [
     spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
 ];
 
+// A tier design's art-space reach: how far the drawn shape extends from
+// center, in the same units as bR/nose/armR (the footprint before scaling).
+function shipReach(t) {
+  return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2));
+}
+
 // How far the DRAWN ship reaches from its center (world units). The shield
 // bubble and any effect that should wrap the art uses this, NOT the (smaller)
 // collision radius — a titan's bubble must clear its outer ring and nose.
+// Since the collision radius is SHIP_HIT_FRAC of the footprint, the footprint
+// is simply r / SHIP_HIT_FRAC — identical for every tier by construction.
 function shipVisualR(tier, r) {
-  const t = SHIP_TIERS[tier];
-  return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2)) * r / t.bR;
+  void tier;
+  return r / SHIP_HIT_FRAC;
 }
 
 function drawShipHull(game, tier, dmg, r) {
   const t = SHIP_TIERS[tier];
-  const u = r / t.bR;   // r IS the body-disc (collision) radius
+  // Normalize the art to the FOOTPRINT (r / SHIP_HIT_FRAC), not the body
+  // disc: the collision circle covers SHIP_HIT_FRAC of the drawn reach.
+  const u = r / (SHIP_HIT_FRAC * shipReach(t));
   const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
   const lw = Math.max(1.1, 0.07 * u);
   const cx = -0.12 * u;                   // body circle sits a touch aft
@@ -1760,67 +1776,210 @@ function drawPrediction(game) {
   drawPath(heldPts, heldHit, 'rgba(255, 200, 90, 0.55)');
 }
 
+// The minimap is a SHIP-CENTERED RADAR: it shows the local neighborhood
+// (MINIMAP_RANGE world units to the rim), not the whole system — worlds drift
+// across it as you fly. Neon rim with bearing ticks, a slow rotating sweep and
+// locator ping centered on you, your sensor bubble, and glowing blips. Same
+// data rules as ever — fog of war (b.seen) decides what exists; the sun is
+// pinned to the rim when out of range so you can always fly home by the map.
+const MINIMAP_RANGE = 5200;
+const RADAR_SIZE = 200;   // CSS px of the #radar canvas (positioned + tilted by style.css)
 function drawMinimap(game) {
+  // The radar has its OWN canvas so the DOM can tilt it on the 3D canopy —
+  // shadow the module ctx with the radar context for this function's scope.
+  const ctx = rctx;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const size = 190, pad = 14;
-  const mx = vw - size - pad, my = pad;
-  const scale = size / (CFG.WORLD_R * 2.15);
-  const cx = mx + size / 2, cy = my + size / 2;
+  ctx.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
+  const cx = RADAR_SIZE / 2, cy = RADAR_SIZE / 2;
+  const r = 95;
+  const scale = (r - 4) / MINIMAP_RANGE;
+  // Radar origin: the ship, or the camera while the wreck drifts
+  const fx = game.ship.alive ? game.ship.x : game.cam.x;
+  const fy = game.ship.alive ? game.ship.y : game.cam.y;
 
-  ctx.fillStyle = 'rgba(6, 10, 24, 0.75)';
-  ctx.strokeStyle = 'rgba(110, 180, 255, 0.4)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, TAU); ctx.fill(); ctx.stroke();
+  // Dark well with a faint lit horizon toward the top
+  const bg = ctx.createRadialGradient(cx, cy - r * 0.6, r * 0.2, cx, cy, r);
+  bg.addColorStop(0, 'rgba(20, 12, 40, 0.82)');
+  bg.addColorStop(1, 'rgba(8, 4, 18, 0.88)');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
 
   ctx.save();
-  ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, TAU); ctx.clip();
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.clip();
 
+  // Grid: two range rings + cross axes, barely-there
+  ctx.strokeStyle = 'rgba(176, 112, 255, 0.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, r * (1 / 3), 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, r * (2 / 3), 0, TAU); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
+  ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
+  ctx.stroke();
+
+  // Sensor bubble: how far the scan actually reveals (mirrors replenishWorld).
+  // Centered on the ship = the radar center.
+  if (game.ship.alive) {
+    const seeR = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1) * scale;
+    ctx.fillStyle = 'rgba(176, 112, 255, 0.05)';
+    ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(176, 112, 255, 0.22)';
+    ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.stroke();
+  }
+
+  // The sun sits at the world origin: storm front + world edge both circle it,
+  // drawn in ship-relative space (the clip discards whatever falls outside).
+  const sunX = cx - fx * scale, sunY = cy - fy * scale;
+  if (game.storm) {
+    ctx.strokeStyle = 'rgba(255, 200, 90, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(sunX, sunY, game.storm.r * scale, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(255, 180, 80, 0.15)';
+    ctx.beginPath(); ctx.arc(sunX, sunY, game.storm.r * scale, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  {
+    const dSun = Math.hypot(fx, fy);
+    if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_RANGE * 1.2) {
+      ctx.strokeStyle = 'rgba(255, 130, 130, 0.3)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sunX, sunY, CFG.WORLD_R * scale, 0, TAU); ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  }
+
+  // Radar sweep: a trailing glow wedge behind a bright leading edge, spinning
+  // around the ship. Runs on game.time, so it freezes with the sim behind menus.
+  const sweepAng = (game.time * TAU / 7) % TAU;
+  if (ctx.createConicGradient) {
+    const sweep = ctx.createConicGradient(sweepAng, cx, cy);
+    sweep.addColorStop(0, 'rgba(176, 112, 255, 0)');
+    sweep.addColorStop(0.8, 'rgba(176, 112, 255, 0)');
+    sweep.addColorStop(1, 'rgba(176, 112, 255, 0.20)');
+    ctx.fillStyle = sweep;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(235, 218, 255, 0.5)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(sweepAng) * r, cy + Math.sin(sweepAng) * r);
+    ctx.stroke();
+  }
+  // A blip FLARES as the beam crosses its bearing, then cools until the next
+  // pass — the radar reads as actively scanning, not as a static chart.
+  const sweepFlare = (dx, dy) => {
+    let lag = sweepAng - Math.atan2(dy, dx);
+    lag %= TAU; if (lag < 0) lag += TAU;
+    return Math.min(1, 0.68 + 0.6 * Math.exp(-lag * 2.5));
+  };
+
+  // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
+  ctx.shadowBlur = 5;
   for (const b of game.bodies) {
     // Fog of war: only the sun is visible from anywhere; everything else
     // appears once it has come within sensor range (b.seen, set by the
     // replenishWorld scan) — the map fills in as you actually explore.
     if (b.type !== 'star' && !b.seen) continue;
-    const x = cx + b.x * scale, y = cy + b.y * scale;
+    const dx = b.x - fx, dy = b.y - fy;
+    const d = Math.hypot(dx, dy) || 1;
+    if (b.type !== 'star' && d > MINIMAP_RANGE * 1.05) continue;   // beyond radar range
+    ctx.globalAlpha = sweepFlare(dx, dy);
+    let x = cx + dx * scale, y = cy + dy * scale;
     if (b.type === 'star') {
+      // Off-range the sun pins to the rim as a homeward direction marker
+      const pinned = d * scale > r - 9;
+      if (pinned) { x = cx + (dx / d) * (r - 9); y = cy + (dy / d) * (r - 9); }
+      ctx.shadowColor = '#ffd76a';
       ctx.fillStyle = b.color;
-      ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, pinned ? 3 : 4.5, 0, TAU); ctx.fill();
     } else if (b.type === 'rogue') {
+      ctx.shadowColor = '#b07aff';
       ctx.fillStyle = '#b07aff';
       ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.type === 'planet') {
-      ctx.fillStyle = b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
-      ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
-      if (b.fort) { ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1; ctx.strokeRect(x - 3, y - 3, 6, 6); }
+      const col = b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
+      ctx.shadowColor = col;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, TAU); ctx.fill();
+      if (b.fort) { ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1; ctx.strokeRect(x - 4, y - 4, 8, 8); }
     } else if (b.type === 'moon' && b.fort) {
+      ctx.shadowColor = '#78c8ff';
       ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1;
       ctx.strokeRect(x - 2.5, y - 2.5, 5, 5);
+    } else if (b.type === 'moon') {
+      ctx.shadowColor = '#9fb6cc';
+      ctx.fillStyle = '#9fb6cc';
+      ctx.beginPath(); ctx.arc(x, y, 1.4, 0, TAU); ctx.fill();
     } else if (b.type === 'nest') {
+      ctx.shadowColor = '#7ec95f';
       ctx.fillStyle = '#7ec95f';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     } else if (b.type === 'station') {
+      ctx.shadowColor = '#c9d6e4';
       ctx.fillStyle = '#c9d6e4';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     } else if (b.visitor) {
+      ctx.shadowColor = '#ffd9a8';
       ctx.fillStyle = '#ffd9a8';
       ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.comet) {
+      ctx.shadowColor = '#8fe8ff';
       ctx.fillStyle = '#8fe8ff';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   }
+  // Aliens: hot red deltas
+  ctx.shadowColor = '#ff4a4a';
   ctx.fillStyle = '#ff4a4a';
   for (const al of game.aliens) {
-    const x = cx + al.x * scale, y = cy + al.y * scale;
-    ctx.fillRect(x - 2, y - 2, 4, 4);
+    const dx = al.x - fx, dy = al.y - fy;
+    if (Math.hypot(dx, dy) > MINIMAP_RANGE * 1.05) continue;
+    ctx.globalAlpha = sweepFlare(dx, dy);
+    const x = cx + dx * scale, y = cy + dy * scale;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 2.6); ctx.lineTo(x + 2.4, y + 2); ctx.lineTo(x - 2.4, y + 2);
+    ctx.closePath(); ctx.fill();
   }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+
+  // The ship: a heading chevron at the radar's heart, with a locator ping
   if (game.ship.alive) {
+    const ping = (game.time % 2.4) / 2.4;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * (1 - ping)})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, 3 + ping * 10, 0, TAU); ctx.stroke();
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(game.ship.angle);
+    ctx.shadowBlur = 6; ctx.shadowColor = '#ffffff';
     ctx.fillStyle = '#ffffff';
-    const x = cx + game.ship.x * scale, y = cy + game.ship.y * scale;
-    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-    ctx.beginPath(); ctx.arc(x, y, 5.5, 0, TAU); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(4.5, 0); ctx.lineTo(-3, 3); ctx.lineTo(-1.2, 0); ctx.lineTo(-3, -3);
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
   }
   ctx.restore();
+
+  // Rim: bright ring + halo + bearing ticks (cardinals heavier), outside the clip
+  ctx.strokeStyle = 'rgba(176, 112, 255, 0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(176, 112, 255, 0.12)';
+  ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.arc(cx, cy, r + 2.5, 0, TAU); ctx.stroke();
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * TAU;
+    const cardinal = i % 6 === 0;
+    const len = cardinal ? 7 : 3.5;
+    ctx.strokeStyle = cardinal ? 'rgba(235, 218, 255, 0.8)' : 'rgba(176, 112, 255, 0.35)';
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * (r - len), cy + Math.sin(a) * (r - len));
+    ctx.lineTo(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1));
+    ctx.stroke();
+  }
 }
 
 export function render(game) {
