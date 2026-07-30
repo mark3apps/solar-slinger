@@ -4,7 +4,7 @@ import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
 import { setDeathVisible } from './hud.js';
-import { setSoundEnabled } from './sfx.js';
+import { setSfxVolume } from './sfx.js';
 import { mulberry32 } from './util.js';
 
 // DEV MECHANICS SUITE — window.mechTest() lazy-loads this module, so normal
@@ -71,9 +71,11 @@ export function runMechTest(game, hooks, opts = {}) {
   const rng = mulberry32(seed ^ 0x5f3759df);
   Math.random = () => rng();
   const wasAuto = game.autoUpgrade;
-  const wasSound = game.soundOn;
   game.autoUpgrade = true;
-  setSoundEnabled(false);
+  // Mute the SFX bus for the scripted burst (there are no audio toggles any
+  // more — the volume slider IS the control; game.sfxVol still holds the
+  // user's level to restore).
+  setSfxVolume(0);
   game.collisionLog = [];
   game.deathLog = [];
   game.nanEvents = 0;
@@ -291,7 +293,7 @@ export function runMechTest(game, hooks, opts = {}) {
   } finally {
     Math.random = realRandom;
     game.autoUpgrade = wasAuto;
-    setSoundEnabled(wasSound);
+    setSfxVolume(game.sfxVol);
     game.godMode = false;
   }
 
