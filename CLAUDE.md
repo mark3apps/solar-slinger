@@ -39,7 +39,8 @@ variable-timestep presentation loop.
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. |
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
-| [sfx.js](src/sfx.js) | Web Audio synthesis. |
+| [sfx.js](src/sfx.js) | Audio engine: owns the AudioContext + the sfx/music buses. EVERY sound is a real CC0 recording (`assets/audio/sfx/` — Kenney + OpenGameArt, lazily decoded): one-shots via the `BANK` variant table, continuous state (thrust/beam/heat/scrape/charge) via the `LOOPS` table — loop-authored samples with game-driven gain/pitch. The synth blips at the bottom are decode-window fallbacks ONLY — the user explicitly rejected synth as the primary voice; never promote them back. |
+| [music.js](src/music.js) | Adaptive music director: ten Scott Buckley CC-BY tracks (`assets/audio/music/`, one composer so every mood shares one voice) in four mood PLAYLISTS — calm / world / sun / danger. **Exactly one track plays at a time** (they're full mixes, not stems — layering them sounded like songs on top of each other): the mood vector picks a playlist with enter/exit hysteresis + dwell, switches crossfade, and a track ending naturally rotates within its playlist. Streams via `<audio>` elements (never `decodeAudioData` — a 7-min track decodes to ~150 MB of PCM). Runs every frame, sim frozen or not (menus duck it). |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`). |
 
 The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
@@ -84,10 +85,16 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   never dismiss an upgrade card, no-op on the splash or over the death/game-over panels. The on-screen **☰
   button** (top-right, below the minimap) just calls `pauseGame`. Player input (grab/fling/RMB) is gated
   behind `menuBlocking()` so nothing reaches the sim through a menu.
-- **Settings** (Sound, Trajectory prediction) persist to `localStorage['ss_settings']` — host-agnostic, so
-  it works identically under serve.py and Electron. **Sound**: the Web Audio context must first be created
-  *inside* a user gesture (a context built at page load starts suspended and never resumes), so `sfx.setSoundEnabled`
-  is only ever called with `on` from a click, and the loader touches audio only to honor a persisted MUTE.
+- **Settings** (Music/SFX volume sliders, Trajectory prediction) persist to
+  `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
+  There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
+  entirely, not just silences them). The Web Audio context must still first be created *inside* a
+  user gesture (a context built at page load starts suspended and never resumes): `sfx.initAudio`
+  runs only from clicks/keys, and the settings loader only STORES the persisted volumes.
+  The volume DEFAULTS are deliberately lopsided (music 0.85, SFX 0.5): the ambient tracks are mastered
+  quiet while the CC0 sample packs run hot — at equal gains the SFX buried the soundtrack.
+  The settings panel's credit line ("Music: Scott Buckley … Kenney.nl") is REQUIRED by the CC-BY music
+  licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 
@@ -174,7 +181,15 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   bigger spread lets same-radius rocks catch up and grind each other. Moons/installations stay exact.
 - **Event-flag messaging:** a subsystem signals a one-shot event by setting `game.<x>Warn` / `game.<x>Name`;
   `update()` in main.js drains and clears it and calls `hud.message(text, seconds)`. First-time-vs-repeat
-  wording is gated on `game.tut.*` booleans.
+  wording is gated on `game.tut.*` booleans. An entry's optional `snd` plays with the message — the audio
+  grammar: `sfxAlarm` = the ship is in danger NOW, `sfxWarnLow` = hostile contact / bad news, `sfxChime` =
+  discovery / opportunity, `sfxLife` = triumph. Keep new events on that grammar.
+- **Audio conventions:** world-positioned one-shots (booms, turret fire) pass `sfx.distVol(game, x, y)` so
+  far-side belt crunches stay a murmur — never add an unscaled boom for an off-screen event. The music mood
+  (`world`/`sun`/`danger`) is computed even with no AudioContext, so headless soaks can assert on it via
+  `window.musicState()`; `window.tick` advances it with the sim. The sun channel has a DEADZONE on its outer
+  third (spawn sits ~3.3 sun-radii out and the dread bed must not brood over a fresh run — tune in
+  `music.computeMood`).
 - **Determinism:** world *generation* uses a seeded `mulberry32` RNG (default seed `20260721`). Runtime
   spawns/spall/AI intentionally use `Math.random`. Procedural sprite geometry is seeded off `b.id` and cached.
 
@@ -353,7 +368,8 @@ about it — this is a hard rule.
   `app://` scheme (Chromium won't load ES modules over `file://`, same reason `serve.py` exists) and
   the game code has no idea it's in Electron. Never `require`/`import` Electron or Node APIs from
   `src/`, and never assume an origin, absolute path, or `file://` — if it wouldn't work over
-  `serve.py`, it's wrong.
+  `serve.py`, it's wrong. Audio assets follow the same rule: always relative paths (`assets/audio/…`);
+  the `app://` scheme carries the `stream` privilege so `<audio>` elements can stream the music beds.
 - **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
   `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`).
   Electron + electron-builder are **devDependencies** — dev/build only, not shipped game deps, so
@@ -383,6 +399,8 @@ There is no test runner. Verify balance and physics with the console hooks:
   `game.prog.spec` is null. To soak a different spec (or a specific build), assign `game.prog`
   wholesale — `{ xp, level, tier, picksThisTier, spec, upgrades: { abilityId: rank }, lives, … }` —
   then `window.tick(1/60)` once to rebuild `game.st` before measuring.
+- `window.musicState()` — the music director's live mood vector (`world`/`sun`/`danger`), duck level,
+  and per-bed gains/stream state. Mood advances under `window.tick` even with no AudioContext.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
 

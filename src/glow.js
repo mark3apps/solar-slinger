@@ -1,6 +1,6 @@
 import { CFG, PROG, addXp } from './config.js';
 import { TAU, rand } from './util.js';
-import { sfxCollect } from './sfx.js';
+import { sfxMote } from './sfx.js';
 
 // GLOW POCKETS — sparse clusters of small bioluminescent motes that ride the
 // same prograde orbit as the asteroid belt, scattered thin across the whole mid
@@ -166,5 +166,5 @@ function collect(game, mx, my) {
       size: 2 * (0.5 + Math.random()), color: 'rgba(150, 255, 190, 0.9)',
     });
   }
-  sfxCollect();
+  sfxMote();
 }

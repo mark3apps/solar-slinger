@@ -76,8 +76,12 @@
   <h2>SETTINGS</h2>
   <div class="setlist">
     <div class="setrow">
-      <span class="setname">Sound</span>
-      <button class="toggle" id="setSound" role="switch" aria-checked="true"><span class="knob"></span></button>
+      <span class="setname">Music volume</span>
+      <input type="range" class="vol" id="setMusicVol" min="0" max="100" value="85" aria-label="Music volume">
+    </div>
+    <div class="setrow">
+      <span class="setname">SFX volume</span>
+      <input type="range" class="vol" id="setSfxVol" min="0" max="100" value="50" aria-label="Sound effects volume">
     </div>
     <div class="setrow">
       <span class="setname">Trajectory prediction</span>
@@ -101,6 +105,8 @@
   <div class="menucol">
     <button class="menubtn primary" id="btnSettingsBack">BACK</button>
   </div>
+  <!-- CC-BY attribution — required by the music licenses (assets/audio/CREDITS.md) -->
+  <p class="small">Music: Scott Buckley &mdash; scottbuckley.com.au (CC-BY 4.0) &middot; SFX: Kenney.nl (CC0)</p>
 </div>
 
 <script type="module" src="src/main.js"></script>

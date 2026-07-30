@@ -27,7 +27,8 @@ export function initHud(game) {
     'pauseScreen', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
-    'topleft', 'splashScreen', 'settingsScreen', 'menuBtn', 'setSound', 'setPredict',
+    'topleft', 'splashScreen', 'settingsScreen', 'menuBtn', 'setPredict',
+    'setMusicVol', 'setSfxVol',
     'btnStart', 'btnSplashSettings', 'btnSplashExit',
     'btnResume', 'btnPauseSettings', 'btnMainMenu', 'btnPauseExit', 'btnSettingsBack']) {
     el[id] = document.getElementById(id);
@@ -61,8 +62,22 @@ export function initMenus(handlers) {
   bind('btnSplashSettings', handlers.onOpenSettings);
   bind('btnPauseSettings', handlers.onOpenSettings);
   bind('btnSettingsBack', handlers.onCloseSettings);
-  bind('setSound', handlers.onToggleSound);
   bind('setPredict', handlers.onTogglePredict);
+  // Volume sliders — the ONLY audio controls (zero = mute; no separate
+  // toggles): live level on drag, and a preview tick on release so the SFX
+  // level can be judged without leaving the menu.
+  if (el.setMusicVol) el.setMusicVol.addEventListener('input', (e) => handlers.onMusicVol(+e.target.value / 100));
+  if (el.setSfxVol) {
+    el.setSfxVol.addEventListener('input', (e) => handlers.onSfxVol(+e.target.value / 100));
+    el.setSfxVol.addEventListener('change', () => handlers.onSfxPreview && handlers.onSfxPreview());
+  }
+}
+
+// Reflect a slider without fighting an in-progress drag
+function setSlider(node, v) {
+  if (!node || document.activeElement === node) return;
+  const val = String(Math.round(v * 100));
+  if (node.value !== val) node.value = val;
 }
 
 // Reflect a switch's on/off state (only touches the DOM on a real change).
@@ -98,8 +113,9 @@ function syncMenus(game) {
     // settings modal opened from it); cleared the instant the game begins.
     document.body.classList.toggle('preGame', !game.started);
   }
-  setToggle(el.setSound, game.soundOn);
   setToggle(el.setPredict, game.predict);
+  setSlider(el.setMusicVol, game.musicVol);
+  setSlider(el.setSfxVol, game.sfxVol);
 }
 
 export function setDeathVisible(v, cause = '', lives = 0) {

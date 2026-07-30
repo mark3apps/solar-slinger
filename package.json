@@ -30,6 +30,7 @@
       "index.html",
       "style.css",
       "src/**/*",
+      "assets/**/*",
       "!**/.DS_Store"
     ],
     "mac": {

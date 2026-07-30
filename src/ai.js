@@ -1,6 +1,7 @@
 import { CFG } from './config.js';
 import { Alien, derail } from './entities.js';
 import { damageShip, damageBody, addParticles } from './physics.js';
+import * as sfx from './sfx.js';
 import { TAU, clamp } from './util.js';
 
 // Steering: accelerate toward a desired velocity (auto-fights gravity)
@@ -244,6 +245,7 @@ function updateForts(game, dt) {
         vx: Math.cos(ang) * 260 + b.vx, vy: Math.sin(ang) * 260 + b.vy,
         life: 5.5,
       });
+      sfx.sfxBolt(sfx.distVol(game, wx, wy));
     }
   }
   if (game.bolts.length) {
