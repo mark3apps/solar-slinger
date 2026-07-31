@@ -452,10 +452,32 @@ about it — this is a hard rule.
 - **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
   `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`),
   `npm run changelog` (preview the pending release notes — needs `GH_TOKEN`).
-  Electron + electron-builder are **devDependencies** — dev/build only, not shipped game deps, so
-  the "no runtime dependencies" claim still holds.
+  Electron + electron-builder are **devDependencies** — dev/build only. `electron-updater` is the
+  one real `dependency` (it ships inside the packaged app), and it belongs to the SHELL — the
+  GAME still has zero runtime dependencies, and nothing under `src/` may ever import it.
 - `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
   `app://` for hot-ish iteration.
+- **Auto-update** ([electron/updater.js](electron/updater.js)) — a no-op in dev (`app.isPackaged`
+  gate), and split by what unsigned builds can honestly do: **Windows NSIS + Linux AppImage**
+  self-update via electron-updater (background download, sha512-verified from `latest*.yml`,
+  installs on quit; a dialog offers "Restart now"; AppImage is detected via
+  `process.env.APPIMAGE`); **macOS** is check-and-notify ONLY — Squirrel.Mac refuses to swap an
+  unsigned/ad-hoc bundle, so until a real Developer ID + notarization (+ a mac `zip` target)
+  exists, don't route mac through electron-updater's installer; **Linux deb/rpm** installs are
+  root-owned (in-place swap = pkexec prompt mid-game), so they're also check-and-notify — the
+  AppImage is the self-updating Linux format. Four load-bearing wires, each of which silently
+  reverts the auto platforms to manual updates if removed: the `build.publish` block in
+  package.json (makes electron-builder embed `app-update.yml` in the app and emit the
+  `dist/latest*.yml` feeds — `latest.yml` win, `latest-linux.yml` + `latest-linux-arm64.yml`
+  per-arch), the release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
+  (the update feed; blockmaps enable differential downloads), the repo staying public (the feeds
+  are unauthenticated), and the SPACE-FREE `nsis.artifactName` / `appImage.artifactName` — with
+  electron-builder's default "Solar Slinger …" names, latest.yml points at the dash-sanitized
+  name while GitHub renames the uploaded asset with DOTS, so the installed app 404s on every
+  check (the AppImage name also needs `${arch}` or the x64 and arm64 files collide on the
+  release). **Failure law: a failed update check is invisible** — offline/rate-limited must
+  never surface a dialog. "Skip this version" persists in `userData/update-prefs.json`
+  (notify platforms only).
 - **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)) is
   **`workflow_dispatch` only — nothing runs on a push to `main`.** You trigger it and pick a
   `bump` (patch/minor/major); `dry_run: true` builds and generates notes while publishing nothing.

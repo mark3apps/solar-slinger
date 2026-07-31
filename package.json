@@ -25,6 +25,11 @@
     "directories": {
       "output": "dist"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "mark3apps",
+      "repo": "solar-slinger"
+    },
     "afterPack": "scripts/adhoc-sign-mac.js",
     "files": [
       "electron/**/*",
@@ -52,6 +57,10 @@
       "syncDesktopName": true,
       "target": [
         {
+          "target": "AppImage",
+          "arch": ["x64", "arm64"]
+        },
+        {
           "target": "deb",
           "arch": [
             "x64",
@@ -67,6 +76,9 @@
         }
       ]
     },
+    "appImage": {
+      "artifactName": "${name}-${version}-${arch}.${ext}"
+    },
     "win": {
       "target": [
         {
@@ -78,8 +90,12 @@
       ]
     },
     "nsis": {
+      "artifactName": "${name}-setup-${version}.${ext}",
       "oneClick": true,
       "deleteAppDataOnUninstall": true
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }
