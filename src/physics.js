@@ -524,16 +524,44 @@ const SOFT2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
 const _g = { ax: 0, ay: 0 };
 const _gp = { ax: 0, ay: 0 };   // non-star portion of the last gravityAt call (gravity compass)
 
+// INFLUENCE CUTOFF (perf): an attractor whose pull at this range is below
+// GRAV_CULL_A (u/s²) contributes nothing a player could ever observe — over a
+// full minute of flight the integrated error is ~1 u/s against orbital speeds
+// of hundreds. Skipping it turns the per-substep gravity sum for every loose
+// rock / alien / debris chunk from O(all attractors) into "the sun plus the
+// few neighbors that actually matter", which is what lets the system scale.
+// cullR2 = G·m / EPS is the squared range where the pull decays to EPS;
+// step() stamps it on each attractor once per substep (mass changes on
+// damage, so it can't be precomputed at spawn). The SHIP (starMul/heavyMul
+// ≠ 1) uses the much wider cullShip2 below, sized so nothing it could feel
+// above EPS — LONG ARMS boost included — is ever dropped; the compass and
+// the predictPaths mirror share exactly that rule. Celestials use
+// gravityOnBody (below), which keeps invariant 2's symmetric pairs and is
+// untouched by this.
+const GRAV_CULL_A = 0.02;
+export const GRAV_CULL_K = CFG.G / GRAV_CULL_A;   // predictPaths mirrors the same constant
+// The SHIP's cutoff must be far more conservative: its felt pull is scaled by
+// SHIP_GRAV × PLANET_GRAV_SHIP and LONG ARMS can boost a far world's tug by
+// up to SHIP_WELL_MAX — so its cull range is widened by exactly that worst
+// case, keeping every attractor the ship could feel above GRAV_CULL_A. The
+// same constant is used by gravityAt (the real ship) AND predictPaths'
+// accelAt (the forecast), so the mirror law holds: the drawn path and the
+// flown path cull identically.
+export const SHIP_CULL_K = GRAV_CULL_K * CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * CFG.SHIP_WELL_MAX;
+
 // Full acceleration from all attractors at point (x,y) — used for the ship,
-// aliens, and debris, which always feel everything.
+// aliens, and debris. The ship always feels everything; aliens/debris/loose
+// rocks skip negligible far-field attractors (see the cutoff note above).
 function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
   let ax = 0, ay = 0, pax = 0, pay = 0;
+  const loose = starMul === 1 && heavyMul === 1;   // ship passes ≠1 → the wide ship cutoff
   for (const b of attractors) {
+    const dx = b.x - x, dy = b.y - y;
+    const d2 = dx * dx + dy * dy + SOFT2;
+    if (d2 > (loose ? b.cullR2 : b.cullShip2)) continue;   // negligible tug — skip the sqrt+div
     const star = b.type === 'star';
     const heavy = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue';
     let w = star ? starMul : heavy ? heavyMul : 1;
-    const dx = b.x - x, dy = b.y - y;
-    const d2 = dx * dx + dy * dy + SOFT2;
     const d = Math.sqrt(d2);
     // LONG ARMS (see CFG.SHIP_WELL_*): only the SHIP passes heavyMul != 1,
     // so this far-field boost never touches aliens, debris, or thrown rocks.
@@ -1176,7 +1204,17 @@ export function step(game, dt) {
   const bodies = game.bodies;
   const attractors = _attractors;
   attractors.length = 0;
-  for (const b of bodies) if (b.alive && b.attractor) attractors.push(b);
+  let aliveCount = 0;   // for the sweep-list staleness check below
+  for (const b of bodies) {
+    if (!b.alive) continue;
+    aliveCount++;
+    if (!b.attractor) continue;
+    // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
+    // are never culled — the sun is the structural anchor of every orbit.
+    if (b.type === 'star') { b.cullR2 = Infinity; b.cullShip2 = Infinity; }
+    else { b.cullR2 = b.mass * GRAV_CULL_K; b.cullShip2 = b.mass * SHIP_CULL_K; }
+    attractors.push(b);
+  }
 
   // Rails maintenance: heavy wanderers (rogues, thrown giants) wake nearby
   // railed bodies into live physics; long-quiet live bodies snap back onto
@@ -1580,13 +1618,29 @@ export function step(game, dt) {
       b.x = p.x + rl.px; b.y = p.y + rl.py;
       b.vx = p.vx + rl.vpx; b.vy = p.vy + rl.vpy;
     } else {
+      // rl.ang stays the source of truth (predictPaths copies it; the orbit
+      // guide arc draws from it) but position uses an INCREMENTAL ROTATION:
+      // one rotor multiply per substep instead of cos+sin — with most of a
+      // big world railed, this pass was a top trig bill. Float drift of the
+      // unit vector is ~1e-14/step; the periodic resync from rl.ang makes it
+      // unobservable on any timescale.
       rl.ang += rl.w * dt;
-      const c = Math.cos(rl.ang), sn = Math.sin(rl.ang);
-      b.x = p.x + c * rl.r;
-      b.y = p.y + sn * rl.r;
+      if (rl.rdt !== dt) {   // first pass / dt change: build rotor + sync exact
+        rl.rdt = dt;
+        rl.dc = Math.cos(rl.w * dt); rl.ds = Math.sin(rl.w * dt);
+        rl.c = Math.cos(rl.ang); rl.s = Math.sin(rl.ang);
+        rl.sync = 600;
+      } else {
+        const c = rl.c * rl.dc - rl.s * rl.ds;
+        rl.s = rl.s * rl.dc + rl.c * rl.ds;
+        rl.c = c;
+        if (--rl.sync <= 0) { rl.sync = 600; rl.c = Math.cos(rl.ang); rl.s = Math.sin(rl.ang); }
+      }
+      b.x = p.x + rl.c * rl.r;
+      b.y = p.y + rl.s * rl.r;
       // Keep velocity truthful so collisions and grabs behave normally
-      b.vx = p.vx - sn * rl.w * rl.r;
-      b.vy = p.vy + c * rl.w * rl.r;
+      b.vx = p.vx - rl.s * rl.w * rl.r;
+      b.vy = p.vy + rl.c * rl.w * rl.r;
     }
   }
 
@@ -1679,14 +1733,30 @@ export function step(game, dt) {
   // sits at its pinned spot for this substep's pair tests (which skip it).
   updateParry(game, dt);
 
-  // Collisions: body-body via sweep-and-prune on x. Sorting ~400 bodies by
-  // left edge is cheap; the inner loop then stops at the first body whose
-  // x-extent can't overlap, so the old O(n^2) pair scan (~80k tests per
-  // substep) collapses to the handful of genuinely near pairs. The x-extent
-  // overlap test is exactly the old |a.x-b.x| <= a.r+b.r cheap bound.
+  // Collisions: body-body via sweep-and-prune on x. The sweep list is
+  // PERSISTENT across substeps: bodies barely move in 1/120s, so feeding
+  // Timsort last substep's order makes the sort near-linear — rebuilding
+  // from the master array every substep (grouped by creation, effectively
+  // random in x) made the sort the single most expensive line in step() at
+  // high body counts. Membership is tracked with b._sw: the compact pass
+  // drops dead bodies, the append pass admits newcomers (spawns/spall), and
+  // the cull pass at the bottom of step() clears _sw on anything it removes
+  // from the world. A world REGEN reuses the same bodies array
+  // (world.generateWorld does bodies.length = 0), which this can't see —
+  // the aliveCount cross-check catches it exactly: stale entries make the
+  // sweep strictly longer than the live population, forcing a hard rebuild.
   const sweep = _sweep;
-  sweep.length = 0;
-  for (const b of bodies) if (b.alive) sweep.push(b);
+  {
+    let w = 0;
+    for (const b of sweep) { if (b.alive && b._sw) sweep[w++] = b; else b._sw = false; }
+    sweep.length = w;
+    for (const b of bodies) if (b.alive && !b._sw) { b._sw = true; sweep.push(b); }
+    if (sweep.length !== aliveCount) {   // stale ghosts (world regen) — hard reset
+      for (const b of sweep) b._sw = false;
+      sweep.length = 0;
+      for (const b of bodies) if (b.alive) { b._sw = true; sweep.push(b); }
+    }
+  }
   sweep.sort(_byLeftEdge);
   for (let i = 0; i < sweep.length; i++) {
     const a = sweep[i];
@@ -1854,6 +1924,7 @@ export function step(game, dt) {
     let w = 0;
     for (const b of bodies) {
       if (b.alive && (b.type !== 'asteroid' || b.x * b.x + b.y * b.y < cullR2)) bodies[w++] = b;
+      else b._sw = false;   // leaving the world (dead or escaped) → leave the sweep list too
     }
     bodies.length = w;
     const aliens = game.aliens;
@@ -1870,8 +1941,11 @@ export function step(game, dt) {
 export function predictPaths(game) {
   const atr = [];
   const src = [];
+  const dtP = CFG.PREDICT_DT;
   for (const b of game.bodies) {
     if (b.alive && b.attractor) {
+      const railed = b.onRails;
+      const circ = railed && !(b.rail.e > 0);
       src.push(b);
       atr.push({
         x: b.x, y: b.y, vx: b.vx, vy: b.vy, mass: b.mass, radius: b.radius,
@@ -1881,24 +1955,39 @@ export function predictPaths(game) {
         // gravity but the capture assist doesn't apply near a comet)
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
+        // Influence cutoffs for the GHOST sums (same constants as gravityAt —
+        // the forecast must not disagree with the sim about what matters):
+        // cull2 for loose-body sums, cull2Ship (the wide one) for the ship path.
+        cull2: b.type === 'star' ? Infinity : b.mass * GRAV_CULL_K,
+        cull2Ship: b.type === 'star' ? Infinity : b.mass * SHIP_CULL_K,
         parentIdx: -1, anchorIdx: -1,
         // Railed attractors predict EXACTLY — advance the rail analytically.
+        // Circular rails advance by INCREMENTAL ROTATION: one cos/sin pair
+        // here at build, then a 4-mult complex rotate per step — the old
+        // per-step cos/sin for every railed ghost was the single biggest
+        // trig bill in the game (~25k calls per forecast). 200 steps of
+        // drift is ~1e-13 rad — invisible on a dashed helper line.
         // Elliptical rails carry a COPY of their Kepler elements so advancing
         // the forecast's mean anomaly never mutates the live rail.
-        railR: b.onRails ? b.rail.r : 0,
-        railW: b.onRails ? b.rail.w : 0,
-        railAng: b.onRails ? b.rail.ang : 0,
-        railParent: b.onRails ? b.rail.parent : null,
-        railEl: (b.onRails && b.rail.e > 0)
+        railR: railed ? b.rail.r : 0,
+        railParent: railed ? b.rail.parent : null,
+        railC: circ ? Math.cos(b.rail.ang) : 0,
+        railS: circ ? Math.sin(b.rail.ang) : 0,
+        railDc: circ ? Math.cos(b.rail.w * dtP) : 0,
+        railDs: circ ? Math.sin(b.rail.w * dtP) : 0,
+        railEl: (railed && b.rail.e > 0)
           ? { e: b.rail.e, a: b.rail.a, smin: b.rail.smin, n: b.rail.n, M: b.rail.M, dir: b.rail.dir, ca: b.rail.ca, sa: b.rail.sa }
           : null,
       });
     }
   }
+  // Map lookup, not indexOf — the old per-ghost indexOf was O(attractors²)
+  const srcIdx = new Map();
+  for (let i = 0; i < src.length; i++) srcIdx.set(src[i], i);
   for (let i = 0; i < src.length; i++) {
-    if (src[i].parent) atr[i].parentIdx = src.indexOf(src[i].parent);
+    if (src[i].parent) atr[i].parentIdx = srcIdx.get(src[i].parent) ?? -1;
     const anchor = starAnchor(src[i]);
-    if (anchor) atr[i].anchorIdx = src.indexOf(anchor);
+    if (anchor) atr[i].anchorIdx = srcIdx.get(anchor) ?? -1;
   }
   const s = game.ship;
   const ship = s.alive ? { x: s.x, y: s.y, vx: s.vx, vy: s.vy, r: s.radius } : null;
@@ -1910,8 +1999,8 @@ export function predictPaths(game) {
     held = {
       x: h.x, y: h.y, vx: fv.vx, vy: fv.vy, r: h.radius,
       weighted: h.type === 'planet' || h.type === 'moon' || h.type === 'rogue' || h.majorComet,
-      parentGhost: h.parent ? atr[src.indexOf(h.parent)] || null : null,
-      anchorGhost: anchor ? atr[src.indexOf(anchor)] || null : null,
+      parentGhost: h.parent ? atr[srcIdx.get(h.parent)] || null : null,
+      anchorGhost: anchor ? atr[srcIdx.get(anchor)] || null : null,
     };
   }
 
@@ -1956,10 +2045,16 @@ export function predictPaths(game) {
   const _acc = [0, 0];   // reused — 200 steps/frame would otherwise churn arrays
   const accelAt = (x, y, starMul = 1, heavyMul = 1) => {
     let ax = 0, ay = 0;
+    // Mirror of gravityAt's influence cutoffs: default muls = a loose-body
+    // ghost (the held rock), which skips negligible far attractors exactly
+    // like the real rock will; the ship path (muls ≠ 1) uses the wide ship
+    // cutoff, exactly like the real ship.
+    const loose = starMul === 1 && heavyMul === 1;
     for (const b of atr) {
-      let w = b.star ? starMul : b.weighted ? heavyMul : 1;
       const dx = b.x - x, dy = b.y - y;
       const d2 = dx * dx + dy * dy + soft2;
+      if (d2 > (loose ? b.cull2 : b.cull2Ship)) continue;
+      let w = b.star ? starMul : b.weighted ? heavyMul : 1;
       const d = Math.sqrt(d2);
       // Mirror of gravityAt's LONG ARMS far-field boost — the ship path is
       // the only caller passing heavyMul != 1, and the predicted trajectory
@@ -1991,7 +2086,54 @@ export function predictPaths(game) {
   const maxPathLen = (game.viewR || 1200) *
     Math.min(0.95, 0.85 + 0.03 * ((game.st.levels && game.st.levels.chart) || 0));
   let pathLen = 0, lastPx = null, lastPy = null, shipEnd = false;
+  // Prefilter (perf): the drawn ship path is length-capped at maxPathLen from
+  // its start, so only attractors that can come within reach of that circle
+  // over the whole horizon can ever be hit by it or rubber-band it. Ghost
+  // speeds are sampled at build time with a generous margin (×2 + slack
+  // covers elliptical rails and parent drift) — an over-full list only costs
+  // a few extra distance tests, while the full-atr scans these replace were
+  // two O(attractors) loops per forecast step.
+  const hitAtr = [], rbAtr = [];
+  const horizon = steps * dt;
+  // Per-ghost advance shortlist for LIVE LOOSE attractors (heavy belt rocks
+  // that cleared ATTRACT_MIN but aren't railed — the view-local field spawns
+  // dozens at once): their sum is unweighted (the weighted branch below only
+  // fires for celestials) and their gravity interest is tiny (cull2 reaches
+  // ~1-2ku), so running the full O(attractors) inner loop per rock per step
+  // made a fresh-spawn forecast cost MORE than the whole sim substep. One
+  // build-time pass collects the few sources that can reach each rock over
+  // the horizon; live CELESTIAL ghosts (rare) keep the full weighted sum.
+  for (let bi = 0; bi < atr.length; bi++) {
+    const b = atr[bi];
+    if (b.star || b.railParent || b.weighted) continue;
+    const list = [];
+    const spdB = Math.hypot(b.vx, b.vy);
+    for (const o of atr) {
+      if (o === b) continue;
+      const d = Math.hypot(o.x - b.x, o.y - b.y);
+      if (d < Math.sqrt(o.cull2) + (spdB + Math.hypot(o.vx, o.vy)) * horizon + 300) list.push(o);
+    }
+    b.adv = list;
+  }
+  if (ship) {
+    // maxPathLen caps the path in the DISPLAY frame; the hit test runs in
+    // inertial space, so the ship's own inertial drift over the horizon must
+    // widen the reach too (co-moving with a fast inner-system ref body, the
+    // inertial path travels much farther than the drawn one).
+    const shipDrift = Math.hypot(ship.vx, ship.vy) * horizon;
+    for (const b of atr) {
+      const reach = maxPathLen + shipDrift + (Math.hypot(b.vx, b.vy) * 2 + 100) * horizon + 200;
+      const d = Math.hypot(b.x - ship.x, b.y - ship.y);
+      if (d < reach + b.radius + ship.r) hitAtr.push(b);
+      if (b.rb && d < reach + b.radius * CFG.SHIP_BAND_RANGE + 300) rbAtr.push(b);
+    }
+  }
   for (let i = 0; i < steps; i++) {
+    // Both forecasts finished (hit / path cap / horizon)? Every remaining
+    // step would only advance attractor ghosts nobody reads — stop. At
+    // gameplay zoom the ship path caps within a fraction of the horizon,
+    // so this routinely skips most of the loop.
+    if ((!ship || shipHit || shipEnd) && (!held || heldHit || i >= CFG.HELD_STEPS)) break;
     // Advance attractors (stars pinned) with the same hierarchical weighting
     // the real sim uses, so predicted planet positions match reality.
     for (let bi = 0; bi < atr.length; bi++) {
@@ -1999,29 +2141,52 @@ export function predictPaths(game) {
       if (b.star) continue;
       if (b.railParent) {
         if (b.railEl) {
-          keplerStep(b.railEl, dt);
-          b.x = b.railParent.x + b.railEl.px;
-          b.y = b.railParent.y + b.railEl.py;
+          // Elliptical GHOSTS advance every other step with 2·dt — Kepler is
+          // analytic (one Newton solve covers any dt), so this simply halves
+          // the solver bill; the ≤1-step position staleness (~10u on a fast
+          // moon) is invisible to the forecast's gravity and hit tests. The
+          // LIVE rails pass in step() still advances every substep, exactly.
+          if (i & 1) {
+            keplerStep(b.railEl, dt * 2);
+            b.x = b.railParent.x + b.railEl.px;
+            b.y = b.railParent.y + b.railEl.py;
+          }
         } else {
-          b.railAng += b.railW * dt;
-          b.x = b.railParent.x + Math.cos(b.railAng) * b.railR;
-          b.y = b.railParent.y + Math.sin(b.railAng) * b.railR;
+          // incremental rotation (rotor precomputed at build — see above)
+          const c = b.railC * b.railDc - b.railS * b.railDs;
+          const s2 = b.railS * b.railDc + b.railC * b.railDs;
+          b.railC = c; b.railS = s2;
+          b.x = b.railParent.x + c * b.railR;
+          b.y = b.railParent.y + s2 * b.railR;
         }
         continue;
       }
       let ax = 0, ay = 0;
-      for (let k = 0; k < atr.length; k++) {
-        const o = atr[k];
-        if (o === b) continue;
-        let w = 1;
-        if (b.weighted && b.parentIdx !== k && o.parentIdx !== bi) {
-          if (o.star) w = (b.anchorIdx === -1 || b.anchorIdx === k) ? 1 : CFG.CROSS_STAR;
-          else w = CFG.CROSS_GRAV;
+      if (b.adv) {
+        // live loose rock: unweighted sum over its build-time shortlist
+        for (const o of b.adv) {
+          const dx = o.x - b.x, dy = o.y - b.y;
+          const d2 = dx * dx + dy * dy + soft2;
+          if (d2 > o.cull2) continue;
+          const inv = (CFG.G * o.mass) / (d2 * Math.sqrt(d2));
+          ax += dx * inv; ay += dy * inv;
         }
-        const dx = o.x - b.x, dy = o.y - b.y;
-        const d2 = dx * dx + dy * dy + soft2;
-        const inv = (w * CFG.G * o.mass) / (d2 * Math.sqrt(d2));
-        ax += dx * inv; ay += dy * inv;
+      } else {
+        // live celestial: full hierarchical weighting, like the real sim
+        for (let k = 0; k < atr.length; k++) {
+          const o = atr[k];
+          if (o === b) continue;
+          const dx = o.x - b.x, dy = o.y - b.y;
+          const d2 = dx * dx + dy * dy + soft2;
+          if (d2 > o.cull2) continue;   // negligible tug (never a star/parent — see gravityAt)
+          let w = 1;
+          if (b.weighted && b.parentIdx !== k && o.parentIdx !== bi) {
+            if (o.star) w = (b.anchorIdx === -1 || b.anchorIdx === k) ? 1 : CFG.CROSS_STAR;
+            else w = CFG.CROSS_GRAV;
+          }
+          const inv = (w * CFG.G * o.mass) / (d2 * Math.sqrt(d2));
+          ax += dx * inv; ay += dy * inv;
+        }
       }
       b.vx += ax * dt; b.vy += ay * dt;
       b.x += b.vx * dt; b.y += b.vy * dt;
@@ -2032,8 +2197,7 @@ export function predictPaths(game) {
       ax *= CFG.SHIP_GRAV; ay *= CFG.SHIP_GRAV;
       // Mirror of the orbit rubber band (step) — same inward-only radial
       // damping, so the forecast bends into captures exactly like the ship
-      for (const b of atr) {
-        if (!b.rb) continue;
+      for (const b of rbAtr) {
         const band = b.radius * CFG.SHIP_BAND_RANGE + 300;
         const bdx = b.x - ship.x, bdy = b.y - ship.y;
         if (bdx > band || bdx < -band || bdy > band || bdy < -band) continue;
@@ -2070,7 +2234,7 @@ export function predictPaths(game) {
       }
       lastPx = px; lastPy = py;
       if (!shipEnd && i % 2 === 0) shipPts.push({ x: px, y: py });
-      if (!shipEnd) for (const b of atr) {
+      if (!shipEnd) for (const b of hitAtr) {
         // Gas giants have no ship surface — the meaningful "hit" is the core
         const hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
         if ((b.x - ship.x) ** 2 + (b.y - ship.y) ** 2 < hr * hr) { shipHit = { x: px, y: py }; break; }
@@ -2081,12 +2245,13 @@ export function predictPaths(game) {
       if (held.weighted) {
         ax = 0; ay = 0;
         for (const o of atr) {
+          const dx = o.x - held.x, dy = o.y - held.y;
+          const d2 = dx * dx + dy * dy + soft2;
+          if (d2 > o.cull2) continue;   // same influence cutoff as everywhere
           let w;
           if (o === held.parentGhost) w = 1;
           else if (o.star) w = (!held.anchorGhost || o === held.anchorGhost) ? 1 : CFG.CROSS_STAR;
           else w = CFG.CROSS_GRAV;
-          const dx = o.x - held.x, dy = o.y - held.y;
-          const d2 = dx * dx + dy * dy + soft2;
           const inv = (w * CFG.G * o.mass) / (d2 * Math.sqrt(d2));
           ax += dx * inv; ay += dy * inv;
         }
