@@ -371,6 +371,12 @@ code "works."
   misses — this was a real bug. (`tractor.js:26`)
 - **Dashed lines are reserved for helper/aiming UI** (throw line, beam ring, orbit rings, lead markers,
   prediction paths). Real objects use solid strokes. Always reset `ctx.setLineDash([])` after a dashed draw.
+- **The world edge has no drawn boundary — the Oort cloud is weather, not UI.** No stroke at `WORLD_R`,
+  and no shared edge of ANY kind at one exact radius: even a soft constant glow starting at a single
+  radius reads as a hard line (the user rejected both). The grind radius is legible from natural cues
+  only — aurora-curtain feet weaving through the warning band, dust density smoothstepping up across it,
+  early flurries, and the frost vignette + OORT warnings (`render.js drawOort`/`drawOortDust`). More
+  generally: in-world transitions are organic/stochastic, never geometric.
 - **The ship shield is a calm, steady volumetric rim glow — no dashes, no idle motion.** Motion is reserved
   for *events* (recharge sweep, absorb ripple). **Shield down draws nothing at all** — a naked hull is the
   indicator; the blinking `SHLD` HUD label carries the alarm. (`render.js:609`, `:619`)
