@@ -119,6 +119,21 @@ export const CFG = {
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
+  // CHUNK SHEDDING: big bodies don't fail all-or-nothing — a single hit that
+  // bites hard enough (≥ CHUNK_DMG_MIN absolute damage, or ≥ CHUNK_DMG_FRAC of
+  // maxHp for smaller "big" bodies like moons) knocks real chunk asteroids off
+  // at the impact point and carves a persistent surface scar (physics.damageBody
+  // → render's crack/scar pass). The absolute floor matters for planets: mass
+  // dominance throttles their per-hit damage to a few points, so a frac-only
+  // gate would mean planets never visibly shed. Corona heat can never shed —
+  // its per-call drip is ~0.1% of maxHp (HEAT_DPS_BODY / 120), far under both
+  // gates. CHUNK_MAX_MASS stays FAR below the 5e4 rail-disturber threshold
+  // (physics rail scan) so flying chunks can never wake whole rail lanes.
+  CHUNK_MIN_MASS: 3500,    // bodies at/above this mass shed chunks (moons and up)
+  CHUNK_DMG_MIN: 4,        // absolute damage floor — lets ordinary throws crater planets
+  CHUNK_DMG_FRAC: 0.045,   // or: single hit bites this fraction of maxHp
+  CHUNK_MAX_MASS: 3200,    // per-chunk mass cap (grabbable boulder, never a disturber)
+
   // Speed governor: each engine level raises the ceiling; excess speed
   // (slingshots, knockbacks) bleeds off at SPEED_BLEED x the overage per
   // second, and NOTHING sustains beyond SPEED_HARD x the ceiling. The old

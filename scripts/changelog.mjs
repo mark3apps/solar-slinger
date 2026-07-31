@@ -232,6 +232,11 @@ const INSTALL_NOTES = `## Installing
 
 Builds are **unsigned**, so both desktop platforms will object on first launch.
 
+**Updating:** the Windows app and the Linux AppImage keep themselves up to
+date — new versions download in the background and install when you quit.
+macOS, deb, and rpm builds can't self-install (unsigned / package-managed),
+so the app checks for new releases and offers to open the download page.
+
 **macOS:** the app is ad-hoc signed but not notarized, so Gatekeeper blocks the
 first launch. Either clear quarantine before opening:
 \`xattr -dr com.apple.quarantine "/Applications/Solar Slinger.app"\`
@@ -241,6 +246,10 @@ System Settings → Privacy & Security → "Open Anyway".
 
 **Windows:** SmartScreen may warn because the installer is unsigned —
 choose "More info" → "Run anyway".
+
+**Linux (any distro, self-updating):** download the \`.AppImage\` for your
+architecture, \`chmod +x\` it, and run it. (Some distros need FUSE2:
+\`sudo apt install libfuse2\`.)
 
 **Debian / Ubuntu (x86_64):** \`sudo apt install ./solar-slinger_*_amd64.deb\`
 

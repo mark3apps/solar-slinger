@@ -122,8 +122,11 @@ re-arms it for a fresh run.
   so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
   so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
   sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
-- **Settings** (Music/SFX volume sliders, Trajectory prediction) persist to
+- **Settings** (Music/SFX volume sliders, Trajectory prediction, FPS counter, Performance metrics,
+  World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
+  `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
+  first world, and loading after it would make every boot world random regardless of the setting.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
   entirely, not just silences them). The Web Audio context must still first be created *inside* a
   user gesture (a context built at page load starts suspended and never resumes): `sfx.initAudio`
@@ -134,6 +137,28 @@ re-arms it for a fresh run.
   licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship. The **CREDITS**
   panel carries the full attribution (every track title, both licenses); the settings line stays put
   regardless, because `CREDITS.md` names it specifically.
+- **The world seed is RANDOM per run.** `main.pickSeed` resolves it in one order — `?seed=` on the URL
+  (wins outright, so a repro link works even for a player who has pinned one), then the Settings field,
+  then `Math.random`. `main.regenWorld(seed)` is the single builder: boot, `resetRun`, and a seed
+  committed on the splash all go through it, and it records the live seed as `game.worldSeed`.
+  `generateWorld`'s own `20260721` default stays put — `devtest.js` leans on it for its fixed baseline.
+  `util.seedFrom` maps typed text to the uint32 mulberry32 wants: plain digits stay themselves (so the
+  number shown in the settings note regenerates exactly that world), anything else is FNV-1a hashed, so
+  worlds can be named. Committing a seed (blur/Enter) re-rolls **only from the title screen**, where the
+  splash backdrop is a live sim and the new world can be seen before START; mid-run it waits for the
+  next run and the note line says so. Typing never re-rolls — that would rebuild the system per keystroke.
+- **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
+  keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
+  fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`
+  `preventDefault` swallows those letters before the field ever sees them. ESC is deliberately let
+  through first, so it still backs out of a panel from inside the field.
+- **The perf overlay** (`#perfBadge`) has two independent Settings toggles: FPS counter (top line) and
+  Performance metrics (frame/sim/draw ms, substeps, and the live array counts). `main.frame` owns the
+  sampling into `game.perf`; hud.js only formats it. Frame time is the RAW rAF delta, never `dtReal` —
+  `dtReal` is clamped to a 20 fps floor and would flatline at 50ms exactly when the overlay matters.
+  Timings are EMA-smoothed and the text refreshes at ~5 Hz (per-frame digits strobe too fast to read);
+  both toggles off costs one `classList` check. Amber, like `#speedBadge` — this HUD's helper/debug
+  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 
@@ -251,7 +276,10 @@ re-arms it for a fresh run.
   `window.musicState()`; `window.tick` advances it with the sim. The sun channel has a DEADZONE on its outer
   third (spawn sits ~3.3 sun-radii out and the dread bed must not brood over a fresh run — tune in
   `music.computeMood`).
-- **Determinism:** world *generation* uses a seeded `mulberry32` RNG (default seed `20260721`). Runtime
+- **Determinism:** world *generation* uses a seeded `mulberry32` RNG, but the seed is **random per run**
+  (see the world-seed bullet in the shell section) — pin one with `?seed=` for a repeatable world.
+  The 17-planet/45-moon `layout` table in world.js is FIXED, so the seed varies placement, masses and
+  features, never the structural counts: the balance baseline holds on any seed. Runtime
   spawns/spall/AI intentionally use `Math.random`. Procedural sprite geometry is seeded off `b.id` and cached.
 
 ## Physics invariants — DO NOT REGRESS
@@ -279,6 +307,19 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    at 900+. (`physics.js:452`)
 6. **`WORLD_R` must exceed every system's outermost reach** (orbit + moons), and star-anchored
    planets/moons are exempt from the boundary force — it silently deorbits them otherwise. (`config.js:5`, `physics.js:613`)
+7. **Chunk shedding is gated, or it cascades.** Big bodies (`CHUNK_MIN_MASS`+, moons and up; never
+   stations/nests/gas giants) don't fail all-or-nothing. At HALF the `CHUNK_DMG_MIN`/`CHUNK_DMG_FRAC`
+   gates a hit carves a persistent scar (`b.scars` — render punches a visible bite out of the
+   silhouette); at the full gates it also SPRAYS real chunk asteroids (a couple from the crater, the
+   rest in random directions; giants vent extra) and sheds the mass. A dying world (planet/moon/rogue,
+   non-gas) shatters into a dense cloud of up to 30 slow chunks that jostle apart. Pieces of worlds
+   carry `b.chunk` — the PLANET CHUNK crust-shard sprite (render `drawChunkSprite`), distinct from
+   belt rock. The gates are load-bearing: the damage floor keeps corona-heat drip (~0.1% of maxHp per
+   call) from ever shedding, `CHUNK_MAX_MASS` (3200) stays far under the 5e4 rail-disturber threshold
+   so chunks can't wake rail lanes, hit-spray chunks spawn OUTSIDE the parent's surface with outward
+   velocity (a chunk born overlapping its parent takes collision damage and sheds again — feedback
+   loop), body counts are capped, and only a direct `'player-throw'` hit propagates player credit onto
+   chunks (shard/Demolition chains stay bounded). (`physics.js damageBody`/`shatter`, `config.js CHUNK_*`)
 
 ### Rails (the biggest architectural fact)
 
@@ -503,10 +544,32 @@ about it — this is a hard rule.
 - **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
   `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`),
   `npm run changelog` (preview the pending release notes — needs `GH_TOKEN`).
-  Electron + electron-builder are **devDependencies** — dev/build only, not shipped game deps, so
-  the "no runtime dependencies" claim still holds.
+  Electron + electron-builder are **devDependencies** — dev/build only. `electron-updater` is the
+  one real `dependency` (it ships inside the packaged app), and it belongs to the SHELL — the
+  GAME still has zero runtime dependencies, and nothing under `src/` may ever import it.
 - `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
   `app://` for hot-ish iteration.
+- **Auto-update** ([electron/updater.js](electron/updater.js)) — a no-op in dev (`app.isPackaged`
+  gate), and split by what unsigned builds can honestly do: **Windows NSIS + Linux AppImage**
+  self-update via electron-updater (background download, sha512-verified from `latest*.yml`,
+  installs on quit; a dialog offers "Restart now"; AppImage is detected via
+  `process.env.APPIMAGE`); **macOS** is check-and-notify ONLY — Squirrel.Mac refuses to swap an
+  unsigned/ad-hoc bundle, so until a real Developer ID + notarization (+ a mac `zip` target)
+  exists, don't route mac through electron-updater's installer; **Linux deb/rpm** installs are
+  root-owned (in-place swap = pkexec prompt mid-game), so they're also check-and-notify — the
+  AppImage is the self-updating Linux format. Four load-bearing wires, each of which silently
+  reverts the auto platforms to manual updates if removed: the `build.publish` block in
+  package.json (makes electron-builder embed `app-update.yml` in the app and emit the
+  `dist/latest*.yml` feeds — `latest.yml` win, `latest-linux.yml` + `latest-linux-arm64.yml`
+  per-arch), the release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
+  (the update feed; blockmaps enable differential downloads), the repo staying public (the feeds
+  are unauthenticated), and the SPACE-FREE `nsis.artifactName` / `appImage.artifactName` — with
+  electron-builder's default "Solar Slinger …" names, latest.yml points at the dash-sanitized
+  name while GitHub renames the uploaded asset with DOTS, so the installed app 404s on every
+  check (the AppImage name also needs `${arch}` or the x64 and arm64 files collide on the
+  release). **Failure law: a failed update check is invisible** — offline/rate-limited must
+  never surface a dialog. "Skip this version" persists in `userData/update-prefs.json`
+  (notify platforms only).
 - **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)) is
   **`workflow_dispatch` only — nothing runs on a push to `main`.** You trigger it and pick a
   `bump` (patch/minor/major); `dry_run: true` builds and generates notes while publishing nothing.
@@ -535,6 +598,12 @@ about it — this is a hard rule.
   script, NOT in the workflow YAML — builds are **unsigned** and every release must carry them.
   The `build:` block in package.json controls what gets packaged and the installer targets. App
   icons live in `build/` (`icon.icns/.ico/.png`, generated from `build/icon-src/`).
+- **The version line in CREDITS** comes from a RELATIVE `fetch('package.json')` in main.js — the one
+  version source `src/` can read without breaking host-agnosticism (it resolves the same under serve.py
+  and over `app://`, which is registered `supportFetchAPI`). `package.json` is listed in the
+  electron-builder `files` block so it stays fetchable from the asar. It is **only accurate on a release
+  build**: a dev checkout's package.json lags the newest `v*` tag, which is the real source of truth. A
+  failed fetch drops the version silently rather than showing a broken line.
 
 ## Testing (headless + live fast-forward, no framework)
 
@@ -546,6 +615,9 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   `{ planets: "18/18", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
+  **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
+  bit-comparable with an earlier soak. The 17/45 criteria hold on any seed (the layout table is fixed);
+  `game.worldSeed` records which world a given result came from, so quote it when reporting.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
   `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes. The raw primitive under
   `soak` — use it directly when you need custom instrumentation between chunks.
