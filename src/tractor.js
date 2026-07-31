@@ -1,6 +1,7 @@
 import { CFG, PROG, addXp } from './config.js';
 import { derail } from './entities.js';
 import { clamp, angDiff, TAU } from './util.js';
+import { bump, best, noteCatch } from './achievements.js';
 import * as sfx from './sfx.js';
 
 // Where the held object is pulled to: offset from the ship toward the cursor.
@@ -151,7 +152,8 @@ export function tryGrab(game) {
     sfx.sfxDenied();
     return false;
   }
-  if (best.heldBy && best.heldBy !== 'player') {
+  const stolen = !!(best.heldBy && best.heldBy !== 'player');
+  if (stolen) {
     // Steal it from an alien
     const al = best.heldBy;
     if (al.target === best) { al.target = null; al.state = 'cooldown'; al.cool = 2; }
@@ -174,6 +176,9 @@ export function tryGrab(game) {
   addXp(game, PROG.XP_CATCH + 20 * w);
   game.prog.catches++;
   best.catchCount++;
+  // ACHIEVEMENTS: one call classifies the whole catch (mass, landmark flags,
+  // body type, whether it was stolen out of an alien's beam).
+  noteCatch(game, best, stolen);
 
   // Echo logs: derelicts and oddities carry a one-line lore fragment,
   // recovered the first time the beam touches them (main.js announces it)
@@ -199,6 +204,13 @@ export function releaseHeld(game, fling) {
   if (fling) {
     const v = computeFlingVelocity(game, b);   // reads b.primed — consume only after
     b.vx = v.vx; b.vy = v.vy;
+    // ACHIEVEMENTS: the release point is the sniper measuring stick (shatter
+    // reads it back), and the prime flag is carried onto the throw so the kill
+    // can credit the counterpunch that set it up.
+    b.throwX = b.x; b.throwY = b.y;
+    b.killedByPrimed = !!b.primed;
+    bump(game, 'flings');
+    if (game.held) bump(game, 'twinFling');   // held2 was promoted — a second rock is still in hand
     b.primed = false;   // Dead Stop prime is one shot — consumed by this fling
     b.thrownBy = 'player';
     b.thrownTimer = 4;
@@ -208,6 +220,7 @@ export function releaseHeld(game, fling) {
     sfx.sfxFling();
   } else {
     b.primed = false;   // a gentle drop wastes the Dead Stop prime — no banking it
+    bump(game, 'drops');
     sfx.sfxDrop();
   }
 }
@@ -291,6 +304,7 @@ export function addToOrbit(game) {
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
   game.orbit.push(b);
   addXp(game, PROG.XP_ORBIT);   // stowing a rock into the shield pays XP
+  bump(game, 'stows');
   sfx.setBeam(false);
   sfx.sfxOrbitCapture();
   return true;
@@ -314,6 +328,7 @@ export function updateTethers(game, dt) {
         b.thrownBy = null; b.thrownTimer = 0; b.heldBy = 'orbit';
         b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
         game.orbit.push(b);
+        bump(game, 'tetherBack');
         sfx.sfxOrbitCapture();
       }
       continue;                                             // no room -> it just drifts free
@@ -344,6 +359,7 @@ export function retrieveFromOrbit(game) {
   b.heldBy = 'player';
   b.orbitAng = undefined;
   game.held = b;
+  bump(game, 'retrieves');
   sfx.sfxGrab();
   sfx.setBeam(true);
   return true;
@@ -380,8 +396,13 @@ export function flingAllFromOrbit(game, count = Infinity) {
     b.vy = s.vy + Math.sin(a) * speed;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    b.throwX = b.x; b.throwY = b.y;   // volley pellets can snipe too (see releaseHeld)
   });
-  if (n) game.flingDelayT = 2;   // same post-fling grace as a single throw (see releaseHeld)
+  if (n) {
+    game.flingDelayT = 2;   // same post-fling grace as a single throw (see releaseHeld)
+    bump(game, 'volleys');
+    best(game, 'volleyBest', n);
+  }
   sfx.sfxFling();
   sfx.sfxBoom(1.5);
   return n;

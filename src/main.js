@@ -9,12 +9,26 @@ import { step } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
+import {
+  newAchState, updateAchievements, bump, best, noteDeath, ACH_EVENT_STATS,
+} from './achievements.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
 import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import { lerp, shellModal, seedFrom } from './util.js';
+
+// A run's progression record. config.newProgress builds the roguelite half;
+// the achievement ledger is bolted on HERE rather than inside it because
+// config.js is a leaf and must never import achievements.js (which imports
+// config). Both halves are created and destroyed together, so `prog` stays the
+// one thing a run is.
+function freshProgress() {
+  const p = newProgress();
+  p.ach = newAchState();
+  return p;
+}
 
 const game = {
   time: 0,
@@ -23,6 +37,7 @@ const game = {
   settingsOpen: false,     // settings overlay (over splash or pause); freezes the sim
   controlsOpen: false,     // the control schematic — same shell rules (util.shellModal)
   creditsOpen: false,      // the credits panel  — same shell rules
+  achievementsOpen: false, // the run's achievement log — same shell rules
   musicVol: 0.85,          // volume sliders (persisted; zero = mute, there are no
   sfxVol: 0.5,             //   toggles) — music high / SFX low by default: quiet
                            //   ambient tracks vs hot sample packs
@@ -40,7 +55,7 @@ const game = {
   particles: [],
   flares: [],              // solar plasma in flight
   bolts: [],               // Bastion turret fire in flight
-  prog: newProgress(),     // roguelite build: xp / level / tier / upgrades / lives
+  prog: freshProgress(),   // roguelite build: xp / level / tier / upgrades / lives / achievements
   st: null,
   pickups: [],             // drifting life pods (world.js seeds/replenishes)
   choosingUpgrade: false,  // sim frozen while a spec/ability card is open
@@ -48,6 +63,8 @@ const game = {
   upgradeKind: null,       // 'spec' | 'tier' (milestone) | 'upgrade' — cards always offer NEW abilities
   rankUps: [],             // AUTOMATIC ability ranks landed since the last drain (config.growAbilities
                            //   pushes, update() drains into messages + the hull-gain heal)
+  achQueue: [],            // achievements landed since the last drain — same event-flag shape
+                           //   as rankUps; update() drains it into toasts + a sound
   gameOver: false,
   lifeTimer: PROG.LIFE_RESPAWN,
   held: null,
@@ -253,7 +270,16 @@ initInput(canvas, {
     if (game.gameOver) { resetRun(); return; }
     // A life was already spent at the moment of death; upgrades are KEPT.
     respawnShip(game);
+    bump(game, 'respawns');
     hud.setDeathVisible(false);
+  },
+  // V: the run's achievement log. Same context-sensitivity as the other shell
+  // panels — it toggles, it never opens over an upgrade card, and it is
+  // meaningless before START.
+  onAchievements: () => {
+    if (game.choosingUpgrade || !game.started) return;
+    if (game.achievementsOpen) { closeShellPanel(); return; }
+    openAchievements();
   },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
@@ -269,6 +295,7 @@ initInput(canvas, {
     s.invuln = Math.max(s.invuln, 0.25 + 0.08 * game.st.evasion);
     game.evadeT = Math.max(0.45, 1.2 - 0.2 * game.st.evasion);
     game.dashT = 0.22; game.dashDir = dir;   // render: side-jet flash
+    bump(game, 'dashes');
     sfx.sfxEvade();
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
@@ -280,6 +307,7 @@ initInput(canvas, {
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
     s.invuln = Math.max(s.invuln, 0.5);
     game.warpT = 3.5;
+    bump(game, 'warps');
     sfx.sfxWarp();
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
@@ -311,14 +339,34 @@ function startGame() {
   // drive window.tick, which bypasses startGame and auto-picks a default spec.
   if (!game.choosingUpgrade && !game.prog.spec) openSpec();
 }
-function pauseGame() { if (game.started && !game.paused) { game.paused = true; sfx.sfxMenuOpen(); } }
+function pauseGame() {
+  if (game.started && !game.paused) { game.paused = true; bump(game, 'pauses'); sfx.sfxMenuOpen(); }
+}
 function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
 // The three shell modals are mutually exclusive — each fully REPLACES the panel
 // it was opened over, so opening one clears the others rather than stacking.
-function closeShell() { game.settingsOpen = false; game.controlsOpen = false; game.creditsOpen = false; }
-function openSettings() { closeShell(); game.settingsOpen = true; sfx.sfxMenuOpen(); }
-function openControls() { closeShell(); game.controlsOpen = true; sfx.sfxMenuOpen(); }
-function openCredits() { closeShell(); game.creditsOpen = true; sfx.sfxMenuOpen(); }
+function closeShell() {
+  game.settingsOpen = false; game.controlsOpen = false;
+  game.creditsOpen = false; game.achievementsOpen = false;
+}
+function openSettings() { closeShell(); game.settingsOpen = true; bump(game, 'openSettings'); sfx.sfxMenuOpen(); }
+function openControls() { closeShell(); game.controlsOpen = true; bump(game, 'openCtrl'); sfx.sfxMenuOpen(); }
+function openCredits() { closeShell(); game.creditsOpen = true; bump(game, 'openCred'); sfx.sfxMenuOpen(); }
+// The run's achievement log. Reachable from the pause menu, the game-over
+// panel, and the V key — it is a RUN readout, so unlike the other three shell
+// panels it says nothing useful before a run has started (the splash doesn't
+// offer it). Opening it is itself an achievement; bump before the sweep runs.
+function openAchievements() {
+  closeShell();
+  bump(game, 'openAch');
+  // Sweep once BEFORE the panel opens. Opening it is itself an achievement, and
+  // a shell modal freezes update() — without this the row it just earned would
+  // sit unticked in the very list you are looking at, and only land on the way
+  // out. (The toast still waits for the unfreeze; that part reads fine.)
+  updateAchievements(game, 0);
+  game.achievementsOpen = true;
+  sfx.sfxMenuOpen();
+}
 // Settings is the only one that owns persisted state, so it's the only one that saves.
 function closeShellPanel() { if (game.settingsOpen) saveSettings(); closeShell(); sfx.sfxMenuClose(); }
 function toMainMenu() { game.paused = false; closeShell(); game.started = false; }
@@ -417,6 +465,7 @@ hud.initMenus({
   onOpenSettings: ui(openSettings),
   onOpenControls: ui(openControls),
   onOpenCredits: ui(openCredits),
+  onOpenAchievements: ui(openAchievements),
   onCloseShell: ui(closeShellPanel),
   onExit: exitGame,
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
@@ -571,7 +620,7 @@ function openUpgrade() {
 // pickSeed resolve one, so a normal new run lands on a brand-new random system
 // unless the player has pinned a seed in Settings.
 function resetRun(seed) {
-  game.prog = newProgress();
+  game.prog = freshProgress();   // ...including a blank achievement ledger + score
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
   game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
@@ -599,6 +648,7 @@ function resetRun(seed) {
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
+  game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   hud.setDeathVisible(false);
@@ -884,6 +934,8 @@ function update(dtReal) {
         // engine growth into a runaway
         if (!game.sling.thrusted && gain > 90) {
           addXp(game, gain * PROG.XP_SLING);   // clean flying earns XP
+          bump(game, 'slings');
+          best(game, 'slingBest', gain);
           hud.message(`SLINGSHOT! +${gain} speed — clean flying earns XP.`, 3);
         }
         game.sling = null;
@@ -952,6 +1004,14 @@ function update(dtReal) {
       const v = game[e.flag];
       if (!v) continue;
       game[e.flag] = null;
+      // ACHIEVEMENTS ride the same one-shot flags. Several discovery rows are
+      // exactly "this event happened once", and this table already guarantees
+      // exactly-once — so they read a counter fed from here rather than making
+      // world.js/physics.js carry a second announcement. Bumped BEFORE the tut
+      // gate below: a repeat firing is still a real event, even when the
+      // message for it has already been shown.
+      const stat = ACH_EVENT_STATS[e.flag];
+      if (stat) bump(game, stat);
       let m = e.first;
       if (e.tut) {
         if (game.tut[e.tut]) {
@@ -965,11 +1025,12 @@ function update(dtReal) {
     }
     if (!s.alive && game.deathCause && !game.deathShown) {
       game.deathShown = true;
+      noteDeath(game, game.deathCause);   // ends every streak the sweep is timing
       game.prog.lives--;   // a life is spent per death (upgrades are kept)
       if (game.prog.lives <= 0) {
         game.gameOver = true;
         sfx.sfxGameOver();
-        hud.setGameOverVisible(true, game.deathCause);
+        hud.setGameOverVisible(true, game.deathCause, game.prog);
       } else {
         hud.setDeathVisible(true, game.deathCause, game.prog.lives);
       }
@@ -989,9 +1050,36 @@ function update(dtReal) {
     sfx.setCharge(game.volleyCharging
       ? 0.2 + 0.8 * Math.min(1, game.volleyT / CFG.VOLLEY_TIME) : 0);
 
+    // ACHIEVEMENTS: evaluated last, so a row that fires this frame is testing
+    // the state the player actually ended the frame in (the tier they just
+    // reached, the rock they just landed). Rides dtReal — its timers are
+    // wall-clock streaks (untouched for five minutes, coasting for two), not
+    // quantized gameplay quantities, so the fixed step buys them nothing.
+    updateAchievements(game, dtReal);
+    if (game.achQueue.length) drainAchievements();
+
     // Camera follows the ship inside the fixed-step loop above (see there);
     // only the cosmetic shake decay rides the variable frame time here.
     game.shake *= Math.exp(-7 * dtReal);
+}
+
+// Announce the achievements that landed this frame. Deliberately its OWN
+// channel, not hud.message: the single message slot is the sim talking to you
+// about the world ("SOLAR FLARE — MOVE!"), and a score notification must never
+// be able to overwrite a warning — or be overwritten by one. Several can land
+// together (a tier-up trips a handful of thresholds at once), so the toast
+// stack takes them all and the sound fires once.
+function drainAchievements() {
+  const q = game.achQueue;
+  let loudest = 0;
+  for (const a of q) {
+    hud.achToast(a);
+    if (a.pts > loudest) loudest = a.pts;
+  }
+  q.length = 0;
+  // The audio grammar (CLAUDE.md): triumph. A big one gets the tier-up fanfare,
+  // an ordinary one the quieter upgrade tick — the same split the pick modal uses.
+  if (loudest >= 60) sfx.sfxTierUp(); else sfx.sfxUpgrade();
 }
 
 // Life pods: sparse drifting collectibles. Fly into one for +1 life; when the
@@ -1005,6 +1093,7 @@ function updateLifePods(dt) {
     p.phase = (p.phase || 0) + dt;
     if (s.alive && Math.hypot(p.x - s.x, p.y - s.y) < PROG.LIFE_R + s.radius) {
       game.pickups.splice(i, 1);
+      bump(game, 'pods');
       if (game.prog.lives < maxLives(game.prog)) {
         game.prog.lives++;
         hud.message(`EXTRA LIFE recovered — ${game.prog.lives} lives.`, 4);

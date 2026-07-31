@@ -25,6 +25,7 @@ export function initInput(canvas, handlers) {
     if (e.code === 'KeyP') handlers.onMenuKey();
     if (e.code === 'KeyR') handlers.onRespawn();
     if (e.code === 'KeyT') handlers.onTogglePredict();
+    if (e.code === 'KeyV') handlers.onAchievements();   // the run's achievement log
     // Upgrade-card selection (only acts while the choice modal is open)
     if (e.code === 'Digit1') handlers.onUpgradePick(0);
     if (e.code === 'Digit2') handlers.onUpgradePick(1);

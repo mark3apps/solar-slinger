@@ -39,11 +39,16 @@
   <div id="bottomleft">
     <div id="progRow">
       <span id="specLabel" class="hidden"></span>
+      <span id="scoreChip" class="hidden" title="Achievement score (V)"></span>
       <span id="livesText"></span>
     </div>
     <div id="upList2"></div>
   </div>
   <div id="combo" class="hidden"></div>
+  <!-- Achievement toasts stack here (hud.achToast pushes, each removes itself).
+       Its own channel, deliberately clear of #msg: a score notification must
+       never overwrite a hazard warning, or be overwritten by one. -->
+  <div id="achRail"></div>
   <canvas id="radar" width="200" height="200"></canvas>
   <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
   <div id="speedBadge" class="hidden"></div>
@@ -60,6 +65,11 @@
 <div id="gameoverScreen" class="panel alert hidden">
   <h1>GAME OVER</h1>
   <p id="gameoverCause"></p>
+  <!-- The run's final scoreboard line. A run ends on a number, not just a cause. -->
+  <div id="gameoverScore"></div>
+  <div class="menucol">
+    <button class="menubtn" id="btnGameOverAch">VIEW ACHIEVEMENTS</button>
+  </div>
   <p class="small">All lives lost &mdash; press R to start a new run</p>
 </div>
 
@@ -96,6 +106,7 @@
   <h1 class="menuhdr">PAUSED</h1>
   <div class="menucol">
     <button class="menubtn primary" id="btnResume">RESUME</button>
+    <button class="menubtn" id="btnPauseAch">ACHIEVEMENTS</button>
     <button class="menubtn" id="btnPauseControls">CONTROLS</button>
     <button class="menubtn" id="btnPauseSettings">SETTINGS</button>
     <button class="menubtn" id="btnMainMenu">MAIN MENU</button>
@@ -188,6 +199,8 @@
       data-note="Pause the run, or back out of whichever panel is open.">ESC</button>
     <button class="kcap" data-fn="FORECAST"
       data-note="Toggle the dashed trajectory prediction on and off.">T</button>
+    <button class="kcap" data-fn="ACHIEVEMENTS"
+      data-note="Open the run's achievement log — what you've earned this flight, and what it scored.">V</button>
     <button class="kcap" data-fn="RESPAWN"
       data-note="Respawn after a death — or start a whole new run once the lives are gone.">R</button>
   </div>
@@ -198,6 +211,35 @@
   <p class="ctrllegend"><i class="ablmark"></i> unlocked by an ability &mdash; your specialization decides which ones you can earn</p>
   <div class="menucol">
     <button class="menubtn primary" id="btnControlsBack">BACK</button>
+  </div>
+</div>
+
+<!-- ACHIEVEMENTS: the run's own scoreboard. A live readout of THIS flight, not a
+     lifetime profile — it is rebuilt from prog.ach every time it opens, and
+     dies with the run. hud.js fills #achList; every row comes from the catalog
+     in achievements.js, so adding one is a catalog edit and nothing here
+     changes. Scrolls internally: the list is far taller than the panel. -->
+<div id="achievementsScreen" class="panel menu wide hidden">
+  <h2>ACHIEVEMENTS</h2>
+  <div class="achhead">
+    <div class="achstat"><span class="asnum" id="achScore">0</span><span class="aslab">SCORE</span></div>
+    <div class="achstat"><span class="asnum" id="achCount">0/0</span><span class="aslab">EARNED</span></div>
+    <div class="achstat"><span class="asnum" id="achPct">0%</span><span class="aslab">OF MAX</span></div>
+  </div>
+  <div class="achfilters" id="achFilters"></div>
+  <div class="achlist" id="achList"></div>
+  <!-- Readout strip: the hovered/focused entry's full description, mirrored in
+       by hud.js from the row's own data-* attributes — the same query-the-
+       console idea as the CONTROLS schematic. Sized for the LONGEST
+       description, never the current one, or the centered panel bounces as the
+       cursor crosses the list. -->
+  <div class="achout" id="achOut">
+    <span class="aofn">SELECT AN ENTRY</span>
+    <span class="aonote">Point at any achievement above to read what it takes.</span>
+    <span class="aometa"></span>
+  </div>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnAchBack">BACK</button>
   </div>
 </div>
 

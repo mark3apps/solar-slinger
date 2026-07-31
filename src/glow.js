@@ -1,5 +1,6 @@
 import { CFG, PROG, addXp } from './config.js';
 import { TAU, rand } from './util.js';
+import { bump } from './achievements.js';
 import { sfxMote } from './sfx.js';
 
 // GLOW POCKETS — sparse clusters of small bioluminescent motes that ride the
@@ -153,6 +154,7 @@ function collect(game, mx, my) {
   const s = game.ship;
   s.hull = Math.min(game.st.hullMax, s.hull + PROG.GLOW_HEAL);
   addXp(game, PROG.GLOW_XP);
+  bump(game, 'motes');
   if (!game.tut.glow) game.glowMsg = true;   // one-shot first-pocket hint (drained in main.js)
   // Biolum spark pop, drifting with the ship so it reads as "scooped up". Pushed
   // straight onto game.particles (glow.js stays off the physics import to avoid
