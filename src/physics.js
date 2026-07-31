@@ -477,14 +477,23 @@ export function damageShip(game, dmg, cause, hitAng) {
   // is spec DNA (st.shieldArc, config.shipStats): BRAWLER's War Plating wraps
   // only the FRONT arc, so a directional hit (hitAng = world angle from ship
   // to impact) landing outside it skips the shield entirely — the tail is
-  // bare. Directionless damage (heat, crush, Oort grinding: no hitAng) always
-  // soaks: it bathes the whole hull, covered arc included.
+  // bare.
+  // DIRECTIONLESS damage (heat, gas crush, Oort grinding — no hitAng) has no
+  // angle to test, so it can't be shrugged off by facing the right way. It
+  // bathes the WHOLE hull, and a partial shield only covers part of that hull:
+  // it soaks its COVERAGE SHARE (arc / PI — half, for the brawler's PI/2
+  // plating) and the rest goes straight through. Half a shield stops half of
+  // an all-over effect; it used to soak all of it, which quietly made the
+  // front-arc drawback free in exactly the places it should hurt most. A
+  // full-wrap shield (SCOUT's Phase Screen) is unaffected — its share is 1.
   const arc = game.st.shieldArc ?? Math.PI;
-  const covered = hitAng === undefined || arc > Math.PI - 0.01 ||
+  const fullWrap = arc > Math.PI - 0.01;
+  const covered = hitAng === undefined || fullWrap ||
     Math.abs(angDiff(hitAng, s.angle)) <= arc;
   let rem = dmg;
   if (s.shield > 0 && rem > 0 && covered) {
-    const absorbed = Math.min(s.shield, rem);
+    const soakable = (hitAng === undefined && !fullWrap) ? dmg * (arc / Math.PI) : rem;
+    const absorbed = Math.min(s.shield, rem, soakable);
     s.shield -= absorbed;
     rem -= absorbed;
     s.shieldHitT = 0.35;

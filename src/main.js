@@ -1,6 +1,6 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
-  addXp, owesPick, xpForPick, pickIsMilestone, tierChoices, rankChoices,
+  addXp, owesPick, xpForPick, pickIsMilestone, tierChoices,
   consumePickCost, applyAbility, applySpec, applyTierUp,
 } from './config.js';
 import { Ship } from './entities.js';
@@ -45,7 +45,9 @@ const game = {
   pickups: [],             // drifting life pods (world.js seeds/replenishes)
   choosingUpgrade: false,  // sim frozen while a spec/ability card is open
   upgradeChoices: null,
-  upgradeKind: null,       // 'spec' | 'tier' (new ability) | 'upgrade' (rank-up)
+  upgradeKind: null,       // 'spec' | 'tier' (milestone) | 'upgrade' — cards always offer NEW abilities
+  rankUps: [],             // AUTOMATIC ability ranks landed since the last drain (config.growAbilities
+                           //   pushes, update() drains into messages + the hull-gain heal)
   gameOver: false,
   lifeTimer: PROG.LIFE_RESPAWN,
   held: null,
@@ -398,6 +400,10 @@ function driftSplash(dt) {
     perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
   }
   for (const m of EVENT_MSGS) game[m.flag] = null;
+  // ...and the automatic-rank queue with them: update() is what drains it, and
+  // the title screen never runs update(), so anything banked here would fire as
+  // a burst of rank messages the instant START ran.
+  game.rankUps.length = 0;
 }
 
 // Every menu button is a user gesture — init Web Audio first so the very
@@ -433,7 +439,10 @@ hud.initMenus({
   onSfxPreview: () => sfx.sfxUiClick(),
 });
 
-// Apply the chosen card (spec / tier-up ability / small rank-up), then unfreeze.
+// Apply the chosen card (spec / milestone ability / between-tier ability), then
+// unfreeze. Every non-spec card is a NEW ability — ranks are automatic (config
+// .growAbilities), so nothing here ever deepens what you already own.
+//
 // HULL UPGRADE HEAL (user design rule): any pick that RAISES hullMax also
 // heals the ship by the gain +20% — an upgrade should feel immediately good,
 // not just widen an empty bar. The one sanctioned mid-life hull gain besides
@@ -444,6 +453,27 @@ function healOnHullGain(oldHullMax) {
   if (gain > 0 && game.ship.alive) {
     game.ship.hull = Math.min(game.st.hullMax, game.ship.hull + gain * 1.2);
   }
+}
+
+// AUTOMATIC RANKS. config.growAbilities banks XP into every owned ability and
+// queues each rank it lands; this announces them. Called from update() right
+// after the st rebuild, so `preHullMax` is the ceiling from BEFORE the ranks —
+// a hull rank owes the same heal a hull PICK does (the hull-gain rule above).
+// Deliberately quiet compared with a pick: one sound, one line, no freeze —
+// this fires mid-flight and must never read as an interruption. Several ranks
+// can land in one frame (a fat survey/master-chart award), so the line
+// collapses past two.
+function drainRankUps(preHullMax) {
+  const ups = game.rankUps;
+  const text = ups.length === 1
+    ? `${ups[0].name.toUpperCase()} rank ${ups[0].rank}.`
+    : ups.length === 2
+      ? `${ups[0].name.toUpperCase()} rank ${ups[0].rank} · ${ups[1].name.toUpperCase()} rank ${ups[1].rank}.`
+      : `${ups.length} ABILITY RANKS GAINED.`;
+  ups.length = 0;
+  healOnHullGain(preHullMax);
+  sfx.sfxUpgrade();
+  hud.message(text, 2.6);
 }
 
 function applyPick(i) {
@@ -459,25 +489,26 @@ function applyPick(i) {
     sfx.sfxTierUp();
     beginRunGuidance(choice);
   } else if (game.upgradeKind === 'tier') {
-    // Milestone: dividend + tier bump FIRST, then the chosen new ability comes in
-    // fresh at rank 1 (so the dividend doesn't double-count it), plus a life.
+    // Milestone: tier bump FIRST, then the chosen new ability comes in fresh at
+    // rank 1 with an empty xp pool, plus a life.
     consumePickCost(game.prog);
     applyTierUp(game.prog);
     applyAbility(game.prog, choice.id);
     game.prog.lives = Math.min(maxLives(game.prog), game.prog.lives + 1);
     game.st = shipStats(game.prog);
-    healOnHullGain(oldHullMax);   // tier + dividend usually raise hullMax — heal the gain
+    healOnHullGain(oldHullMax);   // the tier bump usually raises hullMax — heal the gain
     game.lastTier = game.st.tier;
     sfx.sfxTierUp();
     hud.message(`TIER UP — ${game.st.label.toUpperCase()}. ${choice.name} acquired. +1 life.`, 6);
-  } else {   // 'upgrade' — small pick: deepen an ability you already own
+  } else {   // 'upgrade' — the between-tier pick. Also a NEW ability: ranks
+             // arrive on their own now, so no card ever deepens what you own.
     consumePickCost(game.prog);
     applyAbility(game.prog, choice.id);
     game.prog.picksThisTier++;
     game.st = shipStats(game.prog);
     healOnHullGain(oldHullMax);
     sfx.sfxUpgrade();
-    hud.message(`${choice.name.toUpperCase()} rank ${game.prog.upgrades[choice.id]}.`, 3.5);
+    hud.message(`${choice.name.toUpperCase()} acquired.`, 3.5);
   }
   game.choosingUpgrade = false;
   game.upgradeChoices = null;
@@ -506,32 +537,30 @@ function beginRunGuidance(spec) {
   }, 9000);
 }
 
-// The next owed pick: a TIER-UP (choose a new spec ability) at a milestone,
-// otherwise a SMALL pick (deepen an owned ability). Freezes the sim behind it.
+// The next owed pick. BOTH kinds now draw the same way — NEW abilities you
+// don't own yet (tierChoices) — because deepening is automatic; the milestone
+// ('tier') just also carries the tier bump and the life. Freezes the sim behind
+// the card. Both empty-pool branches must keep progression MOVING: a spec whose
+// offer pool is exhausted still tiers up / still banks the pick, or the ladder
+// silently stalls for the rest of the run.
 function openUpgrade() {
   const prog = game.prog;
   if (!prog.spec) return;   // no picks until a spec is chosen
-  if (pickIsMilestone(prog)) {
-    game.upgradeKind = 'tier';
-    game.upgradeChoices = tierChoices(prog, 2);
-    if (!game.upgradeChoices.length) {   // spec pool exhausted -> tier up with no new ability
-      consumePickCost(prog);
+  game.upgradeKind = pickIsMilestone(prog) ? 'tier' : 'upgrade';
+  game.upgradeChoices = tierChoices(prog, 2);
+  if (!game.upgradeChoices.length) {
+    consumePickCost(prog);
+    if (game.upgradeKind === 'tier') {   // pool exhausted -> tier up with no new ability
       applyTierUp(prog);
       game.prog.lives = Math.min(maxLives(prog), game.prog.lives + 1);
       game.st = shipStats(game.prog);
       game.lastTier = game.st.tier;
       sfx.sfxTierUp();
       hud.message(`TIER UP — ${game.st.label.toUpperCase()}. +1 life.`, 5);
-      return;
+    } else {
+      prog.picksThisTier++;              // ...still advance toward the milestone
     }
-  } else {
-    game.upgradeKind = 'upgrade';
-    game.upgradeChoices = rankChoices(prog, 2);
-    if (!game.upgradeChoices.length) {   // nothing left to deepen (all owned abilities maxed) —
-      consumePickCost(prog);             // still advance toward the tier-up so it isn't stuck,
-      prog.picksThisTier++;              // where a NEW ability (and fresh rank-up fodder) waits
-      return;
-    }
+    return;
   }
   game.choosingUpgrade = true;
   hud.setUpgradeVisible(game, game.upgradeChoices, game.upgradeKind, applyPick);
@@ -569,6 +598,7 @@ function resetRun(seed) {
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
+  game.rankUps.length = 0;               // undrained ranks belong to the dead run
   regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   hud.setDeathVisible(false);
@@ -721,8 +751,14 @@ function update(dtReal) {
 
     // Derived stats track progression continuously; the hull grows with you,
     // and the camera pulls back so the system shrinks as you level.
+    // The PREVIOUS frame's ceiling is captured first: ability ranks land inside
+    // the substeps (config.addXp -> growAbilities), so this rebuild is where an
+    // automatic rank first reaches st — and the hull-gain heal has to measure
+    // against the ceiling from before it.
+    const preRankHullMax = game.st.hullMax;
     game.st = shipStats(game.prog);
     game.ship.radius = game.st.radius;
+    if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe
     const zoomTarget = 1.15 / game.st.zoomOut;

@@ -1,4 +1,5 @@
-import { PROG, shipStats, xpForPick, owesPick } from './config.js';
+import { PROG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
+  abilityById, abilityRankCost } from './config.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
@@ -163,17 +164,99 @@ export function runMechTest(game, hooks, opts = {}) {
       return `level ${lvl0} -> ${game.prog.level}`;
     });
 
-    // T6 — shield ability: rank>0 unlocks a pool that absorbs BEFORE the hull
+    // T5b — AUTOMATIC RANKS: XP feeds every owned ability's own pool, ranks
+    // land with NO card, thresholds RISE per rank, and the pick purse is a
+    // separate accumulator (ranking up must never spend it).
+    t('abilities rank up automatically off XP', () => {
+      const prog = game.prog;
+      const id = 'kineticSling';                 // BRAWLER kit, max 6
+      const a = abilityById(id);
+      const was = prog.upgrades[id];             // the probe is restored at the end —
+      prog.upgrades[id] = 1; prog.abilXp[id] = 0;   //   later tests keep the real build
+      const cost1 = abilityRankCost(a, 1), cost2 = abilityRankCost(a, 2);
+      expect(cost2 > cost1, `threshold did not rise: rank1 ${cost1}, rank2 ${cost2}`);
+      const xp0 = prog.xp;
+      addXp(game, cost1 - 1);                    // one XP short — must NOT rank
+      expect(prog.upgrades[id] === 1, 'ranked up below its threshold');
+      expect(prog.xp === xp0 + cost1 - 1, 'ability growth ate the pick purse');
+      addXp(game, 1);                            // ...and now it does
+      expect(prog.upgrades[id] === 2, 'crossing the threshold did not rank up');
+      expect(!game.choosingUpgrade, 'an automatic rank opened a card');
+      expect(game.rankUps.some((r) => r.id === id), 'the rank was never queued for the HUD');
+      // A fat award crosses several thresholds in one call
+      addXp(game, cost2 * 6);
+      const landed = prog.upgrades[id];
+      expect(landed > 3, `one fat award landed only rank ${landed}`);
+      // Unwind the probe: the XP it poured in would otherwise owe a pile of
+      // picks that fire (and tier the run up) inside the NEXT test's stepSim.
+      game.rankUps.length = 0;
+      prog.xp = xp0; prog.upgrades[id] = was; prog.abilXp[id] = 0;
+      game.st = shipStats(prog);
+      return `rank1 costs ${cost1}, rank2 ${cost2}, one award reached rank ${landed}`;
+    });
+
+    // T5c — DESIGN LAW: ability thresholds always RISE, and no two abilities
+    // in a spec's starting kit rank up at the same moment. Kit abilities are
+    // the only ones learned simultaneously, so their pools stay equal forever
+    // and only the cost stagger (ABIL_XP_SPREAD / _WOBBLE) keeps them apart.
+    // This is a pure catalog property — no sim needed.
+    t('ability thresholds rise, and kits never rank in lockstep', () => {
+      for (const a of ABILITIES) {
+        let prev = 0;
+        for (let r = 1; r < a.max; r++) {
+          const c = abilityRankCost(a, r);
+          expect(c > prev, `${a.id} rank ${r} costs ${c}, not more than the previous ${prev}`);
+          prev = c;
+        }
+      }
+      let worst = Infinity, where = '';
+      for (const s of SPECS) {
+        const pts = [];
+        for (const id of s.start) {
+          const a = abilityById(id);
+          let cum = 0;
+          for (let r = 1; r < a.max; r++) { cum += abilityRankCost(a, r); pts.push({ id, cum }); }
+        }
+        pts.sort((x, y) => x.cum - y.cum);
+        for (let i = 1; i < pts.length; i++) {
+          const d = pts[i].cum - pts[i - 1].cum;
+          if (d < worst) { worst = d; where = `${s.id}: ${pts[i - 1].id}@${pts[i - 1].cum} vs ${pts[i].id}@${pts[i].cum}`; }
+        }
+      }
+      // 40 XP is a few seconds of play even early — below that two ranks land
+      // as one event and the stagger has failed.
+      expect(worst >= 40, `kit rank-ups only ${worst} XP apart — ${where}`);
+      return `all ladders rise; tightest kit gap ${worst} XP (${where})`;
+    });
+
+    // T6 — shield ability: rank>0 unlocks a pool that absorbs BEFORE the hull.
+    // Also the ARC law — BRAWLER's War Plating covers the front only, so it
+    // eats a frontal hit whole, ignores one from behind, and soaks just its
+    // COVERAGE SHARE (half) of directionless damage: heat, gas crush, Oort.
     t('shield unlocks and absorbs first', () => {
       const s = game.ship;
       game.prog.upgrades.warPlating = 3;         // BRAWLER's shield channel
       game.st = shipStats(game.prog);
       expect(game.st.shieldMax > 0, 'shield rank did not unlock a pool');
       s.shield = game.st.shieldMax; s.invuln = 0;
-      const hull0 = s.hull, sh0 = s.shield;
-      damageShip(game, 10, 'suite: absorb probe');
+      let hull0 = s.hull, sh0 = s.shield;
+      damageShip(game, 10, 'suite: absorb probe', s.angle);   // straight up the nose
       expect(s.hull === hull0, 'damage leaked past a full shield');
       expect(Math.abs(sh0 - s.shield - 10) < 1e-9, `shield absorbed ${sh0 - s.shield}, wanted 10`);
+      // ...from BEHIND the front arc it soaks nothing — the tail is bare
+      s.shield = game.st.shieldMax; s.invuln = 0;
+      hull0 = s.hull; sh0 = s.shield;
+      damageShip(game, 10, 'suite: rear probe', s.angle + Math.PI);
+      expect(s.shield === sh0, 'the front arc soaked a hit from behind');
+      expect(Math.abs(hull0 - s.hull - 10) < 1e-9, 'a rear hit did not go straight to hull');
+      // ...and DIRECTIONLESS damage splits: half soaked, half through
+      s.shield = game.st.shieldMax; s.invuln = 0;
+      hull0 = s.hull; sh0 = s.shield;
+      damageShip(game, 10, 'suite: directionless probe');
+      expect(Math.abs(sh0 - s.shield - 5) < 1e-9,
+        `half a shield soaked ${sh0 - s.shield} of 10 directionless, wanted 5`);
+      expect(Math.abs(hull0 - s.hull - 5) < 1e-9, 'the other half never reached the hull');
+      s.shield = game.st.shieldMax;
       return `pool=${Math.round(game.st.shieldMax)}`;
     });
 

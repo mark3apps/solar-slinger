@@ -48,10 +48,13 @@ export class Body {
     this.rot = Math.random() * 6.28;
     this.attractor = this.type === 'star' || o.mass >= CFG.ATTRACT_MIN;
     // Stations/nests override hp: light enough to grab, tough enough to matter.
-    // Planets get a 0.4x factor — their bulk already throttles incoming damage
-    // via mass dominance, so full mass-scaled hp made them nigh unkillable.
+    // PLANETS are their own durability CLASS — a flat base plus a gentle mass
+    // slope, not the mass-scaled curve (CFG.PLANET_HP_* carries the full
+    // rationale). It is what makes a world survive a moon thrown into it.
     this.maxHp = this.type === 'star' ? Infinity
-      : (o.hp || massToHp(o.mass) * (this.type === 'planet' ? 0.4 : 1));
+      : (o.hp || (this.type === 'planet'
+        ? CFG.PLANET_HP_BASE + massToHp(o.mass) * CFG.PLANET_HP_MUL
+        : massToHp(o.mass)));
     this.hp = this.maxHp;
     this.alive = true;
     this.scars = [];         // impact craters {a: surface-local angle, s: size, t: time} — render draws them
