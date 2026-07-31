@@ -1,4 +1,5 @@
 import { PROG, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS } from './config.js';
+import { ACHIEVEMENTS, CATEGORIES, ACH_TOTAL, ACH_MAX_POINTS, isSecret } from './achievements.js';
 
 const el = {};
 let msgTimer = null;
@@ -6,6 +7,7 @@ let prevHull = Infinity, prevShield = Infinity;
 let dispHull = -1, dispShield = -1;   // eased readout values — numbers COUNT, not snap
 let prevXpFrac = 0;        // XP-bar fill fraction last frame — pulse on gain
 let prevCombo = 0;         // combo stamp retriggers its pop on every increment
+let prevScore = 0;         // achievement score — the chip pops on every gain
 let prevSpec = '';         // spec chip identity — restyle only when it changes
 let livesSig = '';         // lives-pip signature — rebuild on change
 let iconSig = '';          // acquired-upgrade chip signature — rebuild on change
@@ -44,9 +46,12 @@ export function initHud(game) {
     'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
     'menuBtn', 'setPredict', 'setFps', 'setPerf', 'setSeed', 'seedNote',
     'setMusicVol', 'setSfxVol', 'ctrlOut', 'credVersion',
+    // Achievements: the run scoreboard, its panel, and the toast rail
+    'achievementsScreen', 'achList', 'achFilters', 'achOut', 'achScore', 'achCount', 'achPct',
+    'achRail', 'scoreChip', 'gameoverScore',
     'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
-    'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnMainMenu', 'btnPauseExit',
-    'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack']) {
+    'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnPauseAch', 'btnMainMenu', 'btnPauseExit',
+    'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack', 'btnAchBack', 'btnGameOverAch']) {
     el[id] = document.getElementById(id);
   }
   el.gametitle = document.querySelector('.gametitle');   // the boot scramble's target (no id)
@@ -54,7 +59,7 @@ export function initHud(game) {
   // which is PICKS_PER_TIER picks PLUS the milestone (see the span math in
   // updateHud) — divide by that same total or the ticks drift off the picks.
   el.xpBar.style.setProperty('--tick', `${100 / (PROG.PICKS_PER_TIER + 1)}%`);
-  void game;
+  initAchPanel(game);
 }
 
 export function message(text, dur = 3.5) {
@@ -83,10 +88,13 @@ export function initMenus(handlers) {
   bind('btnSplashControls', handlers.onOpenControls);
   bind('btnPauseControls', handlers.onOpenControls);
   bind('btnSplashCredits', handlers.onOpenCredits);
-  // All three shell panels back out the same way (main.closeShellPanel)
+  bind('btnPauseAch', handlers.onOpenAchievements);
+  bind('btnGameOverAch', handlers.onOpenAchievements);
+  // Every shell panel backs out the same way (main.closeShellPanel)
   bind('btnSettingsBack', handlers.onCloseShell);
   bind('btnControlsBack', handlers.onCloseShell);
   bind('btnCreditsBack', handlers.onCloseShell);
+  bind('btnAchBack', handlers.onCloseShell);
   bind('setPredict', handlers.onTogglePredict);
   bind('setFps', handlers.onToggleFps);
   bind('setPerf', handlers.onTogglePerf);
@@ -186,6 +194,235 @@ function initControlMap() {
   panel.addEventListener('focusout', clear);
 }
 
+// ---- Achievements ----------------------------------------------------------
+// The panel is REBUILT on open, never per frame: it is a snapshot of a run in
+// progress, the sim is frozen behind it anyway (it's a shell modal), and a
+// 150-row list diffed every frame would cost more than everything else in this
+// file combined. Rows come straight from the catalog, so adding an achievement
+// is a catalog edit and nothing here needs to know it exists.
+let achFilter = 'all';       // the category chip currently selected
+
+// A locked SECRET row is redacted — knowing what the classified ones are would
+// spoil the only category whose whole point is being surprised by it. Locked
+// ordinary rows show in full: a readable locked achievement is a to-do list.
+const CAT_LABEL = {};
+for (const c of CATEGORIES) CAT_LABEL[c.id] = c.label;
+
+// Catalog text is authored in this repo, not user input — but it lands in an
+// ATTRIBUTE here, and apostrophes, quotes and ampersands are all over the
+// descriptions. Escape rather than trust the source.
+const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const fmtClock = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+
+// A row is COMPACT — marker, name, points — and carries its description in
+// data-note for the readout strip below the list. With this many entries a
+// two-line row turns the panel into a wall of prose you have to READ to scan;
+// one line each in two columns fits a whole category on screen, and pointing at
+// one answers "what does this take?" on demand. Same query-the-console idea as
+// the CONTROLS schematic, and the same reason the rows are <button>s: focus
+// walks them, so a keyboard reads the list exactly like a mouse does.
+//
+// A locked SECRET row is redacted — knowing what the classified ones are would
+// spoil the only category whose whole point is being surprised by it. Locked
+// ordinary rows show in full: a readable locked achievement is a to-do list.
+function achRow(a, when) {
+  const got = when !== undefined;
+  const hidden = !got && isSecret(a);
+  const name = hidden ? 'CLASSIFIED' : a.name;
+  const desc = hidden
+    ? 'Classified until you earn it. Whatever it is, you have not done it yet.'
+    : a.desc;
+  const meta = got
+    ? `${CAT_LABEL[a.cat]} · ${a.pts} pts · earned at ${fmtClock(when)}`
+    : `${CAT_LABEL[a.cat]} · ${a.pts} pts · not yet earned`;
+  return `<button class="acrow${got ? ' got' : ''}${hidden ? ' redacted' : ''} ac-${a.cat}" ` +
+    `type="button" data-nm="${esc(name)}" data-note="${esc(desc)}" data-meta="${esc(meta)}">` +
+    `<span class="acmark"></span><span class="acname">${esc(name)}</span>` +
+    `<span class="acpts">${a.pts}</span></button>`;
+}
+
+function buildAchList(game) {
+  const st = game.prog.ach;
+  const earnedOnly = achFilter === 'got';
+  const rows = [];
+  for (const cat of CATEGORIES) {
+    if (achFilter !== 'all' && !earnedOnly && achFilter !== cat.id) continue;
+    let inCat = ACHIEVEMENTS.filter((a) => a.cat === cat.id);
+    const total = inCat.length;
+    const done = inCat.reduce((n, a) => n + (st.got[a.id] !== undefined ? 1 : 0), 0);
+    if (earnedOnly) inCat = inCat.filter((a) => st.got[a.id] !== undefined);
+    if (!inCat.length) continue;
+    rows.push(`<div class="acgrp"><span class="acghd">${cat.label}</span>` +
+      `<span class="acgblurb">${cat.blurb}</span>` +
+      `<span class="acgcount">${done}/${total}</span></div>`);
+    // Earned first inside a category, then the order the catalog declares —
+    // so what you've done reads as a trophy shelf and the rest as the to-do.
+    const sorted = inCat.slice().sort((x, y) =>
+      (st.got[y.id] !== undefined) - (st.got[x.id] !== undefined));
+    for (const a of sorted) rows.push(achRow(a, st.got[a.id]));
+  }
+  el.achList.innerHTML = rows.join('')
+    || '<div class="acempty">Nothing here yet — go and break something.</div>';
+}
+
+function buildAchFilters(game) {
+  const st = game.prog.ach;
+  const chip = (id, label, on) =>
+    `<button class="acchip${on ? ' on' : ''}" data-cat="${id}">${label}</button>`;
+  // ALL and EARNED bracket the category chips: with this many rows, "just show
+  // me what I've actually done" is the view you want most often.
+  const out = [
+    chip('all', `ALL ${st.order.length}/${ACH_TOTAL}`, achFilter === 'all'),
+    chip('got', `EARNED ${st.order.length}`, achFilter === 'got'),
+  ];
+  for (const cat of CATEGORIES) {
+    const inCat = ACHIEVEMENTS.filter((a) => a.cat === cat.id);
+    const done = inCat.reduce((n, a) => n + (st.got[a.id] !== undefined ? 1 : 0), 0);
+    out.push(chip(cat.id, `${cat.label} ${done}/${inCat.length}`, achFilter === cat.id));
+  }
+  el.achFilters.innerHTML = out.join('');
+}
+
+// Fill the whole panel. Called from syncMenus the frame the panel opens, and
+// again whenever the filter changes.
+function refreshAchievements(game) {
+  const st = game.prog.ach;
+  setText(el.achScore, String(st.score));
+  setText(el.achCount, `${st.order.length}/${ACH_TOTAL}`);
+  setText(el.achPct, `${Math.round((st.score / ACH_MAX_POINTS) * 100)}%`);
+  buildAchFilters(game);
+  buildAchList(game);
+  el.achList.scrollTop = 0;
+}
+
+// Both the category chips and the achievement rows are DELEGATED: each refresh
+// throws away hundreds of nodes and builds hundreds more, so binding listeners
+// per row would leak a listener per rebuild. `game` is captured at init, like
+// initHud's.
+const ACH_IDLE = ['SELECT AN ENTRY', 'Point at any achievement above to read what it takes.', ''];
+function initAchPanel(game) {
+  if (!el.achFilters || !el.achList || !el.achOut) return;
+  el.achFilters.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-cat]');
+    if (!t) return;
+    achFilter = t.dataset.cat;
+    refreshAchievements(game);
+  });
+  // The readout. Mirrors the pointed-at (or focused) row's own data-* into the
+  // strip — exactly the CONTROLS schematic's pattern, so a row carries its own
+  // description and nothing here needs to know the catalog exists.
+  const nm = el.achOut.querySelector('.aofn');
+  const note = el.achOut.querySelector('.aonote');
+  const meta = el.achOut.querySelector('.aometa');
+  const show = (e) => {
+    const t = e.target.closest('.acrow');
+    if (!t) return;
+    setText(nm, t.dataset.nm);
+    setText(note, t.dataset.note);
+    setText(meta, t.dataset.meta);
+    el.achOut.classList.toggle('locked', !t.classList.contains('got'));
+  };
+  const clear = () => {
+    setText(nm, ACH_IDLE[0]); setText(note, ACH_IDLE[1]); setText(meta, ACH_IDLE[2]);
+    el.achOut.classList.remove('locked');
+  };
+  el.achList.addEventListener('pointerover', show);
+  el.achList.addEventListener('focusin', show);
+  el.achList.addEventListener('pointerleave', clear);
+  el.achList.addEventListener('focusout', clear);
+}
+
+// ---- Achievement toasts ----------------------------------------------------
+// A landed achievement announces itself on its own rail. Lifetime is driven in
+// JS rather than by a fixed CSS animation delay for one reason: HOVERING PAUSES
+// IT. A notification you have to read in four seconds is a notification you
+// miss, so pointing at a toast holds it open and reveals its full description;
+// the clock only restarts once the pointer leaves.
+//
+// HOVER WITHOUT POINTER-EVENTS. The rail sits in the middle of the play area
+// (right of the canvas, under the radar), so the toasts stay
+// `pointer-events: none` and hover is HIT-TESTED against their rects from a
+// window-level mousemove instead. Giving them real pointer-events would let a
+// toast swallow the mousedown that starts a tractor grab — the canvas listener
+// would simply never fire, and a rock you reached for would be missed because a
+// notification happened to be in the way.
+const TOAST_DWELL = 4200;       // ms on screen when never pointed at
+const TOAST_LINGER = 1400;      // ms of grace once the pointer leaves
+const TOAST_OUT_MS = 460;       // must match the toastOut animation in style.css
+const TOAST_MAX = 4;            // a burst drops the oldest rather than growing off-screen
+const toasts = [];              // live { node, timer, hover } records, oldest first
+let railTracking = false;
+
+function armToast(rec, ms) {
+  clearTimeout(rec.timer);
+  rec.timer = setTimeout(() => {
+    rec.node.classList.add('out');
+    rec.timer = setTimeout(() => killToast(rec), TOAST_OUT_MS);
+  }, ms);
+}
+
+function killToast(rec) {
+  clearTimeout(rec.timer);
+  rec.node.remove();
+  const i = toasts.indexOf(rec);
+  if (i >= 0) toasts.splice(i, 1);
+  // Stop tracking the mouse the moment the last toast goes: this listener only
+  // exists while there is something to point at.
+  if (!toasts.length && railTracking) {
+    window.removeEventListener('mousemove', railHover);
+    railTracking = false;
+  }
+}
+
+function railHover(e) {
+  if (!toasts.length) return;
+  // Cheap reject first — one rect for the whole rail, and only then the
+  // per-toast rects (at most TOAST_MAX of them).
+  const r = el.achRail.getBoundingClientRect();
+  const near = e.clientX >= r.left && e.clientX <= r.right &&
+               e.clientY >= r.top && e.clientY <= r.bottom;
+  for (const rec of toasts.slice()) {
+    let on = false;
+    if (near) {
+      const b = rec.node.getBoundingClientRect();
+      on = e.clientX >= b.left && e.clientX <= b.right &&
+           e.clientY >= b.top && e.clientY <= b.bottom;
+    }
+    if (on === !!rec.hover) continue;
+    rec.hover = on;
+    rec.node.classList.toggle('hover', on);
+    if (on) {
+      // Caught mid-exit? Cancel the leave and bring it back rather than letting
+      // it fade out from under the cursor.
+      clearTimeout(rec.timer);
+      rec.node.classList.remove('out');
+    } else {
+      armToast(rec, TOAST_LINGER);
+    }
+  }
+}
+
+export function achToast(a) {
+  if (!el.achRail) return;
+  const node = document.createElement('div');
+  node.className = `actoast ac-${a.cat}`;
+  const secret = isSecret(a);
+  node.innerHTML = `<span class="atlab">${secret ? 'CLASSIFIED' : 'ACHIEVEMENT'}</span>` +
+    `<span class="atname">${esc(a.name)}</span>` +
+    `<span class="atpts">+${a.pts}</span>` +
+    `<span class="atwrap"><span class="atdesc">${esc(a.desc)}</span></span>`;
+  el.achRail.appendChild(node);
+  const rec = { node, timer: 0, hover: false };
+  toasts.push(rec);
+  armToast(rec, TOAST_DWELL);
+  while (toasts.length > TOAST_MAX) killToast(toasts[0]);
+  if (!railTracking) {
+    window.addEventListener('mousemove', railHover);
+    railTracking = true;
+  }
+}
+
 // Reflect a slider without fighting an in-progress drag
 function setSlider(node, v) {
   if (!node || document.activeElement === node) return;
@@ -220,12 +457,13 @@ function syncMenus(game) {
   const settings = !!game.settingsOpen;
   const controls = !!game.controlsOpen;
   const credits = !!game.creditsOpen;
-  const modal = settings || controls || credits;
+  const achieve = !!game.achievementsOpen;
+  const modal = settings || controls || credits || achieve;
   const splash = !game.started && !modal;
   const pause = game.started && game.paused && !modal;
   const menuBtn = game.started && !game.paused && !modal &&
     !game.choosingUpgrade && !game.gameOver && game.ship.alive;
-  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+menuBtn}${+game.started}`;
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+menuBtn}${+game.started}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
@@ -233,6 +471,28 @@ function syncMenus(game) {
     el.settingsScreen.classList.toggle('hidden', !settings);
     el.controlsScreen.classList.toggle('hidden', !controls);
     el.creditsScreen.classList.toggle('hidden', !credits);
+    el.achievementsScreen.classList.toggle('hidden', !achieve);
+    // Rebuilt ON OPEN and only then (see the buildAchList comment). The sig
+    // guard means this runs on the transition, not every frame the panel is up.
+    if (achieve) refreshAchievements(game);
+    // A shell modal fully REPLACES the panel it opened over (the same law that
+    // makes the three shell panels mutually exclusive) — and that includes the
+    // DEATH and GAME OVER panels, which are centered .panels too: without this
+    // they show through around the modal's edges, which reads as broken. It
+    // matters now because ACHIEVEMENTS is reachable from the game-over screen.
+    // The message slot goes with them for the same reason: it sits at 17% from
+    // the top, exactly where a panel's header is. Their own state is restored
+    // from the live flags when the modal closes.
+    if (modal) {
+      el.deathScreen.classList.add('hidden');
+      el.gameoverScreen.classList.add('hidden');
+      el.msg.classList.add('hidden');
+    } else if (prevModal) {
+      el.gameoverScreen.classList.toggle('hidden', !game.gameOver);
+      el.deathScreen.classList.toggle('hidden',
+        !(game.started && !game.gameOver && !game.ship.alive && game.deathShown));
+      if (game.gameOver) gameOverScore(game.prog);   // the log itself scores points
+    }
     el.menuBtn.classList.toggle('hidden', !menuBtn);
     // The gameplay HUD is meaningless on the title screen — hide it until START.
     el.topleft.classList.toggle('hidden', !game.started);
@@ -274,9 +534,23 @@ export function setDeathVisible(v, cause = '', lives = 0) {
   }
 }
 
-export function setGameOverVisible(v, cause = '') {
+// A run ends on a NUMBER, not just a cause of death — the final score is the
+// one thing that says how this flight went compared with the last. Redrawn
+// rather than written once, because the score can still move after the run
+// ends (opening the achievement log is itself worth points).
+function gameOverScore(prog) {
+  const st = prog && prog.ach;
+  el.gameoverScore.innerHTML = st
+    ? `<span class="gosnum">${st.score}</span><span class="goslab">FINAL SCORE</span>` +
+      `<span class="gosdet">${st.order.length} of ${ACH_TOTAL} achievements</span>`
+    : '';
+}
+
+export function setGameOverVisible(v, cause = '', prog = null) {
   el.gameoverScreen.classList.toggle('hidden', !v);
-  if (v) el.gameoverCause.textContent = cause || 'Your ship broke apart.';
+  if (!v) return;
+  el.gameoverCause.textContent = cause || 'Your ship broke apart.';
+  gameOverScore(prog);
 }
 
 // Build (or hide) the choice modal. `kind` is 'spec' (run-opening specialization
@@ -488,6 +762,16 @@ export function updateHud(game) {
     if (spec) setText(el.specLabel, `${spec.icon} ${spec.name}`);
   }
   setText(el.tierLabel, `TIER ${st.tier} · ${(st.shipName || '').toUpperCase()}`);
+  // Achievement score. Hidden until the run scores its first point — a zero on
+  // the cockpit before you've done anything is just clutter; the moment it
+  // appears IS the first achievement. It pops on every gain, like the XP bar.
+  const score = prog.ach ? prog.ach.score : 0;
+  el.scoreChip.classList.toggle('hidden', score <= 0);
+  if (score > 0) {
+    if (score !== prevScore) flash(el.scoreChip, 'pop');
+    setText(el.scoreChip, `★ ${score}`);
+  }
+  prevScore = score;
   const lives = Math.max(0, prog.lives);
   const lSig = `${lives}/${PROG.MAX_LIVES}`;
   if (lSig !== livesSig) {

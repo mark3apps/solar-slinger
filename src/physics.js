@@ -3,6 +3,7 @@ import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
 import { TAU, clamp, angDiff } from './util.js';
+import { bump, best, noteKill } from './achievements.js';
 import * as sfx from './sfx.js';
 
 // ---------- particles / effects ----------
@@ -160,6 +161,7 @@ function wallSplat(game, body) {
   addParticles(game, body.x, body.y, body.vx * 0.2, body.vy * 0.2,
     18, '#ffcaa0', 200, 0.9, 4);
   addShake(game, 4 + 2 * st.wallSplat);
+  bump(game, 'kSplat');
   if (!game.tut.wallsplat) game.wallSplatWarn = true;   // main.js announces (first time)
 }
 
@@ -172,6 +174,10 @@ export function shatter(game, body, credit = null) {
   if (body.shepherd && earnsScrap(credit)) game.shepherdPlayerKilled = true;
   if (body.tinker && earnsScrap(credit)) game.tinkerPlayerKilled = true;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'shattered', type: body.type, mass: Math.round(body.mass) });
+  // ACHIEVEMENTS: one call classifies the corpse. body.hitBy is whatever landed
+  // the killing blow (stamped in collideBodies) — the moon-shot and sniper rows
+  // are the only reason it exists.
+  noteKill(game, body, credit, body.hitBy);
   if (body.heldBy === 'player' && game.held === body) game.held = null;
 
   const isBig = body.mass > 5e4;
@@ -446,6 +452,12 @@ function vaporize(game, body) {
   if (!body.alive) return;
   body.alive = false;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'vaporized by star', type: body.type, mass: Math.round(body.mass) });
+  // ACHIEVEMENTS: only a body YOU put on that trajectory counts as an offering
+  // — the belt drops things into the sun on its own all day.
+  if (body.thrownBy === 'player') {
+    bump(game, 'sunFed');
+    if (body.mass >= 3500) bump(game, 'sunFedBig');
+  }
   if (body.heldBy === 'player' && game.held === body) game.held = null;
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
@@ -465,6 +477,8 @@ export function killAlien(game, alien) {
   addShake(game, 6);
   sfx.sfxBoom(2, sfx.distVol(game, alien.x, alien.y));
   game.alienKills++;
+  if (alien.kind === 'wright') bump(game, 'kWright');
+  else if (alien.kind === 'golem') bump(game, 'kGolem');
 }
 
 export function damageShip(game, dmg, cause, hitAng) {
@@ -498,8 +512,13 @@ export function damageShip(game, dmg, cause, hitAng) {
     rem -= absorbed;
     s.shieldHitT = 0.35;
   }
+  const hadShield = s.shield > 0 || game.st.shieldMax > 0;
   s.hull -= rem;
   if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
+    // ACHIEVEMENTS: count real BLOWS, not grinding ticks — the same >= 1 gate
+    // the fx use, so "50 hits" means fifty things actually hit you.
+    bump(game, 'hits');
+    if (hadShield && s.shield <= 0 && rem > 0) bump(game, 'shieldBreaks');
     addShake(game, Math.min(18, dmg * 0.5));
     // Shield ate the whole hit → energy zap; anything reached the hull → metal
     if (rem <= 0) sfx.sfxShieldHit(); else sfx.sfxHit();
@@ -694,6 +713,7 @@ function collideBodies(game, a, b) {
       ((a.heldBy === 'orbit' && b.thrownBy === 'alien' && b.thrownTimer > 0) ||
        (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
     addXp(game, PROG.XP_BLOCK);
+    bump(game, 'blocks');
     // AEGIS REFLECTOR (hauler): don't just block — hurl the enemy rock straight
     // back out as YOUR shot (marked player-thrown, so it can smash the alien).
     // Once reflected it's no longer 'alien', so this can't re-fire on it.
@@ -704,7 +724,9 @@ function collideBodies(game, a, b) {
       const spd = 320 + 130 * game.st.aegis;
       rock.vx = sh.vx + (rdx / rd) * spd; rock.vy = sh.vy + (rdy / rd) * spd;
       rock.thrownBy = 'player'; rock.thrownTimer = 3;
+      rock.throwX = rock.x; rock.throwY = rock.y;
       derail(rock);
+      bump(game, 'aegisBack');
     }
   }
 
@@ -849,11 +871,13 @@ function collideBodies(game, a, b) {
     const splats = (x, other) => x.thrownBy === 'player' && x.thrownTimer > 0 && celestial(other);
     if (dmgToA > 0.5) {
       a.splatWall = splats(a, b);
+      a.hitBy = b;   // ACHIEVEMENTS: who landed this blow (shatter reads it back)
       damageBody(game, a, dmgToA, creditA, b.x, b.y);
       a.splatWall = false;
     }
     if (dmgToB > 0.5) {
       b.splatWall = splats(b, a);
+      b.hitBy = a;
       damageBody(game, b, dmgToB, creditB, a.x, a.y);
       b.splatWall = false;
     }
@@ -1041,9 +1065,14 @@ function collideShipBody(game, s, b, dt) {
     const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
       game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
+      // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
+      // the damage lands, checked after, because that's the only moment both
+      // facts are true at once.
+      const own = b.thrownBy === 'player' && b.thrownTimer > 0;
       damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
         `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
+      if (own && !s.alive) bump(game, 'ownGoal');
     }
   }
 }
@@ -1115,6 +1144,8 @@ function updateParry(game, dt) {
       addShake(game, 5);
       sfx.sfxShieldHit();
       addParticles(game, b.x, b.y, s.vx * 0.5, s.vy * 0.5, 10, '#9fd6ff', 120, 0.5, 3);
+      bump(game, 'parries');
+      best(game, 'parryBest', game.parry.rocks.length);
       if (!game.tut.parry) game.parryWarn = true;   // main.js announces (first time)
     }
   }
@@ -1145,6 +1176,8 @@ function updateParry(game, dt) {
       b.vx = s.vx + dx * st.deflectPower;
       b.vy = s.vy + dy * st.deflectPower;
       b.thrownBy = 'player'; b.thrownTimer = 2.5;  // the riposte is YOUR shot — full billiards credit
+      b.throwX = b.x; b.throwY = b.y;              // achievements: launch point (see tractor.releaseHeld)
+      b.killedByParry = true;                      // ...and the verb that set the kill up
       addXp(game, PROG.XP_PARRY);                  // good play pays — per rock, at the launch
       addParticles(game, b.x, b.y, b.vx * 0.3, b.vy * 0.3, 12, '#9fd6ff', 200, 0.7, 3);
     }
@@ -1808,6 +1841,7 @@ export function step(game, dt) {
         // Debris chunks are pure XP pickups now — no scrap currency, and they
         // do NOT heal the hull (hull only resets on respawn; shield recharges).
         addXp(game, d.value * PROG.XP_SCRAP);
+        bump(game, 'scrap');
         sfx.sfxCollect();
         continue;
       }

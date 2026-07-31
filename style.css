@@ -700,7 +700,8 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
    ------------------------------------------------------------------------ */
 /* These panels are the game's shell; like the upgrade modal they must take
    clicks (the #hud layer above them is pointer-events:none). */
-#splashScreen, #pauseScreen, #settingsScreen { pointer-events: auto; }
+#splashScreen, #pauseScreen, #settingsScreen, #achievementsScreen,
+#gameoverScreen { pointer-events: auto; }
 
 /* On the title screen the frozen (but drifting) world is a soft backdrop; the
    transition makes the game "focus in" when START clears the class. */
@@ -1096,3 +1097,348 @@ body.preGame #radar { opacity: 0; }
 .credname:first-of-type { margin-top: 0; }
 .creddet { font-size: 11px; color: var(--ink-dim); line-height: 1.5; margin-top: 2px; }
 .credtracks { font-size: 10px; color: rgba(180, 160, 230, .55); line-height: 1.6; margin-top: 6px; }
+
+/* ---------------------------------------------------------------------------
+   ACHIEVEMENTS — the run's scoreboard.
+
+   Three surfaces, one visual family, all of them keyed off a per-CATEGORY
+   accent (--acc, set by the ac-* classes below) so a toast, a list row and a
+   filter chip for the same category read as the same thing:
+     · #scoreChip   — the cockpit readout, in the identity row
+     · #achRail     — landing notifications
+     · #achievementsScreen — the log itself
+   The gold ★ score deliberately does NOT take one of the semantic instrument
+   colors (hull green / shield blue / lives pink): it is a meta readout, not an
+   instrument, and it must never be mistaken for one at a glance.
+   ------------------------------------------------------------------------ */
+
+/* Cockpit score chip. Sits between the spec pill and the lives dots; gold,
+   like the panel trim, because it belongs to the shell rather than the ship. */
+#scoreChip {
+  --hx: 8px;
+  font-family: var(--font-data);
+  font-size: 10.5px; letter-spacing: 1.5px; font-weight: bold;
+  padding: 3px 12px;
+  clip-path: var(--clip-hexpill);
+  color: #fff0cf;
+  background:
+    linear-gradient(180deg, rgba(255, 201, 100, .45) 0 1px, transparent 1px calc(100% - 1px), rgba(255, 201, 100, .45) calc(100% - 1px)),
+    rgba(255, 201, 100, .16);
+  text-shadow: 0 0 9px rgba(255, 201, 100, .9);
+}
+#scoreChip.pop { animation: scorePop .45s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes scorePop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.22); filter: brightness(1.6); }
+  100% { transform: scale(1); }
+}
+
+/* ---- Toast rail -----------------------------------------------------------
+   Under the radar cluster on the right, well clear of #msg (bottom centre):
+   an achievement must never be able to cover a hazard warning, or be covered
+   by one. Each toast animates itself in and out over its own lifetime; the
+   stack grows DOWNWARD so a new one never shifts the one you're reading. */
+#achRail {
+  position: absolute; top: 274px; right: 14px; z-index: 3;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  /* NOT interactive. The rail sits in the middle of the play area, and a toast
+     with real pointer-events would swallow the mousedown that starts a tractor
+     grab. hud.js hit-tests the pointer against the toast rects instead. */
+  pointer-events: none;
+}
+.actoast {
+  --acc: var(--gold);
+  --ch: 9px;
+  position: relative; isolation: isolate;
+  display: grid; align-items: center; gap: 0 10px;
+  grid-template-columns: 1fr auto;
+  width: 252px;
+  padding: 8px 14px 9px;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(120deg,
+    color-mix(in srgb, var(--acc) 85%, white 10%),
+    color-mix(in srgb, var(--acc) 35%, transparent) 40%,
+    color-mix(in srgb, var(--acc) 75%, transparent));
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--acc) 45%, transparent));
+  transition: filter .18s ease, transform .18s ease;
+  animation: toastIn .42s cubic-bezier(.16, 1.2, .35, 1) both;
+}
+.actoast::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(165deg, rgba(16, 8, 34, .96), rgba(8, 4, 20, .97));
+}
+/* One-shot light sweep across the face as it arrives — the same energy-line
+   idiom the console panels use, fired once and faded out rather than looping. */
+.actoast::after {
+  content: ''; position: absolute; inset: 2px; pointer-events: none;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(105deg,
+      transparent 42%, color-mix(in srgb, var(--acc) 60%, white) 50%, transparent 58%)
+    no-repeat -70% 0 / 240% 100%;
+  animation: toastSheen .8s ease-out .12s both;
+}
+@keyframes toastSheen {
+  from { background-position: -70% 0; opacity: .85; }
+  to   { background-position: 170% 0; opacity: 0; }
+}
+.atlab {
+  grid-column: 1; font-family: var(--font-ui); font-weight: 600;
+  font-size: 8px; letter-spacing: 3px;
+  color: color-mix(in srgb, var(--acc) 70%, white);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 80%, transparent);
+}
+.atname {
+  grid-column: 1; font-family: var(--font-ui); font-weight: 600;
+  font-size: 13px; letter-spacing: 1.5px; color: #ffffff;
+  text-shadow: 0 0 10px color-mix(in srgb, var(--acc) 70%, transparent);
+}
+.atpts {
+  grid-column: 2; grid-row: 1 / span 2;
+  font-family: var(--font-data); font-size: 16px; font-weight: bold;
+  color: color-mix(in srgb, var(--acc) 60%, white);
+  text-shadow: 0 0 12px var(--acc);
+}
+/* The description, revealed on hover. Animating grid-template-rows 0fr -> 1fr
+   expands to the text's OWN height with no magic max-height to keep in sync
+   with the copy — the child just needs overflow:hidden and min-height:0. */
+.atwrap {
+  grid-column: 1 / -1;
+  display: grid; grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows .26s cubic-bezier(.3, .9, .3, 1), opacity .18s ease;
+}
+.atdesc {
+  overflow: hidden; min-height: 0;
+  padding-top: 7px;
+  font-size: 10.5px; line-height: 1.4; color: var(--ink-dim);
+}
+.actoast.hover {
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--acc) 70%, transparent));
+  transform: translateX(-3px);
+}
+.actoast.hover .atwrap { grid-template-rows: 1fr; opacity: 1; }
+
+/* Enter: slides in from the right with a small overshoot, so it reads as
+   arriving rather than appearing. Leave: fades and drifts back out, THEN
+   collapses its own height (and eats the rail's 8px gap with a negative
+   margin) so the toasts below slide up smoothly instead of snapping. */
+@keyframes toastIn {
+  0%   { opacity: 0; transform: translateX(42px) scale(.9); }
+  100% { opacity: 1; transform: none; }
+}
+.actoast.out { animation: toastOut .46s cubic-bezier(.45, 0, .75, .3) forwards; }
+@keyframes toastOut {
+  0%   { opacity: 1; transform: none; max-height: 220px; margin-bottom: 0; }
+  55%  { opacity: 0; transform: translateX(30px) scale(.94); max-height: 220px; margin-bottom: 0; }
+  100% { opacity: 0; transform: translateX(30px) scale(.94);
+         max-height: 0; margin-bottom: -8px; padding-top: 0; padding-bottom: 0; }
+}
+/* Respect a reduced-motion preference: keep the fade, drop the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .actoast { animation: toastFade .3s ease both; }
+  .actoast::after { animation: none; opacity: 0; }
+  .actoast.out { animation: toastFadeOut .3s ease forwards; }
+  @keyframes toastFade { from { opacity: 0; } }
+  @keyframes toastFadeOut { to { opacity: 0; max-height: 0; margin-bottom: -8px;
+    padding-top: 0; padding-bottom: 0; } }
+}
+
+/* ---- Category accents -----------------------------------------------------
+   One --acc per category, shared by the toast, the row and the chip. Kept
+   clear of the ac-brawler/hauler/scout spec accents above — different
+   namespace, different meaning, no id collisions. */
+.ac-first   { --acc: #8fe6ff; }
+.ac-haul    { --acc: var(--amber); }
+.ac-combat  { --acc: #ff8a66; }
+.ac-flight  { --acc: #7dffb8; }
+.ac-peril   { --acc: #ff6f8f; }
+.ac-explore { --acc: #4fd8ff; }
+.ac-build   { --acc: var(--chrome-soft); }
+.ac-silly   { --acc: #ffb3f0; }
+.ac-insane  { --acc: #ffd76a; }
+.ac-secret  { --acc: #b98cff; }
+
+/* ---- The panel ------------------------------------------------------------
+   Fixed height, internal scroll: the catalog is far taller than any screen,
+   and a panel that resized with its filter would lurch around the centre
+   (the same reason .panel.wide is pinned — see the CONTROLS note). */
+/* Wider than .wide's 700px: the list runs two columns, and cramped columns
+   ellipsis away the achievement names, which are the only thing you scan by. */
+#achievementsScreen { width: min(880px, calc(100vw - 32px)); padding: 24px 30px 20px; }
+.achhead {
+  display: flex; justify-content: center; gap: 34px;
+  margin: 0 0 14px;
+}
+.achstat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.asnum {
+  font-family: var(--font-data); font-size: 24px; font-weight: bold;
+  color: #fff0cf; text-shadow: 0 0 14px rgba(255, 201, 100, .8);
+}
+.aslab {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 8.5px; letter-spacing: 3px; color: rgba(206, 170, 255, .7);
+}
+
+/* Filter chips: one per category, plus ALL. They rebuild on every refresh, so
+   hud.js delegates their clicks rather than binding each one. */
+.achfilters {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+  margin-bottom: 12px;
+}
+.acchip {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 8.5px; letter-spacing: 1.6px;
+  padding: 4px 10px; cursor: pointer;
+  color: rgba(214, 194, 255, .72);
+  background: rgba(120, 60, 220, .08);
+  border: 1px solid rgba(176, 112, 255, .28);
+  border-radius: 3px;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.acchip:hover, .acchip:focus-visible {
+  outline: none; color: #f3e8ff;
+  border-color: rgba(216, 180, 255, .8);
+  background: rgba(150, 80, 255, .16);
+}
+.acchip.on {
+  color: #fff6e2; border-color: rgba(255, 201, 100, .8);
+  background: rgba(255, 201, 100, .14);
+  text-shadow: 0 0 8px rgba(255, 201, 100, .7);
+}
+
+/* The list is a TWO-COLUMN grid of compact rows: at ~370 entries a single
+   column of two-line rows is a wall of prose you have to read to scan. One
+   line each, two abreast, fits a whole category on screen; the readout strip
+   below carries the description of whatever you're pointing at. */
+.achlist {
+  height: min(40vh, 340px); overflow-y: auto; overscroll-behavior: contain;
+  text-align: left;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 10px; align-content: start;
+  padding-right: 8px;
+  scrollbar-width: thin; scrollbar-color: rgba(176, 112, 255, .5) transparent;
+}
+.achlist::-webkit-scrollbar { width: 8px; }
+.achlist::-webkit-scrollbar-thumb {
+  background: rgba(176, 112, 255, .45); border-radius: 4px;
+}
+.acempty {
+  grid-column: 1 / -1; padding: 26px 0; text-align: center;
+  font-size: 11px; letter-spacing: 2px; color: rgba(160, 140, 200, .6);
+}
+
+/* Category header inside the list — spans both columns */
+.acgrp {
+  grid-column: 1 / -1;
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 13px 0 5px; padding-bottom: 5px;
+  border-bottom: 1px solid rgba(176, 112, 255, .2);
+}
+.acgrp:first-child { margin-top: 0; }
+.acghd {
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 10px; letter-spacing: 3px; color: #e8ddff;
+  text-shadow: 0 0 8px rgba(176, 112, 255, .6);
+}
+.acgblurb { flex: 1; font-size: 10px; color: rgba(160, 140, 200, .65); }
+.acgcount { font-family: var(--font-data); font-size: 10px; color: rgba(206, 170, 255, .8); }
+
+/* A row. LOCKED is the default look — dim, hollow marker — and .got lights it
+   up in the category accent. The state must read at a glance while scrolling,
+   so the difference is brightness and a filled marker, not a badge to parse.
+   They're <button>s so focus walks the list; all the button chrome is stripped
+   back off, leaving only the pointer and the focus ring. */
+.acrow {
+  --acc: var(--chrome);
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 5px 9px; margin: 0;
+  font: inherit; text-align: left; cursor: default;
+  border: 0; border-left: 2px solid rgba(176, 112, 255, .18);
+  background: rgba(120, 60, 220, .03);
+  opacity: .5;
+  transition: opacity .1s ease, background .1s ease;
+}
+.acrow:hover, .acrow:focus-visible {
+  outline: none; opacity: 1;
+  background: rgba(150, 80, 255, .16);
+  border-left-color: color-mix(in srgb, var(--acc) 90%, transparent);
+}
+.acmark {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--acc) 50%, transparent);
+}
+.acname {
+  flex: 1; min-width: 0;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 11.5px; letter-spacing: 1px; color: #ddd2f5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.acpts {
+  flex: none; min-width: 26px; text-align: right;
+  font-family: var(--font-data); font-size: 12px; font-weight: bold;
+  color: rgba(206, 170, 255, .5);
+}
+.acrow.got {
+  opacity: 1;
+  border-left-color: var(--acc);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--acc) 12%, transparent), transparent 70%);
+}
+.acrow.got .acmark {
+  background: var(--acc);
+  border-color: color-mix(in srgb, var(--acc) 80%, white);
+  box-shadow: 0 0 9px var(--acc);
+}
+.acrow.got .acname { color: #ffffff; text-shadow: 0 0 9px color-mix(in srgb, var(--acc) 55%, transparent); }
+.acrow.got .acpts { color: color-mix(in srgb, var(--acc) 55%, white); text-shadow: 0 0 9px color-mix(in srgb, var(--acc) 60%, transparent); }
+/* Classified + unearned: the name is withheld on purpose — reading the secret
+   list would spoil the only category built on surprise. */
+.acrow.redacted .acname { font-family: var(--font-data); letter-spacing: 3px; color: rgba(185, 140, 255, .5); }
+
+/* ---- The readout strip ----------------------------------------------------
+   PINNED height, not content-driven (the same law as the CONTROLS readout):
+   descriptions run from a few words to two full lines, and an intrinsically
+   sized strip would resize the centre-transformed panel as the cursor crossed
+   the list, lurching it on both edges at once. */
+.achout {
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  height: 62px; margin-top: 10px; padding: 8px 14px;
+  text-align: left;
+  background: rgba(120, 60, 220, .07);
+  border: 1px solid rgba(176, 112, 255, .22);
+  --ch: 9px; clip-path: var(--clip-oct);
+}
+.aofn {
+  font-family: var(--font-ui); font-weight: 700;
+  font-size: 11px; letter-spacing: 2.5px; color: #f3e8ff;
+  text-shadow: 0 0 9px rgba(176, 112, 255, .7);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.aonote {
+  font-size: 11px; line-height: 1.35; color: var(--ink-dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.aometa {
+  font-family: var(--font-data); font-size: 9px; letter-spacing: 1px;
+  color: rgba(255, 201, 100, .75);
+}
+/* An unearned entry says so in the readout's own colour, so the strip carries
+   the locked/earned state too and you never have to look back at the row. */
+.achout.locked .aofn { color: rgba(214, 194, 255, .8); text-shadow: none; }
+.achout.locked .aometa { color: rgba(160, 140, 200, .6); }
+
+/* ---- Game-over scoreboard line -------------------------------------------- */
+#gameoverScore {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  margin: 14px 0 2px;
+}
+.gosnum {
+  font-family: var(--font-data); font-size: 38px; font-weight: bold;
+  color: #fff0cf; text-shadow: 0 0 20px rgba(255, 201, 100, .85);
+  line-height: 1;
+}
+.goslab {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 9px; letter-spacing: 4px; color: rgba(255, 190, 160, .75);
+}
+.gosdet { font-size: 11px; color: var(--ink-dim); margin-top: 4px; letter-spacing: 1px; }

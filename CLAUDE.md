@@ -36,6 +36,7 @@ variable-timestep presentation loop.
 | [tractor.js](src/tractor.js) | Grab / hold / fling, the aim lead-marker solver, the orbit shield. |
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields (seed / update / collect). Rides dtReal, never the fixed step. |
+| [achievements.js](src/achievements.js) | The run's scoreboard: the ~370-row catalog, the stat ledger, and the per-frame predicate sweep. Imports only config — a near-leaf. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. |
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
@@ -76,15 +77,20 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
   the substeps-per-frame count wobbles, and the ship visibly jerks back and forth around screen centre
   (worse the higher the zoom). Phase-locking ship and camera to one clock is what keeps flight smooth.
 
-### The front-end shell (splash / pause / settings / controls / credits)
+### The front-end shell (splash / pause / settings / controls / credits / achievements)
 
 The game boots to a **splash screen**, not straight into play — flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), and the three **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen`.
-Those three are separate flags (each is its own panel) but every gate treats them alike, so they're asked
+`paused` (pause menu), and the four **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
+`achievementsOpen`.
+Those four are separate flags (each is its own panel) but every gate treats them alike, so they're asked
 about through one leaf helper — **`util.shellModal(game)`** — which main, hud, music and render all use.
 They're mutually exclusive: each fully REPLACES the panel it opened over, so `openX` clears the others
-rather than stacking (a panel peeking out around another's edges looks broken). `choosingUpgrade` still
+rather than stacking (a panel peeking out around another's edges looks broken). That replacement rule
+covers the **death / game-over panels and the `#msg` slot too** — `syncMenus` hides all three while a
+modal is up and restores them from the live flags on close. It became load-bearing when ACHIEVEMENTS
+turned out to be reachable *from* the game-over screen: they're centered `.panel`s as well, and `#msg`
+sits at 17% from the top, exactly where a panel's header is. `choosingUpgrade` still
 freezes independently — and START goes straight into it: `startGame` calls `openSpec`, so the first thing
 after the splash is the **specialization choice**, held over the frozen just-started world. `resetRun`
 re-arms it for a fresh run.
@@ -290,6 +296,72 @@ re-arms it for a fresh run.
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
   other player input.
+- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~370 rows in
+  [achievements.js](src/achievements.js) grant **points** (`prog.ach.score`) — never XP, never ranks,
+  never picks — so the balance of the XP curve is untouched by them. **Run-scoped on purpose:** the
+  score answers "how was THIS run", so the ledger lives on `prog` and dies with it; nothing is
+  persisted to localStorage (a lifetime tally makes an achievement a thing you grind once and never
+  see again). `main.freshProgress()` bolts `newAchState()` onto `newProgress()` — **config.js must
+  never import achievements.js**, since achievements imports config and config is a leaf.
+  - **Two halves, deliberately apart.** (1) A **stat ledger** (`prog.ach.stats`): gameplay code bumps
+    plain counters through `bump` / `best` / `least` / `mark` — null-safe, so they're callable from
+    splash frames and headless soaks where no ledger exists — plus `noteCatch` / `noteKill` /
+    `noteDeath`, which classify the three richest events in one call each rather than a dozen bumps
+    at the call site. Call sites never know what an achievement is. (2) **Predicates**: every row's
+    `test(game, s, c)` is a PURE READ, evaluated each frame for every row not yet earned; earned rows
+    splice out, so the sweep shrinks as the run goes. **No loops, no allocation inside a predicate** —
+    anything that needs scanning is computed once into the shared context `c` (the ONE loop the
+    sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it at seven).
+    Measured at 0.02 ms per sweep across all 370 rows — 0.1% of a 60 fps frame.
+  - **Adding one is a catalog row.** Only reach for a new `bump` if nothing already records the event.
+    Several discovery rows ride the existing `EVENT_MSGS` one-shot flags through `ACH_EVENT_STATS`
+    (main's drain feeds them) rather than instrumenting world.js a second time; the heat/oort/gas/skim/
+    coast/spin/no-damage streaks are integrated inside the sweep off flags that already exist, so the
+    hot path never grew a line for them.
+  - **Watch for freebies — this is the failure mode of the whole feature.** A predicate true on frame
+    one is a bug, and five have been caught so far: counting max-1 unlocks as "maxed" handed SCOUT
+    *Maxed Out* immediately (Retro Jets is in its kit); `game.lastDamage` starting at `-99` handed
+    every run 99 free seconds of "untouched"; an "own four abilities" row landed instantly because
+    the BRAWLER and SCOUT kits ARE four (count rows must sit above the biggest kit — 5+); an
+    "unlock the Deflector" row was free for BRAWLER, which starts with it (kit abilities need a RANK
+    threshold, not an unlock one); and a "tier 2 with no picks taken" row was unreachable, since a
+    tier-up spends a pick and increments `prog.level`. **Check every new row against
+    `window.freshRun(i)` + `window.tick(1)` for all three specs** — anything other than *Specialist*
+    landing on frame one is a freebie.
+  - **`noteDeath` ends every streak the sweep is timing.** Without it "ten minutes untouched" would
+    survive being blown up, and a dive that ended at a gas giant's core would score as one you climbed
+    out of.
+  - **Presentation:** landed rows queue on `game.achQueue` (the same event-flag shape as `rankUps`) and
+    `main.drainAchievements` turns them into **toasts on their own rail** — never `hud.message`, whose
+    single slot belongs to the sim warning you about the world; a score notification must not be able
+    to overwrite a hazard warning or be overwritten by one. The sound follows the existing grammar
+    (triumph): `sfxTierUp` for a 60+ row, `sfxUpgrade` otherwise. The cockpit gets a gold `★` score
+    chip (hidden until the first point — its appearance IS the first achievement), the GAME OVER panel
+    leads with the final score, and **V** opens the log. The panel is rebuilt on open, never per frame.
+  - **Toast lifetime is driven in JS, not by a CSS animation delay, because HOVERING PAUSES IT.**
+    A notification you have to read in four seconds is one you miss, so pointing at a toast holds it
+    open and expands its full description; the clock restarts (shorter) once the pointer leaves, and
+    a toast caught mid-exit is brought back rather than fading out from under the cursor. **The
+    toasts stay `pointer-events: none` and hover is HIT-TESTED against their rects from a
+    window-level mousemove** — the rail sits in the middle of the play area, and a toast with real
+    pointer-events would swallow the mousedown that starts a tractor grab (the canvas listener would
+    simply never fire, and a rock you reached for would be missed because a notification happened to
+    be in the way). The listener is bound with the first toast and unbound with the last. The
+    description reveal animates `grid-template-rows: 0fr -> 1fr`, so it expands to the text's OWN
+    height with no magic max-height to keep in sync with the copy. Enter overshoots in from the
+    right with a one-shot light sweep (the panels' energy-line idiom); leave fades and drifts out,
+    THEN collapses its own height and eats the rail's 8px gap with a negative margin, so the toasts
+    below slide up instead of snapping. Both drop to a plain fade under `prefers-reduced-motion`.
+  - **The panel is a SCHEMATIC, not a table** — the same shape as CONTROLS, and for the same reason.
+    At this catalog size a two-line row per entry is a wall of prose you have to READ to scan, so rows
+    are COMPACT (marker · name · points) in a two-column grid, and each carries its description in
+    `data-note`; `initAchPanel` delegates hover/focus to mirror it into the readout strip underneath.
+    Adding an achievement therefore needs nothing in hud.js. The rows are `<button>`s so a keyboard
+    walks the list exactly as a mouse does, and the readout is sized for its LONGEST description, not
+    the current one, or the centre-transformed panel bounces as the cursor crosses it. Filters run
+    ALL / EARNED / one per category. `secret`-category rows are REDACTED until earned — name and
+    description both, though the POINTS still show, so a classified row is visibly worth chasing;
+    every other locked row reads in full, because a readable locked achievement is a to-do list.
 - **Test hooks:** `game.autoUpgrade = true` auto-resolves each card (picks index 0) so a `window.tick`
   soak never stalls; `window.tick` also auto-seeds `SPECS[0]` when no spec is chosen (set
   `game.prog.spec` + rebuild `game.st` first to soak a different spec).
@@ -709,7 +781,9 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   `window.locate('name'|'type')` returns the body itself.
 - `window.god(on)` — ship ignores all damage (`damageShip` early-out) for poking at the corona,
   forts, or gas cores without respawn loops.
-- `window.game` — the live state handle.
+- `window.game` — the live state handle. `game.prog.ach` is the achievement ledger: `.score`,
+  `.order` (ids, in the order earned), `.got` (id → seconds), `.stats` (every raw counter). Reading
+  `.stats` after a soak is the fastest way to check a new achievement's predicate is fed by anything.
 - `game.autoUpgrade = true` — auto-resolves each pick (picks card 0) so soaks never stall. Drive a
   climb by pumping `game.prog.xp`.
 - **Specs headlessly:** `window.tick` bypasses the spec modal by seeding `SPECS[0]` when
