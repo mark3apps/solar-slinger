@@ -213,7 +213,7 @@ function pickShoveRock(game, al, s) {
   let best = null, bestScore = 0;
   for (const b of game.bodies) {
     if (!b.alive || b.type !== 'asteroid' || b.heldBy) continue;
-    if (b.mass > 2000 || b.majorComet || b.pod) continue;   // muscle, not a beam
+    if (b.mass > CFG.LURKER_SHOVE_MASS || b.majorComet || b.pod) continue;   // muscle, not a beam
     const dx = b.x - al.x, dy = b.y - al.y;
     const d = Math.hypot(dx, dy);
     if (d < 60 || d > 700) continue;
@@ -408,8 +408,11 @@ function updateFields(game, dt) {
     if (fieldFrac(f, s.x, s.y) > 1.02) continue;
     let awake = 0;
     for (const a of game.aliens) if (a.alive && a.kind === 'lurker' && a.field === fi) awake++;
-    if (awake >= 2) continue;   // at most a pair hunting at once
-    f.wakeT = 6 + Math.random() * 4;
+    if (awake >= CFG.FIELD_HUNTERS) continue;   // only so many hunting at once
+    // Gap between ambushes. It has to stay well under the time it takes a
+    // lurker to die, or a bigger brood never actually fields its hunter cap —
+    // the shoal just trickles one at a time however many are left.
+    f.wakeT = 4 + Math.random() * 3;
     f.brood--;
     // The ambush: it was one of the rocks — spawn at a field rock near the
     // player (close enough to menace, far enough to see coming).

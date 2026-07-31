@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp } from './config.js';
+import { CFG, PROG, addXp, FIELD_LOBE_MAX } from './config.js';
 import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid, markFieldRock } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
@@ -1341,9 +1341,13 @@ function collideAlienBody(game, al, b) {
     // minute, none landing within 1300u of the ship). Incidental contact now
     // just separates, free of charge.
     if (al.state === 'charge' && !(al.shovedT > 0) && sh.alive &&
-        Math.hypot(al.vx, al.vy) > 60) {
-      // Heavier rock, lazier shove — this is muscle, not a tractor beam
-      const push = CFG.LURKER_SHOVE * Math.min(1, 1400 / Math.max(300, b.mass));
+        b.mass <= CFG.LURKER_SHOVE_MASS && Math.hypot(al.vx, al.vy) > 60) {
+      // Heavier rock, lazier shove — this is muscle, not a tractor beam. The
+      // knee sits at pickShoveRock's own 2000-mass ceiling so the heaviest
+      // rock it will even consider still leaves at a threatening clip (at a
+      // 1400 knee the top of that range crawled out at 0.7x and read as a
+      // shove that had failed).
+      const push = CFG.LURKER_SHOVE * Math.min(1, 1800 / Math.max(300, b.mass));
       // AIMED, with the grabber's lead solve. The velocity is set outright
       // rather than added to the lurker's: the whole pocket is carried by
       // orbital motion, and inheriting that carry threw every shot wide of
@@ -1447,7 +1451,10 @@ export function updateFieldLOD(game, dt) {
   const wakeR2 = wakeR * wakeR;
   if (flds) {
     for (const f of flds) {
-      f.active = Math.hypot(f.x - cx, f.y - cy) < CFG.FIELD_LEN + wakeR;
+      // Reach must cover the pocket's LONGEST lobe (config.FIELD_LOBE_MAX)
+      // plus the fringe stragglers, or the far bulge of a field you are
+      // standing in stays dormant while it is inside the wake bubble.
+      f.active = Math.hypot(f.x - cx, f.y - cy) < CFG.FIELD_LEN * (FIELD_LOBE_MAX * 1.35) + wakeR;
     }
   }
   for (const b of bodies) {
