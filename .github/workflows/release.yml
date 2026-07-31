@@ -102,14 +102,21 @@ jobs:
       - name: Build installers
         run: npx electron-builder ${{ matrix.args }} --publish never
 
+      # latest*.yml + *.blockmap are the auto-update feed: electron-updater on
+      # installed Windows apps resolves the new version + sha512 from latest.yml
+      # on the release, and blockmaps enable differential downloads. Dropping
+      # them from the release silently breaks self-update (electron/updater.js).
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+            dist/latest*.yml
+            dist/*.blockmap
           if-no-files-found: error
 
   # Everything with a side effect lives here, gated on a green build, so a
@@ -162,4 +169,11 @@ jobs:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: Solar Slinger v${{ needs.prepare.outputs.version }}
           body_path: artifacts/release-notes.md
-          files: artifacts/*.dmg,artifacts/*.exe,artifacts/*.deb,artifacts/*.rpm
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/*.rpm
+            artifacts/latest*.yml
+            artifacts/*.blockmap

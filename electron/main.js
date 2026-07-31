@@ -5,6 +5,7 @@
 const { app, BrowserWindow, protocol, net, shell } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { initUpdater } = require('./updater');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -37,6 +38,7 @@ function createWindow() {
   // (python3 serve.py → http://localhost:8642) for hot-ish iteration.
   const startUrl = process.env.ELECTRON_START_URL || 'app://game/index.html';
   win.loadURL(startUrl);
+  return win;
 }
 
 app.whenReady().then(() => {
@@ -51,7 +53,9 @@ app.whenReady().then(() => {
     return net.fetch(pathToFileURL(file).toString());
   });
 
-  createWindow();
+  // Auto-update (electron/updater.js): a no-op in dev; on packaged builds
+  // Windows self-updates on quit, mac/linux get a check-and-notify dialog.
+  initUpdater(createWindow());
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
