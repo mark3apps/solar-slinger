@@ -267,15 +267,17 @@ export const PROG = {
   // the old flat band, with the cost shifted onto the later tiers — the old
   // linear curve (145 + 58*level) priced every tier in the same band (tier t
   // total = ~928*(t+1)), so the opening crawled exactly like the midgame. The
-  // quadratic redistributes it: per-tier totals run 462 / 1278 / 2478 / 4062 /
-  // 6030 vs the old 928 / 1856 / 2784 / 3712 / 4640 — tier 0 is ~2x faster,
-  // tiers 1-2 cheaper, tiers 3+ pricier, and the WHOLE climb to max tier stays
-  // within ~3% of the old grind (14310 vs 13920), so it's a reshape, not a
-  // buff. First pick lands at 60 XP: a survey + a catch, or a few smashes —
-  // the opening upgrade should arrive inside the first couple of minutes.
-  XP_BASE: 60,
-  XP_STEP: 30,
-  XP_CURVE: 3,
+  // quadratic redistributes it: per-tier totals run 308 / 852 / 1652 / 2708 /
+  // 4020 — early tiers cheapest, later tiers pricier, same shape as before.
+  // SPEED PASS (user design rule, second round): the reshape alone kept the
+  // total climb at the old ~14310 grind and the user asked for ALL tiers
+  // faster — so the whole curve is scaled by ⅔ (total now 9540, every tier
+  // ~33% quicker) while preserving the front-loaded ratios above. First pick
+  // lands at 40 XP: one survey, or a couple of smashes — the opening upgrade
+  // should arrive inside the first minute or two.
+  XP_BASE: 40,
+  XP_STEP: 20,
+  XP_CURVE: 2,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
