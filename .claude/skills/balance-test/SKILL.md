@@ -30,7 +30,7 @@ generation is seeded, so the starting layout is identical every run.
    window.soak(600, { idle: true });   // 10 idle sim-minutes — the cleanest stability signal
    ```
 
-   It returns `{ simSeconds, wallMs, planets: "18/18", moons: "45/45", ship, lives, tier,
+   It returns `{ simSeconds, wallMs, planets: "21/21", moons: "48/48", ship, lives, tier,
    deaths: [...], impacts, nanEvents }`. `idle: true` removes the ship first (no life is spent);
    omit it to soak with the ship alive and interacting. For a longer soak, call `soak` twice
    (`2 × 300s`) rather than one huge call, and combine the results yourself — each call re-arms
@@ -55,35 +55,31 @@ generation is seeded, so the starting layout is identical every run.
    normal play. Opening the page with `?dev=1` adds hotkeys: `-` halve, `=` double, `0` reset. Note picks
    still freeze the sim at speed — `game.autoUpgrade = true` if that stalls a long watch.
 
-## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 18 planets, 45 moons —
-## the 18th is The Wanderer's Star, the expedition layer's dark dwarf on the outermost rail;
-## it counts as a planet in the census and must survive like one)
+## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 21 planets, 48 moons —
+## the 21 includes The Wanderer's Star (the expedition layer's dark dwarf, which counts as a
+## planet in the census and must survive like one) and the three outer-band worlds added with
+## the WORLD_R 46000 growth)
 
-- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **18/18 planets must
-  survive 10 idle sim-minutes, and moons should read 45/45.** Two seeded rogues meeting the sun
-  around t≈570 are the known-good fingerprint. There are **NO deterministic moon deaths**: the
-  earlier fingerprint of four moon absorptions at t≈202-267 (masses 9062/9772/7389/4013) was a
-  worldgen defect — two of Tantal's seeded ellipse pairs had overlapping radial ranges, so they
-  crossed, collided (t≈151/176), derailed, and sank into the planet. Fixed by the sibling-slot
-  eccentricity clamp in world.js `spawnMoon`/`addPlanet`. **If absorptions return in the first ~5
-  minutes at repeatable times and masses, that clamp has regressed.**
-  Two moon losses ARE expected and fine:
-  - `moon absorbed @447s (m=5016)` — Quorra's id147. The seeded rogues are on deterministic
-    trajectories, so this repeats every run: one rogue's approach trips `RAIL_DISTURB` at t≈434 and
-    derails the moon, and the second (m=300000, 60× its mass) swallows it at t≈447. A rogue eating
-    something on a flyby is the rogue system working as designed, not a crossing-orbit failure —
-    tell them apart by WHAT is nearby at death (a rogue vs. the moon's own parent/sibling).
-  - An occasional **44/45** from other late churn (t>400, odd masses), or the runtime view-local rock
-    field near the ship spawn knocking Ossia (it re-rails) or sending its moon (m=6972) sunward around
-    t≈150-250. These vary run to run; re-running should restore 45/45.
-
-  `replenishWorld` refills a lost moon within ~60s, so the census usually still reads 45/45 even when
-  a moon died — **judge moon health by the death list, not the alive-count alone** (that masking is
-  what hid the crossing-orbit bug for so long). Anything below 44, a NEW repeatable early loss, or
-  ANY planet loss in an IDLE soak is a regression.
+- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **21/21 planets AND
+  48/48 moons must survive, with ZERO loose planets and zero NaN.** Baseline re-measured 2026-07
+  after rogue planets were removed: idle runs to t≈1020 hold 21/21 and 48/48 with only a couple of
+  ambient non-asteroid deaths (replenished within ~60s). The bar is genuinely strict now — rogues
+  were the one thing that damaged the sky unprompted, so **any planet loss, or a planet still
+  `onRails === false` at the end, is a regression, not variance.** Older fingerprints in this file's
+  history (seeded rogues dying at t≈570, Quorra's moon at t≈447) belong to a world that no longer
+  exists; ignore them.
+  - The Tantal sibling-slot eccentricity clamp in world.js `spawnMoon`/`addPlanet` is still
+    load-bearing: **repeatable same-time same-mass moon absorptions in the first ~5 minutes mean that
+    clamp has regressed.**
+  - **Dense-field asserts the planet/moon census cannot see** (worth adding to any field-related
+    soak): per pocket, rocks within ~6000u of `game.fields[i]` should stay near `CFG.FIELD_ROCKS`
+    (the reknit refills off-view); every field rock must satisfy `b.fieldRock && !b.attractor`
+    (gravity-free in both directions); and railed field rock must carry `b.rail.w === fields[i].w`
+    (the rigid-pocket rule — a mismatch shears the pocket apart).
 - **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
   ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
-  rail into the corona). 16/18+ is normal; losses of OUTER planets, or several at once, are regressions.
+  rail into the corona). 20/21+ is normal now that nothing wanders the sky unprompted; losses of
+  OUTER planets, or several at once, are regressions.
 - **Moon survival:** moons should essentially all survive; they're railed and orbits are exact by
   construction. A moon `shattered` against its own planet points at invariant #1 or #2 (energy pumping
   in tight pairs).
@@ -106,7 +102,7 @@ generation is seeded, so the starting layout is identical every run.
 | Star-anchored planet `vaporized by star` | #2 (neighbor-star damping) or #6 (`WORLD_R`/boundary exemption) |
 | Moon `shattered` against its planet | #1 (snapshot before integrate) or #2 (symmetric pair weight) |
 | Death count climbs steadily over time | #3 (ambient damage threshold) |
-| A rogue launches a planet out of orbit | #4 (damped natural impulse / immovable heavy) |
+| Anything launches a planet out of orbit | #4 (damped natural impulse / immovable heavy) |
 | Ship dies instantly to one thrown rock | #5 (ship bounce/impact cap) |
 
 ## Caveats

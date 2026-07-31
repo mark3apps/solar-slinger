@@ -5,7 +5,12 @@ export const CFG = {
   // Soft boundary radius. MUST exceed the outermost orbit reach (orbit +
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
-  WORLD_R: 42000,
+  // 46000 = the old 42000 grown 20% by AREA (42000 x sqrt(1.2)) — the extra
+  // room is the OUTER BAND (~37k-46k): three new planet lanes (world.js
+  // layout, stopping at 42600 — the rogue spawn ring needs clearance above
+  // the outermost lane), the dark star's 39500 lane, and the Farshoal dense
+  // field riding the frost fringe at 44300.
+  WORLD_R: 46000,
   OORT_WARN: 1400,         // warning distance before the cloud edge
   OORT_DPS: 6,             // hull damage/s at the edge, scaling with depth
   ATTRACT_MIN: 2000,       // bodies at/above this mass exert gravity
@@ -214,6 +219,95 @@ export const CFG = {
   ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
   ALIEN_BURST: 4,          // a nest can scramble up to this many at once
 
+  // DENSE ASTEROID FIELDS (world.js seedDenseFields): packed rock shoals
+  // riding the sun's rails at fixed radii, each home to a finite brood of
+  // SHOAL LURKERS (ai.js) — camouflaged ambushers that never leave the field.
+  // SIZE AND COUNT ARE SEPARATE KNOBS. The pocket is deliberately VAST — a
+  // field you cross in two seconds is a clump, not a region — so the extents
+  // grew far faster than the rock count: the shoal should read as somewhere
+  // you fly INTO and are surrounded by, with real open lanes inside it rather
+  // than wall-to-wall gravel. Rock SIZE carries the density impression
+  // instead (world.fieldMass skews big, few pebbles).
+  FIELD_ROCKS: 1900,       // rocks per field (~58u mean spacing — thick, trimmed from 2200)
+  // Pocket size is PHYSICAL, not angular — an angular width scales with the
+  // orbit radius and turned the outer field into an 11,000u dilute arc.
+  // The pocket is deliberately close to ROUND rather than a long lane-shaped
+  // smear: the design goal is that flying in you get LOST in it, and a wide
+  // arc you cross in one straight line never does that no matter how long it
+  // is. At 6200 x 4600 against a ~450u view radius, the far side is a dozen
+  // screens away in every direction.
+  FIELD_LEN: 2950,         // tangential half-length of the pocket (world units)
+  FIELD_SPREAD: 2200,      // radial half-thickness (world units)
+  // A few GIANTS per pocket: landmark rocks big enough to navigate by and to
+  // shatter into a cascade of smaller field rock (physics.shatter), which is
+  // the chaos engine of the whole shoal. Gravity-free like everything else in
+  // here — see the FIELD ROCK note below.
+  FIELD_GIANTS: 9,
+  FIELD_GIANT_MASS: [14000, 60000],   // the biggest are moon-scale monoliths
+  FIELD_GIANT_SHARDS: [5, 9],   // pieces a giant breaks into (big shards re-flag as giants — one more cascade level)
+  // Both lurker ranges are sized OFF the pocket, not absolutely: the wake
+  // must reach past the far end (FIELD_LEN) or you could sit deep inside the
+  // rocks without ever springing the ambush, and the territory has to contain
+  // the whole pocket plus chase room or a lurker breaks off mid-slash.
+  // (No circular wake/territory radii any more — lurker containment is the
+  // POCKET FOOTPRINT itself, via fieldFrac() below: a circle wide enough to
+  // cover the long axis overshot the short axis by 2x, and the baddies
+  // visibly hunted open space outside their own rocks.)
+  // MONOLITHS: a couple of rocks per pocket (plus the named heart) at twice
+  // the drawn radius of the biggest regular giant (radius goes with cbrt of
+  // mass, so 2x the size = 8x the mass). Landmarks you steer by from across
+  // the shoal; still field rock — no gravity, and breakable only by a truly
+  // heavy blow (see FIELD_HP_CAP).
+  FIELD_MONOLITHS: 2,
+  FIELD_MONOLITH_MASS: [3e5, 4.8e5],
+  // Field-rock hp ceiling. Without it FIELD_HP_MUL made a monolith ~34,000 hp
+  // — unbreakable, which contradicts the design ("bigger rocks break into
+  // smaller pieces and keep the chaos going"). At 5200 a thrown moon-class
+  // mass (4.7-12k damage) can crack even a monolith; pebbles still bounce off.
+  FIELD_HP_CAP: 5200,
+  // FIELD ROCK is its own material, not belt rock: no gravity AT ALL — it
+  // neither feels it nor exerts it, GIANTS INCLUDED (a shoal is about
+  // knocking things into each other, and a heavy attractor parked in the
+  // middle of that would quietly turn the pocket into its own solar system)
+  // — plus a much livelier bounce and a thick hide against its own kind.
+  // That combination is what makes a shoal a PINBALL TABLE you can knock
+  // around all day instead of a cloud that grinds itself to dust the first
+  // time something big ploughs through. Gravity-free is also the only reason
+  // 2000+ of them are affordable.
+  // FLAT restitution for field-rock pairs, just under perfectly elastic
+  // (>= 1 ADDS energy per hit and the pocket boils itself apart). This is a
+  // fixed value, not a multiplier on RESTITUTION: the whole point of the
+  // material is that hits SEND ROCKS FLYING, and inheriting the world's
+  // deliberately deadened bounce defeated it.
+  FIELD_BOUNCE: 0.92,
+  FIELD_TOUGH: 0.08,       // x damage on field-vs-field impacts (unless a player throw is involved)
+  FIELD_HP_MUL: 6,         // field rock is MUCH tougher stuff than belt rock
+  FIELD_BROOD: 4,          // lurkers per field per run — finite; a cleared field is QUIET
+  LURKER_HP: 34,           // frail: ~2 solid hits, or ~3 of its own ram passes
+  LURKER_RADIUS: 10,
+  LURKER_DMG: 16,          // contact damage per slash pass (grabbers hit for 24)
+  LURKER_SPEED: 1.35,      // x ALIEN_SPEED — the fastest thing in the sky up close
+  // The lurker fights like a BRAWLER, not a grabber: it has no beam, it
+  // BODY-CHECKS field rocks at you. Ambient rock contact can't hurt it (it
+  // lives in the rocks — see the shove branch in physics.collideAlienBody);
+  // a PLAYER-thrown rock still guts it, which is the counterplay.
+  LURKER_SHOVE: 420,       // speed imparted to a rock it charges through
+  LURKER_SHOVE_CD: 1.0,    // seconds before it can body-check again
+  // It only sets up a body-check when it is genuinely CLOSE — a rock punted
+  // from across the pocket is a random event the player never reads as aimed,
+  // and it wastes the charge. Inside this range the shot is a real threat.
+  LURKER_SHOVE_R: 950,     // ship must be within this before it lines a rock up
+  // The shove is HELPED: the rock keeps steering toward its lead solution for
+  // a moment after the hit, so a body-check reads as a deliberate aimed shot
+  // instead of a hopeful nudge that the pocket's own drift walks off target.
+  // Tuned against a stationary target: at 400/0.9s the shots grazed (median
+  // closest approach ~25u — about a ship-width wide), because a pocket this
+  // busy deflects a rock off its neighbours mid-flight. This converges those
+  // grazes into hits while staying a short, bounded correction rather than a
+  // homing missile.
+  LURKER_GUIDE_T: 1.3,     // seconds of guidance after the body-check
+  LURKER_GUIDE_A: 700,     // steering accel during that window
+
   // Solar storms: periodic charged waves sweeping the WHOLE system —
   // discovery weather, not a weapon. The front lights auroras on the worlds
   // it washes over, brightens comet tails, and gives loose scrap a gentle
@@ -267,6 +361,22 @@ export const CFG = {
   ATMO_MAX_MASS: 1400,
   ATMO_DPS_FRAC: 0.9,
 };
+
+// Normalized position of (x, y) in a dense field's POCKET frame: <= 1 means
+// inside the elliptical footprint (FIELD_LEN along the lane, FIELD_SPREAD
+// across it), values above 1 scale linearly with how far outside. This is
+// THE containment test for everything field-scoped — the lurker leash and
+// wake (ai.js), the hunting-eye mirror (render.js), and the entry announce
+// (world.js) all share it so they can never disagree about where a field
+// ends. Lives in config because config is a leaf every consumer already
+// imports, and it needs CFG.
+export function fieldFrac(f, x, y) {
+  const dx = x - f.x, dy = y - f.y;
+  const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
+  const rad = dx * ca + dy * sa;        // radial offset (across the lane)
+  const tan = -dx * sa + dy * ca;       // tangential offset (along the lane)
+  return Math.hypot(tan / CFG.FIELD_LEN, rad / CFG.FIELD_SPREAD);
+}
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your
 // BEAM can grab.

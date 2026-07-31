@@ -251,10 +251,14 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kNest >= 1),
   A('killNest3', 'combat', PTS.brutal, 'Exterminator', 'Destroy three alien nests.',
     (g, s) => s.kNest >= 3),
-  A('killRogue', 'combat', PTS.hard, 'Rogue No More', 'Destroy a rogue planet.',
-    (g, s) => s.kRogue >= 1),
-  A('killRogue3', 'combat', PTS.brutal, 'Border Control', 'Destroy three rogue planets.',
-    (g, s) => s.kRogue >= 3),
+  // (The two rogue-planet rows retired with rogue planets themselves — an
+  // achievement nothing in the world can produce is worse than one row short.
+  // The kRogue ledger key and noteKill's rogue branch stay: type 'rogue' is
+  // still supported, nothing just spawns it.)
+  A('giantCrack', 'combat', PTS.normal, 'Calving', 'Shatter a field giant into pieces.',
+    (g, s) => s.kGiant >= 1),
+  A('giantCrack10', 'combat', PTS.hard, 'Rock Breaker', 'Shatter ten field giants.',
+    (g, s) => s.kGiant >= 10),
   A('killComet', 'combat', PTS.normal, 'Ice Breaker', 'Destroy a comet.',
     (g, s) => s.kComet >= 1),
   A('killComet8', 'combat', PTS.tricky, 'Shower Cancelled', 'Destroy eight comets.',
@@ -273,6 +277,12 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kGolem >= 1),
   A('golem5', 'combat', PTS.hard, 'Unmade', 'Kill five scrap golems.',
     (g, s) => s.kGolem >= 5),
+  A('lurker', 'combat', PTS.normal, 'Not A Rock', 'Kill a shoal lurker.',
+    (g, s) => s.kLurker >= 1),
+  A('lurker8', 'combat', PTS.hard, 'Shoal Survivor', 'Kill eight shoal lurkers.',
+    (g, s) => s.kLurker >= 8),
+  A('fieldClear', 'combat', PTS.tricky, 'Quiet Waters', "Destroy a dense field's whole lurker brood.",
+    (g, s) => s.fieldClear >= 1),
   A('fort', 'combat', PTS.hard, 'Liberator', 'Smash every turret on a Bastion fort.',
     (g, s) => s.kFort >= 1),
   A('fort3', 'combat', PTS.insane, 'Siege Engine', 'Liberate three Bastion forts.',
@@ -495,6 +505,8 @@ export const ACHIEVEMENTS = [
     (g, s) => s.rogues >= 5),
 
   // ---- EXPLORATION ------------------------------------------------------
+  A('field1', 'explore', PTS.easy, 'Thick Sky', 'Fly into a dense asteroid field.',
+    (g, s) => s.fieldsSeen >= 1),
   A('chart5', 'explore', PTS.easy, "Cartographer's Apprentice", 'Chart 5 bodies.',
     (g) => g.prog.surveyed >= 5),
   A('chart25', 'explore', PTS.tricky, 'Cartographer', 'Chart 25 bodies.',
@@ -967,6 +979,11 @@ export function noteKill(game, b, credit, impactor) {
   } else if (b.type === 'station') s.kStation = (s.kStation || 0) + 1;
   else if (b.type === 'rogue') s.kRogue = (s.kRogue || 0) + 1;
   else if (b.type === 'nest') s.kNest = (s.kNest || 0) + 1;
+  // Field giants: only PLAYER-credited breaks count, so a shoal grinding
+  // itself apart in the background never scores.
+  if (b.giant && b.fieldRock && (credit === 'player-throw' || credit === 'player' || credit === 'ram')) {
+    s.kGiant = (s.kGiant || 0) + 1;
+  }
   // Deflector and Dead Stop both mark their rocks, so a kill can name the verb
   // that set it up (both flags are cleared by the throw that consumes them).
   if (b.killedByParry) s.parryKill = (s.parryKill || 0) + 1;
@@ -1202,7 +1219,6 @@ export const ACH_EVENT_STATS = {
   cometWarn: 'cometShowers',
   flareWarn: 'flares',
   flareHitWarn: 'flareHits',
-  rogueIncoming: 'rogues',
   tinkerPaidWarn: 'trades',
   maydayWarn: 'maydays',
   maydaySavedWarn: 'rescues',
@@ -1215,6 +1231,8 @@ export const ACH_EVENT_STATS = {
   echoMsg: 'echoes',
   golemWarn: 'golemSeen',
   wrightWarn: 'wrightsSeen',
+  fieldWarn: 'fieldsSeen',
+  lurkerWarn: 'lurkersSeen',
   jinkWarn: 'jinks',
   comboShow: 'combos',
   tetherShow: 'tetherThrows',

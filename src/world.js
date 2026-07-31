@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp, maxLives } from './config.js';
+import { CFG, PROG, addXp, maxLives, fieldFrac } from './config.js';
 import { Body, railBody, railEllipse } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
@@ -58,7 +58,11 @@ const GAS_KIND_COLORS = {
   azure:  ['#5a9dc9', '#4f93c4', '#7bd9c9'],
   violet: ['#b05ac9', '#a04fc0', '#c06ad4'],
 };
-const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex'];
+// One name per layout planet — the list must be at least as long as the
+// layout's named-planet count (19) or nameIdx wraps and the sky gets two
+// worlds with one name (the old 14-name list shipped duplicate Khepri/Vantor,
+// which made chart messages and window.goto ambiguous).
+const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex', 'Ferren', 'Wold', 'Corve', 'Naiad', 'Aster'];
 
 // Moon archetypes — like planets, each kind has its own palette and a distinct
 // renderer look (render.js drawMoonDetail), plus a mass/size skew, so a
@@ -386,6 +390,11 @@ export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
     color: mass >= 2600 ? '#a3765c' : '#8d8577',   // boulders read rusty
   });
   bodies.push(a);
+  // Register with the awake list so mid-frame spawns (spall, shards, geyser
+  // pellets) simulate THIS frame instead of waiting for the next LOD rebuild.
+  // Creation sites that bypass this helper self-heal anyway — one frame of
+  // stasis, then the rebuild picks them up.
+  if (bodies._awake) bodies._awake.push(a);
   return a;
 }
 
@@ -426,6 +435,10 @@ export function generateWorld(game, seed = 20260721) {
   // array (everything holds game.bodies by reference) — without this clear, a
   // second sun + full system stacked onto the old one on every game over.
   bodies.length = 0;
+  // ...and the awake list dies with the old world: it holds REFERENCES, and a
+  // stale list would keep simulating the dead sky's bodies. step() falls back
+  // to the full array until updateFieldLOD rebuilds it (first frame).
+  bodies._awake = null;
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
@@ -482,6 +495,19 @@ export function generateWorld(game, seed = 20260721) {
     { r: 32500, mass: 4e4,   radius: 95,  ptype: 'ice', moons: 1 },
     { r: 34500, mass: 1.1e5, radius: 150, ptype: 'rocky', moons: 2 },
     { r: 36800, mass: 5e4,   radius: 120, ptype: 'ice', moons: 1 },
+    // ---- THE OUTER BAND (37k-46k): the room opened by the WORLD_R area
+    // growth. Entries are APPENDED so every earlier world's seeded placement
+    // is untouched (draws happen in layout order); only post-layout content
+    // re-rolls its angles. The dark star keeps its 39500 lane between the
+    // first two, and The Farshoal (dense field) rides at 42400.
+    // Lanes stop at 42600: the rogue spawn ring (WORLD_R - 600 = 45400) must
+    // clear the outermost planet by ~2x RAIL_DISTURB. At 43900 the sentinel
+    // sat 1500 from the ring — inside effective disturb reach (1400 + rogue
+    // radius) — so a just-spawned rogue derailed it, co-traveled, and
+    // gravitationally dragged it sunward (outer lanes orbit at only ~50 u/s).
+    { r: 38300, mass: 6e4,   radius: 115, ptype: 'ice', moons: 2 },
+    { r: 40800, mass: 5.5e4, radius: 105, ptype: 'rocky', moons: 1, station: true },
+    { r: 42600, mass: 3.5e4, radius: 85,  ptype: 'ice' },   // a lone frozen sentinel — no moons, under the moon-accretion mass floor
   ];
   const planets = [];
   let nameIdx = 0;
@@ -712,28 +738,19 @@ export function generateWorld(game, seed = 20260721) {
   // It deepens over time and, at full bloom, seeds the next planet outward.
   planets[0].ember = 0.55;
 
-  // Rogue planets — wanderers that stir up (but can't shred) the system
-  const rogues = [
-    { mass: 2.5e5, radius: 95 },
-    { mass: 3e5, radius: 105 },
-    { mass: 3.5e5, radius: 112 },
-    { mass: 4.5e5, radius: 125 },
-  ];
-  for (const rg of rogues) {
-    const th = rng() * TAU;
-    const d = CFG.WORLD_R * 0.92;
-    // Oblique entry: sweep through the map rather than beelining into the sun
-    const aimTh = th + Math.PI + (rng() < 0.5 ? -1 : 1) * rand(rng, 0.85, 1.25);
-    const sp = rand(rng, 24, 44);
-    bodies.push(new Body({
-      type: 'rogue',
-      x: Math.cos(th) * d, y: Math.sin(th) * d,
-      vx: Math.cos(aimTh) * sp, vy: Math.sin(aimTh) * sp,
-      mass: rg.mass, radius: rg.radius,
-      color: '#7a4ad9',
-      name: 'Rogue',
-    }));
-  }
+  // ROGUE PLANETS WERE REMOVED (2026-07, user call: "they're only causing
+  // issues"). A wandering 2.5-4.5e5 mass under full gravity was a permanent
+  // source of sky damage that no player action caused and none could prevent:
+  // it derailed whatever lane it crossed, ATE moons on the flyby, and — once
+  // the outer band existed — gravitationally captured light outer worlds and
+  // dragged them into the sun, taking every lane it crossed on the way down.
+  // Three separate guards were written against that one body type (the
+  // spawn-ring radius, the entry-speed floor, and the planet fiat re-rail in
+  // physics) before deleting it turned out to be the honest fix. The sky's
+  // drama now comes from things the player is part of. `type: 'rogue'` stays
+  // supported everywhere (render, minimap, weighted gravity, the re-rail
+  // disturber list) so the concept can return if it ever earns its keep —
+  // nothing spawns one.
 
   // Player starts in a stable orbit inside the inner asteroid belt.
   // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
@@ -780,20 +797,23 @@ export function generateWorld(game, seed = 20260721) {
   game.tinkerCd = 0;
   game.tinkerSaid = null;
   game.tinkerPlayerKilled = false;
-  // THE WANDERER'S STAR — a cold dark dwarf on the outermost rail, the payoff
+  // THE WANDERER'S STAR — a cold dark dwarf deep in the outer band, the payoff
   // of the relay questline. hidden = sensor-null: the fog scan and the chart
   // scan both skip it, so no amount of flying reveals it — only the powered
   // relay does. Type 'planet' ON PURPOSE: 'star' would bypass minimap fog
   // (render draws stars from anywhere) and vaporize the ship on contact, and
   // a custom type would fall through the physics re-rail scan — rogues DO
-  // wander out here (they spawn at WORLD_R*0.92 ≈ 38.6k) and can derail it,
-  // so it must be re-railable. Mass 4.5e4 stays under the replenish
+  // wander out here (they spawn at WORLD_R-600 = 45.4k) and can still knock
+  // it loose by IMPACT (planets no longer proximity-derail), so it must be
+  // re-railable — as a planet it also gets the fiat rescue that breaks a
+  // rogue capture, which suits a questline body that must never be lost.
+  // Mass 4.5e4 stays under the replenish
   // moon-host filter (5e4: no moons accrete around it), and its sun
   // anchorage exempts it from the boundary force the ordinary way — NO
   // noBoundary; that flag is the interstellar visitor's alone.
   {
     const th = rng() * TAU;
-    const dr2 = 39500;   // inside WORLD_R 42000, beyond the last planet at 36800
+    const dr2 = 39500;   // its lane threads the outer band, between the 38300 and 40800 worlds
     const dx = Math.cos(th) * dr2, dy = Math.sin(th) * dr2;
     const dv = orbitVel(sun, dx, dy, 1);
     const dk = new Body({
@@ -809,7 +829,141 @@ export function generateWorld(game, seed = 20260721) {
   game.relayPowered = false;
   game.relayBeamT = 0;
   game.wandererEchoT = 0;
+  // DENSE ASTEROID FIELDS: three packed rock shoals at fixed radii (appended
+  // here, after every earlier rng draw, per the expedition-layer rule above).
+  seedDenseFields(game, sun, rng);
   respawnShip(game);
+}
+
+// DENSE FIELDS — rock shoals packed tight enough that flying one is weaving,
+// not cruising. Radii sit in the gaps between planet LANES (10400 between the
+// 9500/11200 worlds, 23000 between 22000/24000, 33500 between 32500/34500) and
+// clear of the existing belts. Each field is home to a finite SHOAL LURKER
+// brood (CFG.FIELD_BROOD, ai.js) — the second and only other alien source
+// besides nests; a brood destroyed quiets its field for the run.
+const FIELD_DEFS = [
+  { r: 10400, name: 'The Shoal' },
+  { r: 23000, name: 'The Grindstones' },
+  { r: 33500, name: 'The Hushfield' },
+  // The frost fringe of the outer band opened by the WORLD_R 42000→46000
+  // area growth. Beyond every planet lane (42600), brushing the Oort warning
+  // band — evocative and harmless: Oort grinding bites the SHIP only, rocks
+  // and lurkers are immune, and the reknit absorbs spawn-ring rogue plows.
+  { r: 44300, name: 'The Farshoal' },
+];
+
+// Field rock mass — the full ladder without belt rock's heavy pebble skew: a
+// shoal made of specks reads as space debris, not as terrain you thread. The
+// exponent is near-linear (1.15 vs the belt's 2.2) so every size is well
+// represented, and a third of the pocket is deliberately chunky. Masses above
+// CFG.ATTRACT_MIN are fine HERE and nowhere else: markFieldRock forces
+// `attractor = false` at any mass, so field rock never joins the
+// O(bodies x attractors) gravity loop no matter how big it rolls. (History:
+// before that rule, ordinary asteroidMass here minted ~107 permanent
+// attractors and nearly doubled the hot loop.)
+function fieldMass(rng) {
+  if (rng() < 0.35) return 1800 + rng() * 3200;     // chunky tier: 1800-5000
+  return 120 + Math.pow(rng(), 1.15) * 1700;
+}
+
+// Stamp a body as FIELD ROCK — the shoal's own material. Exported because
+// physics.shatter mints new field rock when a giant breaks apart, and every
+// property here has to travel with the shards or the pocket slowly turns back
+// into ordinary belt gravel.
+//   - fieldRock: no gravity FELT (physics Phase 1), livelier bounce, tough
+//     against its own kind
+//   - attractor false: no gravity EXERTED, at any mass. Giants are heavy
+//     enough to qualify by the ordinary ATTRACT_MIN rule, and a heavy
+//     attractor sitting in a pocket built for knocking rocks together would
+//     quietly turn the shoal into its own little solar system — and put
+//     dozens of extra bodies into the O(bodies x attractors) gravity loop.
+//   - hp x FIELD_HP_MUL: it survives the chaos it exists to create.
+export function markFieldRock(b, fi) {
+  b.field = fi;
+  b.fieldRock = true;
+  b.attractor = false;
+  // Capped: FIELD_HP_MUL alone made a monolith ~34k hp — unbreakable, which
+  // contradicts "bigger rocks break into pieces and keep the chaos going".
+  // At the cap, a thrown moon-class mass still cracks anything in the shoal.
+  b.hp = b.maxHp = Math.min(b.maxHp * CFG.FIELD_HP_MUL, CFG.FIELD_HP_CAP);
+  return b;
+}
+
+function seedDenseFields(game, sun, rng) {
+  game.fields = [];
+  for (let fi = 0; fi < FIELD_DEFS.length; fi++) {
+    const fd = FIELD_DEFS[fi];
+    const ang0 = rng() * TAU;
+    // ONE shared angular speed for the whole shoal: railBody's per-body ±4%
+    // w jitter would shear a pocket this tight into a long dilute arc within
+    // minutes (and same-radius rocks that catch up GRIND — the exact failure
+    // the jitter comment warns about). A rigid pocket has ZERO relative
+    // drift, which is what keeps "super dense" true for the whole run. The
+    // FIELD's w is nudged once per field instead (deterministic off fi), so
+    // the three shoals never sit in lockstep with the belts around them.
+    const w = Math.sqrt(CFG.G * sun.mass / (fd.r * fd.r * fd.r)) * (1 + (fi - 1) * 0.015);
+    const f = {
+      r: fd.r, ang: ang0, w, name: fd.name, heart: null,
+      x: sun.x + Math.cos(ang0) * fd.r, y: sun.y + Math.sin(ang0) * fd.r,
+      brood: CFG.FIELD_BROOD, wakeT: 0, cleared: false, near: false, seen: false,
+    };
+    game.fields.push(f);
+    const arc = CFG.FIELD_LEN / fd.r;   // physical pocket size at every radius
+    const placed = [];
+    for (let i = 0; i < CFG.FIELD_ROCKS; i++) {
+      // Reject positions that land on top of something already placed: a rock
+      // born touching the 5200-mass heart is quietly ABSORBED by the
+      // surface-hugging rule on the first substep. Retries just consume more
+      // of the seeded stream — deterministic, and nothing draws after fields.
+      // The scan is bounded to the heart plus the last 40 placements: a full
+      // O(n^2) sweep at this rock count is millions of checks per worldgen,
+      // and freshRun/mechTest regenerate the world constantly.
+      let x = 0, y = 0;
+      for (let tries = 0; tries < 6; tries++) {
+        const a = ang0 + rand(rng, -arc, arc);
+        const rr = fd.r + rand(rng, -CFG.FIELD_SPREAD, CFG.FIELD_SPREAD);
+        x = sun.x + Math.cos(a) * rr; y = sun.y + Math.sin(a) * rr;
+        if (f.heart && Math.hypot(f.heart.x - x, f.heart.y - y) < 120) continue;
+        let clash = false;
+        for (let k = Math.max(0, placed.length - 40); k < placed.length; k++) {
+          if (Math.hypot(placed[k].x - x, placed[k].y - y) < 40) { clash = true; break; }
+        }
+        if (!clash) break;
+      }
+      placed.push({ x, y });
+      const v = orbitVel(sun, x, y, 1);
+      let rock;
+      if (i === 0) {
+        // The field HEART: the shoal's named MONOLITH and its anchor. Its
+        // rail angle IS the field anchor (ai.js updateFields reads it), and
+        // its chartKey makes the field a chartable landmark.
+        rock = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, CFG.FIELD_MONOLITH_MASS[1]);
+        rock.name = fd.name; rock.chartKey = 'field' + fi;
+        rock.giant = true;
+        f.heart = rock;
+      } else if (i <= CFG.FIELD_MONOLITHS) {
+        // MONOLITHS: twice the drawn radius of the biggest regular giant
+        // (8x the mass — radius goes with cbrt). Steer-by landmarks.
+        rock = spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          rand(rng, CFG.FIELD_MONOLITH_MASS[0], CFG.FIELD_MONOLITH_MASS[1]));
+        rock.giant = true;
+      } else if (i <= CFG.FIELD_MONOLITHS + CFG.FIELD_GIANTS) {
+        // GIANTS: the pocket's mid-tier landmarks and its chaos engine —
+        // crack one and it sprays a cascade of smaller field rock
+        // (physics.shatter).
+        rock = spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          rand(rng, CFG.FIELD_GIANT_MASS[0], CFG.FIELD_GIANT_MASS[1]));
+        rock.giant = true;
+      } else if (rng() < 0.02) {
+        rock = spawnCache(game.bodies, x, y, v.vx, v.vy);   // shoals hide salvage (rate halved when the rock count doubled — same absolute loot)
+      } else {
+        rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+      }
+      railBody(rock, sun);
+      rock.rail.w = w;   // override the id-hashed jitter — the rigid-pocket rule above
+      markFieldRock(rock, fi);
+    }
+  }
 }
 
 // A drifting extra-life collectible. Without explicit coords it appears on a
@@ -992,25 +1146,8 @@ function powerRelay(game, b, rl) {
 export function replenishWorld(game, dt) {
   const rng = Math.random;
 
-  // Rogues — slower trickle, same cap of 3
-  game.rogueTimer = (game.rogueTimer ?? 240) - dt;
-  if (game.rogueTimer <= 0) {
-    game.rogueTimer = 200 + rng() * 200;
-    const rogues = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'rogue' ? 1 : 0), 0);
-    if (rogues < 3) {
-      const th = rng() * TAU;
-      const aimTh = th + Math.PI + (rng() < 0.5 ? -1 : 1) * (0.85 + rng() * 0.4);
-      const sp = 24 + rng() * 20;
-      game.bodies.push(new Body({
-        type: 'rogue',
-        x: Math.cos(th) * CFG.WORLD_R * 0.92, y: Math.sin(th) * CFG.WORLD_R * 0.92,
-        vx: Math.cos(aimTh) * sp, vy: Math.sin(aimTh) * sp,
-        mass: 2.5e5 + rng() * 2e5, radius: 95 + rng() * 30,
-        color: '#7a4ad9', name: 'Rogue',
-      }));
-      game.rogueIncoming = 3;
-    }
-  }
+  // (No rogue trickle — rogue planets were removed entirely; see the note in
+  // generateWorld where the seeded ones used to be.)
 
   // Moons — destroyed ones are eventually replaced around big planets.
   // 60s cadence (was 90): the sun's tide claims derailed moons steadily, and
@@ -1251,6 +1388,43 @@ export function replenishWorld(game, dt) {
     }
   }
 
+  // Dense fields slowly REKNIT: ambient traffic (rogue drive-bys derail
+  // everything in RAIL_DISTURB; moon conjunctions plow the inner shoal) frays
+  // a pocket over minutes, and player smashing thins it for good otherwise.
+  // Top back up toward the seeded density — off-view only, and counted
+  // against the POCKET (not strays flung across the system that still carry
+  // b.field), so a scattered shoal genuinely regrows instead of reading full.
+  // 30s x 8 rocks ≈ 16/min: a rogue plow can scatter dozens at once (the
+  // outer shoals sit inside the spawn ring's disturb annulus), and a slow
+  // trickle leaves a pocket visibly thin for minutes — unacceptable for
+  // content whose whole identity is density. Rate scales with FIELD_ROCKS.
+  game.fieldTimer = (game.fieldTimer ?? 30) - dt;
+  if (game.fieldTimer <= 0 && game.fields) {
+    game.fieldTimer = 30;
+    for (let fi = 0; fi < game.fields.length; fi++) {
+      const f = game.fields[fi];
+      let n = 0;
+      for (const b of game.bodies) {
+        if (b.alive && b.field === fi &&
+            Math.hypot(b.x - f.x, b.y - f.y) < CFG.FIELD_LEN * 2.5) n++;
+      }
+      if (n >= CFG.FIELD_ROCKS * 0.8 || game.bodies.length > 10600) continue;
+      for (let i = 0; i < 55; i++) {   // scales with FIELD_ROCKS (see the cadence note above)
+        const a = f.ang + rand(rng, -CFG.FIELD_LEN, CFG.FIELD_LEN) / f.r;
+        const rr = f.r + rand(rng, -CFG.FIELD_SPREAD, CFG.FIELD_SPREAD);
+        const x = game.homeStar.x + Math.cos(a) * rr;
+        const y = game.homeStar.y + Math.sin(a) * rr;
+        // Never in view — a rock fading into existence mid-screen reads wrong
+        if (Math.hypot(x - s.x, y - s.y) < (game.viewR || 1200) * 1.3) continue;
+        const v = orbitVel(game.homeStar, x, y, 1);
+        const rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+        railBody(rock, game.homeStar);
+        rock.rail.w = f.w;   // join the rigid pocket, not the jittered flow
+        markFieldRock(rock, fi);
+      }
+    }
+  }
+
   // ---- solar storms: system-wide discovery weather (CFG.STORM_*). The
   // expanding front is tracked here; render draws it, physics gives loose
   // scrap a nudge, and every world the front washes over gets an aurora.
@@ -1469,6 +1643,16 @@ export function replenishWorld(game, dt) {
         const ddx = b.x - s.x, ddy = b.y - s.y;
         if (ddx * ddx + ddy * ddy < seeR2) b.seen = true;
       }
+      // Dense fields are charted as REGIONS, not as their individual rocks
+      // (render's minimap stipple reads f.seen): the anchor coming inside
+      // sensor range identifies the whole shoal, same rule as a body.
+      if (game.fields) {
+        for (const f of game.fields) {
+          if (f.seen) continue;
+          const ddx = f.x - s.x, ddy = f.y - s.y;
+          if (ddx * ddx + ddy * ddy < seeR2) f.seen = true;
+        }
+      }
     }
     // CHART: reading a nameplate (the approach zone) charts the body — the old
     // planets-only survey, generalized to every chartKey carrier: moons,
@@ -1569,6 +1753,17 @@ export function replenishWorld(game, dt) {
     if (s.alive && game.vesper && game.vesper.alive && !game.tut.vesper &&
         Math.hypot(game.vesper.x - s.x, game.vesper.y - s.y) < (game.viewR || 1200) * 1.35) {
       game.vesperWarn = true;
+    }
+    // Dense fields announce on approach — a rising-edge latch per field (the
+    // scan re-fires every 0.5s, so a bare flag would spam), re-armed with
+    // hysteresis once the player is well clear so a return visit re-hails.
+    if (s.alive && game.fields) {
+      for (const f of game.fields) {
+        const frac = fieldFrac(f, s.x, s.y);   // the shared pocket-footprint test
+        if (frac < 1.1) {
+          if (!f.near) { f.near = true; game.fieldWarn = true; }
+        } else if (frac > 1.6) f.near = false;
+      }
     }
     // Ring shepherd: an unshepherded ring scatters, and slowly reknits if
     // the moonlet ever settles back into its lane. Runs even while the ship
@@ -1704,8 +1899,15 @@ export function replenishWorld(game, dt) {
   const target = Math.round(30 + 22 * (0.5 + 0.5 * Math.sin(game.time * 0.02)));
   const locals = game.bodies.reduce((n, b) => n + (b.alive && b.local ? 1 : 0), 0);
   const total = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
-  // Global cap leaves room for the permanent trojan/ring/junk populations
-  if (locals >= target || total >= 380) return;
+  // Global cap leaves room for the permanent trojan/ring/junk populations.
+  // Raised 380 -> 9800 across the dense-field work: the four pockets are
+  // ~8800 PERMANENT asteroids on their own, and the cap counts every asteroid
+  // in the world — at the old ceilings the fields alone starved this
+  // view-local spawner and the player flew through empty space everywhere
+  // except the shoals. Field rock is gravity-free and non-attracting
+  // (CFG.FIELD_*), so the count costs the O(bodies x attractors) gravity loop
+  // nothing; the budget that actually binds is the collision broad-phase.
+  if (locals >= target || total >= 9800) return;
   for (let i = 0; i < Math.min(3, target - locals); i++) {
     const th = rng() * TAU;
     const d = viewR + 250 + rng() * 1100;

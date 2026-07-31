@@ -1,4 +1,4 @@
-import { CFG, PROG, SHIP_HIT_FRAC } from './config.js';
+import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac } from './config.js';
 import { predictPaths, PARRY_FLICK } from './physics.js';
 import { volleyPick } from './tractor.js';
 import { TAU, angDiff, lerp, mulberry32, shellModal, crystalShards } from './util.js';
@@ -2848,6 +2848,47 @@ function drawAlien(game, al) {
     return;
   }
 
+  // Shoal lurker: a rock-toned splinter — camouflage is the whole trick, so
+  // at a prowl it reads as just another field rock (belt-rock greys, dull
+  // outline). On the hunt the carapace seams and eye slit light up crimson.
+  if (al.kind === 'lurker') {
+    // "Hunting" must MIRROR ai.js updateLurker's engaged test (ship distance
+    // to the field anchor + alive + dust shroud) — measuring the LURKER's
+    // own anchor distance lit the crimson eye during the camouflaged prowl
+    // (it orbits the anchor, trivially inside territory), and kept it lit at
+    // a dust-cloaked ship the AI had actually lost.
+    const f = game.fields && game.fields[al.field];
+    const s = game.ship;
+    const hunting = !f || (s.alive && !game.dustCloak && fieldFrac(f, s.x, s.y) < 1.15);
+    const r = al.radius;
+    ctx.save();
+    ctx.translate(al.x, al.y);
+    // Nose along the velocity — it swims, it doesn't hover
+    const sp = Math.hypot(al.vx, al.vy);
+    ctx.rotate(sp > 4 ? Math.atan2(al.vy, al.vx) : al.angle);
+    ctx.fillStyle = '#7d7566';
+    ctx.strokeStyle = hunting ? '#d15a4a' : '#5f594e';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(r * 1.7, 0);                       // nose spike
+    ctx.lineTo(r * 0.35, -r * 0.85);
+    ctx.lineTo(-r * 0.5, -r * 1.05);              // dorsal spine
+    ctx.lineTo(-r * 1.1, -r * 0.35);
+    ctx.lineTo(-r * 1.3, 0);                      // tail
+    ctx.lineTo(-r * 1.1, r * 0.35);
+    ctx.lineTo(-r * 0.5, r * 1.05);               // ventral spine
+    ctx.lineTo(r * 0.35, r * 0.85);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    if (hunting) {
+      // Eye slit, pulsing hot while it hunts
+      ctx.fillStyle = `rgba(255, 90, 70, ${0.6 + 0.4 * Math.sin(game.time * 9 + al.id)})`;
+      ctx.fillRect(r * 0.45, -r * 0.22, r * 0.7, r * 0.44);
+    }
+    ctx.restore();
+    return;
+  }
+
   ctx.save();
   ctx.translate(al.x, al.y);
   const bob = Math.sin(al.wobble) * 2;
@@ -2952,6 +2993,8 @@ const MINIMAP_FAR = MINIMAP_NEAR + MINIMAP_RANGE;    // outer half at half scale
 const MINIMAP_SWEEP_T = 7;                           // seconds per sweep revolution
 const MINIMAP_PING_T = 1.1;                          // how long an outer contact lingers
 const RADAR_SIZE = 200;   // CSS px of the #radar canvas (positioned + tilted by style.css)
+// Offscreen cache for the dense-field dot layer (see the bake in drawMinimap)
+let dotCanvas = null, dotCtx = null, dotBakeT = -1, dotBakeFx = 0, dotBakeFy = 0, dotBakeSeen = 0;
 function drawMinimap(game) {
   // The radar has its OWN canvas so the DOM can tilt it on the 3D canopy —
   // shadow the module ctx with the radar context for this function's scope.
@@ -3104,6 +3147,82 @@ function drawMinimap(game) {
     const k = 1 - age / MINIMAP_PING_T;
     return k * k;
   };
+
+  // DENSE FIELDS: every field rock in radar range is a REAL return — the
+  // dial shows the actual rocks (their true bearings and ranges, strays
+  // included), not an artist's impression of the footprint. Still terrain,
+  // not contacts: dim tan 1px squares, no glow, no boundary ring (a hard
+  // outline would claim an edge the pocket doesn't have — the no-hard-edges
+  // law read across to the dial). Each rock pings on ITS OWN bearing as the
+  // sweep crosses it — one shared age made a pocket this wide strobe as a
+  // single slab, and the beam physically reaches the near edge well before
+  // the far one. Cost: one pass over bodies with an early `field == null`
+  // reject (same shape as the blip loop below) and cheap fillRects — no
+  // arcs, no shadowBlur.
+  if (game.fields) {
+    // THE DOT LAYER IS CACHED: ~1900 in-range rocks x (hypot + atan2 +
+    // fillRect) per frame measured ~0.3-0.6ms, and a radar dot being a
+    // fifteenth of a second stale is imperceptible — so the layer bakes into
+    // an offscreen canvas at ~15Hz (or when the origin jumps, or a field's
+    // fog flips, or the sim clock rewinds = resetRun) and composites here
+    // for the price of one drawImage. The bright sweep LINE stays live below,
+    // so the radar still reads as actively scanning; only the dots' fade
+    // steps at bake rate. game.time drives the throttle so a paused sim
+    // reuses the bake forever instead of rebaking a frozen picture.
+    if (!dotCanvas || dotCanvas.width !== RADAR_SIZE * dpr) {
+      dotCanvas = document.createElement('canvas');
+      dotCanvas.width = dotCanvas.height = RADAR_SIZE * dpr;
+      dotCtx = dotCanvas.getContext('2d');
+      dotBakeT = -1;
+    }
+    let seenMask = 0;
+    for (let i = 0; i < game.fields.length; i++) if (game.fields[i].seen) seenMask |= 1 << i;
+    if (game.time < dotBakeT || game.time - dotBakeT > 0.066 ||
+        seenMask !== dotBakeSeen || Math.hypot(fx - dotBakeFx, fy - dotBakeFy) > 60) {
+      dotBakeT = game.time; dotBakeFx = fx; dotBakeFy = fy; dotBakeSeen = seenMask;
+      const dc = dotCtx;
+      dc.setTransform(dpr, 0, 0, dpr, 0, 0);
+      dc.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
+      dc.fillStyle = '#a2937d';   // belt-rock tan: terrain, not the blip palette
+      for (const b of game.bodies) {
+        if (b.field == null || !b.alive) continue;
+        const f = game.fields[b.field];
+        if (!f || !f.seen) continue;   // fog of war: field-level, like the scan
+        const dx = b.x - fx, dy = b.y - fy;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d > MINIMAP_FAR) continue;
+        const aDot = d > MINIMAP_NEAR ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
+        if (aDot <= 0.01) continue;
+        dc.globalAlpha = aDot * (b.giant ? 0.95 : 0.6);
+        const rr = radarR(d);
+        const px = cx + (dx / d) * rr, py = cy + (dy / d) * rr;
+        // giants read bigger — they're the landmarks you navigate the shoal by
+        const sz = b.giant ? 2.6 : 1.2;
+        dc.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+      }
+      dc.globalAlpha = 1;
+    }
+    // Composite inside the dial clip; both canvases share the dpr transform.
+    ctx.drawImage(dotCanvas, 0, 0, RADAR_SIZE, RADAR_SIZE);
+    // Unexplored fields: one anonymous return out in the scan band and
+    // nothing on the chart half — the same fog rule every contact obeys.
+    // Four iterations — stays live, not worth baking.
+    ctx.fillStyle = '#8a8f9c';
+    for (const f of game.fields) {
+      if (f.seen) continue;
+      const fdx = f.x - fx, fdy = f.y - fy;
+      const fd = Math.hypot(fdx, fdy) || 1;
+      if (fd <= MINIMAP_NEAR || fd > MINIMAP_FAR) continue;
+      const a0 = sweepPing(sweepAge(fdx, fdy));
+      if (a0 <= 0.01) continue;
+      const rr0 = radarR(fd);
+      ctx.globalAlpha = a0 * 0.5;
+      ctx.beginPath();
+      ctx.arc(cx + (fdx / fd) * rr0, cy + (fdy / fd) * rr0, 1.5, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
 
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
@@ -3378,7 +3497,13 @@ export function render(game) {
 
   drawShipRings(game);
   drawPrediction(game);
-  for (const b of game.bodies) if (b.alive && bodyOnScreen(b)) drawBody(game, b);
+  // Dormant field rocks can NEVER be on screen: dormancy requires being
+  // outside a wake bubble of 2.2x viewR + 600 around the ship/camera, and the
+  // screen edge sits at 1.0x viewR — a >1.2x-viewR guaranteed margin. So the
+  // ~7000 dormants skip even the bodyOnScreen test. (Teleports — warp, dev
+  // goto — could break the invariant for one frame; main.js reclassifies the
+  // LOD immediately after a warp for exactly that reason.)
+  for (const b of game.bodies) if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
   drawGlow(game);
   drawApproach(game);
   drawDeflectable(game);

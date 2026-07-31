@@ -5,7 +5,7 @@ import {
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step } from './physics.js';
+import { step, updateFieldLOD } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -319,6 +319,11 @@ initInput(canvas, {
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
     s.invuln = Math.max(s.invuln, 0.5);
     game.warpT = 3.5;
+    // Reclassify the field LOD at the exit point (dt 0 = no rail advance):
+    // a 950u jump can outrun the wake bubble's guaranteed margin, and the
+    // renderer skips dormant rocks outright — without this, a warp INTO a
+    // shoal would show empty space for one frame.
+    updateFieldLOD(game, 0);
     bump(game, 'warps');
     sfx.sfxWarp();
   },
@@ -448,6 +453,7 @@ function driftSplash(dt) {
   // One clock for both keeps the drift glass-smooth. (Before the world was
   // live this couldn't show — nothing moved for the camera to beat against.)
   splashAcc = Math.min(splashAcc + dt, 0.25);   // a backgrounded tab must not spiral
+  let splashSteps = 0;
   while (splashAcc >= CFG.DT) {
     step(game, CFG.DT);
     game.splashT = (game.splashT || 0) + CFG.DT;
@@ -457,8 +463,14 @@ function driftSplash(dt) {
     game.cam.x = Math.cos(a) * 4400;
     game.cam.y = Math.sin(a) * 4400;
     splashAcc -= CFG.DT;
+    splashSteps++;
     perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
   }
+  // The title backdrop pays the field LOD too (the dead ship routes the wake
+  // bubble to the CAMERA): without this the splash simulated all ~8000 field
+  // rocks at full price behind a menu — and dormant pockets would freeze
+  // solid instead of orbiting, since update() never runs here.
+  if (splashSteps) updateFieldLOD(game, splashSteps * CFG.DT);
   for (const m of EVENT_MSGS) game[m.flag] = null;
   // ...and the automatic-rank queue with them: update() is what drains it, and
   // the title screen never runs update(), so anything banked here would fire as
@@ -650,7 +662,7 @@ function resetRun(seed) {
   game.storm = null; game.stormTimer = undefined;
   game.visitor = null; game.visitorDone = false;
   game.vesperRespawnT = null; game.shepherdRespawnT = null; game.shepherdPlayerKilled = false;
-  game.rogueTimer = undefined; game.moonTimer = undefined;
+  game.moonTimer = undefined;
   game.flareTimer = undefined; game.cometTimer = undefined; game.wrightTimer = undefined;
   game.alienTimer = 0; game.asteroidTimer = 10;
   game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
@@ -683,8 +695,6 @@ function resetRun(seed) {
 const EVENT_MSGS = [
   { flag: 'alienWarn', tut: 'alienSeen', snd: sfx.sfxWarnLow,
     first: ['WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5] },
-  { flag: 'rogueIncoming', snd: sfx.sfxWarnLow,
-    first: ['SENSOR ALERT: a rogue planet has entered the sector.', 4.5] },
   { flag: 'tetherShow', tut: 'tether', snd: sfx.sfxChime,
     first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
@@ -721,6 +731,14 @@ const EVENT_MSGS = [
     repeat: ['WRECKWRIGHT descending on the debris field!', 3] },
   { flag: 'golemWarn', snd: sfx.sfxWarnLow,
     first: ['SCRAP-GOLEM assembled — your leftovers are hunting you.', 4.5] },
+  { flag: 'fieldWarn', tut: 'field', snd: sfx.sfxChime,
+    first: ['DENSE FIELD — a packed rock shoal. Rich pickings… and things live in the thick of it.', 6],
+    repeat: ['Entering a dense asteroid field.', 3] },
+  { flag: 'lurkerWarn', tut: 'lurker', snd: sfx.sfxWarnLow,
+    first: ['SHOAL LURKER — one of the rocks is moving! It hunts in slash passes: watch your flanks.', 5.5],
+    repeat: ['LURKER ambush — it was one of the rocks!', 3] },
+  { flag: 'fieldClearWarn', snd: sfx.sfxChime,
+    first: [(v) => `${v.toUpperCase()} is quiet — the lurker brood is destroyed. The rocks are yours.`, 5.5] },
   { flag: 'fortShieldDownName', snd: sfx.sfxWarnLow,
     first: [(v) => `FORTRESS SHIELD DOWN at ${v} — smash the turrets!`, 4] },
   { flag: 'fortLiberatedName', snd: sfx.sfxLife,
@@ -890,6 +908,7 @@ function update(dtReal) {
     // quantized target to beat against.
     acc += dtReal;
     const camK = 1 - Math.exp(-6 * CFG.DT);
+    let simSteps = 0;   // substeps taken THIS call — the field LOD advances by the same clock
     while (acc >= CFG.DT) {
       updateTractor(game, CFG.DT);
       updateOrbit(game, CFG.DT);
@@ -898,8 +917,13 @@ function update(dtReal) {
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);
       acc -= CFG.DT;
+      simSteps++;
       perf.steps++;   // frame() zeroes this; updateScaled calls update() several times, so it sums
     }
+    // Dense-field LOD: classify awake/dormant field rocks and group-advance
+    // the dormant rails — ONCE per frame, by exactly the sim time the substep
+    // loop just consumed, so dormant pockets never drift off the sim clock.
+    if (simSteps) updateFieldLOD(game, simSteps * CFG.DT);
 
     const s = game.ship;
 
@@ -1264,6 +1288,7 @@ window.goto = (target, y) => {
   s.invuln = Math.max(s.invuln, 2);
   game.cam.x = s.x; game.cam.y = s.y;
   game.predictRef = null;   // let the frame-relative trajectory re-pick its anchor
+  updateFieldLOD(game, 0);  // teleport = reclassify (see onWarp) so the arrival renders
   return { x: Math.round(s.x), y: Math.round(s.y) };
 };
 
