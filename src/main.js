@@ -190,6 +190,18 @@ fetch('package.json').then((r) => r.json())
 sfx.setSfxVolume(game.sfxVol);
 music.setMusicVolume(game.musicVol);
 
+// Arm the audio context on the FIRST user gesture anywhere on the page, not
+// just on a shell button. Browsers refuse to build an AudioContext outside a
+// gesture, and every other initAudio call site is a menu button — so on a cold
+// load the title theme could only ever start on a click of SETTINGS / CONTROLS
+// / CREDITS. A click on START armed audio and left the run, and the splash's
+// own bed never played at all. pointerdown/keydown fire BEFORE the button's
+// click handler, so the theme is already coming up as the panel is used.
+// Passive + once: this costs nothing after the first event.
+for (const ev of ['pointerdown', 'keydown']) {
+  window.addEventListener(ev, () => sfx.initAudio(), { once: true, passive: true });
+}
+
 // Fair view: fold the canvas-size normalization into cam.zoom itself —
 // mouseWorld, viewR, render culling, and the /zoom UI-stroke idiom all read
 // cam.zoom, so this one assignment keeps every consumer consistent.

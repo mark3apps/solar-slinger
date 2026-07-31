@@ -77,7 +77,15 @@ jobs:
             args: --linux
     runs-on: ${{ matrix.os }}
     steps:
+      # lfs:true is LOAD-BEARING — the music beds live in Git LFS (.gitattributes)
+      # and actions/checkout does NOT fetch LFS objects by default. Without it
+      # electron-builder packages the 130-byte pointer files as the soundtrack
+      # and ships a silent game, with a green build and no error anywhere.
+      # This is the only job that needs the assets; prepare/publish don't, and
+      # leaving them pointer-only keeps the LFS bandwidth bill down.
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - uses: actions/setup-node@v4
         with:
@@ -86,6 +94,19 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Fail loudly here rather than shipping silence: a pointer file is ~130
+      # bytes, so anything under 1 KB means the LFS smudge did not run.
+      - name: Verify LFS assets are real audio
+        shell: bash
+        run: |
+          small=$(find assets/audio/music -name '*.m4a' -size -1k)
+          if [ -n "$small" ]; then
+            echo "::error::LFS objects were not fetched — these are pointer files:"
+            echo "$small"
+            exit 1
+          fi
+          echo "All $(ls assets/audio/music/*.m4a | wc -l) music tracks fetched."
 
       # electron-builder shells out to rpmbuild for the rpm target; the
       # GitHub ubuntu image doesn't guarantee it, so install explicitly.

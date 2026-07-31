@@ -12,6 +12,12 @@ The repo also ships a thin desktop-packaging layer (Electron + a release CI) —
 python3 serve.py          # http://127.0.0.1:8642  (or preview_start name "solar-slinger")
 ```
 
+**Clone with [Git LFS](https://git-lfs.com) installed** (`brew install git-lfs && git lfs install`).
+The 24 music beds (~176 MB) are LFS-tracked — see `.gitattributes`. Without LFS you get 130-byte
+pointer files, the `<audio>` elements fail to decode, and the game runs SILENT with no error that
+points at the cause. `git lfs pull` fixes an already-bad clone. Everything else in the repo is
+plain text; only `assets/audio/music/*.m4a` is tracked (the SFX pack is small enough to stay inline).
+
 This is the primary dev workflow: edit a `.js`, reload, see it live — no build, no bundler.
 `serve.py` is a **no-cache** wrapper around `http.server` on port 8642. Do **not** replace it
 with plain `python3 -m http.server`: plain http.server sends no cache header, browsers cache
@@ -41,7 +47,7 @@ variable-timestep presentation loop.
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Audio engine: owns the AudioContext + the sfx/music buses. EVERY sound is a real CC0 recording (`assets/audio/sfx/` — Kenney + OpenGameArt, lazily decoded): one-shots via the `BANK` variant table, continuous state (thrust/beam/heat/scrape/charge) via the `LOOPS` table — loop-authored samples with game-driven gain/pitch. The synth blips at the bottom are decode-window fallbacks ONLY — the user explicitly rejected synth as the primary voice; never promote them back. |
-| [music.js](src/music.js) | Adaptive music director: ten Scott Buckley CC-BY tracks (`assets/audio/music/`, one composer so every mood shares one voice) in four mood PLAYLISTS — calm / world / sun / danger. **Exactly one track plays at a time** (they're full mixes, not stems — layering them sounded like songs on top of each other): the mood vector picks a playlist with enter/exit hysteresis + dwell, switches crossfade, and a track ending naturally rotates within its playlist. Streams via `<audio>` elements (never `decodeAudioData` — a 7-min track decodes to ~150 MB of PCM). Runs every frame, sim frozen or not (menus duck it). |
+| [music.js](src/music.js) | Adaptive music director: 24 Scott Buckley CC-BY tracks (`assets/audio/music/`, one composer so every mood shares one voice) in six PLAYLISTS — four picked by the mood vector (calm / world / sun / danger) and two by GAME STATE, which outranks mood: **title** (splash) and **menu** (paused / shell modal mid-run). **Exactly one track plays at a time** (they're full mixes, not stems — layering them sounded like songs on top of each other): the mood vector picks a playlist with enter/exit hysteresis + dwell, switches crossfade, and a track ending naturally rotates within its playlist. Every playlist needs ≥2 tracks — a one-track list rotates to itself at its natural end and `switchTo` early-outs on that, so the fallback is a manual replay. Streams via `<audio>` elements (never `decodeAudioData` — a 7-min track decodes to ~150 MB of PCM). Runs every frame, sim frozen or not. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`). |
 | [devtest.js](src/devtest.js) | The scripted mechanics test suite (`window.mechTest`). Lazy-loaded only when invoked — normal play never imports it. |
 
@@ -136,7 +142,17 @@ re-arms it for a fresh run.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
   entirely, not just silences them). The Web Audio context must still first be created *inside* a
   user gesture (a context built at page load starts suspended and never resumes): `sfx.initAudio`
-  runs only from clicks/keys, and the settings loader only STORES the persisted volumes.
+  runs only from clicks/keys, and the settings loader only STORES the persisted volumes. main.js
+  also arms it from a **one-shot window `pointerdown`/`keydown`** — every other call site is a shell
+  button, so on a cold load the TITLE bed could only start if you clicked SETTINGS/CONTROLS/CREDITS;
+  a click on START armed audio and immediately left the splash, and the title theme never played.
+  pointerdown fires before the button's click handler, so the bed is already rising as the panel opens.
+- **The splash and the pause menu have their own music beds** (`title` / `menu` in music.js), chosen
+  by game state ahead of the mood vector. Because those beds ARE the content there, they play at full
+  level — the old menu duck now only covers the ~2s before the crossfade lands. `choosingUpgrade` is
+  deliberately NOT a menu: pick cards land mid-flight every couple of minutes and swapping the score
+  under each one would shred the soundtrack, so it keeps ducking the gameplay track instead. A shell
+  modal opened FROM the splash stays on the title bed — no run has started, so there is nothing to pause.
   The volume DEFAULTS are deliberately lopsided (music 0.85, SFX 0.5): the ambient tracks are mastered
   quiet while the CC0 sample packs run hot — at equal gains the SFX buried the soundtrack.
   The settings panel's credit line ("Music: Scott Buckley … Kenney.nl") is REQUIRED by the CC-BY music
@@ -680,6 +696,11 @@ about it — this is a hard rule.
   `src/`, and never assume an origin, absolute path, or `file://` — if it wouldn't work over
   `serve.py`, it's wrong. Audio assets follow the same rule: always relative paths (`assets/audio/…`);
   the `app://` scheme carries the `stream` privilege so `<audio>` elements can stream the music beds.
+- **The build job checks out with `lfs: true`** — the music is LFS-tracked and `actions/checkout`
+  does not fetch LFS objects by default, so without it electron-builder packages the pointer files
+  and ships a silent game on a green build. A size guard in that job fails the run if any track
+  comes through under 1 KB. `prepare`/`publish` deliberately stay pointer-only (they never touch
+  the assets, and each extra LFS checkout is billed bandwidth).
 - **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
   `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`),
   `npm run changelog` (preview the pending release notes — needs `GH_TOKEN`).
