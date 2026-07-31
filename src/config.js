@@ -119,6 +119,21 @@ export const CFG = {
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
+  // CHUNK SHEDDING: big bodies don't fail all-or-nothing — a single hit that
+  // bites hard enough (≥ CHUNK_DMG_MIN absolute damage, or ≥ CHUNK_DMG_FRAC of
+  // maxHp for smaller "big" bodies like moons) knocks real chunk asteroids off
+  // at the impact point and carves a persistent surface scar (physics.damageBody
+  // → render's crack/scar pass). The absolute floor matters for planets: mass
+  // dominance throttles their per-hit damage to a few points, so a frac-only
+  // gate would mean planets never visibly shed. Corona heat can never shed —
+  // its per-call drip is ~0.1% of maxHp (HEAT_DPS_BODY / 120), far under both
+  // gates. CHUNK_MAX_MASS stays FAR below the 5e4 rail-disturber threshold
+  // (physics rail scan) so flying chunks can never wake whole rail lanes.
+  CHUNK_MIN_MASS: 3500,    // bodies at/above this mass shed chunks (moons and up)
+  CHUNK_DMG_MIN: 4,        // absolute damage floor — lets ordinary throws crater planets
+  CHUNK_DMG_FRAC: 0.045,   // or: single hit bites this fraction of maxHp
+  CHUNK_MAX_MASS: 3200,    // per-chunk mass cap (grabbable boulder, never a disturber)
+
   // Speed governor: each engine level raises the ceiling; excess speed
   // (slingshots, knockbacks) bleeds off at SPEED_BLEED x the overage per
   // second, and NOTHING sustains beyond SPEED_HARD x the ceiling. The old
@@ -187,6 +202,30 @@ export const CFG = {
   PREDICT_DT: 1 / 30,
   HELD_STEPS: 60,          // the throw line is short (~2s of flight)...
   LOCK_T: 1.8,             // ...and lock-on only works within throw-line reach
+
+  // DELIVERY: flinging/towing a matching object into a target's catch radius
+  // hands it over (world.updateDeliveries — the relay, the Herald, the Tinker
+  // Barge, and mayday-pod docks all share this one verb).
+  DELIVER_R: 280,
+  // The barge only asks for things it can see from its own deck: wants are
+  // picked from a census of matching bodies within this radius of the barge
+  // (user design rule — a want you must haul from across the system reads as
+  // a chore, not a trade; the graveyard-wreck want effectively retires unless
+  // the player has stockpiled wrecks nearby). 6000 comfortably covers the
+  // neighboring junk-satellite worlds, ring ice sweeping past, and the
+  // view-local rock field of a player hanging around to trade.
+  TINKER_WANT_R: 6000,
+  // IRON MOONS are magnetic: loose scrap DEBRIS inside this range drifts into
+  // a pooling halo just off the surface. Debris ONLY — the storm-shove law:
+  // a force that touched bodies, celestials, or rails is an invariant
+  // regression waiting to happen (see CFG.STORM_* above).
+  IRON_MAGNET_R: 900,
+  IRON_MAGNET_A: 60,       // capped accel — gentler than the storm shove (130)
+  // DUST MOONS trail a concealing halo: inside DUST_HALO x radius the ship is
+  // invisible to alien senses (ai.js gates on game.dustCloak). The render
+  // gradient reaches wider than the mechanic so the boundary never reads as a
+  // hard edge (in-world transitions are organic, never geometric).
+  DUST_HALO: 2.4,
 };
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your
@@ -252,15 +291,17 @@ export const PROG = {
   // the old flat band, with the cost shifted onto the later tiers — the old
   // linear curve (145 + 58*level) priced every tier in the same band (tier t
   // total = ~928*(t+1)), so the opening crawled exactly like the midgame. The
-  // quadratic redistributes it: per-tier totals run 462 / 1278 / 2478 / 4062 /
-  // 6030 vs the old 928 / 1856 / 2784 / 3712 / 4640 — tier 0 is ~2x faster,
-  // tiers 1-2 cheaper, tiers 3+ pricier, and the WHOLE climb to max tier stays
-  // within ~3% of the old grind (14310 vs 13920), so it's a reshape, not a
-  // buff. First pick lands at 60 XP: a survey + a catch, or a few smashes —
-  // the opening upgrade should arrive inside the first couple of minutes.
-  XP_BASE: 60,
-  XP_STEP: 30,
-  XP_CURVE: 3,
+  // quadratic redistributes it: per-tier totals run 308 / 852 / 1652 / 2708 /
+  // 4020 — early tiers cheapest, later tiers pricier, same shape as before.
+  // SPEED PASS (user design rule, second round): the reshape alone kept the
+  // total climb at the old ~14310 grind and the user asked for ALL tiers
+  // faster — so the whole curve is scaled by ⅔ (total now 9540, every tier
+  // ~33% quicker) while preserving the front-loaded ratios above. First pick
+  // lands at 40 XP: one survey, or a couple of smashes — the opening upgrade
+  // should arrive inside the first minute or two.
+  XP_BASE: 40,
+  XP_STEP: 20,
+  XP_CURVE: 2,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
@@ -272,6 +313,15 @@ export const PROG = {
   XP_SURVEY: 40,           // chart a world
   XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
   XP_SLING: 0.6,           // per unit of speed gained in a clean slingshot
+  // ---- expedition layer: charting, deliveries, rescues ----
+  XP_SURVEY_MOON: 15,      // charting a moon — worth less than a world
+  XP_SURVEY_POI: 25,       // charting a station or named landmark
+  XP_SURVEY_STAR: 160,     // charting the hidden dark star (the relay questline payoff)
+  XP_MASTER_CHART: 250,    // logging EVERY chartable body in the system
+  XP_HERALD: 200,          // waking the Herald (deliver it a graveyard wreck)
+  XP_TRADE: 150,           // the Tinker Barge's XP payment option
+  XP_RESCUE: 180,          // docking a mayday pod at a station before its air runs out
+  XP_SKIM_BANDED: 3,       // banded-moon skim XP multiplier (the skate park)
   // Life pods: sparse world collectibles that refill the buffer
   LIFE_R: 62,              // collect radius
   LIFE_MAX_ACTIVE: 1,      // at most this many adrift at once
@@ -419,12 +469,18 @@ export function newProgress() {
     spec: null,            // chosen at run start (applySpec seeds the starting kit)
     upgrades: {},          // { abilityId: rank } — empty until a spec is chosen
     lives: PROG.START_LIVES,
+    masterChart: false,    // 100% chart completion (shipStats grants the sensor/forecast bonus)
+    maxLivesBonus: 0,      // permanent cap raises (charting the dark star) — read via maxLives()
     // flavor counters (stats only, not read by shipStats)
     catches: 0,
     smashes: 0,
     surveyed: 0,
   };
 }
+
+// The lives cap: base PROG cap plus permanent bonuses earned in-run. Every cap
+// read goes through here so a bonus can never be forgotten by one call site.
+export function maxLives(prog) { return PROG.MAX_LIVES + (prog.maxLivesBonus || 0); }
 
 // ---- XP + pick bookkeeping (pure helpers over game.prog) --------------------
 
@@ -674,14 +730,18 @@ export function shipStats(prog) {
     slipstream: slipC > 0,                        // tap F: short warp (main.onWarp)
     // ---- scaled passives ----
     magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magnetC),
-    sensorMul: 1 + 0.3 * deepC,             // Deep Array widens the map reveal
+    // Deep Array widens the map reveal; MASTER CHART (knowing the whole sky)
+    // sharpens it further — the completionist reward reads through the same
+    // stat every consumer already uses.
+    sensorMul: (1 + 0.3 * deepC) * (prog.masterChart ? 1.25 : 1),
     // Scout's Phase Screen is thin but SNAPPY — it recharges sooner and faster
     // (that speed is the ability's identity; the other specs keep the base rate).
     regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
     regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
-    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC,
+    // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.
+    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],

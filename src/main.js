@@ -1,5 +1,5 @@
 import {
-  CFG, PROG, SPECS, newProgress, shipStats,
+  CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, xpForPick, pickIsMilestone, tierChoices, rankChoices,
   consumePickCost, applyAbility, applySpec, applyTierUp,
 } from './config.js';
@@ -14,7 +14,7 @@ import * as hud from './hud.js';
 import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
-import { lerp, shellModal } from './util.js';
+import { lerp, shellModal, seedFrom } from './util.js';
 
 const game = {
   time: 0,
@@ -26,6 +26,12 @@ const game = {
   musicVol: 0.85,          // volume sliders (persisted; zero = mute, there are no
   sfxVol: 0.5,             //   toggles) — music high / SFX low by default: quiet
                            //   ambient tracks vs hot sample packs
+  seedText: '',            // world seed AS TYPED in settings (persisted); '' = roll a new one every run
+  seedPin: null,           // that text resolved to a uint32, or null when it's blank
+  worldSeed: 0,            // the seed the LIVE world was actually built from
+  showFps: false,          // perf overlay toggles (persisted) — FPS line / full metrics block
+  showPerf: false,
+  version: '',             // build version for the credits panel (fetched from package.json)
   ship: new Ship(),
   bodies: [],
   aliens: [],
@@ -88,32 +94,78 @@ const game = {
 // host-agnostic; the console hooks at the bottom work with or without it.
 game.devMode = new URLSearchParams(location.search).has('dev');
 
-game.st = shipStats(game.prog);
-generateWorld(game);
-game.cam.x = game.ship.x; game.cam.y = game.ship.y;
-
-const canvas = document.getElementById('game');
-const view = initRender(canvas);
-hud.initHud(game);
-
 // Persisted front-end settings. localStorage is host-agnostic (works the same
 // over serve.py and inside the Electron shell), so src/ stays packaging-blind.
+// LOAD ORDER MATTERS: this runs BEFORE the world is generated, because a
+// pinned seed has to reach the very first world — load it after and the boot
+// world is always random no matter what the settings say.
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem('ss_settings') || '{}');
     if (typeof s.musicVol === 'number') game.musicVol = Math.max(0, Math.min(1, s.musicVol));
     if (typeof s.sfxVol === 'number') game.sfxVol = Math.max(0, Math.min(1, s.sfxVol));
     if (typeof s.predict === 'boolean') game.predict = s.predict;
+    if (typeof s.showFps === 'boolean') game.showFps = s.showFps;
+    if (typeof s.showPerf === 'boolean') game.showPerf = s.showPerf;
+    if (typeof s.seedText === 'string') setSeedText(s.seedText);
   } catch (e) { /* fall back to defaults */ }
 }
 function saveSettings() {
   try {
     localStorage.setItem('ss_settings', JSON.stringify({
       musicVol: game.musicVol, sfxVol: game.sfxVol, predict: game.predict,
+      showFps: game.showFps, showPerf: game.showPerf, seedText: game.seedText,
     }));
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
 }
+
+// ---- World seed -------------------------------------------------------------
+// Every fresh run rolls a NEW world unless a seed is pinned. Precedence:
+// ?seed= on the URL (reproducible soaks and bug reports — it also overrides the
+// stored setting, so a pinned player can still be handed a repro link), then the
+// persisted Settings field, then random. generateWorld's own 20260721 default
+// stays put on purpose: devtest.js leans on it for its fixed baseline world.
+const urlSeed = new URLSearchParams(location.search).get('seed');
+function setSeedText(text) {
+  game.seedText = text;
+  game.seedPin = text.trim() ? seedFrom(text) : null;
+}
+function pickSeed() {
+  if (urlSeed) return seedFrom(urlSeed);
+  if (game.seedPin != null) return game.seedPin;
+  return (Math.random() * 0xffffffff) >>> 0;
+}
+// Build (or rebuild) the world. `seed` undefined = resolve one through pickSeed;
+// pass one explicitly to force a specific world (window.freshRun / mechTest).
+// The transient arrays are cleared first — everything holds them by reference,
+// so leftovers from the old world would drift through the new one.
+function regenWorld(seed) {
+  game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
+  game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
+  game.orbit.length = 0; game.pickups.length = 0;
+  game.held = null; game.held2 = null;
+  game.worldSeed = seed ?? pickSeed();
+  generateWorld(game, game.worldSeed);   // clears game.bodies itself, then respawns the ship
+  game.cam.x = game.ship.x; game.cam.y = game.ship.y;
+}
+
 loadSettings();
+game.st = shipStats(game.prog);
+regenWorld();
+
+const canvas = document.getElementById('game');
+const view = initRender(canvas);
+hud.initHud(game);
+
+// Build version for the CREDITS panel. A RELATIVE fetch keeps src/ host-
+// agnostic — it resolves identically under serve.py and the Electron app://
+// scheme (registered supportFetchAPI). Accurate only on a release build: in a
+// dev checkout package.json lags the newest v* tag, which is the real source of
+// truth (CLAUDE.md → Desktop packaging).
+fetch('package.json').then((r) => r.json())
+  .then((j) => { game.version = j.version || ''; })
+  .catch(() => { /* no version line rather than a broken one */ });
+
 // Volume levels are safe pre-gesture — both modules just store them (the audio
 // context itself still only ever gets built inside a user gesture: initAudio).
 sfx.setSfxVolume(game.sfxVol);
@@ -343,6 +395,7 @@ function driftSplash(dt) {
     game.cam.x = Math.cos(a) * 4400;
     game.cam.y = Math.sin(a) * 4400;
     splashAcc -= CFG.DT;
+    perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
   }
   for (const m of EVENT_MSGS) game[m.flag] = null;
 }
@@ -361,6 +414,18 @@ hud.initMenus({
   onCloseShell: ui(closeShellPanel),
   onExit: exitGame,
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
+  onToggleFps: ui(() => { game.showFps = !game.showFps; saveSettings(); }),
+  onTogglePerf: ui(() => { game.showPerf = !game.showPerf; saveSettings(); }),
+  // WORLD SEED. Typing only records the pin (regenerating per keystroke would
+  // rebuild the system on every character); the COMMIT — blur or Enter — is what
+  // re-rolls, and only from the title screen, where the splash backdrop is a
+  // live sim so the new world can be seen before START. Mid-run it's a no-op:
+  // yanking the world out from under a run in progress would be a disaster, so
+  // it waits for the next one (the note line says so).
+  onSeedInput: (text) => { setSeedText(text); saveSettings(); },
+  onSeedCommit: () => { if (!game.started) regenWorld(); },
+  // "I like this world" — pin whatever is currently loaded.
+  onSeedPin: ui(() => { setSeedText(String(game.worldSeed)); saveSettings(); }),
   // Volume sliders: live on drag (a drag is a gesture, so initAudio is safe);
   // the release preview tick lets the SFX level be judged from the menu.
   onMusicVol: (v) => { sfx.initAudio(); game.musicVol = v; music.setMusicVolume(v); saveSettings(); },
@@ -399,7 +464,7 @@ function applyPick(i) {
     consumePickCost(game.prog);
     applyTierUp(game.prog);
     applyAbility(game.prog, choice.id);
-    game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+    game.prog.lives = Math.min(maxLives(game.prog), game.prog.lives + 1);
     game.st = shipStats(game.prog);
     healOnHullGain(oldHullMax);   // tier + dividend usually raise hullMax — heal the gain
     game.lastTier = game.st.tier;
@@ -452,7 +517,7 @@ function openUpgrade() {
     if (!game.upgradeChoices.length) {   // spec pool exhausted -> tier up with no new ability
       consumePickCost(prog);
       applyTierUp(prog);
-      game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+      game.prog.lives = Math.min(maxLives(prog), game.prog.lives + 1);
       game.st = shipStats(game.prog);
       game.lastTier = game.st.tier;
       sfx.sfxTierUp();
@@ -473,7 +538,9 @@ function openUpgrade() {
 }
 
 // Game over -> fresh run: wipe the build, regenerate the world, restart.
-// `seed` is a dev/test hook (window.freshRun): undefined = the default world.
+// `seed` forces a specific world (window.freshRun / mechTest); undefined lets
+// pickSeed resolve one, so a normal new run lands on a brand-new random system
+// unless the player has pinned a seed in Settings.
 function resetRun(seed) {
   game.prog = newProgress();
   game.st = shipStats(game.prog);
@@ -502,9 +569,8 @@ function resetRun(seed) {
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
-  generateWorld(game, seed);   // rebuilds bodies (cleared first) + spawn, calls respawnShip
+  regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
-  game.cam.x = game.ship.x; game.cam.y = game.ship.y;
   hud.setDeathVisible(false);
   hud.setGameOverVisible(false);
   firstStart = true;     // re-arm the flight guidance for the fresh run
@@ -590,10 +656,38 @@ const EVENT_MSGS = [
     first: [(v) => `MOONSHADOW — a lunar eclipse is sweeping across ${v}.`, 5] },
   { flag: 'surveyMsg', snd: sfx.sfxChime, first: [(v) => v, 4.5] },
   { flag: 'echoMsg', snd: sfx.sfxChime, first: [(v) => v, 7.5] },
+  { flag: 'masterChartWarn', snd: sfx.sfxLife,
+    first: ['MASTER CHART COMPLETE — every world logged. Deep-sky calibration: sensors and forecast permanently sharpened.', 6.5] },
   { flag: 'graveyardWarn', tut: 'graveyard', snd: sfx.sfxChime,
     first: ['GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6] },
   { flag: 'ghostWarn', tut: 'ghost', snd: sfx.sfxWarnLow,
     first: ['UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6] },
+  { flag: 'heraldWakeWarn', snd: sfx.sfxLife,
+    first: ['THE HERALD ANSWERS — lights returning deck by deck. Its beacon now watches this reach of space.', 6.5] },
+  { flag: 'tinkerWantWarn', tut: 'tinker', snd: sfx.sfxChime,
+    first: [(v) => `TINKER BARGE — a crewed trader! It wants ${v}: fling one into its catch ring for payment.`, 6.5],
+    repeat: [(v) => `The Tinker Barge wants ${v}.`, 3.5] },
+  { flag: 'tinkerPaidWarn', snd: sfx.sfxLife,
+    first: [(v) => `TRADE COMPLETE — payment delivered: ${v}.`, 4.5] },
+  { flag: 'relayWarn', snd: sfx.sfxChime,
+    first: ['THE RELAY POWERS UP — its dish grinds around and locks a bearing. There IS a star out there. New contact on the map rim.', 7] },
+  { flag: 'maydayWarn', tut: 'mayday', snd: sfx.sfxWarnLow,
+    first: [(v) => `MAYDAY — an escape pod is adrift to the ${v}, air failing. Tow it to any station — the dock is marked on your radar.`, 6.5],
+    repeat: [(v) => `MAYDAY — pod adrift to the ${v}, air failing.`, 4.5] },
+  { flag: 'maydaySavedWarn', snd: sfx.sfxLife,
+    first: ['PILOT RESCUED — they made it.', 4] },
+  // Deliberately silent: the quiet IS the message.
+  { flag: 'maydayLostWarn',
+    first: ['The pod has gone quiet.', 5] },
+  // ---- moons-with-jobs discoveries (all sfxChime: opportunity, not threat) ----
+  { flag: 'ironWarn', tut: 'iron', snd: sfx.sfxChime,
+    first: ['MAGNETIC MOON — this iron moon gathers loose salvage. Let your scrap pool here, then sweep it up.', 5.5] },
+  { flag: 'sulfurWarn', tut: 'sulfur', snd: sfx.sfxChime,
+    first: ['SULFUR POPS — the crust is venting! A hard smash fountains loose sling rock.', 5.5] },
+  { flag: 'dustWarn', tut: 'dust', snd: sfx.sfxChime,
+    first: ['DUST SHROUD — inside this halo, alien senses cannot find you. Pursuers lose their lock.', 5.5] },
+  { flag: 'bandedWarn', tut: 'banded', snd: sfx.sfxChime,
+    first: ["BANDED SKIMMING — grinding this moon's bands pays triple XP. Risky flying, rewarded.", 5.5] },
   { flag: 'ringDecayName', snd: sfx.sfxChime,
     first: [(v) => `The shepherd moon is gone — ${v}'s ring is beginning to scatter.`, 6] },
   { flag: 'volcWarn', tut: 'volc', snd: sfx.sfxChime,
@@ -610,6 +704,17 @@ const EVENT_MSGS = [
 
 let last = performance.now();
 let acc = 0;
+
+// ---- Perf sampling (the FPS / metrics overlay) ------------------------------
+// Frame time is measured from the RAW rAF delta, never dtReal: dtReal is
+// clamped to a 20 fps floor (tab-switch protection), so it would flatline at
+// 50ms and lie exactly when the overlay matters most. The three timings are
+// EMA-smoothed — unsmoothed digits strobe too fast to read — while the counts
+// stay instantaneous, since they don't jitter. Costs nothing when the overlay
+// is off: it's four multiply-adds and hud.js early-outs before formatting.
+const perf = { fps: 60, frameMs: 16.7, simMs: 0, drawMs: 0, steps: 0 };
+game.perf = perf;
+const PERF_EMA = 0.1;
 
 function update(dtReal) {
     game.time += dtReal;
@@ -684,6 +789,7 @@ function update(dtReal) {
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);
       acc -= CFG.DT;
+      perf.steps++;   // frame() zeroes this; updateScaled calls update() several times, so it sums
     }
 
     const s = game.ship;
@@ -719,6 +825,7 @@ function update(dtReal) {
     if (game.autoEvadeT > 0) game.autoEvadeT -= dtReal;     // Reflex Jink recharge
     if (game.jinkT > 0) game.jinkT -= dtReal;               // jink flash ring
     if (game.warpT > 0) game.warpT -= dtReal;               // Slipstream cooldown
+    if (game.relayBeamT > 0) game.relayBeamT -= dtReal;     // relay bearing-beam cue
 
     // SLINGSHOT: pass through a planet's well without touching the throttle
     // and leave faster than you entered — clean flying feeds the engines.
@@ -862,7 +969,7 @@ function updateLifePods(dt) {
     p.phase = (p.phase || 0) + dt;
     if (s.alive && Math.hypot(p.x - s.x, p.y - s.y) < PROG.LIFE_R + s.radius) {
       game.pickups.splice(i, 1);
-      if (game.prog.lives < PROG.MAX_LIVES) {
+      if (game.prog.lives < maxLives(game.prog)) {
         game.prog.lives++;
         hud.message(`EXTRA LIFE recovered — ${game.prog.lives} lives.`, 4);
       } else {
@@ -875,7 +982,7 @@ function updateLifePods(dt) {
   game.lifeTimer -= dt;
   if (game.lifeTimer <= 0) {
     game.lifeTimer = PROG.LIFE_RESPAWN * (0.6 + Math.random() * 0.8);
-    if (game.prog.lives < PROG.MAX_LIVES && game.pickups.length < PROG.LIFE_MAX_ACTIVE) {
+    if (game.prog.lives < maxLives(game.prog) && game.pickups.length < PROG.LIFE_MAX_ACTIVE) {
       spawnLifePod(game);
     }
   }
@@ -906,8 +1013,11 @@ function updateScaled(dtReal) {
 
 function frame(now) {
   requestAnimationFrame(frame);
-  const dtReal = Math.min(0.05, (now - last) / 1000);
+  const raw = now - last;   // honest frame time — sampled BEFORE the 20 fps clamp below
+  const dtReal = Math.min(0.05, raw / 1000);
   last = now;
+  perf.steps = 0;
+  const t0 = performance.now();
 
   // The sim freezes on the splash, while paused, while settings is open, or
   // while an upgrade card is open; rendering and the HUD keep running so the
@@ -924,12 +1034,24 @@ function frame(now) {
     applyZoom();                              // a resize while frozen must still reframe
   }
 
+  const t1 = performance.now();
+
   // The music director runs EVERY frame, frozen or not — menus duck it, and
   // it needs dtReal for its own smoothing even while the sim holds still.
   music.updateMusic(game, dtReal);
 
   render(game);
   hud.updateHud(game);
+
+  // Sampled last so the overlay reports the frame it just finished. The badge
+  // itself is written one frame behind (updateHud ran above) — nobody can see
+  // a 16ms lag in a 5 Hz readout, and bracketing it here keeps the draw cost
+  // honest instead of excluding the HUD from its own measurement.
+  const t2 = performance.now();
+  perf.frameMs = lerp(perf.frameMs, raw, PERF_EMA);
+  perf.fps = lerp(perf.fps, raw > 0 ? 1000 / raw : 0, PERF_EMA);
+  perf.simMs = lerp(perf.simMs, t1 - t0, PERF_EMA);
+  perf.drawMs = lerp(perf.drawMs, t2 - t1, PERF_EMA);
 }
 
 requestAnimationFrame(frame);
@@ -945,7 +1067,11 @@ window.tick = (seconds) => {
   const dt = 1 / 60;
   // Music mood advances with the sim so soaks can assert on it (the rAF loop
   // is suspended in hidden tabs, where tick is the only clock).
-  for (let t = 0; t < seconds; t += dt) { update(dt); music.updateMusic(game, dt); }
+  for (let t = 0; t < seconds; t += dt) {
+    perf.steps = 0;   // frame() normally owns this; tick bypasses it, and a whole
+    update(dt);       // tick's worth of substeps in the "per frame" slot would lie
+    music.updateMusic(game, dt);
+  }
   render(game);
   hud.updateHud(game);
 };

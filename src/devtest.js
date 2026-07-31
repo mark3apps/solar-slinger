@@ -281,6 +281,49 @@ export function runMechTest(game, hooks, opts = {}) {
       return `culled, tripwire counted ${counted}`;
     });
 
+    // T15 — EXPEDITION: the shared delivery verb — a wreck brought into the
+    // Herald's catch radius is CONSUMED (a handover, not a kill: no shatter,
+    // no scrap) and wakes it, paying XP
+    t('delivery: wreck wakes the Herald', () => {
+      const gh = game.ghost;
+      expect(gh && gh.alive, 'no Herald in the world');
+      expect(!gh.awake, 'Herald started awake');
+      parkShip(game, gh.x + 600, gh.y);
+      const w = spawnAsteroid(game.bodies, gh.x + 200, gh.y, gh.vx, gh.vy, 300);
+      w.wreck = true;
+      const xp0 = game.prog.xp;
+      hooks.stepSim(2 / 60);   // updateDeliveries runs per-frame in replenishWorld
+      expect(gh.awake, 'delivered wreck did not wake the Herald');
+      expect(!w.alive, 'delivered wreck was not consumed');
+      expect(game.prog.xp > xp0, 'the wake paid no XP');
+      return `awake, +${(game.prog.xp - xp0).toFixed(0)} xp`;
+    });
+
+    // T16 — EXPEDITION: charting pays exactly once per key, the hidden dark
+    // star stays out of the denominator, and 100% fires MASTER CHART (whose
+    // reward reads through shipStats.sensorMul)
+    t('chart pays once; master chart at 100%', () => {
+      expect(game.darkStar && game.darkStar.hidden, 'dark star not hidden at start');
+      let lastMoon = null;
+      for (const b of game.bodies) {
+        if (!b.alive || !b.chartKey || b.hidden) continue;
+        if (!lastMoon && b.type === 'moon' && !b.fort) { lastMoon = b; continue; }
+        if (!game.charted[b.chartKey]) { game.charted[b.chartKey] = true; game.prog.surveyed++; }
+      }
+      expect(lastMoon, 'no moon left to chart');
+      parkShip(game, lastMoon.x + lastMoon.radius + 60, lastMoon.y);
+      const surveyed0 = game.prog.surveyed;
+      hooks.stepSim(1.2);   // > the 0.5s scan throttle
+      expect(game.charted[lastMoon.chartKey], 'the last moon did not chart');
+      expect(game.prog.surveyed === surveyed0 + 1,
+        `surveyed ${surveyed0} -> ${game.prog.surveyed}, wanted exactly +1`);
+      expect(game.prog.masterChart, 'MASTER CHART did not fire at 100%');
+      expect(game.st.sensorMul >= 1.25, `sensorMul ${game.st.sensorMul} — master-chart bonus missing`);
+      hooks.stepSim(0.6);
+      expect(game.prog.surveyed === surveyed0 + 1, 'a charted key paid again');
+      return `surveyed=${game.prog.surveyed}, masterChart fired, hidden star excluded`;
+    });
+
     // T14 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {
       const now = census(game);

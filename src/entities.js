@@ -54,6 +54,7 @@ export class Body {
       : (o.hp || massToHp(o.mass) * (this.type === 'planet' ? 0.4 : 1));
     this.hp = this.maxHp;
     this.alive = true;
+    this.scars = [];         // impact craters {a: surface-local angle, s: size, t: time} — render draws them
     this.heldBy = null;      // 'player' | 'orbit' | alien ref | null
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;

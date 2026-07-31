@@ -133,8 +133,9 @@ export function tryGrab(game) {
   let best = null, bestD = Infinity;
   for (const b of game.bodies) {
     // Nests are a siege target, not cargo, and Bastion forts repel the beam;
+    // the Tinker Barge is CREWED — the beam won't take a live friendly ship;
     // never re-grab a rock you're already holding.
-    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort ||
+    if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.tinker ||
         b.heldBy === 'orbit' || b === game.held || b === game.held2 ||
         b.parryFrozen) continue;   // mid-parry rock belongs to the flick, not the beam
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);

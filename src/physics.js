@@ -168,25 +168,59 @@ export function shatter(game, body, credit = null) {
   body.alive = false;
   // The ring shepherd only respawns after AMBIENT deaths — a deliberate
   // player kill earns its permanently scattered ring (world.js respawn).
+  // Same rule for the Tinker Barge: shoot the trader and no trader returns.
   if (body.shepherd && earnsScrap(credit)) game.shepherdPlayerKilled = true;
+  if (body.tinker && earnsScrap(credit)) game.tinkerPlayerKilled = true;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'shattered', type: body.type, mass: Math.round(body.mass) });
   if (body.heldBy === 'player' && game.held === body) game.held = null;
 
   const isBig = body.mass > 5e4;
-  // Big bodies break into grabbable fragments, not just dust
-  if (isBig) {
+  // A dying WORLD comes apart into a TON of planet chunks — a dense, jostling
+  // debris cloud filling the volume the world occupied, not a neat ring.
+  // Speeds are deliberately mixed (slow core pieces, fast ejecta) so the cloud
+  // lingers and the chunks bump and grind each other on the way out; being
+  // ordinary bodies they collide, spall, and chain like anything else. Chunk
+  // masses stay under CHUNK_MAX_MASS (never rail disturbers) and the count is
+  // capped by mass and by the global body budget.
+  const isWorld = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
+  if (isWorld && body.ptype !== 'gas') {
+    // Ejection speeds are LOW on purpose: the cloud should hang together and
+    // visibly jostle — chunks grinding past each other — before gravity and
+    // the orbital flow shear it into a debris stream. Fast ejecta reads as a
+    // firework that empties the screen in a second.
+    const n = Math.min(Math.min(30, 10 + Math.floor(body.mass / 8000)),
+      Math.max(0, 460 - game.bodies.length));
+    for (let i = 0; i < n; i++) {
+      const th = (i / n) * TAU + (Math.random() - 0.5) * 0.6;
+      const rr = body.radius * (0.2 + Math.random() * 0.85);
+      const s = 25 + Math.random() * 130;
+      const m = clamp(body.mass * (0.01 + Math.random() * 0.022), 120, CFG.CHUNK_MAX_MASS);
+      const f = spawnAsteroid(
+        game.bodies,
+        body.x + Math.cos(th) * rr,
+        body.y + Math.sin(th) * rr,
+        body.vx + Math.cos(th) * s + (Math.random() - 0.5) * 70,
+        body.vy + Math.sin(th) * s + (Math.random() - 0.5) * 70,
+        m,
+      );
+      f.color = body.color;
+      f.chunk = true;         // crust-shard sprite — visibly a piece of THIS world
+    }
+  } else if (isBig) {
+    // Big non-world bodies (giant loose asteroids) break into plain fragments
     const n = 5 + Math.floor(Math.random() * 4);
     for (let i = 0; i < n; i++) {
       const th = (i / n) * TAU + Math.random() * 0.6;
       const s = 40 + Math.random() * 110;
       const m = clamp(body.mass * (0.02 + Math.random() * 0.03), 200, 4000);
-      spawnAsteroid(
+      const f = spawnAsteroid(
         game.bodies,
         body.x + Math.cos(th) * body.radius * 0.6,
         body.y + Math.sin(th) * body.radius * 0.6,
         body.vx + Math.cos(th) * s, body.vy + Math.sin(th) * s,
         m,
       );
+      f.color = body.color;   // wreckage reads as pieces of the world it was
     }
   }
 
@@ -236,11 +270,12 @@ export function shatter(game, body, credit = null) {
   // player's OWN projectile (credit 'player'), which never reaches the
   // 'player-throw' branch below.
   if (body.splatWall && game.st.wallSplat > 0) wallSplat(game, body);
+  const big = isBig || isWorld;   // even a small moon dies like a world
   addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3,
-    isBig ? 50 : 16, body.color, isBig ? 260 : 140, isBig ? 1.6 : 0.9, isBig ? 5 : 3);
-  addShake(game, isBig ? 14 : 4);
+    big ? 50 : 16, body.color, big ? 260 : 140, big ? 1.6 : 0.9, big ? 5 : 3);
+  addShake(game, big ? 14 : 4);
   // Distance-scaled: far belt traffic crunching itself stays a murmur
-  sfx.sfxBoom(isBig ? 3 : 1, sfx.distVol(game, body.x, body.y));
+  sfx.sfxBoom(big ? 3 : 1, sfx.distVol(game, body.x, body.y));
 
   // XP: only a direct throw-kill pays combat XP (not your own projectile
   // shattering or a shield brush — those still pay scrap, above).
@@ -317,18 +352,94 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
   // wall survives the intercepts it exists to make. Loose rocks are untouched.
   if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.2 * game.st.rockwall;
+  // SULFUR MOONS: a hard PLAYER smash (earnsScrap credit — ambient traffic
+  // can't trigger it) vents the crust: a queued chain of surface pops that
+  // fountain loose sling rock (the world.js hazard loop pops them). Not on
+  // the killing blow — the moon's death is its own event, not a send-off.
+  if (body.type === 'moon' && body.moonType === 'sulfur' && earnsScrap(credit) &&
+      dmg > 8 && !(body.sulfurCd > 0) && body.hp - dmg > 0) {
+    body.sulfurCd = 30;
+    body.sulfurPops = 3 + Math.floor(Math.random() * 3);
+    body.sulfurPopT = 0.2;
+    game.sulfurWarn = true;
+  }
   derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
   const frac = clamp(dmg / body.maxHp, 0, 0.5);
+
+  // CHUNKS + SCARS: a hard single hit on a big body isn't just an hp tick.
+  // Wear shows EARLY — at half the spray gates the hit already carves a
+  // persistent crater (b.scars; render punches a visible bite out of the
+  // silhouette). At the full gates the impact also SPRAYS real chunk
+  // asteroids: a couple burst from the crater, the rest shoot out in random
+  // directions all around the body (giants vent extra), and they fly,
+  // collide, and chain like any other rock. The dual gate (absolute damage
+  // OR hp fraction) exists because mass dominance throttles planet hits to a
+  // few points — see the CHUNK_* rationale in config.js. Corona heat's
+  // per-call drip (~0.1% of maxHp) can never clear even the half gates.
+  const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas';
+  const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS;
+  // Small rocks scar too — wear is universal, only the SPRAY needs the mass
+  // gate. Their maxHp is tiny so the gate is fractional (a real bite of the
+  // rock, not a graze), with a radius floor below which a scar can't read.
+  const scarHit = bigEnough
+    ? (dmg >= CFG.CHUNK_DMG_MIN * 0.5 || frac >= CFG.CHUNK_DMG_FRAC * 0.5)
+    : (frac >= 0.15 && body.radius >= 5);
+  if (canWear && scarHit) {
+    // severity 0..1 blends both gates: frac carries moons, raw damage carries
+    // planets (whose maxHp dwarfs any single hit)
+    const sev = clamp(frac * 8 + dmg / 60, 0.15, 1);
+    const ia = (hx !== undefined) ? Math.atan2(hy - body.y, hx - body.x) : Math.random() * TAU;
+    // scar angle is stored SURFACE-LOCAL (minus rot) so the bite rides the spin
+    body.scars.push({ a: ia - body.rot, s: 0.6 + sev * 1.6, t: game.time });
+    if (body.scars.length > 7) body.scars.shift();
+    if (bigEnough && (dmg >= CFG.CHUNK_DMG_MIN || frac >= CFG.CHUNK_DMG_FRAC) &&
+        game.bodies.length < 450) {   // body-count cap like the spall path
+      const n = 2 + Math.round(sev * 4) + (body.mass >= 2e4 ? 2 : 0);
+      let shed = 0;
+      for (let k = 0; k < n; k++) {
+        // first chunks burst from the crater; the rest spray ANYWHERE — a big
+        // impact rings the whole body, not just the wound
+        const th = k < 2 ? ia + (Math.random() - 0.5) * 1.6 : Math.random() * TAU;
+        const m = clamp(body.mass * (0.004 + Math.random() * 0.012) * sev, 90, CFG.CHUNK_MAX_MASS);
+        const sp = 80 + Math.random() * 150 + 220 * sev;
+        // spawn OUTSIDE the surface with outward velocity — a chunk born
+        // overlapping its parent would take collision damage and shed again
+        const f = spawnAsteroid(game.bodies,
+          body.x + Math.cos(th) * (body.radius * 1.03 + 14),
+          body.y + Math.sin(th) * (body.radius * 1.03 + 14),
+          body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, m);
+        f.color = body.color;   // chunks read as pieces of the world they left
+        // shed pieces of worlds are PLANET CHUNKS (crust-shard sprite); big
+        // loose asteroids just calve ordinary rock
+        if (body.type === 'planet' || body.type === 'moon' || body.type === 'rogue') f.chunk = true;
+        // GRAVITY BILLIARDS: chunks your throw knocked loose carry your credit
+        // for a beat — same rule as the knocked-rock propagation in
+        // collideBodies. ONLY on a direct 'player-throw' hit: shard/Demolition
+        // damage stays credit-neutral so those chains remain bounded.
+        if (credit === 'player-throw') { f.thrownBy = 'player'; f.thrownTimer = 1.4; }
+        shed += m;
+      }
+      // The shed mass really leaves the body (floor at 25% of base, like chip)
+      body.mass = Math.max(body.baseMass * 0.25, body.mass - shed);
+      addParticles(game,
+        body.x + Math.cos(ia) * body.radius, body.y + Math.sin(ia) * body.radius,
+        body.vx * 0.5, body.vy * 0.5, 8 + Math.round(sev * 16), body.color, 170, 1, 4);
+      addShake(game, Math.min(10, 2 + sev * 9));
+      sfx.sfxBoom(1 + sev * 1.5, sfx.distVol(game, body.x, body.y));
+    }
+  }
+
   if (frac > 0.01) {
     // Chip scrap only from player-caused hits (throw / shield) — see shatter
     if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, scrapValue(body) * frac * 0.5);
     body.mass = Math.max(body.baseMass * 0.25, body.mass - body.baseMass * frac * 0.35);
-    body.radius = body.baseRadius * Math.cbrt(body.mass / body.baseMass);
-    if (body.mass < CFG.ATTRACT_MIN && body.type !== 'star') body.attractor = false;
     addParticles(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, 8, body.color, 100, 0.7);
   }
+  // One radius/attractor rebuild covers both the chip and chunk mass losses
+  body.radius = body.baseRadius * Math.cbrt(body.mass / body.baseMass);
+  if (body.mass < CFG.ATTRACT_MIN && body.type !== 'star') body.attractor = false;
 }
 
 function vaporize(game, body) {
@@ -828,7 +939,11 @@ function collideShipBody(game, s, b, dt) {
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
       const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
       damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
-      addXp(game, grind * PROG.XP_SKIM);   // skating a surface is risky XP
+      // Skating a surface is risky XP — and BANDED MOONS are the skate park:
+      // same grind, same hull cost, triple the payout.
+      const banded = b.type === 'moon' && b.moonType === 'banded';
+      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : 1));
+      if (banded && !game.tut.banded) game.bandedWarn = true;
 
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
@@ -1376,6 +1491,14 @@ export function step(game, dt) {
   }
 
   const storm = game.storm;   // solar storm front nudges loose scrap outward
+  // IRON MOONS are magnetic — natural salvage depots. Shortlist them once per
+  // substep; the debris loop springs loose chunks toward a pooling halo just
+  // off the surface. DEBRIS ONLY, exactly the storm-shove law: a force that
+  // touched bodies, celestials, or rails is an invariant regression.
+  let ironMoons = null;
+  for (const b of bodies) {
+    if (b.alive && b.type === 'moon' && b.moonType === 'iron') (ironMoons ??= []).push(b);
+  }
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
     const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
@@ -1383,6 +1506,7 @@ export function step(game, dt) {
     if (s.alive && dd < magnet) {
       // Spring-steer toward the ship (matching its velocity) rather than pure
       // acceleration — otherwise chunks whip into little orbits around you.
+      // (The ship magnet always outranks an iron moon's pull.)
       const t = 1 - dd / magnet;
       const spd = 260 + 700 * t;
       const desVx = (dx / dd) * spd + s.vx, desVy = (dy / dd) * spd + s.vy;
@@ -1390,6 +1514,26 @@ export function step(game, dt) {
     } else {
       const g = gravityAt(attractors, d.x, d.y);
       d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
+      if (ironMoons) {
+        // Spring toward the nearest iron moon's pooling ring (radius + 50) so
+        // chunks visibly POOL off the surface instead of burying in the disc.
+        // Same desired-velocity idiom as the ship magnet, much gentler cap.
+        let im = null, imd = CFG.IRON_MAGNET_R;
+        for (const m of ironMoons) {
+          const md = Math.hypot(m.x - d.x, m.y - d.y);
+          if (md < imd) { imd = md; im = m; }
+        }
+        if (im) {
+          const ux = (im.x - d.x) / (imd || 1), uy = (im.y - d.y) / (imd || 1);
+          const toRing = imd - (im.radius + 50);
+          const spd2 = Math.max(-60, Math.min(60, toRing * 0.6));
+          const desVx2 = im.vx + ux * spd2, desVy2 = im.vy + uy * spd2;
+          let iax = (desVx2 - d.vx) * 2, iay = (desVy2 - d.vy) * 2;
+          const iam = Math.hypot(iax, iay);
+          if (iam > CFG.IRON_MAGNET_A) { iax *= CFG.IRON_MAGNET_A / iam; iay *= CFG.IRON_MAGNET_A / iam; }
+          d.ax += iax; d.ay += iay;
+        }
+      }
       if (storm) {
         // Gentle radiation-pressure shove while the front passes. Scrap
         // ONLY — pushing bodies or celestials is how invariants die.

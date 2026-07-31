@@ -653,6 +653,28 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.0, 0, TAU); ctx.fill();
   }
 
+  // DUST MOONS trail their concealing halo — a soft brown gradient with slow
+  // drifting specks seeded off the id. Drawn WIDER than the stealth radius
+  // (2.9 vs CFG.DUST_HALO 2.4) so the gradient IS the boundary read: no ring
+  // stroke at the exact mechanic radius, no hard edges in-world.
+  if (b.type === 'moon' && b.moonType === 'dust') {
+    const R = b.radius * 2.9;
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.8, b.x, b.y, R);
+    g.addColorStop(0, 'rgba(116, 109, 101, 0.16)');
+    g.addColorStop(0.6, 'rgba(116, 109, 101, 0.10)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(150, 140, 128, 0.35)';
+    for (let i = 0; i < 7; i++) {
+      const a = b.id * 1.7 + i * 2.399 + game.time * (0.05 + (i % 3) * 0.02);
+      const rr = b.radius * (1.3 + (((b.id + i * 13) % 10) / 10) * 1.3);
+      ctx.beginPath();
+      ctx.arc(b.x + Math.cos(a) * rr, b.y + Math.sin(a) * rr, Math.max(0.8, b.radius * 0.05), 0, TAU);
+      ctx.fill();
+    }
+  }
+
   ctx.fillStyle = b.color;
   if (b.visitor) {
     drawVisitorSprite(b);
@@ -660,16 +682,24 @@ function drawBody(game, b) {
     drawCacheSprite(game, b);
   } else if (b.core) {
     drawCoreSprite(game, b);
+  } else if (b.pod) {
+    drawPodSprite(game, b);
+  } else if (b.chunk) {
+    drawChunkSprite(b);
   } else if (b.type === 'asteroid') {
     traceAsteroid(b);
     ctx.fill();
     if (b.cored) drawCoreGlint(game, b);
   } else if (b.ghost) {
     drawGhostSprite(game, b);
+  } else if (b.tinker) {
+    drawBargeSprite(game, b);
   } else if (b.type === 'station') {
     drawStationSprite(b);
   } else if (b.type === 'nest') {
     drawNestSprite(game, b);
+  } else if (b.dark) {
+    drawDarkStarSprite(b);
   } else {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
   }
@@ -693,7 +723,7 @@ function drawBody(game, b) {
       ctx.lineTo(b.x - Math.cos(a) * b.radius, b.y - Math.sin(a) * b.radius);
     }
     ctx.stroke();
-  } else if (b.type === 'asteroid' && !b.visitor) {
+  } else if (b.type === 'asteroid' && !b.visitor && !b.pod && !b.chunk) {
     ctx.save();
     traceAsteroid(b);
     ctx.clip();
@@ -708,9 +738,11 @@ function drawBody(game, b) {
     ctx.restore();
   }
 
-  // Day/night shading away from the nearest star
+  // Day/night shading away from the nearest star. The dark star is exempt:
+  // a sun-facing terminator on "a hole in the starfield" contradicts its
+  // uniform absorption-rim read.
   const st = nearestStar(game, b.x, b.y);
-  if (st && b.type !== 'asteroid' && b.type !== 'station' && b.type !== 'nest') {
+  if (st && b.type !== 'asteroid' && b.type !== 'station' && b.type !== 'nest' && !b.dark) {
     const ang = Math.atan2(b.y - st.y, b.x - st.x);
     ctx.save();
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
@@ -750,17 +782,9 @@ function drawBody(game, b) {
     ctx.lineCap = 'butt';
   }
 
-  // Damage cracks
-  if (b.hp < b.maxHp * 0.6 && b.maxHp !== Infinity) {
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = Math.max(1, b.radius * 0.05);
-    ctx.beginPath();
-    for (let i = 0; i < 3; i++) {
-      const a = b.id * 1.7 + i * 2.1;
-      ctx.moveTo(b.x + Math.cos(a) * b.radius * 0.2, b.y + Math.sin(a) * b.radius * 0.2);
-      ctx.lineTo(b.x + Math.cos(a + 0.5) * b.radius * 0.9, b.y + Math.sin(a + 0.5) * b.radius * 0.9);
-    }
-    ctx.stroke();
+  // Progressive damage: crack web + impact scars + near-death ember fissures
+  if (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length))) {
+    drawBodyDamage(game, b);
   }
 
   // Held / orbiting highlights
@@ -957,6 +981,234 @@ function drawMoonDetail(game, b) {
   ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
 }
 
+// Progressive damage, drawn in the SURFACE frame (translate + rotate b.rot) so
+// wounds ride the day/night spin, clipped to the silhouette. Three layers:
+//  - a seeded crack web whose count/length/width grow with lost hp — the rng
+//    sequence is consumed identically every frame, so cracks never swim, and
+//    each new crack eases in (grow) instead of popping;
+//  - persistent impact craters (b.scars, minted by physics.damageBody when a
+//    hit sheds chunks): a dark bite at the rim with fracture rays fanning
+//    inward, fading in over a beat;
+//  - past 55% damage, ember light leaks from the deepest cracks (icy worlds
+//    leak cold blue instead) — the crust is failing.
+// Solid strokes only — this is a real object, not helper UI.
+function drawBodyDamage(game, b) {
+  const dmg01 = 1 - b.hp / b.maxHp;
+  const R = b.radius;
+  ctx.save();
+  if (b.type === 'asteroid') traceAsteroid(b);
+  else { ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); }
+  ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+
+  // Crack web: jagged fissures running INWARD from the rim (impacts fracture
+  // from the surface, so chords across the middle read wrong). Geometry is
+  // rebuilt each frame from the same seeded rolls — stable, never swims — and
+  // shared with the ember pass below via crackPaths.
+  const prog = (dmg01 - 0.04) * 14;   // hairlines from ~4% damage — wear shows early
+  const cracks = prog > 0 ? crackPaths(b, R, prog) : null;
+  if (cracks && cracks.length) {
+    ctx.strokeStyle = `rgba(0,0,0,${0.24 + 0.28 * dmg01})`;
+    ctx.lineWidth = Math.max(0.8, R * 0.028) * (0.7 + 0.5 * dmg01);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const pts of cracks) {
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+    }
+    ctx.stroke();
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+  }
+
+  // Near death the deepest fissures glow from within (same geometry as the
+  // dark pass — the light leaks from inside the cracks, not beside them)
+  if (dmg01 > 0.55 && cracks && cracks.length) {
+    const icy = b.ptype === 'ice' || b.moonType === 'ice';
+    const heat = (dmg01 - 0.55) / 0.45;
+    const breathe = 0.85 + 0.15 * Math.sin(game.time * 1.8 + b.id);
+    // more fissures ignite as death approaches
+    const nGlow = Math.max(2, Math.ceil(cracks.length * (0.3 + 0.7 * heat)));
+    const glowPath = () => {
+      ctx.beginPath();
+      for (let i = 0; i < Math.min(cracks.length, nGlow); i++) {
+        const pts = cracks[i];
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+      }
+    };
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // soft halo first, bright core inside it — light leaking FROM the crack
+    ctx.strokeStyle = icy
+      ? `rgba(110, 190, 255, ${0.3 * heat * breathe})`
+      : `rgba(255, 110, 40, ${0.34 * heat * breathe})`;
+    ctx.lineWidth = Math.max(1.5, R * 0.055);
+    glowPath(); ctx.stroke();
+    ctx.strokeStyle = icy
+      ? `rgba(200, 240, 255, ${0.7 * heat * breathe})`
+      : `rgba(255, 205, 120, ${0.75 * heat * breathe})`;
+    ctx.lineWidth = Math.max(0.8, R * 0.02);
+    glowPath(); ctx.stroke();
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+
+  // Scar bites — drawn UNCLIPPED so each crater visibly punches a chunk out
+  // of the silhouette: an opaque space-toned jagged blob straddling the rim
+  // (the missing material), a pale cliff-face lip on its inner edge, and
+  // fracture rays fanning into the body. Angles are surface-local, so bites
+  // ride the day/night spin like everything else.
+  if (b.scars && b.scars.length) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rot);
+    for (const sc of b.scars) {
+      const k = Math.min(1, (game.time - sc.t) * 3);   // quick fade-in
+      const br = Math.max(2.2, R * 0.06 * sc.s);       // floor so pebble bites still read
+      // Rocks aren't circles: sample the jag/shard silhouette at the scar's
+      // local angle so the bite sits ON the edge (vertex i lives at local
+      // angle i/n·TAU — same mapping as traceAsteroid/drawChunkSprite).
+      let edge = 1;
+      const poly = b.chunk ? b.shard : b.jag;
+      if (b.type === 'asteroid' && poly) {
+        let ai = sc.a % TAU; if (ai < 0) ai += TAU;
+        edge = poly[Math.round((ai / TAU) * poly.length) % poly.length];
+      }
+      // centered a hair OUTSIDE the rim so it reads as a notch eaten out of
+      // the edge, never a blob floating on the face
+      const cd = R * edge + br * 0.15;
+      const cxp = Math.cos(sc.a) * cd, cyp = Math.sin(sc.a) * cd;
+      // organic bite mouth — two sin harmonics per vertex, stable per scar
+      const NV = 10;
+      ctx.fillStyle = `rgba(4, 6, 13, ${k})`;          // the space behind shows through
+      ctx.beginPath();
+      for (let v = 0; v < NV; v++) {
+        const va = (v / NV) * TAU;
+        const h = Math.sin(b.id * 7.7 + sc.t * 13.3 + v * 2.1) * 0.14
+          + Math.sin(sc.t * 5.9 + v * 4.7) * 0.08;
+        const vr = br * (0.92 + h);
+        const px = cxp + Math.cos(va) * vr, py = cyp + Math.sin(va) * vr;
+        if (v === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      // pale exposed cliff face along the bite's inner edge
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.14 * k})`;
+      ctx.lineWidth = Math.max(0.8, br * 0.18);
+      ctx.beginPath();
+      ctx.arc(cxp, cyp, br * 0.95, sc.a + Math.PI - 1.0, sc.a + Math.PI + 1.0);
+      ctx.stroke();
+      // fracture rays fanning inward from the wound
+      ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * k})`;
+      ctx.lineWidth = Math.max(0.8, R * 0.022);
+      ctx.beginPath();
+      for (let r2 = 0; r2 < 3; r2++) {
+        const ra = sc.a + Math.PI + (r2 - 1) * 0.5 + Math.sin(b.id * 3.3 + sc.t * 7.1 + r2 * 5.7) * 0.22;
+        ctx.moveTo(cxp + Math.cos(ra) * br * 0.6, cyp + Math.sin(ra) * br * 0.6);
+        ctx.lineTo(cxp + Math.cos(ra) * R * (0.28 + 0.13 * r2) * sc.s,
+          cyp + Math.sin(ra) * R * (0.28 + 0.13 * r2) * sc.s);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// Build the seeded crack polylines for a body at damage progress `prog`
+// (fractional crack count). Every crack's rolls are consumed in the same order
+// every frame regardless of prog, so existing cracks never move as new ones
+// open; the newest crack eases outward (grow) instead of popping. Points are
+// SURFACE-LOCAL (caller has translated/rotated into the body frame). Each
+// fissure starts at the rim and stress-walks inward with angular jitter, with
+// a short side-branch once it's fully open.
+function crackPaths(b, R, prog) {
+  const rng = mulberry32(b.id * 5077 + 7);
+  const MAXC = 8;
+  const out = [];
+  for (let i = 0; i < MAXC; i++) {
+    const a0 = rng() * TAU;
+    const len = R * (0.32 + rng() * 0.34);
+    const drift = (rng() - 0.5) * 1.1;
+    const j1 = rng() - 0.5, j2 = rng() - 0.5, j3 = rng() - 0.5;
+    const brSide = rng() < 0.5 ? -1 : 1, brAt = 0.35 + rng() * 0.3;
+    if (i >= prog) continue;                       // rolled but not yet open
+    const grow = Math.min(1, prog - i);
+    const jags = [0, j1, j2, j3];
+    const pts = [];
+    for (let k = 0; k <= 3; k++) {
+      const t = (k / 3) * grow;
+      const r = R * 0.985 - len * t;
+      const a = a0 + drift * t * 0.35 + jags[k] * 0.22;
+      pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    out.push(pts);
+    if (grow >= 1) {                               // side-branch off the midline
+      const t = brAt;
+      const r = R * 0.985 - len * t;
+      const a = a0 + drift * t * 0.35;
+      const ba = a + brSide * (0.5 + Math.abs(j2) * 0.5);
+      const br2 = r - len * 0.3;
+      out.push([[Math.cos(a) * r, Math.sin(a) * r], [Math.cos(ba) * br2, Math.sin(ba) * br2]]);
+    }
+  }
+  return out;
+}
+
+// A PLANET CHUNK: a shard of a wounded or destroyed world. Reads as a piece of
+// that world, not a belt rock: sharp angular fracture faces (darker than the
+// surface — freshly split interior), with a bright strip of the old crust
+// surviving along one edge in the world's own color. Shape is seeded off b.id
+// and cached like the asteroid jag.
+function drawChunkSprite(b) {
+  const R = b.radius;
+  if (!b.shard || b.shardR !== R) {
+    const rng = mulberry32(b.id * 3163 + 41);
+    const n = 6 + Math.floor(rng() * 3);
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);   // sharper than a tumbled rock
+    b.shard = pts; b.shardR = R;
+    b.crustAt = Math.floor(rng() * n);   // which run of edges keeps the old surface
+  }
+  const n = b.shard.length;
+  const vx = (i) => Math.cos((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
+  const vy = (i) => Math.sin((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  const shard = () => {
+    ctx.beginPath();
+    ctx.moveTo(vx(0), vy(0));
+    for (let i = 1; i < n; i++) ctx.lineTo(vx(i), vy(i));
+    ctx.closePath();
+  };
+  // fracture faces: the world's color, knocked down — split rock, not surface
+  ctx.fillStyle = b.color;
+  shard(); ctx.fill();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+  shard(); ctx.fill();
+  // surviving crust: a bright strip of the old surface along one edge run
+  ctx.save();
+  shard(); ctx.clip();
+  ctx.strokeStyle = b.color;
+  ctx.lineWidth = R * 0.42;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(vx(b.crustAt), vy(b.crustAt));
+  ctx.lineTo(vx(b.crustAt + 1), vy(b.crustAt + 1));
+  ctx.lineTo(vx(b.crustAt + 2), vy(b.crustAt + 2));
+  ctx.stroke();
+  // one dark split line across the interior — the fracture that freed it
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+  ctx.lineWidth = Math.max(0.8, R * 0.08);
+  ctx.beginPath();
+  ctx.moveTo(vx(b.crustAt) * 0.55, vy(b.crustAt) * 0.55);
+  ctx.lineTo(vx(b.crustAt + Math.floor(n / 2)) * 0.85, vy(b.crustAt + Math.floor(n / 2)) * 0.85);
+  ctx.stroke();
+  ctx.restore();
+  ctx.restore();
+}
+
 // A cored rock: a mineral vein glinting through the shell so prospectors can
 // spot which rocks are worth cracking.
 function drawCoreGlint(game, b) {
@@ -1081,6 +1333,94 @@ function drawVisitorSprite(b) {
   ctx.restore();
 }
 
+// A mayday escape pod: a REAL little spacecraft, not a UI token — a gumdrop
+// re-entry capsule with a charred ablative shield, panel seams, a dark
+// viewport, orange rescue striping (paint on the hull, not interface), and a
+// beacon mast that tumbles WITH the hull. The strobe's blink RATE rises as
+// the air runs out — the urgency read lives on the object itself.
+function drawPodSprite(game, b) {
+  const r = b.radius;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  const hull = () => {
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.6, -r * 0.7);
+    ctx.quadraticCurveTo(r * 0.5, -r * 0.6, r * 0.95, -r * 0.16);
+    ctx.quadraticCurveTo(r * 1.04, 0, r * 0.95, r * 0.16);
+    ctx.quadraticCurveTo(r * 0.5, r * 0.6, -r * 0.6, r * 0.7);
+    ctx.closePath();
+  };
+  hull();
+  ctx.fillStyle = '#aab3bd';
+  ctx.fill();
+  ctx.save();
+  hull();
+  ctx.clip();
+  // belly shade — a lit 3D body, not a flat disc
+  ctx.fillStyle = 'rgba(20, 28, 40, 0.35)';
+  ctx.fillRect(-r, r * 0.12, r * 2.2, r);
+  // orange rescue striping near the stern — real-spacecraft paint
+  ctx.fillStyle = 'rgba(226, 128, 64, 0.85)';
+  ctx.save();
+  ctx.rotate(-0.18);
+  ctx.fillRect(-r * 0.5, -r, r * 0.16, r * 2);
+  ctx.fillRect(-r * 0.18, -r, r * 0.16, r * 2);
+  ctx.restore();
+  // panel seams
+  ctx.strokeStyle = 'rgba(60, 72, 86, 0.55)';
+  ctx.lineWidth = Math.max(0.6, r * 0.06);
+  ctx.beginPath();
+  ctx.moveTo(r * 0.16, -r * 0.6); ctx.lineTo(r * 0.16, r * 0.6);
+  ctx.moveTo(r * 0.62, -r * 0.42); ctx.lineTo(r * 0.62, r * 0.42);
+  ctx.stroke();
+  ctx.restore();
+  // hull rim so it pops against space
+  hull();
+  ctx.strokeStyle = 'rgba(210, 220, 235, 0.5)';
+  ctx.lineWidth = Math.max(0.7, r * 0.06);
+  ctx.stroke();
+  // charred ablative shield capping the stern
+  ctx.fillStyle = '#463e37';
+  ctx.beginPath(); ctx.ellipse(-r * 0.62, 0, r * 0.22, r * 0.72, 0, 0, TAU); ctx.fill();
+  // viewport: dark glass, thin bright rim
+  ctx.fillStyle = '#141e2a';
+  ctx.beginPath(); ctx.arc(r * 0.42, -r * 0.06, r * 0.24, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(220, 235, 245, 0.6)';
+  ctx.lineWidth = Math.max(0.6, r * 0.07);
+  ctx.beginPath(); ctx.arc(r * 0.42, -r * 0.06, r * 0.24, 0, TAU); ctx.stroke();
+  // beacon mast + strobe (rate = urgency; same idiom as the ghost heartbeat)
+  ctx.strokeStyle = '#6d7683';
+  ctx.lineWidth = Math.max(0.8, r * 0.08);
+  ctx.beginPath(); ctx.moveTo(r * 0.85, -r * 0.22); ctx.lineTo(r * 1.22, -r * 0.5); ctx.stroke();
+  const urgency = 1 - Math.max(0, Math.min(1, (b.podT || 0) / 120));
+  const rate = 1.5 + urgency * 6;
+  if (Math.sin(game.time * TAU * rate * 0.5) > 0) {
+    ctx.fillStyle = 'rgba(120, 255, 170, 0.25)';
+    ctx.beginPath(); ctx.arc(r * 1.22, -r * 0.5, r * 0.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#8affc0';
+    ctx.beginPath(); ctx.arc(r * 1.22, -r * 0.5, Math.max(1, r * 0.16), 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// The Wanderer's Star: a hole in the starfield — near-black disc, a deep
+// violet rim, and an absorption halo DARKER than space. Deliberately no glow:
+// this is the one body drawn by what it swallows.
+function drawDarkStarSprite(b) {
+  const R = b.radius;
+  const halo = ctx.createRadialGradient(b.x, b.y, R * 0.8, b.x, b.y, R * 2.6);
+  halo.addColorStop(0, 'rgba(4, 2, 10, 0.85)');
+  halo.addColorStop(1, 'transparent');
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * 2.6, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#241f2e';
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(120, 90, 200, 0.35)';
+  ctx.lineWidth = Math.max(1, R * 0.05);
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
+}
+
 // The ghost ship: a long dead hull with a snapped keel and one slow
 // heartbeat light — the thing the sonar ping belongs to
 function drawGhostSprite(game, b) {
@@ -1106,10 +1446,88 @@ function drawGhostSprite(game, b) {
     ctx.lineTo(i * r * 0.5, r * 0.45);
   }
   ctx.stroke();
-  // slow heartbeat running light (matches the audible ping cadence loosely)
-  const lit = Math.sin(game.time * 1.8) > 0.92;
-  ctx.fillStyle = lit ? '#ff6a5a' : '#4a2e2c';
-  ctx.beginPath(); ctx.arc(r * 0.9, 0, Math.max(2, r * 0.12), 0, TAU); ctx.fill();
+  if (b.awake) {
+    // Resolved (a wreck delivered): lights returned deck by deck — a steady
+    // warm lamp and a row of lit portholes. Solid fills, and deliberately NO
+    // idle motion: the calm steadiness IS the "alive again" read.
+    ctx.fillStyle = '#ffd98a';
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, Math.max(2, r * 0.12), 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255, 214, 140, 0.75)';
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath(); ctx.arc(i * r * 0.5, r * 0.02, Math.max(1.2, r * 0.07), 0, TAU); ctx.fill();
+    }
+  } else {
+    // slow heartbeat running light (matches the audible ping cadence loosely)
+    const lit = Math.sin(game.time * 1.8) > 0.92;
+    ctx.fillStyle = lit ? '#ff6a5a' : '#4a2e2c';
+    ctx.beginPath(); ctx.arc(r * 0.9, 0, Math.max(2, r * 0.12), 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// The Tinker Barge: a boxy crewed tug — warm lit windows against the dead
+// grey derelicts are the "this one is alive" tell — with its current want
+// held up as a little glyph over the hull. All solid strokes: a real object.
+function drawBargeSprite(game, b) {
+  const r = b.radius;
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  // hull block + forward wheelhouse + cargo pods aft
+  ctx.fillStyle = '#8a7350';
+  ctx.fillRect(-r * 1.5, -r * 0.55, r * 2.6, r * 1.1);
+  ctx.fillStyle = '#c9a86a';
+  ctx.fillRect(r * 0.7, -r * 0.75, r * 0.9, r * 1.5);
+  ctx.fillStyle = '#6e5c42';
+  for (let i = 0; i < 3; i++) ctx.fillRect(-r * 1.4 + i * r * 0.75, -r * 0.95, r * 0.55, r * 0.4);
+  ctx.strokeStyle = '#e8d9b8';
+  ctx.lineWidth = Math.max(1, r * 0.07);
+  ctx.strokeRect(-r * 1.5, -r * 0.55, r * 2.6, r * 1.1);
+  // warm crew windows
+  ctx.fillStyle = '#ffd98a';
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath(); ctx.arc(-r * 0.9 + i * r * 0.62, 0, Math.max(1, r * 0.09), 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+  drawBargeWant(game, b);
+}
+
+// The want glyph bobbing over the barge: purple crystal / pale ice hex / grey
+// wreck slab / satellite cross. Hidden while the barge rests between trades.
+function drawBargeWant(game, b) {
+  const want = game.tinkerWant;
+  if (!want || game.tinkerCd > 0) return;
+  const z = game.cam.zoom;
+  const s = Math.max(6, b.radius * 0.55);
+  const gx = b.x, gy = b.y - b.radius * 2.2 + Math.sin(game.time * 1.6) * 3;
+  ctx.save();
+  ctx.translate(gx, gy);
+  ctx.lineWidth = 2 / z;
+  if (want.id === 'crystal') {
+    ctx.fillStyle = 'rgba(185, 140, 255, 0.9)';
+    ctx.beginPath();
+    ctx.moveTo(0, -s); ctx.lineTo(s * 0.7, 0); ctx.lineTo(0, s); ctx.lineTo(-s * 0.7, 0);
+    ctx.closePath(); ctx.fill();
+  } else if (want.id === 'ice') {
+    ctx.strokeStyle = 'rgba(191, 227, 242, 0.95)';
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * TAU - Math.PI / 2;
+      const px = Math.cos(a) * s * 0.8, py = Math.sin(a) * s * 0.8;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.stroke();
+  } else if (want.id === 'wreck') {
+    ctx.fillStyle = 'rgba(159, 176, 194, 0.9)';
+    ctx.fillRect(-s, -s * 0.35, s * 2, s * 0.7);
+    ctx.strokeStyle = 'rgba(159, 176, 194, 0.9)';
+    ctx.beginPath(); ctx.moveTo(-s, s * 0.35); ctx.lineTo(-s * 1.4, s * 0.8); ctx.stroke();
+  } else {   // junk: a dead satellite — body box + solar panels
+    ctx.fillStyle = 'rgba(159, 176, 194, 0.9)';
+    ctx.fillRect(-s * 0.3, -s * 0.3, s * 0.6, s * 0.6);
+    ctx.fillRect(-s * 1.1, -s * 0.18, s * 0.7, s * 0.36);
+    ctx.fillRect(s * 0.4, -s * 0.18, s * 0.7, s * 0.36);
+  }
   ctx.restore();
 }
 
@@ -1320,11 +1738,14 @@ function drawApproach(game) {
     }
 
     const label = b.ghost ? (b.name || 'UNKNOWN HULK').toUpperCase()
+      : b.tinker ? ('TINKER BARGE' + (game.tinkerWant && !(game.tinkerCd > 0)
+        ? ' — WANTS ' + game.tinkerWant.label.toUpperCase() : ''))
       : (b.majorComet || b.visitor || b.shepherd || b.volcanic) ? (b.name || '').toUpperCase()
       : b.fort ? `BASTION FORTRESS${b.name ? ' — ' + b.name.toUpperCase() : ''}`
       : b.type === 'rogue' ? 'ROGUE PLANET'
-      : b.type === 'station' ? 'DERELICT STATION'
+      : b.type === 'station' ? (b.name || 'Derelict Station').toUpperCase()
       : b.type === 'nest' ? 'ALIEN NEST'
+      : b.dark ? (b.hidden ? 'UNRESOLVED MASS — SENSOR NULL' : `${b.name.toUpperCase()} — DWARF STAR`)
       : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`
         + (b.ember > 0.01 ? ' ⚠ EMBERKIN' : '');
     const fs = Math.max(13 / z, b.radius * 0.16);
@@ -2261,7 +2682,13 @@ function drawMinimap(game) {
   // Sensor bubble: how far the scan actually reveals (mirrors replenishWorld).
   // Centered on the ship = the radar center.
   if (game.ship.alive) {
-    const seeR = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1) * scale;
+    let seeW = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1);
+    // Awake-Herald beacon boost — MIRRORS the fog scan in world.js; the bubble
+    // must not lie about the actual reveal radius.
+    const gh = game.ghost;
+    if (gh && gh.alive && gh.awake &&
+        Math.hypot(gh.x - game.ship.x, gh.y - game.ship.y) < 6000) seeW *= 1.5;
+    const seeR = seeW * scale;
     ctx.fillStyle = 'rgba(176, 112, 255, 0.05)';
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.fill();
     ctx.strokeStyle = 'rgba(176, 112, 255, 0.22)';
@@ -2343,7 +2770,9 @@ function drawMinimap(game) {
       ctx.fillStyle = '#b07aff';
       ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.type === 'planet') {
-      const col = b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
+      // the dark star's own color is near-black — invisible on the radar well
+      const col = b.dark ? '#b89aff'
+        : b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
       ctx.shadowColor = col;
       ctx.fillStyle = col;
       ctx.beginPath(); ctx.arc(x, y, 2.5, 0, TAU); ctx.fill();
@@ -2360,6 +2789,11 @@ function drawMinimap(game) {
       ctx.shadowColor = '#7ec95f';
       ctx.fillStyle = '#7ec95f';
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    } else if (b.tinker) {
+      // the one friendly blip on the map — warm amber, matching its windows
+      ctx.shadowColor = '#ffcf8a';
+      ctx.fillStyle = '#ffcf8a';
+      ctx.fillRect(x - 2, y - 2, 4, 4);
     } else if (b.type === 'station') {
       ctx.shadowColor = '#c9d6e4';
       ctx.fillStyle = '#c9d6e4';
@@ -2388,6 +2822,97 @@ function drawMinimap(game) {
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
+
+  // The revealed-but-uncharted Wanderer's Star pins to the rim like the sun
+  // does — the relay's promise, pointing the pilgrimage. Retires once charted
+  // (in range it's an ordinary seen-planet dot from the loop above).
+  {
+    const dk = game.darkStar;
+    if (dk && dk.alive && dk.seen && !(game.charted && game.charted.wanderer)) {
+      const dx = dk.x - fx, dy = dk.y - fy;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d > MINIMAP_RANGE * 1.05) {
+        const x = cx + (dx / d) * (r - 9), y = cy + (dy / d) * (r - 9);
+        ctx.fillStyle = '#b89aff';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 4); ctx.lineTo(x + 3, y); ctx.lineTo(x, y + 4); ctx.lineTo(x - 3, y);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  // Mayday pod: a blinking rescue cross with a tiny POD tag, rim-pinned when
+  // out of range — the ping found it by ear; the radar keeps the bearing.
+  // HIDDEN while the pod rides the player's beam: a marker for the thing
+  // you're already carrying is noise, and the dock is all that matters then.
+  if (game.mayday && game.mayday.alive && game.mayday.heldBy !== 'player') {
+    const dx = game.mayday.x - fx, dy = game.mayday.y - fy;
+    const d = Math.hypot(dx, dy) || 1;
+    const rr = Math.min(d * scale, r - 9);
+    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    // mint-white, not nest-green: friendly-rescue must not share a hue with
+    // the hostile-source blips
+    if (Math.sin(game.time * 6) > -0.2) {
+      ctx.strokeStyle = '#d8ffe8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x - 3, y); ctx.lineTo(x + 3, y);
+      ctx.moveTo(x, y - 3); ctx.lineTo(x, y + 3);
+      ctx.stroke();
+    }
+    const lx = x - (dx / d) * 13, ly = y - (dy / d) * 13;   // tag pulled inward, never clipped
+    ctx.font = '600 7px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(216, 255, 232, 0.75)';
+    ctx.fillText('POD', lx, ly + 2.5);
+    ctx.textAlign = 'left';
+  }
+  // …and the DROP-OFF: while the rescue is live, the radar runs a full
+  // mission display for it — a guide line from the ship to the nearest
+  // station, a pulsing ring converging on the marker, and a literal DOCK tag
+  // (nothing is clearer than the word). Prefer a dock the player has
+  // actually charted; if none is seen yet the pod's beacon vectors an unseen
+  // one — a bearing only, never a map reveal (the station blip stays fogged).
+  if (game.mayday && game.mayday.alive) {
+    let dock = null, dd = Infinity, dockSeen = false;
+    for (const b of game.bodies) {
+      if (!b.alive || b.type !== 'station') continue;
+      const d = Math.hypot(b.x - fx, b.y - fy);
+      const seen = !!b.seen;
+      if (dock && dockSeen && !seen) continue;   // never trade a seen dock for an unseen one
+      if (!dock || (seen && !dockSeen) || d < dd) { dock = b; dd = d; dockSeen = seen; }
+    }
+    if (dock) {
+      const dx = dock.x - fx, dy = dock.y - fy;
+      const d = Math.hypot(dx, dy) || 1;
+      const rr = Math.min(d * scale, r - 9);
+      const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+      // guide line: "fly this way" — dim so the marker stays the star
+      ctx.strokeStyle = 'rgba(216, 255, 232, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(x, y); ctx.stroke();
+      // converging pulse pulls the eye into the marker
+      const k = (game.time * 0.9) % 1;
+      ctx.strokeStyle = `rgba(216, 255, 232, ${0.1 + 0.4 * k})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, 13 - 9 * k, 0, TAU); ctx.stroke();
+      // the dock itself: a bold ring + landing cross
+      ctx.strokeStyle = '#d8ffe8';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, TAU); ctx.stroke();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x - 2.5, y); ctx.lineTo(x + 2.5, y);
+      ctx.moveTo(x, y - 2.5); ctx.lineTo(x, y + 2.5);
+      ctx.stroke();
+      const lx = x - (dx / d) * 17, ly = y - (dy / d) * 17;   // tag pulled inward, never clipped
+      ctx.font = '600 7px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(216, 255, 232, 0.95)';
+      ctx.fillText('DOCK', lx, ly + 2.5);
+      ctx.textAlign = 'left';
+    }
+  }
 
   // The ship: a heading chevron at the radar's heart, with a locator ping
   if (game.ship.alive) {
@@ -2573,12 +3098,33 @@ export function render(game) {
     }
   }
 
-  // Ghost-ship sonar: the visible ring of the audible ping (solid — it's a
-  // real emission from a real object, not helper UI)
-  if (game.ghostPing) {
-    const gp = game.ghostPing;
-    const k = 1 - gp.t / 1.6;
-    ctx.strokeStyle = `rgba(255, 150, 120, ${(1 - k) * 0.45})`;
+  // The powered relay's bearing beam: a fading solid gradient line from the
+  // dish toward the revealed dark star — a ~12s one-shot cue, not standing UI.
+  if (game.relayBeamT > 0 && game.relay && game.relay.alive && game.darkStar) {
+    const rl = game.relay, dk = game.darkStar;
+    const a = Math.min(1, game.relayBeamT / 12) * 0.5;
+    const ang = Math.atan2(dk.y - rl.y, dk.x - rl.x);
+    const bx = rl.x + Math.cos(ang) * 2600, by = rl.y + Math.sin(ang) * 2600;
+    const g = ctx.createLinearGradient(rl.x, rl.y, bx, by);
+    g.addColorStop(0, `rgba(185, 154, 255, ${a})`);
+    g.addColorStop(1, 'transparent');
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 3 / game.cam.zoom;
+    ctx.beginPath(); ctx.moveTo(rl.x, rl.y); ctx.lineTo(bx, by); ctx.stroke();
+  }
+
+  // Sonar rings: the visible face of the audible pings (solid — a real
+  // emission from a real object, not helper UI). The ghost ship's is mournful
+  // red until the Herald wakes; friendly pings (the awakened Herald, the
+  // Tinker Barge) render warm green.
+  for (const gp of [game.ghostPing, game.tinkerPing, game.maydayPing]) {
+    if (!gp) continue;
+    // each ping expands from ITS OWN lifetime (t0), so a short urgent ping
+    // still blooms from the hull instead of popping in mid-expansion
+    const k = 1 - gp.t / (gp.t0 || 1.6);
+    ctx.strokeStyle = gp.friendly
+      ? `rgba(190, 255, 210, ${(1 - k) * 0.4})`
+      : `rgba(255, 150, 120, ${(1 - k) * 0.45})`;
     ctx.lineWidth = 2 / game.cam.zoom;
     ctx.beginPath(); ctx.arc(gp.x, gp.y, 40 + k * 900, 0, TAU); ctx.stroke();
   }

@@ -122,8 +122,11 @@ re-arms it for a fresh run.
   so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
   so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
   sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
-- **Settings** (Music/SFX volume sliders, Trajectory prediction) persist to
+- **Settings** (Music/SFX volume sliders, Trajectory prediction, FPS counter, Performance metrics,
+  World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
+  `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
+  first world, and loading after it would make every boot world random regardless of the setting.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
   entirely, not just silences them). The Web Audio context must still first be created *inside* a
   user gesture (a context built at page load starts suspended and never resumes): `sfx.initAudio`
@@ -134,6 +137,28 @@ re-arms it for a fresh run.
   licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship. The **CREDITS**
   panel carries the full attribution (every track title, both licenses); the settings line stays put
   regardless, because `CREDITS.md` names it specifically.
+- **The world seed is RANDOM per run.** `main.pickSeed` resolves it in one order — `?seed=` on the URL
+  (wins outright, so a repro link works even for a player who has pinned one), then the Settings field,
+  then `Math.random`. `main.regenWorld(seed)` is the single builder: boot, `resetRun`, and a seed
+  committed on the splash all go through it, and it records the live seed as `game.worldSeed`.
+  `generateWorld`'s own `20260721` default stays put — `devtest.js` leans on it for its fixed baseline.
+  `util.seedFrom` maps typed text to the uint32 mulberry32 wants: plain digits stay themselves (so the
+  number shown in the settings note regenerates exactly that world), anything else is FNV-1a hashed, so
+  worlds can be named. Committing a seed (blur/Enter) re-rolls **only from the title screen**, where the
+  splash backdrop is a live sim and the new world can be seen before START; mid-run it waits for the
+  next run and the note line says so. Typing never re-rolls — that would rebuild the system per keystroke.
+- **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
+  keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
+  fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`
+  `preventDefault` swallows those letters before the field ever sees them. ESC is deliberately let
+  through first, so it still backs out of a panel from inside the field.
+- **The perf overlay** (`#perfBadge`) has two independent Settings toggles: FPS counter (top line) and
+  Performance metrics (frame/sim/draw ms, substeps, and the live array counts). `main.frame` owns the
+  sampling into `game.perf`; hud.js only formats it. Frame time is the RAW rAF delta, never `dtReal` —
+  `dtReal` is clamped to a 20 fps floor and would flatline at 50ms exactly when the overlay matters.
+  Timings are EMA-smoothed and the text refreshes at ~5 Hz (per-frame digits strobe too fast to read);
+  both toggles off costs one `classList` check. Amber, like `#speedBadge` — this HUD's helper/debug
+  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 
@@ -279,7 +304,10 @@ re-arms it for a fresh run.
   `window.musicState()`; `window.tick` advances it with the sim. The sun channel has a DEADZONE on its outer
   third (spawn sits ~3.3 sun-radii out and the dread bed must not brood over a fresh run — tune in
   `music.computeMood`).
-- **Determinism:** world *generation* uses a seeded `mulberry32` RNG (default seed `20260721`). Runtime
+- **Determinism:** world *generation* uses a seeded `mulberry32` RNG, but the seed is **random per run**
+  (see the world-seed bullet in the shell section) — pin one with `?seed=` for a repeatable world.
+  The 17-planet/45-moon `layout` table in world.js is FIXED, so the seed varies placement, masses and
+  features, never the structural counts: the balance baseline holds on any seed. Runtime
   spawns/spall/AI intentionally use `Math.random`. Procedural sprite geometry is seeded off `b.id` and cached.
 
 ## Physics invariants — DO NOT REGRESS
@@ -307,6 +335,19 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    at 900+. (`physics.js:452`)
 6. **`WORLD_R` must exceed every system's outermost reach** (orbit + moons), and star-anchored
    planets/moons are exempt from the boundary force — it silently deorbits them otherwise. (`config.js:5`, `physics.js:613`)
+7. **Chunk shedding is gated, or it cascades.** Big bodies (`CHUNK_MIN_MASS`+, moons and up; never
+   stations/nests/gas giants) don't fail all-or-nothing. At HALF the `CHUNK_DMG_MIN`/`CHUNK_DMG_FRAC`
+   gates a hit carves a persistent scar (`b.scars` — render punches a visible bite out of the
+   silhouette); at the full gates it also SPRAYS real chunk asteroids (a couple from the crater, the
+   rest in random directions; giants vent extra) and sheds the mass. A dying world (planet/moon/rogue,
+   non-gas) shatters into a dense cloud of up to 30 slow chunks that jostle apart. Pieces of worlds
+   carry `b.chunk` — the PLANET CHUNK crust-shard sprite (render `drawChunkSprite`), distinct from
+   belt rock. The gates are load-bearing: the damage floor keeps corona-heat drip (~0.1% of maxHp per
+   call) from ever shedding, `CHUNK_MAX_MASS` (3200) stays far under the 5e4 rail-disturber threshold
+   so chunks can't wake rail lanes, hit-spray chunks spawn OUTSIDE the parent's surface with outward
+   velocity (a chunk born overlapping its parent takes collision damage and sheds again — feedback
+   loop), body counts are capped, and only a direct `'player-throw'` hit propagates player credit onto
+   chunks (shard/Demolition chains stay bounded). (`physics.js damageBody`/`shatter`, `config.js CHUNK_*`)
 
 ### Rails (the biggest architectural fact)
 
@@ -345,6 +386,57 @@ give directions by). Rules that keep it from breaking the invariants above:
   (`st.sensorMul`) come from the SCOUT **Nav Plotter** and **Deep Array** abilities, not from a passive
   survey track.
 - **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
+- **The expedition layer** (all seeded content appends AFTER `seedGlowPockets` in `generateWorld` —
+  any rng draw earlier reshuffles the whole sky and breaks mechTest T1; the guard comment in world.js
+  marks the spot):
+  - **Deliveries** (`world.updateDeliveries`, per-frame): the shared "fling/tow an object into a
+    target's catch radius" verb (`CFG.DELIVER_R`). Consumption is a HANDOVER (`alive = false`, no
+    shatter/scrap); **railed bodies are never cargo** (legit deliveries are always loose — without
+    that gate a planet's railed junk satellites self-deliver to the barge at lane conjunction), and
+    every handler carries a **re-entry guard** (the loop visits bodies pushed mid-sweep, and the
+    barge's ice payment spawns inside its own catch radius — unguarded, an ice-for-ice trade is a
+    runaway).
+  - **CHART EVERYTHING**: every world/moon/station/named landmark carries a `b.chartKey`;
+    `game.charted` records KEYS (respawned landmarks stay charted — spawn fns set their own keys).
+    The total is recomputed live each scan (a destroyed uncharted body drops out — no 100% softlock).
+    100% fires **MASTER CHART** (`prog.masterChart` → sensorMul ×1.25 + predictBoost in shipStats).
+    Moons/POIs pay less than worlds and halve the Recon Drone reach.
+  - **The Herald resolves**: deliver any graveyard wreck (`b.wreck`) → `gh.awake` — XP, a life pod,
+    the ping turns friendly, and the fog scan sees ×1.5 farther within 6000u (MIRRORED in the
+    minimap sensor bubble — keep in sync).
+  - **The Tinker Barge** (`spawnTinker`): the system's ONE friendly NPC — a railed, station-keeping
+    trader at r≈12000 with a rotating want (crystal/ice/wreck/junk — junk EXCLUDES the carved
+    stone/visitor/wrecks or it eats landmarks). **Wants come from a LOCAL census** (user design
+    rule — the barge only asks for things close by; a cross-system haul is a chore, not a trade):
+    `pickTinkerWant` counts supply within `CFG.TINKER_WANT_R` (cored rocks count toward crystal),
+    offers only plentiful wants (fallback: whatever there's most of), and a want whose local supply
+    dries up re-rolls on a ~8s census — but NEVER while the player is holding a match (no re-rolling
+    out from under a delivery in progress). The wreck want thus only appears if wrecks were hauled
+    near the lane. Not grabbable (`b.tinker` in tryGrab); mass 1900 DELIBERATELY under `ATTRACT_MIN`
+    (installations are never attractors); player kill permanent, ambient death respawns (~300s) —
+    the shepherd's rule.
+  - **The Uncharted Star**: `b.hidden` = sensor-null (fog + chart scans both skip it) — only feeding
+    the Relay Station (the `ei === 0` echo station; its log IS the breadcrumb) a core crystal reveals
+    the dark dwarf on the outermost rail (r≈39500). Type `'planet'` ON PURPOSE (star bypasses minimap
+    fog; a custom type wouldn't re-rail after a rogue disturbance); NO `noBoundary`. Charting it:
+    `XP_SURVEY_STAR` + permanent `prog.maxLivesBonus` +1 — **all lives-cap reads go through
+    `config.maxLives(prog)`**, never raw `PROG.MAX_LIVES`.
+  - **Mayday pods**: rare ambient rescues (t>180s, one at a time) — a real loose body (hp override 60)
+    drifting sunward or nest-ward with an air timer; dock it at ANY station. The pod SPRITE is a
+    real spacecraft (capsule + charred shield + orange rescue paint + beacon mast strobing faster
+    as air runs out) — never a flat UI token. While the rescue is live the minimap runs a full
+    mission display: blinking POD-tagged cross (hidden while the pod rides the player's beam), a
+    guide line from ship to the nearest station, and a pulsing DOCK-tagged ring (prefer a SEEN
+    dock; an unseen fallback is a bearing only — the station blip itself stays fogged, never a map
+    reveal). Loss = a silent somber message, no penalty. Aliens grabbing the pod is intended drama
+    (the helper refuses alien-held deliveries).
+  - **Moons with jobs**: **iron** = debris-only magnet pooling scrap at a surface halo (the
+    storm-shove law — never bodies/rails; ship magnet always wins); **sulfur** = player-credited
+    smash (`earnsScrap`, >8 dmg, not the killing blow, 30s cd ticked in the always-running pre-pass)
+    fountains capped loose rock; **dust** = `game.dustCloak` stealth (computed once per frame in
+    `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
+    battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
+    never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
   pass must keep skipping volcanic/shepherd moons.
@@ -536,6 +628,12 @@ about it — this is a hard rule.
   script, NOT in the workflow YAML — builds are **unsigned** and every release must carry them.
   The `build:` block in package.json controls what gets packaged and the installer targets. App
   icons live in `build/` (`icon.icns/.ico/.png`, generated from `build/icon-src/`).
+- **The version line in CREDITS** comes from a RELATIVE `fetch('package.json')` in main.js — the one
+  version source `src/` can read without breaking host-agnosticism (it resolves the same under serve.py
+  and over `app://`, which is registered `supportFetchAPI`). `package.json` is listed in the
+  electron-builder `files` block so it stays fetchable from the asar. It is **only accurate on a release
+  build**: a dev checkout's package.json lags the newest `v*` tag, which is the real source of truth. A
+  failed fetch drops the version silently rather than showing a broken line.
 
 ## Testing (headless + live fast-forward, no framework)
 
@@ -544,9 +642,12 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
 - `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
   `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "17/17", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{ planets: "18/18", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
+  **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
+  bit-comparable with an earlier soak. The 17/45 criteria hold on any seed (the layout table is fixed);
+  `game.worldSeed` records which world a given result came from, so quote it when reporting.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
   `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes. The raw primitive under
   `soak` — use it directly when you need custom instrumentation between chunks.
@@ -589,4 +690,5 @@ Run these from `javascript_tool` against the preview (the pane suspends rAF when
 /`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
 actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
 runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
-17-planet/45-moon baseline).
+18-planet/45-moon baseline — the 18th planet is The Wanderer's Star, the expedition layer's
+hidden dark dwarf).

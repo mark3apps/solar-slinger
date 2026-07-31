@@ -30,7 +30,7 @@ generation is seeded, so the starting layout is identical every run.
    window.soak(600, { idle: true });   // 10 idle sim-minutes — the cleanest stability signal
    ```
 
-   It returns `{ simSeconds, wallMs, planets: "17/17", moons: "45/45", ship, lives, tier,
+   It returns `{ simSeconds, wallMs, planets: "18/18", moons: "45/45", ship, lives, tier,
    deaths: [...], impacts, nanEvents }`. `idle: true` removes the ship first (no life is spent);
    omit it to soak with the ship alive and interacting. For a longer soak, call `soak` twice
    (`2 × 300s`) rather than one huge call, and combine the results yourself — each call re-arms
@@ -55,9 +55,11 @@ generation is seeded, so the starting layout is identical every run.
    normal play. Opening the page with `?dev=1` adds hotkeys: `-` halve, `=` double, `0` reset. Note picks
    still freeze the sim at speed — `game.autoUpgrade = true` if that stalls a long watch.
 
-## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 17 planets, 45 moons)
+## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 18 planets, 45 moons —
+## the 18th is The Wanderer's Star, the expedition layer's dark dwarf on the outermost rail;
+## it counts as a planet in the census and must survive like one)
 
-- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **17/17 planets must
+- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **18/18 planets must
   survive 10 idle sim-minutes, and moons should read 45/45.** Two seeded rogues meeting the sun
   around t≈570 are the known-good fingerprint. There are **NO deterministic moon deaths**: the
   earlier fingerprint of four moon absorptions at t≈202-267 (masses 9062/9772/7389/4013) was a
@@ -81,7 +83,7 @@ generation is seeded, so the starting layout is identical every run.
   ANY planet loss in an IDLE soak is a regression.
 - **With the ship alive:** expect the same, *plus* occasional losses of the 1-2 innermost worlds to
   ship-interaction drama (magma/Emberkin artillery near a live ship can chip the firing world off its
-  rail into the corona). 15/17+ is normal; losses of OUTER planets, or several at once, are regressions.
+  rail into the corona). 16/18+ is normal; losses of OUTER planets, or several at once, are regressions.
 - **Moon survival:** moons should essentially all survive; they're railed and orbits are exact by
   construction. A moon `shattered` against its own planet points at invariant #1 or #2 (energy pumping
   in tight pairs).

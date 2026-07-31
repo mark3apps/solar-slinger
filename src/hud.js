@@ -36,12 +36,13 @@ export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
-    'msg', 'speedBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
+    'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2', 'bottomleft',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
     'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
-    'menuBtn', 'setPredict', 'setMusicVol', 'setSfxVol', 'ctrlOut',
+    'menuBtn', 'setPredict', 'setFps', 'setPerf', 'setSeed', 'seedNote',
+    'setMusicVol', 'setSfxVol', 'ctrlOut', 'credVersion',
     'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
     'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnMainMenu', 'btnPauseExit',
     'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack']) {
@@ -84,6 +85,18 @@ export function initMenus(handlers) {
   bind('btnControlsBack', handlers.onCloseShell);
   bind('btnCreditsBack', handlers.onCloseShell);
   bind('setPredict', handlers.onTogglePredict);
+  bind('setFps', handlers.onToggleFps);
+  bind('setPerf', handlers.onTogglePerf);
+  // World seed: `input` records what was typed, `change` (blur / Enter) is the
+  // COMMIT that may re-roll the world — regenerating per keystroke would
+  // rebuild the whole system on every character. The note line pins the world
+  // you're already looking at.
+  if (el.setSeed) {
+    el.setSeed.addEventListener('input', (e) => handlers.onSeedInput(e.target.value));
+    el.setSeed.addEventListener('change', () => handlers.onSeedCommit());
+    el.setSeed.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+  }
+  bind('seedNote', handlers.onSeedPin);
   initControlMap();
   // Volume sliders — the ONLY audio controls (zero = mute; no separate
   // toggles): live level on drag, and a preview tick on release so the SFX
@@ -177,6 +190,14 @@ function setSlider(node, v) {
   if (node.value !== val) node.value = val;
 }
 
+// Reflect a text field without fighting live typing — same activeElement guard
+// as setSlider, and for the same reason: rewriting the value under a cursor
+// would jump the caret to the end on every frame.
+function setInput(node, v) {
+  if (!node || document.activeElement === node) return;
+  if (node.value !== v) node.value = v;
+}
+
 // Reflect a switch's on/off state (only touches the DOM on a real change).
 function setToggle(node, on) {
   if (!node || node.classList.contains('on') === !!on) return;
@@ -225,8 +246,21 @@ function syncMenus(game) {
     prevSplash = splash; prevModal = modal;
   }
   setToggle(el.setPredict, game.predict);
+  setToggle(el.setFps, game.showFps);
+  setToggle(el.setPerf, game.showPerf);
   setSlider(el.setMusicVol, game.musicVol);
   setSlider(el.setSfxVol, game.sfxVol);
+  setInput(el.setSeed, game.seedText);
+  // The seed note names the world you're actually in (click it to pin that
+  // one). A pin that doesn't match the live world can only be waiting on the
+  // next run — say so, rather than letting the field look like it did nothing.
+  if (el.seedNote) {
+    const pending = game.seedPin != null && game.seedPin !== game.worldSeed;
+    setText(el.seedNote, `World ${game.worldSeed}${pending ? ' · new seed applies next run' : ' · click to keep it'}`);
+  }
+  // Version lands asynchronously (a package.json fetch) — setText is diffed, so
+  // this costs exactly one DOM write whenever it finally resolves.
+  if (el.credVersion) setText(el.credVersion, game.version ? `Solar Slinger v${game.version}` : 'Solar Slinger');
 }
 
 export function setDeathVisible(v, cause = '', lives = 0) {
@@ -316,6 +350,35 @@ function moodChrome(game) {
   setVar(el.hud, '--moodI', intensity.toFixed(2));
 }
 
+// ---- The perf overlay (Settings: FPS counter / Performance metrics) --------
+// Two independent toggles feeding one badge: FPS is the top line, the metrics
+// block is everything under it. Both off costs a single classList check — the
+// string is never built. Refreshed at ~5 Hz rather than per frame BECAUSE per-
+// frame digits are unreadable (they strobe faster than you can focus on them),
+// and it keeps the mote sum — the only loop here — off the hot path.
+// main.js owns the sampling (game.perf); this only formats it.
+const PERF_MS = 200;
+let perfNext = 0;
+function perfBadge(game) {
+  const on = game.showFps || game.showPerf;
+  el.perfBadge.classList.toggle('hidden', !on);
+  if (!on) return;
+  const now = performance.now();
+  if (now < perfNext) return;
+  perfNext = now + PERF_MS;
+  const p = game.perf || {};
+  const lines = [];
+  if (game.showFps) lines.push(`${Math.round(p.fps || 0)} FPS`);
+  if (game.showPerf) {
+    let motes = 0;
+    for (const g of game.glowPockets) motes += g.motes ? g.motes.length : 0;
+    lines.push(`frame ${(p.frameMs || 0).toFixed(1)}  sim ${(p.simMs || 0).toFixed(1)}  draw ${(p.drawMs || 0).toFixed(1)} ms`);
+    lines.push(`steps ${p.steps || 0} · bodies ${game.bodies.length} · debris ${game.debris.length}`);
+    lines.push(`fx ${game.particles.length} · aliens ${game.aliens.length} · motes ${motes} · orbit ${game.orbit.length}`);
+  }
+  setText(el.perfBadge, lines.join('\n'));
+}
+
 export function updateHud(game) {
   syncMenus(game);
   moodChrome(game);
@@ -330,6 +393,7 @@ export function updateHud(game) {
     setText(el.speedBadge, lag ? `SIM ×${scale} — running ×${act.toFixed(1)}` : `SIM ×${scale}`);
     el.speedBadge.classList.toggle('lag', lag);
   }
+  perfBadge(game);
   const s = game.ship;
   const st = game.st;
   const prog = game.prog;

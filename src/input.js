@@ -10,8 +10,19 @@ export function initInput(canvas, handlers) {
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
     initAudio();
+    // ESC backs out of a panel from anywhere, focused field included.
+    if (e.code === 'Escape') { handlers.onMenuKey(); return; }
+    // A FOCUSED TEXT FIELD OWNS THE KEYBOARD. Every hotkey below is a bare
+    // letter, so without this bail-out typing in the Settings seed box doubles
+    // as gameplay input: "r" respawns (and on game over restarts the run
+    // outright), "t" toggles the forecast, "p" closes the panel you're typing
+    // in, digits pick upgrade cards — and the preventDefault at the bottom
+    // swallows w/s so they never even reach the field. Ranges are covered too,
+    // which stops the volume sliders' arrow keys from firing hotkeys as well.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     input.keys.add(e.code);
-    if (e.code === 'Escape' || e.code === 'KeyP') handlers.onMenuKey();
+    if (e.code === 'KeyP') handlers.onMenuKey();
     if (e.code === 'KeyR') handlers.onRespawn();
     if (e.code === 'KeyT') handlers.onTogglePredict();
     // Upgrade-card selection (only acts while the choice modal is open)
