@@ -128,7 +128,9 @@ export function shatter(game, body, credit = null) {
   body.alive = false;
   // The ring shepherd only respawns after AMBIENT deaths — a deliberate
   // player kill earns its permanently scattered ring (world.js respawn).
+  // Same rule for the Tinker Barge: shoot the trader and no trader returns.
   if (body.shepherd && earnsScrap(credit)) game.shepherdPlayerKilled = true;
+  if (body.tinker && earnsScrap(credit)) game.tinkerPlayerKilled = true;
   if (game.deathLog) game.deathLog.push({ t: Math.round(game.time), how: 'shattered', type: body.type, mass: Math.round(body.mass) });
   if (body.heldBy === 'player' && game.held === body) game.held = null;
 
@@ -268,6 +270,17 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
   // wall survives the intercepts it exists to make. Loose rocks are untouched.
   if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.2 * game.st.rockwall;
+  // SULFUR MOONS: a hard PLAYER smash (earnsScrap credit — ambient traffic
+  // can't trigger it) vents the crust: a queued chain of surface pops that
+  // fountain loose sling rock (the world.js hazard loop pops them). Not on
+  // the killing blow — the moon's death is its own event, not a send-off.
+  if (body.type === 'moon' && body.moonType === 'sulfur' && earnsScrap(credit) &&
+      dmg > 8 && !(body.sulfurCd > 0) && body.hp - dmg > 0) {
+    body.sulfurCd = 30;
+    body.sulfurPops = 3 + Math.floor(Math.random() * 3);
+    body.sulfurPopT = 0.2;
+    game.sulfurWarn = true;
+  }
   derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
@@ -758,7 +771,11 @@ function collideShipBody(game, s, b, dt) {
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
       const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
       damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
-      addXp(game, grind * PROG.XP_SKIM);   // skating a surface is risky XP
+      // Skating a surface is risky XP — and BANDED MOONS are the skate park:
+      // same grind, same hull cost, triple the payout.
+      const banded = b.type === 'moon' && b.moonType === 'banded';
+      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : 1));
+      if (banded && !game.tut.banded) game.bandedWarn = true;
 
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
@@ -1191,6 +1208,14 @@ export function step(game, dt) {
   }
 
   const storm = game.storm;   // solar storm front nudges loose scrap outward
+  // IRON MOONS are magnetic — natural salvage depots. Shortlist them once per
+  // substep; the debris loop springs loose chunks toward a pooling halo just
+  // off the surface. DEBRIS ONLY, exactly the storm-shove law: a force that
+  // touched bodies, celestials, or rails is an invariant regression.
+  let ironMoons = null;
+  for (const b of bodies) {
+    if (b.alive && b.type === 'moon' && b.moonType === 'iron') (ironMoons ??= []).push(b);
+  }
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
     const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
@@ -1198,6 +1223,7 @@ export function step(game, dt) {
     if (s.alive && dd < magnet) {
       // Spring-steer toward the ship (matching its velocity) rather than pure
       // acceleration — otherwise chunks whip into little orbits around you.
+      // (The ship magnet always outranks an iron moon's pull.)
       const t = 1 - dd / magnet;
       const spd = 260 + 700 * t;
       const desVx = (dx / dd) * spd + s.vx, desVy = (dy / dd) * spd + s.vy;
@@ -1205,6 +1231,26 @@ export function step(game, dt) {
     } else {
       const g = gravityAt(attractors, d.x, d.y);
       d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
+      if (ironMoons) {
+        // Spring toward the nearest iron moon's pooling ring (radius + 50) so
+        // chunks visibly POOL off the surface instead of burying in the disc.
+        // Same desired-velocity idiom as the ship magnet, much gentler cap.
+        let im = null, imd = CFG.IRON_MAGNET_R;
+        for (const m of ironMoons) {
+          const md = Math.hypot(m.x - d.x, m.y - d.y);
+          if (md < imd) { imd = md; im = m; }
+        }
+        if (im) {
+          const ux = (im.x - d.x) / (imd || 1), uy = (im.y - d.y) / (imd || 1);
+          const toRing = imd - (im.radius + 50);
+          const spd2 = Math.max(-60, Math.min(60, toRing * 0.6));
+          const desVx2 = im.vx + ux * spd2, desVy2 = im.vy + uy * spd2;
+          let iax = (desVx2 - d.vx) * 2, iay = (desVy2 - d.vy) * 2;
+          const iam = Math.hypot(iax, iay);
+          if (iam > CFG.IRON_MAGNET_A) { iax *= CFG.IRON_MAGNET_A / iam; iay *= CFG.IRON_MAGNET_A / iam; }
+          d.ax += iax; d.ay += iay;
+        }
+      }
       if (storm) {
         // Gentle radiation-pressure shove while the front passes. Scrap
         // ONLY — pushing bodies or celestials is how invariants die.

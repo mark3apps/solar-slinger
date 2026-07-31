@@ -54,6 +54,8 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | glow mote heals hull | the one legitimate mid-life heal |
 | death spends life, respawn keeps build | lives system, build persistence |
 | NaN tripwire contains poison | invariant containment + `nanEvents` counting |
+| delivery: wreck wakes the Herald | the shared delivery verb (updateDeliveries) — handover, not kill; pays XP |
+| chart pays once; master chart at 100% | chart-everything: once-per-key payout, hidden-star exclusion, MASTER CHART reward |
 | sky intact after suite | the suite's own actions must not shred planets/moons |
 
 ## Judging results

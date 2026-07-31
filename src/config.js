@@ -187,6 +187,30 @@ export const CFG = {
   PREDICT_DT: 1 / 30,
   HELD_STEPS: 60,          // the throw line is short (~2s of flight)...
   LOCK_T: 1.8,             // ...and lock-on only works within throw-line reach
+
+  // DELIVERY: flinging/towing a matching object into a target's catch radius
+  // hands it over (world.updateDeliveries — the relay, the Herald, the Tinker
+  // Barge, and mayday-pod docks all share this one verb).
+  DELIVER_R: 280,
+  // The barge only asks for things it can see from its own deck: wants are
+  // picked from a census of matching bodies within this radius of the barge
+  // (user design rule — a want you must haul from across the system reads as
+  // a chore, not a trade; the graveyard-wreck want effectively retires unless
+  // the player has stockpiled wrecks nearby). 6000 comfortably covers the
+  // neighboring junk-satellite worlds, ring ice sweeping past, and the
+  // view-local rock field of a player hanging around to trade.
+  TINKER_WANT_R: 6000,
+  // IRON MOONS are magnetic: loose scrap DEBRIS inside this range drifts into
+  // a pooling halo just off the surface. Debris ONLY — the storm-shove law:
+  // a force that touched bodies, celestials, or rails is an invariant
+  // regression waiting to happen (see CFG.STORM_* above).
+  IRON_MAGNET_R: 900,
+  IRON_MAGNET_A: 60,       // capped accel — gentler than the storm shove (130)
+  // DUST MOONS trail a concealing halo: inside DUST_HALO x radius the ship is
+  // invisible to alien senses (ai.js gates on game.dustCloak). The render
+  // gradient reaches wider than the mechanic so the boundary never reads as a
+  // hard edge (in-world transitions are organic, never geometric).
+  DUST_HALO: 2.4,
 };
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your
@@ -270,6 +294,15 @@ export const PROG = {
   XP_SURVEY: 40,           // chart a world
   XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
   XP_SLING: 0.6,           // per unit of speed gained in a clean slingshot
+  // ---- expedition layer: charting, deliveries, rescues ----
+  XP_SURVEY_MOON: 15,      // charting a moon — worth less than a world
+  XP_SURVEY_POI: 25,       // charting a station or named landmark
+  XP_SURVEY_STAR: 160,     // charting the hidden dark star (the relay questline payoff)
+  XP_MASTER_CHART: 250,    // logging EVERY chartable body in the system
+  XP_HERALD: 200,          // waking the Herald (deliver it a graveyard wreck)
+  XP_TRADE: 150,           // the Tinker Barge's XP payment option
+  XP_RESCUE: 180,          // docking a mayday pod at a station before its air runs out
+  XP_SKIM_BANDED: 3,       // banded-moon skim XP multiplier (the skate park)
   // Life pods: sparse world collectibles that refill the buffer
   LIFE_R: 62,              // collect radius
   LIFE_MAX_ACTIVE: 1,      // at most this many adrift at once
@@ -407,12 +440,18 @@ export function newProgress() {
     spec: null,            // chosen at run start (applySpec seeds the starting kit)
     upgrades: {},          // { abilityId: rank } — empty until a spec is chosen
     lives: PROG.START_LIVES,
+    masterChart: false,    // 100% chart completion (shipStats grants the sensor/forecast bonus)
+    maxLivesBonus: 0,      // permanent cap raises (charting the dark star) — read via maxLives()
     // flavor counters (stats only, not read by shipStats)
     catches: 0,
     smashes: 0,
     surveyed: 0,
   };
 }
+
+// The lives cap: base PROG cap plus permanent bonuses earned in-run. Every cap
+// read goes through here so a bonus can never be forgotten by one call site.
+export function maxLives(prog) { return PROG.MAX_LIVES + (prog.maxLivesBonus || 0); }
 
 // ---- XP + pick bookkeeping (pure helpers over game.prog) --------------------
 
@@ -640,14 +679,18 @@ export function shipStats(prog) {
     slipstream: slipC > 0,                        // tap F: short warp (main.onWarp)
     // ---- scaled passives ----
     magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magnetC),
-    sensorMul: 1 + 0.3 * deepC,             // Deep Array widens the map reveal
+    // Deep Array widens the map reveal; MASTER CHART (knowing the whole sky)
+    // sharpens it further — the completionist reward reads through the same
+    // stat every consumer already uses.
+    sensorMul: (1 + 0.3 * deepC) * (prog.masterChart ? 1.25 : 1),
     // Scout's Phase Screen is thin but SNAPPY — it recharges sooner and faster
     // (that speed is the ability's identity; the other specs keep the base rate).
     regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
     regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
-    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC,
+    // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.
+    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],

@@ -1,5 +1,5 @@
 import {
-  CFG, PROG, SPECS, newProgress, shipStats,
+  CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, xpForPick, pickIsMilestone, tierChoices, rankChoices,
   consumePickCost, applyAbility, applySpec, applyTierUp,
 } from './config.js';
@@ -385,7 +385,7 @@ function applyPick(i) {
     consumePickCost(game.prog);
     applyTierUp(game.prog);
     applyAbility(game.prog, choice.id);
-    game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+    game.prog.lives = Math.min(maxLives(game.prog), game.prog.lives + 1);
     game.st = shipStats(game.prog);
     game.lastTier = game.st.tier;
     sfx.sfxTierUp();
@@ -436,7 +436,7 @@ function openUpgrade() {
     if (!game.upgradeChoices.length) {   // spec pool exhausted -> tier up with no new ability
       consumePickCost(prog);
       applyTierUp(prog);
-      game.prog.lives = Math.min(PROG.MAX_LIVES, game.prog.lives + 1);
+      game.prog.lives = Math.min(maxLives(prog), game.prog.lives + 1);
       game.st = shipStats(game.prog);
       game.lastTier = game.st.tier;
       sfx.sfxTierUp();
@@ -567,10 +567,38 @@ const EVENT_MSGS = [
     first: [(v) => `MOONSHADOW — a lunar eclipse is sweeping across ${v}.`, 5] },
   { flag: 'surveyMsg', snd: sfx.sfxChime, first: [(v) => v, 4.5] },
   { flag: 'echoMsg', snd: sfx.sfxChime, first: [(v) => v, 7.5] },
+  { flag: 'masterChartWarn', snd: sfx.sfxLife,
+    first: ['MASTER CHART COMPLETE — every world logged. Deep-sky calibration: sensors and forecast permanently sharpened.', 6.5] },
   { flag: 'graveyardWarn', tut: 'graveyard', snd: sfx.sfxChime,
     first: ['GRAVEYARD ORBIT — pre-collapse wreckage rings the sun. Rich salvage… but the sun is very close.', 6] },
   { flag: 'ghostWarn', tut: 'ghost', snd: sfx.sfxWarnLow,
     first: ['UNKNOWN CONTACT — a repeating signal, close by. Something old is out here.', 6] },
+  { flag: 'heraldWakeWarn', snd: sfx.sfxLife,
+    first: ['THE HERALD ANSWERS — lights returning deck by deck. Its beacon now watches this reach of space.', 6.5] },
+  { flag: 'tinkerWantWarn', tut: 'tinker', snd: sfx.sfxChime,
+    first: [(v) => `TINKER BARGE — a crewed trader! It wants ${v}: fling one into its catch ring for payment.`, 6.5],
+    repeat: [(v) => `The Tinker Barge wants ${v}.`, 3.5] },
+  { flag: 'tinkerPaidWarn', snd: sfx.sfxLife,
+    first: [(v) => `TRADE COMPLETE — payment delivered: ${v}.`, 4.5] },
+  { flag: 'relayWarn', snd: sfx.sfxChime,
+    first: ['THE RELAY POWERS UP — its dish grinds around and locks a bearing. There IS a star out there. New contact on the map rim.', 7] },
+  { flag: 'maydayWarn', tut: 'mayday', snd: sfx.sfxWarnLow,
+    first: [(v) => `MAYDAY — an escape pod is adrift to the ${v}, air failing. Tow it to any station — the dock is marked on your radar.`, 6.5],
+    repeat: [(v) => `MAYDAY — pod adrift to the ${v}, air failing.`, 4.5] },
+  { flag: 'maydaySavedWarn', snd: sfx.sfxLife,
+    first: ['PILOT RESCUED — they made it.', 4] },
+  // Deliberately silent: the quiet IS the message.
+  { flag: 'maydayLostWarn',
+    first: ['The pod has gone quiet.', 5] },
+  // ---- moons-with-jobs discoveries (all sfxChime: opportunity, not threat) ----
+  { flag: 'ironWarn', tut: 'iron', snd: sfx.sfxChime,
+    first: ['MAGNETIC MOON — this iron moon gathers loose salvage. Let your scrap pool here, then sweep it up.', 5.5] },
+  { flag: 'sulfurWarn', tut: 'sulfur', snd: sfx.sfxChime,
+    first: ['SULFUR POPS — the crust is venting! A hard smash fountains loose sling rock.', 5.5] },
+  { flag: 'dustWarn', tut: 'dust', snd: sfx.sfxChime,
+    first: ['DUST SHROUD — inside this halo, alien senses cannot find you. Pursuers lose their lock.', 5.5] },
+  { flag: 'bandedWarn', tut: 'banded', snd: sfx.sfxChime,
+    first: ["BANDED SKIMMING — grinding this moon's bands pays triple XP. Risky flying, rewarded.", 5.5] },
   { flag: 'ringDecayName', snd: sfx.sfxChime,
     first: [(v) => `The shepherd moon is gone — ${v}'s ring is beginning to scatter.`, 6] },
   { flag: 'volcWarn', tut: 'volc', snd: sfx.sfxChime,
@@ -692,6 +720,7 @@ function update(dtReal) {
     if (game.autoEvadeT > 0) game.autoEvadeT -= dtReal;     // Reflex Jink recharge
     if (game.jinkT > 0) game.jinkT -= dtReal;               // jink flash ring
     if (game.warpT > 0) game.warpT -= dtReal;               // Slipstream cooldown
+    if (game.relayBeamT > 0) game.relayBeamT -= dtReal;     // relay bearing-beam cue
 
     // SLINGSHOT: pass through a planet's well without touching the throttle
     // and leave faster than you entered — clean flying feeds the engines.
@@ -835,7 +864,7 @@ function updateLifePods(dt) {
     p.phase = (p.phase || 0) + dt;
     if (s.alive && Math.hypot(p.x - s.x, p.y - s.y) < PROG.LIFE_R + s.radius) {
       game.pickups.splice(i, 1);
-      if (game.prog.lives < PROG.MAX_LIVES) {
+      if (game.prog.lives < maxLives(game.prog)) {
         game.prog.lives++;
         hud.message(`EXTRA LIFE recovered — ${game.prog.lives} lives.`, 4);
       } else {
@@ -848,7 +877,7 @@ function updateLifePods(dt) {
   game.lifeTimer -= dt;
   if (game.lifeTimer <= 0) {
     game.lifeTimer = PROG.LIFE_RESPAWN * (0.6 + Math.random() * 0.8);
-    if (game.prog.lives < PROG.MAX_LIVES && game.pickups.length < PROG.LIFE_MAX_ACTIVE) {
+    if (game.prog.lives < maxLives(game.prog) && game.pickups.length < PROG.LIFE_MAX_ACTIVE) {
       spawnLifePod(game);
     }
   }

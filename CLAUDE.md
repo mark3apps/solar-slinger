@@ -317,6 +317,57 @@ give directions by). Rules that keep it from breaking the invariants above:
   (`st.sensorMul`) come from the SCOUT **Nav Plotter** and **Deep Array** abilities, not from a passive
   survey track.
 - **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
+- **The expedition layer** (all seeded content appends AFTER `seedGlowPockets` in `generateWorld` —
+  any rng draw earlier reshuffles the whole sky and breaks mechTest T1; the guard comment in world.js
+  marks the spot):
+  - **Deliveries** (`world.updateDeliveries`, per-frame): the shared "fling/tow an object into a
+    target's catch radius" verb (`CFG.DELIVER_R`). Consumption is a HANDOVER (`alive = false`, no
+    shatter/scrap); **railed bodies are never cargo** (legit deliveries are always loose — without
+    that gate a planet's railed junk satellites self-deliver to the barge at lane conjunction), and
+    every handler carries a **re-entry guard** (the loop visits bodies pushed mid-sweep, and the
+    barge's ice payment spawns inside its own catch radius — unguarded, an ice-for-ice trade is a
+    runaway).
+  - **CHART EVERYTHING**: every world/moon/station/named landmark carries a `b.chartKey`;
+    `game.charted` records KEYS (respawned landmarks stay charted — spawn fns set their own keys).
+    The total is recomputed live each scan (a destroyed uncharted body drops out — no 100% softlock).
+    100% fires **MASTER CHART** (`prog.masterChart` → sensorMul ×1.25 + predictBoost in shipStats).
+    Moons/POIs pay less than worlds and halve the Recon Drone reach.
+  - **The Herald resolves**: deliver any graveyard wreck (`b.wreck`) → `gh.awake` — XP, a life pod,
+    the ping turns friendly, and the fog scan sees ×1.5 farther within 6000u (MIRRORED in the
+    minimap sensor bubble — keep in sync).
+  - **The Tinker Barge** (`spawnTinker`): the system's ONE friendly NPC — a railed, station-keeping
+    trader at r≈12000 with a rotating want (crystal/ice/wreck/junk — junk EXCLUDES the carved
+    stone/visitor/wrecks or it eats landmarks). **Wants come from a LOCAL census** (user design
+    rule — the barge only asks for things close by; a cross-system haul is a chore, not a trade):
+    `pickTinkerWant` counts supply within `CFG.TINKER_WANT_R` (cored rocks count toward crystal),
+    offers only plentiful wants (fallback: whatever there's most of), and a want whose local supply
+    dries up re-rolls on a ~8s census — but NEVER while the player is holding a match (no re-rolling
+    out from under a delivery in progress). The wreck want thus only appears if wrecks were hauled
+    near the lane. Not grabbable (`b.tinker` in tryGrab); mass 1900 DELIBERATELY under `ATTRACT_MIN`
+    (installations are never attractors); player kill permanent, ambient death respawns (~300s) —
+    the shepherd's rule.
+  - **The Uncharted Star**: `b.hidden` = sensor-null (fog + chart scans both skip it) — only feeding
+    the Relay Station (the `ei === 0` echo station; its log IS the breadcrumb) a core crystal reveals
+    the dark dwarf on the outermost rail (r≈39500). Type `'planet'` ON PURPOSE (star bypasses minimap
+    fog; a custom type wouldn't re-rail after a rogue disturbance); NO `noBoundary`. Charting it:
+    `XP_SURVEY_STAR` + permanent `prog.maxLivesBonus` +1 — **all lives-cap reads go through
+    `config.maxLives(prog)`**, never raw `PROG.MAX_LIVES`.
+  - **Mayday pods**: rare ambient rescues (t>180s, one at a time) — a real loose body (hp override 60)
+    drifting sunward or nest-ward with an air timer; dock it at ANY station. The pod SPRITE is a
+    real spacecraft (capsule + charred shield + orange rescue paint + beacon mast strobing faster
+    as air runs out) — never a flat UI token. While the rescue is live the minimap runs a full
+    mission display: blinking POD-tagged cross (hidden while the pod rides the player's beam), a
+    guide line from ship to the nearest station, and a pulsing DOCK-tagged ring (prefer a SEEN
+    dock; an unseen fallback is a bearing only — the station blip itself stays fogged, never a map
+    reveal). Loss = a silent somber message, no penalty. Aliens grabbing the pod is intended drama
+    (the helper refuses alien-held deliveries).
+  - **Moons with jobs**: **iron** = debris-only magnet pooling scrap at a surface halo (the
+    storm-shove law — never bodies/rails; ship magnet always wins); **sulfur** = player-credited
+    smash (`earnsScrap`, >8 dmg, not the killing blow, 30s cd ticked in the always-running pre-pass)
+    fountains capped loose rock; **dust** = `game.dustCloak` stealth (computed once per frame in
+    `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
+    battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
+    never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
   pass must keep skipping volcanic/shepherd moons.
@@ -492,7 +543,7 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
 - `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
   `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "17/17", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{ planets: "18/18", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
@@ -537,4 +588,5 @@ Run these from `javascript_tool` against the preview (the pane suspends rAF when
 /`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
 actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
 runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
-17-planet/45-moon baseline).
+18-planet/45-moon baseline — the 18th planet is The Wanderer's Star, the expedition layer's
+hidden dark dwarf).
