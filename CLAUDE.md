@@ -209,7 +209,19 @@ re-arms it for a fresh run.
   reaches BRAWLER/HAULER this way, and Afterburner reaches BRAWLER only at tier 4 (`tierFloorFor` is
   the one resolver). An optional **`xpMul`** scales that ability's whole automatic rank ladder —
   late-floored rows discount it (0.5 at `minTier` 3, 0.7 at 2) because they're learned with only a
-  fraction of the run's XP left to earn. `channel` is the stat bucket it feeds;
+  fraction of the run's XP left to earn. An optional **`needs: '<channel>'` is a HARD PREREQUISITE**
+  (`config.prereqMet`, filtered in `tierChoices`): the row isn't OFFERED until you own an ability
+  feeding that channel. It exists only for rows that are literally INERT alone — Scattergun /
+  Rockwall / Aegis Reflector / Recovery Tether all act on ORBIT rocks, and with no orbit ability
+  `shipStats` gives `orbitCap` 0 / `maxOrbiters` 0 so there is never a rock to act on; Impact
+  Warning is gated behind the plotter inside `shipStats` itself (`hasCrashWarn = collisionC > 0 &&
+  hasPredict`). Each was a dead card: it spent the pick, its bar climbed, nothing happened. It names
+  a CHANNEL, not an id, so it resolves across specs with no per-spec table (orbit = BRAWLER's War
+  Rack and HAULER's Orbital Sling / Expanded Bay alike). Every channel a `needs` points at has at
+  least one un-gated tier-0 provider in that spec's pool, so a gate can never deadlock. Do NOT add
+  it to the second-track duplicates (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
+  Freighter, Juggernaut) — they READ like extensions but work fine standing alone.
+  `channel` is the stat bucket it feeds;
   `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one
   channel (e.g. HAULER's Orbital Sling + Expanded Bay both feed `orbit`). Add an ability by adding a
   catalog row + reading its channel in `shipStats` — nothing else needs to know it exists.
