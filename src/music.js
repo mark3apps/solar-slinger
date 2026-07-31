@@ -19,7 +19,7 @@
 // while the sim is frozen (menus just duck the level — the duck rides
 // musicBus, so per-track gains carry only the crossfade envelopes).
 import { getAudio } from './sfx.js';
-import { lerp } from './util.js';
+import { lerp, shellModal } from './util.js';
 
 const DIR = 'assets/audio/music/';
 const PLAYLISTS = {
@@ -183,6 +183,10 @@ function computeMood(game, dt) {
   mood.world = chase(mood.world, world, dt, 1.4, 0.25);
   mood.sun = chase(mood.sun, sun, dt, 1.6, 0.3);
   mood.danger = chase(mood.danger, danger, dt, 2.5, 0.35);
+  // Published on the game object so the HUD can tint the cockpit chrome with
+  // it (hud.js) without importing the music module. Read-only downstream — the
+  // director owns these numbers.
+  game.mood = mood;
 }
 
 // Which playlist does the mood ask for? EXIT threshold for the one we're in,
@@ -219,7 +223,7 @@ export function updateMusic(game, dt) {
   // The duck rides musicBus so the per-track gains stay pure fade envelopes.
   const duckTo = !game.started ? 0.55
     : game.gameOver ? 0.3
-    : (game.paused || game.settingsOpen || game.choosingUpgrade) ? 0.4
+    : (game.paused || shellModal(game) || game.choosingUpgrade) ? 0.4
     : !game.ship.alive ? 0.4   // deep dip — give the death sequence the stage
     : 1;
   duckCur = lerp(duckCur, duckTo, 1 - Math.exp(-2.5 * dt));

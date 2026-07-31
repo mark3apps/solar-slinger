@@ -1,5 +1,12 @@
 export const TAU = Math.PI * 2;
 
+// Is a full-screen shell modal up? Settings / Controls / Credits are separate
+// flags because each is its own panel, but every gate in the game treats them
+// identically — the sim freezes, player input is blocked, the music ducks, the
+// trajectory forecast hides. Kept here (a leaf) so main, hud, music and render
+// can all ask without importing each other.
+export const shellModal = (g) => !!(g.settingsOpen || g.controlsOpen || g.creditsOpen);
+
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 

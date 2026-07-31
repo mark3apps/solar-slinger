@@ -69,28 +69,33 @@
 </div>
 
 <div id="splashScreen" class="panel menu">
+  <!-- The power-on scan sweep; hud.js replays it by re-adding .boot -->
+  <i class="bootscan"></i>
   <div class="titleblock">
     <div class="orbitdeco">
       <i class="od-ring od-r1"><i class="od-orb"></i></i>
       <i class="od-ring od-r2"><i class="od-orb"></i></i>
       <i class="od-sun"></i>
     </div>
-    <div class="gametitle">SOLAR <span>SLINGER</span></div>
+    <!-- data-text is the sheen overlay's glyph copy (.gametitle::after) — keep
+         it identical to the text, or the highlight won't line up -->
+    <div class="gametitle" data-text="SOLAR SLINGER">SOLAR <span>SLINGER</span></div>
     <div class="subtitle">A LIVING GRAVITY SANDBOX</div>
   </div>
-  <p class="tagline">Fly a little ship through a living solar system &mdash; grab things with your tractor beam, and fling them.</p>
   <div class="menucol">
     <button class="menubtn primary" id="btnStart">START GAME</button>
+    <button class="menubtn" id="btnSplashControls">CONTROLS</button>
     <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
+    <button class="menubtn" id="btnSplashCredits">CREDITS</button>
     <button class="menubtn" id="btnSplashExit">EXIT</button>
   </div>
-  <p class="keyhints"><span><kbd>MOUSE</kbd>steer</span><span><kbd>W</kbd>thrust</span><span><kbd>LMB</kbd>grab &amp; fling</span></p>
 </div>
 
 <div id="pauseScreen" class="panel menu hidden">
   <h1 class="menuhdr">PAUSED</h1>
   <div class="menucol">
     <button class="menubtn primary" id="btnResume">RESUME</button>
+    <button class="menubtn" id="btnPauseControls">CONTROLS</button>
     <button class="menubtn" id="btnPauseSettings">SETTINGS</button>
     <button class="menubtn" id="btnMainMenu">MAIN MENU</button>
     <button class="menubtn" id="btnPauseExit">EXIT</button>
@@ -114,25 +119,89 @@
       <button class="toggle" id="setPredict" role="switch" aria-checked="true"><span class="knob"></span></button>
     </div>
   </div>
-  <div class="ctrlref">
-    <div class="ctrlhd">CONTROLS</div>
-    <div class="ctrlrow"><span>Steer</span><span>Mouse</span></div>
-    <div class="ctrlrow"><span>Thrust</span><span>W</span></div>
-    <div class="ctrlrow"><span>Reverse <em>(ability)</em></span><span>S</span></div>
-    <div class="ctrlrow"><span>Grab &amp; fling</span><span>Left mouse</span></div>
-    <div class="ctrlrow"><span>Orbit / shotgun</span><span>Right mouse</span></div>
-    <div class="ctrlrow"><span>Afterburner <em>(ability)</em></span><span>Hold Shift</span></div>
-    <div class="ctrlrow"><span>Dash left / right <em>(ability)</em></span><span>A / D</span></div>
-    <div class="ctrlrow"><span>Slipstream <em>(ability)</em></span><span>F</span></div>
-    <div class="ctrlrow"><span>Pause menu</span><span>Esc</span></div>
-    <div class="ctrlrow"><span>Trajectory prediction</span><span>T</span></div>
-    <div class="ctrlrow"><span>Respawn / new run</span><span>R</span></div>
-  </div>
   <div class="menucol">
     <button class="menubtn primary" id="btnSettingsBack">BACK</button>
   </div>
   <!-- CC-BY attribution — required by the music licenses (assets/audio/CREDITS.md) -->
   <p class="small">Music: Scott Buckley &mdash; scottbuckley.com.au (CC-BY 4.0) &middot; SFX: Kenney.nl (CC0)</p>
+</div>
+
+<!-- CONTROLS: a pilot's schematic, not a table. Every control is a real key cap
+     or mouse zone you can point at; hud.js mirrors the hovered/focused one's
+     data-fn / data-note into the readout strip at the bottom. Controls marked
+     .abl are unlocked by an ability, not owned from the start. -->
+<div id="controlsScreen" class="panel menu wide hidden">
+  <h2>FLIGHT CONTROLS</h2>
+  <div class="ctrlmap">
+    <div class="ctrlpad">
+      <div class="cphd">HELM</div>
+      <div class="keygrid">
+        <button class="kcap kw" data-fn="THRUST"
+          data-note="Burn the main engine. There is no brake — turn around and thrust to kill speed.">W</button>
+        <button class="kcap ka abl" data-fn="DASH LEFT"
+          data-note="Dash Jets: dart out to the left of your nose. Short cooldown.">A</button>
+        <button class="kcap ks abl" data-fn="REVERSE"
+          data-note="Retro Jets: thrust straight backwards without turning the ship.">S</button>
+        <button class="kcap kd abl" data-fn="DASH RIGHT"
+          data-note="Dash Jets: dart out to the right of your nose. Short cooldown.">D</button>
+      </div>
+      <div class="keyrow">
+        <button class="kcap wide abl" data-fn="AFTERBURNER"
+          data-note="Hold to spend the BURN tank for a hard burn and a higher speed ceiling. It refills slowly once you let go.">SHIFT</button>
+        <button class="kcap abl" data-fn="SLIPSTREAM"
+          data-note="Warp a short distance toward the cursor. Long cooldown.">F</button>
+      </div>
+    </div>
+    <div class="ctrlpad">
+      <div class="cphd">TRACTOR &amp; AIM</div>
+      <div class="mousefig">
+        <button class="mzone mleft" data-fn="GRAB &amp; FLING"
+          data-note="Hold to catch a rock in the beam, release to throw it. It flies exactly at your cursor, and the throw never shoves the ship."><span>LMB</span></button>
+        <button class="mzone mright" data-fn="ORBIT &amp; SHOTGUN"
+          data-note="Send the held rock into orbit around your ship as a shield. Hold with rocks in orbit to charge a shotgun volley."><span>RMB</span></button>
+        <button class="mzone mbody" data-fn="STEER"
+          data-note="The ship always noses toward the cursor — there is no turn key."><span>MOVE</span></button>
+      </div>
+    </div>
+  </div>
+  <div class="keyrow syskeys">
+    <button class="kcap" data-fn="MENU"
+      data-note="Pause the run, or back out of whichever panel is open.">ESC</button>
+    <button class="kcap" data-fn="FORECAST"
+      data-note="Toggle the dashed trajectory prediction on and off.">T</button>
+    <button class="kcap" data-fn="RESPAWN"
+      data-note="Respawn after a death — or start a whole new run once the lives are gone.">R</button>
+  </div>
+  <div class="ctrlout" id="ctrlOut">
+    <span class="cofn">SELECT A CONTROL</span>
+    <span class="conote">Point at any key or mouse button above to read what it does.</span>
+  </div>
+  <p class="ctrllegend"><i class="ablmark"></i> unlocked by an ability &mdash; your specialization decides which ones you can earn</p>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnControlsBack">BACK</button>
+  </div>
+</div>
+
+<div id="creditsScreen" class="panel menu hidden">
+  <h2>CREDITS</h2>
+  <div class="credlist">
+    <div class="credgrp">
+      <div class="cphd">MUSIC</div>
+      <div class="credname">Scott Buckley</div>
+      <div class="creddet">scottbuckley.com.au &mdash; released under CC-BY 4.0</div>
+      <div class="credtracks">Adrift Among Infinite Stars &middot; Meanwhile &middot; Shadows and Dust &middot; Permafrost &middot; Hymn to the Dawn &middot; Monomyth: The Distant Sun &middot; Decoherence &middot; Incantation &middot; Machina &middot; Nightfall</div>
+    </div>
+    <div class="credgrp">
+      <div class="cphd">SOUND EFFECTS</div>
+      <div class="credname">Kenney</div>
+      <div class="creddet">kenney.nl &mdash; Sci-Fi Sounds, Interface Sounds (CC0)</div>
+      <div class="credname">rubberduck &middot; SketchMan3 &middot; pauliuw &middot; artisticdude &middot; Spiceman &middot; AntumDeluge</div>
+      <div class="creddet">opengameart.org (CC0)</div>
+    </div>
+  </div>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnCreditsBack">BACK</button>
+  </div>
 </div>
 
 <script type="module" src="src/main.js"></script>

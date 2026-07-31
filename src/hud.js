@@ -40,12 +40,14 @@ export function initHud(game) {
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2', 'bottomleft',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
-    'topleft', 'splashScreen', 'settingsScreen', 'menuBtn', 'setPredict',
-    'setMusicVol', 'setSfxVol',
-    'btnStart', 'btnSplashSettings', 'btnSplashExit',
-    'btnResume', 'btnPauseSettings', 'btnMainMenu', 'btnPauseExit', 'btnSettingsBack']) {
+    'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
+    'menuBtn', 'setPredict', 'setMusicVol', 'setSfxVol', 'ctrlOut',
+    'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
+    'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnMainMenu', 'btnPauseExit',
+    'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack']) {
     el[id] = document.getElementById(id);
   }
+  el.gametitle = document.querySelector('.gametitle');   // the boot scramble's target (no id)
   // Tick period on the XP bar = one upgrade pick (tracks PICKS_PER_TIER)
   el.xpBar.style.setProperty('--tick', `${100 / PROG.PICKS_PER_TIER}%`);
   void game;
@@ -74,8 +76,15 @@ export function initMenus(handlers) {
   bind('btnPauseExit', handlers.onExit);
   bind('btnSplashSettings', handlers.onOpenSettings);
   bind('btnPauseSettings', handlers.onOpenSettings);
-  bind('btnSettingsBack', handlers.onCloseSettings);
+  bind('btnSplashControls', handlers.onOpenControls);
+  bind('btnPauseControls', handlers.onOpenControls);
+  bind('btnSplashCredits', handlers.onOpenCredits);
+  // All three shell panels back out the same way (main.closeShellPanel)
+  bind('btnSettingsBack', handlers.onCloseShell);
+  bind('btnControlsBack', handlers.onCloseShell);
+  bind('btnCreditsBack', handlers.onCloseShell);
   bind('setPredict', handlers.onTogglePredict);
+  initControlMap();
   // Volume sliders — the ONLY audio controls (zero = mute; no separate
   // toggles): live level on drag, and a preview tick on release so the SFX
   // level can be judged without leaving the menu.
@@ -84,6 +93,81 @@ export function initMenus(handlers) {
     el.setSfxVol.addEventListener('input', (e) => handlers.onSfxVol(+e.target.value / 100));
     el.setSfxVol.addEventListener('change', () => handlers.onSfxPreview && handlers.onSfxPreview());
   }
+}
+
+// ---- Title-screen boot sequence -------------------------------------------
+// The wordmark resolves out of a glyph scramble: characters lock left to right
+// while the unlocked ones flicker through junk. Substitution only — the string
+// keeps its exact length (spaces included) the whole way, so the centered title
+// never reflows mid-boot. The rest of the sequence is CSS (.boot on the splash).
+const TITLE_A = 'SOLAR ', TITLE_B = 'SLINGER';   // the plain half and the gold <span> half
+const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#*<>/\\+=';
+const SCRAMBLE_MS = 620;
+let scrambleRaf = 0;
+
+function scrambleTitle() {
+  const node = el.gametitle;
+  if (!node) return;
+  const full = TITLE_A + TITLE_B;
+  const t0 = performance.now();
+  cancelAnimationFrame(scrambleRaf);
+  const stepFrame = (now) => {
+    const p = Math.min(1, (now - t0) / SCRAMBLE_MS);
+    const locked = Math.floor(p * full.length);
+    let out = '';
+    for (let i = 0; i < full.length; i++) {
+      out += (i < locked || full[i] === ' ')
+        ? full[i]
+        : GLYPHS[(Math.random() * GLYPHS.length) | 0];
+    }
+    // Rebuilt as markup because the gold half is a <span> — the two-tone
+    // wordmark has to survive the scramble.
+    node.innerHTML = `${out.slice(0, TITLE_A.length)}<span>${out.slice(TITLE_A.length)}</span>`;
+    if (p < 1) scrambleRaf = requestAnimationFrame(stepFrame);
+  };
+  scrambleRaf = requestAnimationFrame(stepFrame);
+}
+
+// Replay the power-on. The class is stripped and re-added (with a reflow between)
+// so the CSS animations retrigger on every return to the splash, not just load.
+function playBoot() {
+  if (!el.splashScreen) return;
+  el.splashScreen.classList.remove('boot');
+  void el.splashScreen.offsetWidth;
+  el.splashScreen.classList.add('boot');
+  scrambleTitle();
+}
+
+// ---- The control schematic's readout ---------------------------------------
+// Every key cap / mouse zone in #controlsScreen carries its own data-fn (the
+// function name) and data-note (what it actually does); pointing at one mirrors
+// them into the readout strip, like querying a console. Delegated from the panel
+// so the markup stays the single source of truth — adding a control is an HTML
+// edit, nothing here needs to know it exists. Keyboard users get the same thing
+// through focus, which is why the caps are <button>s and not decorative spans.
+const CTRL_IDLE = ['SELECT A CONTROL', 'Point at any key or mouse button above to read what it does.'];
+function initControlMap() {
+  const panel = el.controlsScreen;
+  if (!panel || !el.ctrlOut) return;
+  const fn = el.ctrlOut.querySelector('.cofn');
+  const note = el.ctrlOut.querySelector('.conote');
+  const show = (e) => {
+    const t = e.target.closest('[data-fn]');
+    if (!t) return;
+    setText(fn, t.dataset.fn);
+    setText(note, t.dataset.note || '');
+    panel.querySelectorAll('.lit').forEach((n) => n.classList.remove('lit'));
+    t.classList.add('lit');
+  };
+  const clear = () => {
+    setText(fn, CTRL_IDLE[0]);
+    setText(note, CTRL_IDLE[1]);
+    panel.querySelectorAll('.lit').forEach((n) => n.classList.remove('lit'));
+  };
+  panel.addEventListener('pointerover', show);
+  panel.addEventListener('focusin', show);
+  panel.addEventListener('pointerleave', clear);
+  panel.addEventListener('focusout', clear);
 }
 
 // Reflect a slider without fighting an in-progress drag
@@ -104,21 +188,27 @@ function setToggle(node, on) {
 // settings switches in step with live state. Called every frame from updateHud
 // (guarded so the DOM is only touched when something actually flips).
 let menuSig = '';
+let prevSplash = false, prevModal = false;
 function syncMenus(game) {
-  // Settings is a modal that fully REPLACES the panel it was opened over
-  // (splash or pause), so both hide while it's up — otherwise the panel beneath
-  // peeks out around its edges.
+  // A shell modal (settings / controls / credits) fully REPLACES the panel it
+  // was opened over (splash or pause), so both hide while one is up — otherwise
+  // the panel beneath peeks out around its edges.
   const settings = !!game.settingsOpen;
-  const splash = !game.started && !settings;
-  const pause = game.started && game.paused && !settings;
-  const menuBtn = game.started && !game.paused && !settings &&
+  const controls = !!game.controlsOpen;
+  const credits = !!game.creditsOpen;
+  const modal = settings || controls || credits;
+  const splash = !game.started && !modal;
+  const pause = game.started && game.paused && !modal;
+  const menuBtn = game.started && !game.paused && !modal &&
     !game.choosingUpgrade && !game.gameOver && game.ship.alive;
-  const sig = `${+splash}${+pause}${+settings}${+menuBtn}${+game.started}`;
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+menuBtn}${+game.started}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
     el.pauseScreen.classList.toggle('hidden', !pause);
     el.settingsScreen.classList.toggle('hidden', !settings);
+    el.controlsScreen.classList.toggle('hidden', !controls);
+    el.creditsScreen.classList.toggle('hidden', !credits);
     el.menuBtn.classList.toggle('hidden', !menuBtn);
     // The gameplay HUD is meaningless on the title screen — hide it until START.
     el.topleft.classList.toggle('hidden', !game.started);
@@ -128,6 +218,11 @@ function syncMenus(game) {
     // Blur the frozen world into a soft backdrop behind the splash (incl. the
     // settings modal opened from it); cleared the instant the game begins.
     document.body.classList.toggle('preGame', !game.started);
+    // Power-on animation whenever the title screen comes UP — on load and on
+    // MAIN MENU out of a run, but NOT when a shell panel closes back onto it
+    // (the console is already booted; re-running it there reads as a glitch).
+    if (splash && !prevSplash && !prevModal) playBoot();
+    prevSplash = splash; prevModal = modal;
   }
   setToggle(el.setPredict, game.predict);
   setSlider(el.setMusicVol, game.musicVol);
@@ -188,8 +283,42 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
   el.upgradeScreen.classList.remove('hidden');
 }
 
+// ---- Mood-reactive cockpit chrome -----------------------------------------
+// The music director's live mood vector (calm / world / sun / danger — music.js
+// publishes it as game.mood) tints the cockpit frame and its edge wash, so the
+// shell breathes with the soundtrack instead of sitting at one violet forever.
+// CHROME ONLY: the instruments keep their semantic colors (hull green, shield
+// blue, lives pink) so they still read at a glance. The lowhull / heat alarm
+// classes override --fr outright in CSS — an alarm always outranks a mood — and
+// mood is all zeros until game.started, so the title screen stays plain violet.
+const MOOD_CALM = [176, 112, 255];    // --chrome, the violet everything-chrome
+const MOOD_SUN = [255, 176, 74];      // corona amber, sibling of the gold trim
+const MOOD_DANGER = [255, 92, 122];   // the ember/pink end of the palette
+const mixRgb = (a, b, t) => [
+  Math.round(a[0] + (b[0] - a[0]) * t),
+  Math.round(a[1] + (b[1] - a[1]) * t),
+  Math.round(a[2] + (b[2] - a[2]) * t),
+];
+
+function moodChrome(game) {
+  const m = game.mood;
+  if (!m) return;
+  const cl = (v) => Math.max(0, Math.min(1, v || 0));
+  const sun = cl(m.sun), danger = cl(m.danger), world = cl(m.world);
+  // Danger is blended LAST so it wins a tie: burning up next to a nest should
+  // read as a threat, not as a sunrise.
+  let c = mixRgb(MOOD_CALM, MOOD_SUN, sun * 0.85);
+  c = mixRgb(c, MOOD_DANGER, danger * 0.9);
+  // Worlds only lift the glow — a hue shift there would collide with the cyan
+  // the sensors already own.
+  const intensity = Math.min(1, Math.max(sun, danger) * 0.9 + world * 0.22);
+  setVar(el.hud, '--mood', `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
+  setVar(el.hud, '--moodI', intensity.toFixed(2));
+}
+
 export function updateHud(game) {
   syncMenus(game);
+  moodChrome(game);
   // Dev sim-speed badge (window.speed / ?dev hotkeys): hidden at 1x so normal
   // play never shows it; while fast-forwarding it also owns up to the achieved
   // rate whenever the machine can't keep up with the target.

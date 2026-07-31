@@ -14,13 +14,15 @@ import * as hud from './hud.js';
 import { initInput, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
-import { lerp } from './util.js';
+import { lerp, shellModal } from './util.js';
 
 const game = {
   time: 0,
   started: false,          // false → splash screen; the sim doesn't run until START
   paused: false,
   settingsOpen: false,     // settings overlay (over splash or pause); freezes the sim
+  controlsOpen: false,     // the control schematic — same shell rules (util.shellModal)
+  creditsOpen: false,      // the credits panel  — same shell rules
   musicVol: 0.85,          // volume sliders (persisted; zero = mute, there are no
   sfxVol: 0.5,             //   toggles) — music high / SFX low by default: quiet
                            //   ambient tracks vs hot sample packs
@@ -137,7 +139,7 @@ function fireVolley() {
 
 // The player may only touch the sim while actually flying — not on the splash,
 // in the pause menu, mid-settings, or while an upgrade card is open.
-const menuBlocking = () => !game.started || game.paused || game.settingsOpen || game.choosingUpgrade;
+const menuBlocking = () => !game.started || game.paused || shellModal(game) || game.choosingUpgrade;
 
 initInput(canvas, {
   onGrab: () => {
@@ -236,8 +238,8 @@ initInput(canvas, {
   },
 });
 
-// ---- Front-end shell: splash / pause / settings transitions ----
-// The sim runs only while game.started && !paused && !settingsOpen (frame gate);
+// ---- Front-end shell: splash / pause / settings / controls / credits ----
+// The sim runs only while game.started && !paused && !shellModal (frame gate);
 // these just flip those flags. hud.syncMenus derives the visible overlay from them.
 let firstStart = true;
 let tipTimer = null;
@@ -245,7 +247,7 @@ let tipTimer = null;
 function startGame() {
   game.started = true;
   game.paused = false;
-  game.settingsOpen = false;
+  closeShell();
   // Drop the splash's wide framing onto the ship; the sim's zoom ramp + the
   // clearing blur then read as a dive from the establishing shot into play.
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
@@ -257,14 +259,20 @@ function startGame() {
 }
 function pauseGame() { if (game.started && !game.paused) { game.paused = true; sfx.sfxMenuOpen(); } }
 function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
-function openSettings() { game.settingsOpen = true; sfx.sfxMenuOpen(); }
-function closeSettings() { game.settingsOpen = false; saveSettings(); sfx.sfxMenuClose(); }
-function toMainMenu() { game.paused = false; game.settingsOpen = false; game.started = false; }
+// The three shell modals are mutually exclusive — each fully REPLACES the panel
+// it was opened over, so opening one clears the others rather than stacking.
+function closeShell() { game.settingsOpen = false; game.controlsOpen = false; game.creditsOpen = false; }
+function openSettings() { closeShell(); game.settingsOpen = true; sfx.sfxMenuOpen(); }
+function openControls() { closeShell(); game.controlsOpen = true; sfx.sfxMenuOpen(); }
+function openCredits() { closeShell(); game.creditsOpen = true; sfx.sfxMenuOpen(); }
+// Settings is the only one that owns persisted state, so it's the only one that saves.
+function closeShellPanel() { if (game.settingsOpen) saveSettings(); closeShell(); sfx.sfxMenuClose(); }
+function toMainMenu() { game.paused = false; closeShell(); game.started = false; }
 
 // ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
 function toggleMenu() {
   if (game.choosingUpgrade) return;
-  if (game.settingsOpen) { closeSettings(); return; }
+  if (shellModal(game)) { closeShellPanel(); return; }
   // Nothing to toggle on the splash, or over the death / game-over panel (both
   // are centered .panels — a pause menu would stack on top of them).
   if (!game.started || game.gameOver || !game.ship.alive) return;
@@ -279,24 +287,64 @@ function exitGame() {
   window.close();
 }
 
-// Living title backdrop. The sim is frozen on the splash, so nothing moves on
-// its own — we keep it alive two cheap ways: advance the COSMETIC render clock
-// (sun corona, star twinkle, ring spins all read game.time; the sim never runs,
-// so bodies don't actually orbit) and fly a slow, wide establishing shot of the
-// inner system. The camera orbits the sun (at the origin) well zoomed-out so the
-// star and its nearest planets sweep through frame; the ship spawns way out in
-// the belt, so it stays off-screen here (no title-screen HUD, no spawn blink).
-// startGame snaps the camera back to the ship, so the sim's zoom ramp reads as a
-// dive from this wide shot down into your ship.
-const SPLASH_ZOOM = 0.17;   // zoomCur for the wide shot (gameplay tier-0 is ~1.15)
+// Living title backdrop: the world behind the splash actually ORBITS. We fly a
+// slow, wide establishing shot of the inner system — the camera orbits the sun
+// (at the origin) well zoomed-out so the star and its nearest planets sweep
+// through frame — while the physics runs underneath it, so planets ride their
+// rails, moons swing, and the belt grinds. The ship spawns way out in the belt,
+// so it stays off-screen here (no title-screen HUD, no spawn blink). startGame
+// snaps the camera back to the ship, so the sim's zoom ramp reads as a dive from
+// this wide shot down into your ship.
+//
+// It runs the PHYSICS ONLY — never the full update(). update() is the player's
+// loop, and a title screen must not be able to spend a life, bank XP, or queue
+// a message. replenishWorld stays out for the same reason even though it would
+// top the belt back up on a long idle: its survey scan pays XP_SURVEY and sets
+// b.seen, so idling on the menu would bank progress and burn off the minimap
+// fog before the run even started. updateAliens stays out too — nests are far
+// from this establishing shot, and alien fire has consequences.
+// Two guards keep the splash consequence-free:
+//   - the ship is pinned invulnerable, so a stray belt hit can't kill it and
+//     charge prog.lives for a run that hasn't started;
+//   - event flags step() raises (heat, storms, auroras…) are cleared each frame
+//     instead of drained, or they'd all fire as messages the moment START ran.
+const SPLASH_ZOOM = 0.205;   // zoomCur for the wide shot (gameplay tier-0 is ~1.15)
+let splashAcc = 0;
 function driftSplash(dt) {
   game.time += dt;
-  game.splashT = (game.splashT || 0) + dt;
-  const t = game.splashT;
-  game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
-  const a = t * 0.06;                                            // slow orbit of the sun
-  game.cam.x = Math.cos(a) * 4400;
-  game.cam.y = Math.sin(a) * 4400;
+  // The re-rail scan measures against the player's view, not the camera's — off
+  // on the title screen it would re-rail rocks in shot. Keep it honest.
+  const { vw, vh } = view.getView();
+  game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
+  game.ship.invuln = Math.max(game.ship.invuln || 0, 1);
+
+  // NO SCREEN SHAKE on the title screen. step() pumps game.shake on every
+  // impact (physics.addShake, capped at 30) but its decay lives in update(),
+  // which never runs here — so the moment the backdrop went live, ambient belt
+  // crunches pegged it at the cap and render's ±15px random jitter shook the
+  // whole sky forever. Zeroed rather than decayed on purpose: an establishing
+  // shot lurching from an off-screen collision you can't even see at this zoom
+  // is noise behind a menu, not drama.
+  game.shake = 0;
+
+  // The camera rides the PHYSICS clock, inside the substep loop — the same law
+  // as the in-game follow cam, and for the same reason. The backdrop advances
+  // in quantized CFG.DT chunks and the substeps-per-frame count wobbles
+  // (2, 2, 3, 2, …); a camera eased on dtReal beats against that quantization.
+  // One clock for both keeps the drift glass-smooth. (Before the world was
+  // live this couldn't show — nothing moved for the camera to beat against.)
+  splashAcc = Math.min(splashAcc + dt, 0.25);   // a backgrounded tab must not spiral
+  while (splashAcc >= CFG.DT) {
+    step(game, CFG.DT);
+    game.splashT = (game.splashT || 0) + CFG.DT;
+    const t = game.splashT;
+    game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
+    const a = t * 0.06;                                            // slow orbit of the sun
+    game.cam.x = Math.cos(a) * 4400;
+    game.cam.y = Math.sin(a) * 4400;
+    splashAcc -= CFG.DT;
+  }
+  for (const m of EVENT_MSGS) game[m.flag] = null;
 }
 
 // Every menu button is a user gesture — init Web Audio first so the very
@@ -308,7 +356,9 @@ hud.initMenus({
   onPause: ui(pauseGame),
   onMainMenu: ui(toMainMenu),
   onOpenSettings: ui(openSettings),
-  onCloseSettings: ui(closeSettings),
+  onOpenControls: ui(openControls),
+  onOpenCredits: ui(openCredits),
+  onCloseShell: ui(closeShellPanel),
   onExit: exitGame,
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
   // Volume sliders: live on drag (a drag is a gesture, so initAudio is safe);
@@ -835,7 +885,7 @@ function frame(now) {
   // The sim freezes on the splash, while paused, while settings is open, or
   // while an upgrade card is open; rendering and the HUD keep running so the
   // frozen world sits as a living backdrop under whichever overlay is up.
-  if (game.started && !game.paused && !game.settingsOpen && !game.choosingUpgrade) updateScaled(dtReal);
+  if (game.started && !game.paused && !shellModal(game) && !game.choosingUpgrade) updateScaled(dtReal);
   else {
     // The sim is frozen — every state-driven loop must fall silent with it
     sfx.setThrust(false);
