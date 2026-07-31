@@ -9,6 +9,31 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.3.0] — 2026-07-31
+
+### Changes
+
+- **Cap shoal XP farming, pay XP for achievements, and make the fields high-risk** ([#40](https://github.com/mark3apps/solar-slinger/pull/40)) — @mark3apps
+  The dense asteroid fields were the optimal way to play: park in a shoal, grind gravel, get fully upgraded in about a minute. This closes that, then makes the pockets dangerous…
+- **Faster lurker shoves, bigger broods, and organic field outlines** ([#39](https://github.com/mark3apps/solar-slinger/pull/39)) — @mark3apps
+  Three asks about the dense asteroid fields: the lurkers threw rocks too slowly, there weren't enough of them in the shoal, and the pocket read as a square.
+- **Gate abilities that are inert without a prerequisite** ([#38](https://github.com/mark3apps/solar-slinger/pull/38)) — @mark3apps
+  Five abilities in the catalog were dead cards: taking one spent your pick and started its rank bar climbing while nothing whatsoever happened in the world. They're now hidden from…
+- **Dense asteroid fields, shoal lurkers, and a 20% larger world** ([#37](https://github.com/mark3apps/solar-slinger/pull/37)) — @mark3apps
+  Four vast rock shoals at fixed radii — The Shoal (10,400), The Grindstones (23,000), The Hushfield (33,500), and The Farshoal (44,300, on the new outer band's frost fringe). Each…
+- **Five new planet archetypes, each with its own mechanic** ([#36](https://github.com/mark3apps/solar-slinger/pull/36)) — @mark3apps
+  The system had four planet types (lava / rocky / gas / ice) and no earth-like world. This adds five solid archetypes — terran, ocean, desert, shroud, crystal — and three gas-giant…
+- **Minimap: two-scale dial, ping-only outer band, honest sun** ([#35](https://github.com/mark3apps/solar-slinger/pull/35)) — @mark3apps
+  The radar now runs two scales on one radius. The inner half is unchanged — 1:1 with the old dial, out to MINIMAPNEAR (2600u). The outer half is zoomed out 2x, covering 5200u…
+- **Expand the soundtrack to 24 tracks: title + menu beds, and move music to Git LFS** ([#34](https://github.com/mark3apps/solar-slinger/pull/34)) — @mark3apps
+  The soundtrack goes from ten tracks to 24, the splash and pause menus get music of their own, and the music beds move to Git LFS. Fourteen new Scott Buckley CC-BY tracks…
+- **Achievements: 370 run-scoped rows, a score, and a hover-readout log** ([#33](https://github.com/mark3apps/solar-slinger/pull/33)) — @mark3apps
+  Adds achievements — a third progression track that costs the other two nothing. 370 rows across ten categories grant points (prog.ach.score), never XP, ranks or picks, so the…
+- **Perf pass: 2-4x sim headroom for bigger solar systems** ([#32](https://github.com/mark3apps/solar-slinger/pull/32)) — @mark3apps
+  A performance pass on the simulation so the solar system can keep growing. At 120Hz the frame budget is 8.3ms; the old code spent ~7ms at 2x today's body count, dominated by two…
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.2.0...v0.3.0
+
 ## [0.2.0] — 2026-07-31
 
 ### Changes
