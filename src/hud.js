@@ -410,6 +410,10 @@ export function achToast(a) {
   const secret = isSecret(a);
   node.innerHTML = `<span class="atlab">${secret ? 'CLASSIFIED' : 'ACHIEVEMENT'}</span>` +
     `<span class="atname">${esc(a.name)}</span>` +
+    // Points only. The XP the row also pays (main.drainAchievements) is
+    // deliberately NOT shown: raw XP is an abstracted number the player never
+    // reads anywhere else — the bars and the pick card are how progress
+    // surfaces — so printing it here would be noise, not feedback.
     `<span class="atpts">+${a.pts}</span>` +
     `<span class="atwrap"><span class="atdesc">${esc(a.desc)}</span></span>`;
   el.achRail.appendChild(node);

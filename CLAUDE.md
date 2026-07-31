@@ -263,8 +263,50 @@ re-arms it for a fresh run.
   still advances `picksThisTier` (else a spec whose pool is exhausted can never reach its tier-up)
   and a milestone tiers up anyway.
   The XP curve is **front-loaded on purpose** (`XP_BASE`/`XP_STEP`/`XP_CURVE`): per-tier totals run
-  183 / 595 / 1247 / 2139 / 3271, so tier 0 is a fraction of tier 4. Speed passes shorten the whole
-  climb by cutting the EARLY tiers hardest — that is where pace is felt.
+  303 / 763 / 1399 / 2211 / 3199 (total climb 7875), so tier 0 is still a fraction of tier 4. Speed
+  passes shorten the whole climb by cutting the EARLY tiers hardest — that is where pace is felt.
+  **The achievement pass raised it WHERE THE NEW INCOME LANDS, not uniformly** (from
+  183/595/1247/2139/3271, total 7435 → ×1.66 / 1.28 / 1.12 / 1.03 / 0.98): achievement XP is steeply
+  front-loaded — measured on a ship that never played, 96 XP arrived in the first 100 seconds and the
+  next 150 paid nothing. **The split is the principle: early achievement XP is a FLOOR** every player
+  collects, so pricing it in is fair to everyone; **late achievement XP is optional** and wildly
+  player-dependent, so assuming it would punish anyone who doesn't chase it. A first pass that scaled
+  the whole curve by 1.31 was wrong in both directions — it under-corrected tier 0 and taxed a tier 4
+  that gets almost none of the stream. Absorption is deliberately PARTIAL early (~65%): play XP is
+  hardest to earn at tier 0 with the weakest ship, which is exactly where the boost earns its keep.
+  **`ABIL_XP_TOTAL` moves with the climb TOTAL** (6500 → 6900), not with the curve's shape — every
+  ability pool receives the achievement XP too. See the ratio rule above.
+- **XP INCOME IN THE DENSE FIELDS IS GATED TWICE, and both gates are load-bearing.** Four pockets of
+  ~1900 rocks each meant parking in a shoal out-earned every aimed, risky thing in the game — the
+  optimal play was the least interesting one. **`config.fieldXp(game, b, xp)` is the ONE resolver**;
+  every award sourced from a shoal rock goes through it and nothing else may pay one. Call sites:
+  catch and orbit-stow (tractor.js), smash / ram / parry and BOTH scrap drops incl. the combo bonus
+  (physics.js — debris chunks are pure XP, so undamped salvage just relocates the farm). Non-field
+  bodies pass through untouched, so a site can wrap unconditionally.
+  1. **`PROG.XP_FIELD_MUL` (0.3)** — what ONE rock is worth. Uniform across the pocket on purpose:
+     exempting giants and monoliths would move the farm onto them, and the reward for calving one is
+     its ACHIEVEMENT, which pays XP of its own.
+  2. **`PROG.FIELD_XP_BUDGET` (150/field, `f.xpLeft`)** — what the SHOAL is worth, for the whole run.
+     **This is the gate that actually holds.** A multiplier prices a rock, and the problem is that a
+     pocket holds 1900 of them, so any trick that raises the rocks-per-minute rate simply outruns it;
+     a budget is rate-independent. Deliberately the same shape as `FIELD_BROOD`: finite per run, no
+     refill, so working a shoal dry is a CHOICE whose consequence traces to the player. All four
+     fields together cap at ~600 XP, under 8% of the climb. A dried pocket announces itself once
+     (`game.fieldDryName` → the `EVENT_MSGS` drain) — the rocks still shatter and are still ammunition,
+     and a payout that silently stopped would read as a bug.
+  Untouched: `XP_BLOCK` and alien kills (the lurker brood is itself a finite budget) and everything
+  outside a field.
+- **BILLIARDS CREDIT IS DEPTH-CAPPED INSIDE A POCKET** (`CFG.FIELD_CHAIN_MAX` 2, `physics.chainOk`,
+  `b.chainN`). This was the actual exploit, and it was a physics bug wearing an economy costume: the
+  gravity-billiards rule stamps `thrownBy = 'player'` onto any rock your throw knocks hard, and among
+  1900 TOUCHING rocks that mark spread outward forever (every fresh contact refreshed the 1.4s timer).
+  Because the `FIELD_TOUGH` damp exempts "a player throw", **the entire shoal took full lethal damage
+  and paid full credit off one fling** — measured at 245 XP in 30s and still climbing, most of it
+  chip-scrap from thousands of laundered impacts. Capped, the trick shot survives and the cascade
+  doesn't (one throw: 66 XP / 19 kills → 13 XP / 5 kills). `chainN` is the link number and **must be
+  reset to 0 at every REAL launch** — `tractor.releaseHeld`, `flingAllFromOrbit`, the parry riposte —
+  or a rock that once ended a chain can never start one. Belt rock is deliberately UNCAPPED: it is
+  sparse and cannot cascade, so planet billiards stay glorious.
 - **The pick modal is deferred, never lost.** It won't open while a rock is in the beam
   (`game.held`) nor for ~2s after any fling (`game.flingDelayT`, set in `releaseHeld` /
   `flingAllFromOrbit`) — freezing the sim mid-aim feels awful. `owesPick` stays true until consumed,
@@ -280,7 +322,20 @@ re-arms it for a fresh run.
     (config.shipStats) so it bonks from frame one, and Ram Prow (in the STARTING KIT, not Heavy
     Winch) / Juggernaut / Berserker deepen it in `physics.collideShipBody` (Berserker also scales
     `tractor.flingSpeedFor`); Cluster Rounds / Shockwave / Demolition in `physics.brawlerThrowKill`,
-    called ONLY from `shatter`'s `'player-throw'` branch; Wall Splat (`st.wallSplat`,
+    called ONLY from `shatter`'s `'player-throw'` branch. **The blast has TWO RADII and they are not
+    interchangeable:** `pushR` (`170 + 60 × shockwave`, 350 at max) keeps a long reach because the
+    shove is the spectacle and costs the world nothing, while `dmgR` (`90 + 38 × demolition`, 204 at
+    max) is deliberately tight because *erasing* a body has to be earned. A rock caught between the
+    two is thrown, not deleted — the more interesting outcome, since it becomes your next projectile.
+    (History: one shared reach of `240 + 90/rank` = 510 at max, off EVERY throw-kill — a circle about
+    as wide as the screen. It only looked generous in the sparse belt; in a dense field it deleted a
+    pocket faster than the eye could follow.) **FRIENDLY FIRE** (`CFG.BLAST_SELF_DMG` 0.6) is keyed to
+    `dmgR` alone: standing inside it costs the same damage with the same falloff (~63 at point blank,
+    a fifth of a tier-3 hull, and hull does not self-heal), so the blast is no longer the one brawler
+    tool with no downside. `hitAng` points from ship to blast, so a BRAWLER's front-arc shield really
+    does cover a detonation it is facing. The body-count caps (20 swept, **10 damaged**) are what
+    actually bind inside a shoal — a pocket puts ~100 rocks inside any of these radii versus a handful
+    of belt rock — so treat them as the field limiter, not just a perf guard; Wall Splat (`st.wallSplat`,
     `physics.wallSplat`) rides its OWN flag instead — `collideBodies` sets `body.splatWall` around
     the one damage call where YOUR live throw dies against a celestial (its shatter credit is only
     `'player'`, so the credit alone can't distinguish a splat), and the burst is push-only,
@@ -324,9 +379,21 @@ re-arms it for a fresh run.
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
   other player input.
-- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~380 rows in
-  [achievements.js](src/achievements.js) grant **points** (`prog.ach.score`) — never XP, never ranks,
-  never picks — so the balance of the XP curve is untouched by them. **Run-scoped on purpose:** the
+- **ACHIEVEMENTS are a THIRD track, and they FEED the other two.** ~385 rows in
+  [achievements.js](src/achievements.js) grant **points** (`prog.ach.score`), and those points also
+  **pay XP** — `pts × PROG.XP_PER_ACH_POINT` (0.6), banked in `main.drainAchievements`, never in
+  achievements.js `award` (the sweep stays a pure read; the drain is where the game reacts). So a
+  landed row feeds the pick purse and every ability pool like any other good play: a 200-pt insane
+  feat pays 120 XP, a 5-pt trivial one 3. The XP curve above was re-shaped (not just scaled) to
+  absorb the stream — **the two numbers move together**, and dropping the rate without dropping the
+  curve leaves the opening far slower than it was.
+  (History: achievements were points-ONLY at first, deliberately costing the other
+  tracks nothing; they now pay, because the score alone didn't reward a player for chasing them.)
+  **The XP is deliberately NEVER SHOWN** (user call) — not on the toast, not in the panel. Raw XP is
+  an abstracted number the player reads nowhere else in the game; progress surfaces as the bars, the
+  rank-up line and the pick card, and printing a figure beside every toast would be noise, not
+  feedback. The toast and the panel show POINTS, exactly as before.
+  **Run-scoped on purpose:** the
   score answers "how was THIS run", so the ledger lives on `prog` and dies with it; nothing is
   persisted to localStorage (a lifetime tally makes an achievement a thing you grind once and never
   see again). `main.freshProgress()` bolts `newAchState()` onto `newProgress()` — **config.js must
@@ -680,16 +747,26 @@ code "works."
   empty bar). A `shield`-channel ability UNLOCKS the regenerating
   shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
   quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
-  - **BRAWLER (War Plating)** — STRONG (38%→65% of the pool) but **FRONT ARC ONLY** (`shieldArc` π/2):
-    a directional hit from behind (`hitAng` in `physics.damageShip`) skips the shield entirely — the
-    tail is bare, so facing the threat matters. **Directionless damage** (heat, gas crush, Oort
-    grinding — no `hitAng`, nothing to face) can't be dodged by aiming, so it is SPLIT by coverage:
-    the shield soaks its share (`arc / π` — half, for the brawler) and the rest goes straight to
-    hull. Half a shield stops half of an all-over effect; soaking all of it made the front-arc
-    drawback free in exactly the places it should bite. Full-wrap shields are unaffected (share 1).
+  - **BRAWLER (War Plating)** — a THIN, FAST-RE-FORMING FRONT PLATE (12%→26% of the pool) covering
+    **35% of bearings** (`shieldArc` = 0.35π, ±63° off the nose), with the quickest cycle in the game
+    (regen ×1.5, regenDelay ×0.35 — ~1.75s and the nose is covered again). **Its identity is the
+    CYCLE, not the capacity.** (History: it was 38%→65% of the pool, which made it simply the best
+    shield in the game — converting most of a brawler's health into a regenerating layer meant the
+    front-arc drawback never cost anything, because the pool never ran out while you faced the right
+    way. And the arc was a clean π/2, i.e. 50%, which covered everything ahead of the beam — "front
+    arc only" was barely a drawback in practice. 35% is a genuinely narrow nose plate: you have to
+    point at what is hurting you.) A directional hit from behind (`hitAng` in `physics.damageShip`)
+    skips the shield entirely — the tail is bare, so facing the threat matters. **Directionless
+    damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) can't be dodged by
+    aiming, so it is SPLIT by coverage: the shield soaks `arc / π` and the rest goes straight to hull.
+    Soaking all of it made the front-arc drawback free in exactly the places it should bite. Full-wrap
+    shields are unaffected (share 1). **Anything asserting that share must DERIVE it from
+    `st.shieldArc`** (devtest T6 does) — a hardcoded half re-breaks every time the angle is tuned.
     Render clips every shield visual to the covered wedge — the bare tail must READ.
   - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
-    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability.
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. Both shields are thin now, so
+    the CYCLE is what separates them: the brawler's is smaller and returns nearly twice as fast, the
+    scout's is a touch slower back but covers every angle.
   - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
     Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
@@ -751,12 +828,35 @@ code "works."
       every hit ADDS energy and the pocket boils itself apart. Field rocks are also EXEMPT from the
       gentle-contact absorb rule against each other: a pocket that ate every soft touch with a 15x
       mass ratio digested itself around its own giants.
+    - **Tough against its own kind, DANGEROUS TO YOU** (`FIELD_SHIP_DMG` 2.5, the mirror of
+      `FIELD_TOUGH` below, applied in `collideShipBody`). The pockets are meant to be **high risk /
+      high reward** and were reading as pure reward, because a rigid pocket is SAFE: match its orbit
+      and every rock is nearly stationary relative to you, so the `closing > 25` gate left a farmer
+      sitting inside 1900 rocks barely scratched. The multiplier rides `closing`, so it weights the
+      danger toward LOOSE, stirred-up rock — the mess you made — while ambient jostling stays minor.
+      Hull does not self-heal, so that attrition is the real price of working a shoal.
+      **Field rock also keeps the BASE mass-saturation knee at every tier**, which mattered far more
+      than the multiplier: the knee normally grows with tier (`1500 × (1 + tier×1.2)`) so a
+      dreadnought shrugs off pebbles, and that made the shoals get SAFER the stronger you got — a
+      median field rock at 300 closing went 31% of hull at tier 0, 7% at tier 3, **4% at tier 5**,
+      i.e. harmless at exactly the tier you farm them. Flat knee ⇒ the same absolute bite at every
+      tier, so a bigger hull endures more of a shoal without ever becoming immune to one. A big ship
+      in a dense field is a big target.
+      **`FIELD_SHIP_DMG` is deliberately NOT applied to alien-thrown rock** — a lurker shove already
+      carries its own `thrown` multiplier and its own speed/mass tuning, and the two stacked put a
+      single body-check on the 45%-per-hit cap at every tier (a two-shot kill from an ambush, with
+      three hunting). Keeping them separate is also what lets the shoal and its predator be tuned
+      independently instead of through each other.
     - **Tough against its own kind** (`FIELD_TOUGH` 0.08 damage scale, `FIELD_HP_MUL` 6 hp): hits
       send rocks flying, they don't erase them. The damp covers EVERY field-vs-field impact —
       including lurker body-checks and chain caroms, which are 'thrown' and at full damage vaporized
       their targets instead of billiarding them. Only a player's own live throw punches at full
       strength — smashing field rock deliberately still works and still pays. In a 30s soak melee,
       40 kicked rocks cascaded into ~1160 loose rocks caroming with only 5 deaths out of 2200.
+      **"A player's own live throw" means YOUR throw and at most `FIELD_CHAIN_MAX` links past it** —
+      see the billiards depth cap in the design laws. Unbounded, the propagated `thrownBy = 'player'`
+      mark defeated this damp across the whole pocket, which is also why the shoal did NOT survive
+      being knocked around "indefinitely" as this rule intends.
     - **GIANTS** (`FIELD_GIANTS` per pocket) shatter into a spray of smaller field rock, and shards
       over 3000 mass are giants themselves — a bounded cascade, not an unbounded chain. This is the
       shoal's chaos engine. The shard budget must stay ABOVE the world's steady-state body count or
@@ -810,7 +910,16 @@ code "works."
     counter (orbit shield blocks it for XP, Deflector parries it, Dead Stop primes on the catch). Three
     rules are load-bearing and each fixed a real failure:
     - **Ambient rock contact does it NO harm.** A predator that died to its own habitat suicided on the
-      nearest rock within seconds of spawning. A PLAYER-thrown rock still guts it — that's the counterplay.
+      nearest rock within seconds of spawning. A PLAYER-thrown rock still hurts it — that's the counterplay.
+    - **It takes a MINIMUM number of hits, and hp is not what does that** (`LURKER_HIT_CAP` 0.34 of
+      `LURKER_HP`, capped in `collideAlienBody`). Rock damage is QUADRATIC in closing speed and linear
+      in mass, spanning three orders of magnitude (a 200-mass lob at 400 closing does 139; a 1400-mass
+      rock at 1000 does 7422), so NO hp value is tunable across that range — every one is either
+      one-shot by a real throw or immortal to a weak one. Raising `LURKER_HP` 34 → 90 alone changed
+      literally nothing: both were one-shot by all nine sample throws. The per-hit cap (same idiom as
+      invariant 3's comparable-rock cap) makes it cost ≥3 solid hits, which is what lets the predator
+      live long enough to line up the rocks that are the actual threat. Lurkers only — grabbers and
+      golems keep their existing feel.
     - **Only a committed `charge` shoves.** At shoal density a lurker brushes rocks constantly just
       manoeuvring; letting brushes shove burnt every cooldown on a random rock flung a random way
       (measured: 1 shove/min, none landing within 1300u).

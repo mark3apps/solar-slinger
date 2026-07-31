@@ -2594,33 +2594,43 @@ function drawShip(game) {
     // collision radius — on a titan those differ by almost 2x. It tracks the
     // tier-morph scale so it grows with the art instead of snapping.
     const R = visR * morphScale * 1.08 + 5 / z;
-    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI):
-    // clip every shield visual — glow, recharge sweep, absorb ripple — to
-    // the covered wedge so the bare tail reads at a glance. The wedge tracks
-    // the nose, so the calm-rim design law still holds within it.
+    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI), so
+    // every shield visual — glow, recharge sweep, absorb ripple — is confined
+    // to the covered wedge and the bare tail reads at a glance.
+    //
+    // THE EDGES MUST FEATHER, NOT CUT. A single pie clip ended the glow on two
+    // dead-straight radial lines, which read as a UI mask laid over the ship —
+    // the in-world design law is that boundaries are organic, never geometric
+    // (same reason WORLD_R has no drawn edge). Instead the visuals are drawn
+    // inside NESTED wedges: every layer shares the nose bearing, the widest
+    // reaches the true coverage edge and the narrowest covers the core, so the
+    // accumulated alpha is flat across the middle and ramps to nothing exactly
+    // AT the mechanical edge. The fade never claims coverage the sim doesn't
+    // give — it just stops announcing it with a straight line.
     const arc = game.st.shieldArc ?? Math.PI;
     const partial = arc < Math.PI - 0.01;
-    if (partial) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.arc(s.x, s.y, R * 2.6, s.angle - arc, s.angle + arc);
-      ctx.closePath();
-      ctx.clip();
-    }
+    // Layer count is a SMOOTHNESS knob, not a look knob: each layer boundary is
+    // a step in the angular alpha, and at 8 they were faintly visible as
+    // banding when zoomed right in. 16 puts each step near the limit of what
+    // 8-bit alpha can show. Cost stays trivial because the gradient is hoisted.
+    const LAYERS = partial ? 16 : 1;
+    // Fraction of the wedge that stays at full strength before the feather
+    // begins; the rest ramps out to the edge.
+    const CORE = 0.4;
+    // Stacking N layers at 1/N alpha with source-over lands at 1-(1-1/N)^N,
+    // not 1 — without this the plate would read ~35% dimmer than a full wrap.
+    const layerComp = partial ? 1 / (1 - Math.pow(1 - 1 / LAYERS, LAYERS)) : 1;
+    // Hoisted out of the layer loop: the gradient depends on the ship position,
+    // not the wedge, so building it once keeps the feather nearly free.
+    let glowGrad = null;
     if (sf > 0.02) {
       const col = sf > 0.6 ? '130, 225, 255' : sf > 0.3 ? '150, 190, 255' : '205, 150, 255';
-      let a = 0.12 + 0.30 * sf;
+      let a = (0.12 + 0.30 * sf) * layerComp;
       if (sf < 0.3) a *= 0.6 + 0.4 * Math.sin(game.time * 26);
-      // A calm, steady bubble: just a soft volumetric rim glow. No dashes
-      // (that's helper-UI language) and no moving parts (distracting) —
-      // motion is reserved for EVENTS: recharge sweeps and absorb ripples.
-      const g2 = ctx.createRadialGradient(s.x, s.y, R * 0.7, s.x, s.y, R * 1.1);
-      g2.addColorStop(0, 'transparent');
-      g2.addColorStop(0.8, `rgba(${col}, ${a * 0.8})`);
-      g2.addColorStop(1, 'transparent');
-      ctx.fillStyle = g2;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.1, 0, TAU); ctx.fill();
+      glowGrad = ctx.createRadialGradient(s.x, s.y, R * 0.7, s.x, s.y, R * 1.1);
+      glowGrad.addColorStop(0, 'transparent');
+      glowGrad.addColorStop(0.8, `rgba(${col}, ${a * 0.8})`);
+      glowGrad.addColorStop(1, 'transparent');
     }
     // (Shield down = nothing drawn at all: a naked hull IS the indicator.
     // The HUD bar's blinking SHLD label carries the alarm.)
@@ -2629,21 +2639,42 @@ function drawShip(game) {
     // gates its charging shimmer on the same stat).
     const charging = s.alive && sf < 1 &&
       game.time - game.lastDamage > game.st.regenDelay;
-    if (charging) {
-      const t = (game.time % 0.8) / 0.8;
-      ctx.strokeStyle = `rgba(140, 230, 255, ${0.5 * t})`;
-      ctx.lineWidth = 1.5 / z;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R * (1.7 - 0.7 * t), 0, TAU); ctx.stroke();
+    const sweepT = (game.time % 0.8) / 0.8;
+    const hitK = s.shieldHitT > 0 ? 1 - s.shieldHitT / 0.35 : -1;
+    for (let li = 0; li < LAYERS; li++) {
+      ctx.save();
+      if (partial) {
+        // Widest layer last-but-one to first — every layer is centred on the
+        // nose, so they nest and the overlap count IS the angular falloff.
+        const half = arc * (CORE + (1 - CORE) * ((li + 1) / LAYERS));
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        ctx.arc(s.x, s.y, R * 2.6, s.angle - half, s.angle + half);
+        ctx.closePath();
+        ctx.clip();
+        ctx.globalAlpha = 1 / LAYERS;
+      }
+      // A calm, steady bubble: just a soft volumetric rim glow. No dashes
+      // (that's helper-UI language) and no moving parts (distracting) —
+      // motion is reserved for EVENTS: recharge sweeps and absorb ripples.
+      if (glowGrad) {
+        ctx.fillStyle = glowGrad;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.1, 0, TAU); ctx.fill();
+      }
+      if (charging) {
+        ctx.strokeStyle = `rgba(140, 230, 255, ${0.5 * sweepT * layerComp})`;
+        ctx.lineWidth = 1.5 / z;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R * (1.7 - 0.7 * sweepT), 0, TAU); ctx.stroke();
+      }
+      if (hitK >= 0) {
+        ctx.strokeStyle = `rgba(220, 245, 255, ${(1 - hitK) * 0.9 * layerComp})`;
+        ctx.lineWidth = 3 / z;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R * (1 + hitK * 0.55), 0, TAU); ctx.stroke();
+        ctx.fillStyle = `rgba(150, 225, 255, ${(1 - hitK) * 0.16 * layerComp})`;
+        ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
     }
-    if (s.shieldHitT > 0) {
-      const k = 1 - s.shieldHitT / 0.35;
-      ctx.strokeStyle = `rgba(220, 245, 255, ${(1 - k) * 0.9})`;
-      ctx.lineWidth = 3 / z;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R * (1 + k * 0.55), 0, TAU); ctx.stroke();
-      ctx.fillStyle = `rgba(150, 225, 255, ${(1 - k) * 0.16})`;
-      ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
-    }
-    if (partial) ctx.restore();
   }
 
   // REFLEX JINK flash: one expanding mint ring the instant the auto-dodge

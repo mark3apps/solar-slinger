@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp } from './config.js';
+import { CFG, PROG, addXp, fieldXp } from './config.js';
 import { derail } from './entities.js';
 import { clamp, angDiff, TAU } from './util.js';
 import { bump, best, noteCatch } from './achievements.js';
@@ -171,9 +171,11 @@ export function tryGrab(game) {
 
   // XP: every catch pays. Heavy catches (relative to current capacity) pay
   // most; re-catching the same rock pays less each time so you can't farm one
-  // pebble forever.
+  // pebble forever. Inside a dense field the same defence fails — there is
+  // always a FRESH rock within a beam length — so shoal rock goes through
+  // fieldXp (flat damp + the pocket's finite budget) on top of it.
   const w = clamp(best.mass / game.st.capacity, 0.1, 1) / (1 + 0.6 * best.catchCount);
-  addXp(game, PROG.XP_CATCH + 20 * w);
+  addXp(game, fieldXp(game, best, PROG.XP_CATCH + 20 * w));
   game.prog.catches++;
   best.catchCount++;
   // ACHIEVEMENTS: one call classifies the whole catch (mass, landmark flags,
@@ -214,6 +216,7 @@ export function releaseHeld(game, fling) {
     b.primed = false;   // Dead Stop prime is one shot — consumed by this fling
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    b.chainN = 0;   // YOUR throw is always link 0 (physics.chainOk) — even for a rock that ended a chain
     if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
     game.flingDelayT = 2;   // hold any owed upgrade pick back ~2s so it can't freeze the throw
     if (game.tetherMul > 1.15) game.tetherShow = game.tetherMul;   // main.js announces
@@ -303,7 +306,7 @@ export function addToOrbit(game) {
   // (ambient spin is a sleepy ±0.3 rad/s)
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
   game.orbit.push(b);
-  addXp(game, PROG.XP_ORBIT);   // stowing a rock into the shield pays XP
+  addXp(game, fieldXp(game, b, PROG.XP_ORBIT));   // stowing a rock into the shield pays XP (damped in a shoal)
   bump(game, 'stows');
   sfx.setBeam(false);
   sfx.sfxOrbitCapture();
@@ -396,6 +399,7 @@ export function flingAllFromOrbit(game, count = Infinity) {
     b.vy = s.vy + Math.sin(a) * speed;
     b.thrownBy = 'player';
     b.thrownTimer = 4;
+    b.chainN = 0;                     // link 0, like releaseHeld
     b.throwX = b.x; b.throwY = b.y;   // volley pellets can snipe too (see releaseHeld)
   });
   if (n) {

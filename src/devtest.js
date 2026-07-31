@@ -309,13 +309,17 @@ export function runMechTest(game, hooks, opts = {}) {
       damageShip(game, 10, 'suite: rear probe', s.angle + Math.PI);
       expect(s.shield === sh0, 'the front arc soaked a hit from behind');
       expect(Math.abs(hull0 - s.hull - 10) < 1e-9, 'a rear hit did not go straight to hull');
-      // ...and DIRECTIONLESS damage splits: half soaked, half through
+      // ...and DIRECTIONLESS damage splits by COVERAGE SHARE (shieldArc / PI),
+      // derived rather than hardcoded: the brawler wedge is deliberately under
+      // half (see shipStats), so a literal 5 here would just re-break every
+      // time that angle is tuned.
       s.shield = game.st.shieldMax; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
+      const share = game.st.shieldArc / Math.PI;
       damageShip(game, 10, 'suite: directionless probe');
-      expect(Math.abs(sh0 - s.shield - 5) < 1e-9,
-        `half a shield soaked ${sh0 - s.shield} of 10 directionless, wanted 5`);
-      expect(Math.abs(hull0 - s.hull - 5) < 1e-9, 'the other half never reached the hull');
+      expect(Math.abs(sh0 - s.shield - 10 * share) < 1e-9,
+        `the wedge soaked ${sh0 - s.shield} of 10 directionless, wanted ${10 * share}`);
+      expect(Math.abs(hull0 - s.hull - 10 * (1 - share)) < 1e-9, 'the rest never reached the hull');
       s.shield = game.st.shieldMax;
       return `pool=${Math.round(game.st.shieldMax)}`;
     });
@@ -333,14 +337,23 @@ export function runMechTest(game, hooks, opts = {}) {
     });
 
     // T8 — DESIGN LAW: the hull never self-heals (glow pockets only)
+    // The law's ONE sanctioned exception has to be allowed for here: a pick or
+    // an automatic RANK that raises hullMax heals the gain +20%
+    // (main.healOnHullGain). Achievements pay XP now, so a row landing during
+    // these three seconds can rank a hull track mid-probe — that heal is the
+    // rule working, not the law breaking, so the budget below is exactly it.
     t('hull does not self-heal', () => {
       const s = game.ship;
       parkShip(game, 0, -26000);                 // quiet space, far from pockets
       s.hull = game.st.hullMax * 0.5;
-      const hull0 = s.hull;
+      const hull0 = s.hull, max0 = game.st.hullMax;
       hooks.stepSim(3);
-      expect(s.hull <= hull0 + 1e-6, `hull rose ${s.hull - hull0} with no glow pocket`);
-      return `held at ${Math.round(hull0)}/${game.st.hullMax}`;
+      const sanctioned = Math.max(0, game.st.hullMax - max0) * 1.2;
+      expect(s.hull <= hull0 + sanctioned + 1e-6,
+        `hull rose ${s.hull - hull0} with no glow pocket (hull-gain heal allowed ${sanctioned})`);
+      return sanctioned > 0
+        ? `held at ${Math.round(hull0)} + ${Math.round(sanctioned)} hull-gain heal`
+        : `held at ${Math.round(hull0)}/${game.st.hullMax}`;
     });
 
     // T9 — the shield DOES recharge after the quiet delay
