@@ -649,6 +649,8 @@ function drawBody(game, b) {
     drawCacheSprite(game, b);
   } else if (b.core) {
     drawCoreSprite(game, b);
+  } else if (b.chunk) {
+    drawChunkSprite(b);
   } else if (b.type === 'asteroid') {
     traceAsteroid(b);
     ctx.fill();
@@ -682,7 +684,7 @@ function drawBody(game, b) {
       ctx.lineTo(b.x - Math.cos(a) * b.radius, b.y - Math.sin(a) * b.radius);
     }
     ctx.stroke();
-  } else if (b.type === 'asteroid' && !b.visitor) {
+  } else if (b.type === 'asteroid' && !b.visitor && !b.chunk) {
     ctx.save();
     traceAsteroid(b);
     ctx.clip();
@@ -739,17 +741,9 @@ function drawBody(game, b) {
     ctx.lineCap = 'butt';
   }
 
-  // Damage cracks
-  if (b.hp < b.maxHp * 0.6 && b.maxHp !== Infinity) {
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = Math.max(1, b.radius * 0.05);
-    ctx.beginPath();
-    for (let i = 0; i < 3; i++) {
-      const a = b.id * 1.7 + i * 2.1;
-      ctx.moveTo(b.x + Math.cos(a) * b.radius * 0.2, b.y + Math.sin(a) * b.radius * 0.2);
-      ctx.lineTo(b.x + Math.cos(a + 0.5) * b.radius * 0.9, b.y + Math.sin(a + 0.5) * b.radius * 0.9);
-    }
-    ctx.stroke();
+  // Progressive damage: crack web + impact scars + near-death ember fissures
+  if (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length))) {
+    drawBodyDamage(game, b);
   }
 
   // Held / orbiting highlights
@@ -944,6 +938,234 @@ function drawMoonDetail(game, b) {
   ctx.strokeStyle = 'rgba(210, 224, 245, 0.35)';
   ctx.lineWidth = Math.max(0.8, 1.1 / game.cam.zoom);
   ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
+}
+
+// Progressive damage, drawn in the SURFACE frame (translate + rotate b.rot) so
+// wounds ride the day/night spin, clipped to the silhouette. Three layers:
+//  - a seeded crack web whose count/length/width grow with lost hp — the rng
+//    sequence is consumed identically every frame, so cracks never swim, and
+//    each new crack eases in (grow) instead of popping;
+//  - persistent impact craters (b.scars, minted by physics.damageBody when a
+//    hit sheds chunks): a dark bite at the rim with fracture rays fanning
+//    inward, fading in over a beat;
+//  - past 55% damage, ember light leaks from the deepest cracks (icy worlds
+//    leak cold blue instead) — the crust is failing.
+// Solid strokes only — this is a real object, not helper UI.
+function drawBodyDamage(game, b) {
+  const dmg01 = 1 - b.hp / b.maxHp;
+  const R = b.radius;
+  ctx.save();
+  if (b.type === 'asteroid') traceAsteroid(b);
+  else { ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); }
+  ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+
+  // Crack web: jagged fissures running INWARD from the rim (impacts fracture
+  // from the surface, so chords across the middle read wrong). Geometry is
+  // rebuilt each frame from the same seeded rolls — stable, never swims — and
+  // shared with the ember pass below via crackPaths.
+  const prog = (dmg01 - 0.04) * 14;   // hairlines from ~4% damage — wear shows early
+  const cracks = prog > 0 ? crackPaths(b, R, prog) : null;
+  if (cracks && cracks.length) {
+    ctx.strokeStyle = `rgba(0,0,0,${0.24 + 0.28 * dmg01})`;
+    ctx.lineWidth = Math.max(0.8, R * 0.028) * (0.7 + 0.5 * dmg01);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const pts of cracks) {
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+    }
+    ctx.stroke();
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+  }
+
+  // Near death the deepest fissures glow from within (same geometry as the
+  // dark pass — the light leaks from inside the cracks, not beside them)
+  if (dmg01 > 0.55 && cracks && cracks.length) {
+    const icy = b.ptype === 'ice' || b.moonType === 'ice';
+    const heat = (dmg01 - 0.55) / 0.45;
+    const breathe = 0.85 + 0.15 * Math.sin(game.time * 1.8 + b.id);
+    // more fissures ignite as death approaches
+    const nGlow = Math.max(2, Math.ceil(cracks.length * (0.3 + 0.7 * heat)));
+    const glowPath = () => {
+      ctx.beginPath();
+      for (let i = 0; i < Math.min(cracks.length, nGlow); i++) {
+        const pts = cracks[i];
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+      }
+    };
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // soft halo first, bright core inside it — light leaking FROM the crack
+    ctx.strokeStyle = icy
+      ? `rgba(110, 190, 255, ${0.3 * heat * breathe})`
+      : `rgba(255, 110, 40, ${0.34 * heat * breathe})`;
+    ctx.lineWidth = Math.max(1.5, R * 0.055);
+    glowPath(); ctx.stroke();
+    ctx.strokeStyle = icy
+      ? `rgba(200, 240, 255, ${0.7 * heat * breathe})`
+      : `rgba(255, 205, 120, ${0.75 * heat * breathe})`;
+    ctx.lineWidth = Math.max(0.8, R * 0.02);
+    glowPath(); ctx.stroke();
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+
+  // Scar bites — drawn UNCLIPPED so each crater visibly punches a chunk out
+  // of the silhouette: an opaque space-toned jagged blob straddling the rim
+  // (the missing material), a pale cliff-face lip on its inner edge, and
+  // fracture rays fanning into the body. Angles are surface-local, so bites
+  // ride the day/night spin like everything else.
+  if (b.scars && b.scars.length) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rot);
+    for (const sc of b.scars) {
+      const k = Math.min(1, (game.time - sc.t) * 3);   // quick fade-in
+      const br = Math.max(2.2, R * 0.06 * sc.s);       // floor so pebble bites still read
+      // Rocks aren't circles: sample the jag/shard silhouette at the scar's
+      // local angle so the bite sits ON the edge (vertex i lives at local
+      // angle i/n·TAU — same mapping as traceAsteroid/drawChunkSprite).
+      let edge = 1;
+      const poly = b.chunk ? b.shard : b.jag;
+      if (b.type === 'asteroid' && poly) {
+        let ai = sc.a % TAU; if (ai < 0) ai += TAU;
+        edge = poly[Math.round((ai / TAU) * poly.length) % poly.length];
+      }
+      // centered a hair OUTSIDE the rim so it reads as a notch eaten out of
+      // the edge, never a blob floating on the face
+      const cd = R * edge + br * 0.15;
+      const cxp = Math.cos(sc.a) * cd, cyp = Math.sin(sc.a) * cd;
+      // organic bite mouth — two sin harmonics per vertex, stable per scar
+      const NV = 10;
+      ctx.fillStyle = `rgba(4, 6, 13, ${k})`;          // the space behind shows through
+      ctx.beginPath();
+      for (let v = 0; v < NV; v++) {
+        const va = (v / NV) * TAU;
+        const h = Math.sin(b.id * 7.7 + sc.t * 13.3 + v * 2.1) * 0.14
+          + Math.sin(sc.t * 5.9 + v * 4.7) * 0.08;
+        const vr = br * (0.92 + h);
+        const px = cxp + Math.cos(va) * vr, py = cyp + Math.sin(va) * vr;
+        if (v === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      // pale exposed cliff face along the bite's inner edge
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.14 * k})`;
+      ctx.lineWidth = Math.max(0.8, br * 0.18);
+      ctx.beginPath();
+      ctx.arc(cxp, cyp, br * 0.95, sc.a + Math.PI - 1.0, sc.a + Math.PI + 1.0);
+      ctx.stroke();
+      // fracture rays fanning inward from the wound
+      ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * k})`;
+      ctx.lineWidth = Math.max(0.8, R * 0.022);
+      ctx.beginPath();
+      for (let r2 = 0; r2 < 3; r2++) {
+        const ra = sc.a + Math.PI + (r2 - 1) * 0.5 + Math.sin(b.id * 3.3 + sc.t * 7.1 + r2 * 5.7) * 0.22;
+        ctx.moveTo(cxp + Math.cos(ra) * br * 0.6, cyp + Math.sin(ra) * br * 0.6);
+        ctx.lineTo(cxp + Math.cos(ra) * R * (0.28 + 0.13 * r2) * sc.s,
+          cyp + Math.sin(ra) * R * (0.28 + 0.13 * r2) * sc.s);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// Build the seeded crack polylines for a body at damage progress `prog`
+// (fractional crack count). Every crack's rolls are consumed in the same order
+// every frame regardless of prog, so existing cracks never move as new ones
+// open; the newest crack eases outward (grow) instead of popping. Points are
+// SURFACE-LOCAL (caller has translated/rotated into the body frame). Each
+// fissure starts at the rim and stress-walks inward with angular jitter, with
+// a short side-branch once it's fully open.
+function crackPaths(b, R, prog) {
+  const rng = mulberry32(b.id * 5077 + 7);
+  const MAXC = 8;
+  const out = [];
+  for (let i = 0; i < MAXC; i++) {
+    const a0 = rng() * TAU;
+    const len = R * (0.32 + rng() * 0.34);
+    const drift = (rng() - 0.5) * 1.1;
+    const j1 = rng() - 0.5, j2 = rng() - 0.5, j3 = rng() - 0.5;
+    const brSide = rng() < 0.5 ? -1 : 1, brAt = 0.35 + rng() * 0.3;
+    if (i >= prog) continue;                       // rolled but not yet open
+    const grow = Math.min(1, prog - i);
+    const jags = [0, j1, j2, j3];
+    const pts = [];
+    for (let k = 0; k <= 3; k++) {
+      const t = (k / 3) * grow;
+      const r = R * 0.985 - len * t;
+      const a = a0 + drift * t * 0.35 + jags[k] * 0.22;
+      pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    out.push(pts);
+    if (grow >= 1) {                               // side-branch off the midline
+      const t = brAt;
+      const r = R * 0.985 - len * t;
+      const a = a0 + drift * t * 0.35;
+      const ba = a + brSide * (0.5 + Math.abs(j2) * 0.5);
+      const br2 = r - len * 0.3;
+      out.push([[Math.cos(a) * r, Math.sin(a) * r], [Math.cos(ba) * br2, Math.sin(ba) * br2]]);
+    }
+  }
+  return out;
+}
+
+// A PLANET CHUNK: a shard of a wounded or destroyed world. Reads as a piece of
+// that world, not a belt rock: sharp angular fracture faces (darker than the
+// surface — freshly split interior), with a bright strip of the old crust
+// surviving along one edge in the world's own color. Shape is seeded off b.id
+// and cached like the asteroid jag.
+function drawChunkSprite(b) {
+  const R = b.radius;
+  if (!b.shard || b.shardR !== R) {
+    const rng = mulberry32(b.id * 3163 + 41);
+    const n = 6 + Math.floor(rng() * 3);
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);   // sharper than a tumbled rock
+    b.shard = pts; b.shardR = R;
+    b.crustAt = Math.floor(rng() * n);   // which run of edges keeps the old surface
+  }
+  const n = b.shard.length;
+  const vx = (i) => Math.cos((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
+  const vy = (i) => Math.sin((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  const shard = () => {
+    ctx.beginPath();
+    ctx.moveTo(vx(0), vy(0));
+    for (let i = 1; i < n; i++) ctx.lineTo(vx(i), vy(i));
+    ctx.closePath();
+  };
+  // fracture faces: the world's color, knocked down — split rock, not surface
+  ctx.fillStyle = b.color;
+  shard(); ctx.fill();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+  shard(); ctx.fill();
+  // surviving crust: a bright strip of the old surface along one edge run
+  ctx.save();
+  shard(); ctx.clip();
+  ctx.strokeStyle = b.color;
+  ctx.lineWidth = R * 0.42;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  ctx.moveTo(vx(b.crustAt), vy(b.crustAt));
+  ctx.lineTo(vx(b.crustAt + 1), vy(b.crustAt + 1));
+  ctx.lineTo(vx(b.crustAt + 2), vy(b.crustAt + 2));
+  ctx.stroke();
+  // one dark split line across the interior — the fracture that freed it
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+  ctx.lineWidth = Math.max(0.8, R * 0.08);
+  ctx.beginPath();
+  ctx.moveTo(vx(b.crustAt) * 0.55, vy(b.crustAt) * 0.55);
+  ctx.lineTo(vx(b.crustAt + Math.floor(n / 2)) * 0.85, vy(b.crustAt + Math.floor(n / 2)) * 0.85);
+  ctx.stroke();
+  ctx.restore();
+  ctx.restore();
 }
 
 // A cored rock: a mineral vein glinting through the shell so prospectors can

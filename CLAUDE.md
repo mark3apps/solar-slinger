@@ -279,6 +279,19 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    at 900+. (`physics.js:452`)
 6. **`WORLD_R` must exceed every system's outermost reach** (orbit + moons), and star-anchored
    planets/moons are exempt from the boundary force — it silently deorbits them otherwise. (`config.js:5`, `physics.js:613`)
+7. **Chunk shedding is gated, or it cascades.** Big bodies (`CHUNK_MIN_MASS`+, moons and up; never
+   stations/nests/gas giants) don't fail all-or-nothing. At HALF the `CHUNK_DMG_MIN`/`CHUNK_DMG_FRAC`
+   gates a hit carves a persistent scar (`b.scars` — render punches a visible bite out of the
+   silhouette); at the full gates it also SPRAYS real chunk asteroids (a couple from the crater, the
+   rest in random directions; giants vent extra) and sheds the mass. A dying world (planet/moon/rogue,
+   non-gas) shatters into a dense cloud of up to 30 slow chunks that jostle apart. Pieces of worlds
+   carry `b.chunk` — the PLANET CHUNK crust-shard sprite (render `drawChunkSprite`), distinct from
+   belt rock. The gates are load-bearing: the damage floor keeps corona-heat drip (~0.1% of maxHp per
+   call) from ever shedding, `CHUNK_MAX_MASS` (3200) stays far under the 5e4 rail-disturber threshold
+   so chunks can't wake rail lanes, hit-spray chunks spawn OUTSIDE the parent's surface with outward
+   velocity (a chunk born overlapping its parent takes collision damage and sheds again — feedback
+   loop), body counts are capped, and only a direct `'player-throw'` hit propagates player credit onto
+   chunks (shard/Demolition chains stay bounded). (`physics.js damageBody`/`shatter`, `config.js CHUNK_*`)
 
 ### Rails (the biggest architectural fact)
 
