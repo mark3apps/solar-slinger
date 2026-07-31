@@ -7,7 +7,7 @@ let canvas, ctx, vw, vh, dpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
 let armedSet = null;   // orbiters the shotgun charge has armed this frame
 const starLayers = [];   // parallax background stars
-const oortSpecks = [];   // icy debris ring marking the world edge
+const oortShards = [];   // tumbling ice shards in banded shells beyond the world edge
 
 export function initRender(cv) {
   canvas = cv;
@@ -37,11 +37,33 @@ export function initRender(cv) {
     }
     starLayers.push({ parallax, pts });
   }
-  for (let i = 0; i < 420; i++) {
-    const th = rng() * TAU;
-    const r = CFG.WORLD_R + 150 + rng() * rng() * 3200;
-    oortSpecks.push({ x: Math.cos(th) * r, y: Math.sin(th) * r, s: 2 + rng() * 7, b: 0.25 + rng() * 0.5 });
-  }
+  // Oort hero shards, seeded once and animated in drawOort (drift along the
+  // shell + tumble in place — both pure functions of game.time, no update
+  // pass). These are only the LANDMARK layer: glinting crystals, craggy
+  // bergs, and huge dim ghost masses deep in the fog. The bulk of the cloud
+  // is the procedural hashed dust in drawOortDust — a seeded array can never
+  // be dense enough over a 264k-unit ring without a monster count.
+  const shardBand = (count, r0, r1, s0, s1, kind) => {
+    for (let i = 0; i < count; i++) {
+      const verts = [];
+      const n = 5 + Math.floor(rng() * 4);
+      for (let j = 0; j < n; j++) verts.push(0.55 + rng() * 0.5);
+      oortShards.push({
+        th: rng() * TAU,
+        r: r0 + rng() * (r1 - r0),
+        w: (rng() - 0.5) * 0.0022,   // slow shell drift, both directions
+        size: s0 + rng() * rng() * (s1 - s0),
+        verts, kind,
+        rot: rng() * TAU,
+        spin: (rng() - 0.5) * (kind === 'crystal' ? 0.7 : 0.1),
+        b: 0.3 + rng() * 0.45,
+        gp: rng() * TAU, gs: 0.6 + rng() * 1.4,   // glint phase / speed
+      });
+    }
+  };
+  shardBand(900, CFG.WORLD_R + 60, CFG.WORLD_R + 1800, 4, 13, 'crystal');
+  shardBand(420, CFG.WORLD_R + 250, CFG.WORLD_R + 2400, 24, 90, 'berg');
+  shardBand(260, CFG.WORLD_R + 1400, CFG.WORLD_R + 3400, 90, 220, 'ghost');
   return { getView: () => ({ vw, vh }) };
 }
 
@@ -114,6 +136,254 @@ function drawStarfield(game) {
     }
   }
   ctx.globalAlpha = 1;
+}
+
+// Procedural ice dust: hashed world-grid grains — the only way to fill a
+// 264k-unit ring densely at every zoom without a monster array. The layer
+// samples its grid in a slowly ROTATING frame (rotate the view into the
+// frame, iterate those cells, rotate points back out), so the whole field
+// drifts; two layers counter-rotate so the cloud shimmers with parallax
+// instead of reading as one rigid disc. Grains fade in across the wall's
+// face (flurries begin inside the warning band) and sink into the fog with
+// depth. isShards draws sparser tumbling diamonds instead of fine grains.
+function drawOortDust(game, cell, omega, isShards) {
+  const phi = omega * game.time;
+  const c = Math.cos(phi), s = Math.sin(phi);
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const [wx, wy] of [[view.x0, view.y0], [view.x1, view.y0], [view.x0, view.y1], [view.x1, view.y1]]) {
+    const rx = wx * c + wy * s, ry = -wx * s + wy * c;
+    if (rx < bx0) bx0 = rx; if (rx > bx1) bx1 = rx;
+    if (ry < by0) by0 = ry; if (ry > by1) by1 = ry;
+  }
+  const ix0 = Math.floor(bx0 / cell) - 1, ix1 = Math.ceil(bx1 / cell) + 1;
+  const iy0 = Math.floor(by0 / cell) - 1, iy1 = Math.ceil(by1 / cell) + 1;
+  const inner = CFG.WORLD_R - 420;
+  for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
+    let h = (ix * 73856093) ^ (iy * 19349663);
+    h = ((h ^ (h >> 13)) * 1274126177) & 0x7fffffff;
+    if ((h % 8) > (isShards ? 2 : 4)) continue;
+    const px = (ix + (h % 89) / 89) * cell, py = (iy + ((h >> 6) % 89) / 89) * cell;
+    const rr = Math.hypot(px, py);
+    if (rr < inner) continue;
+    const wx = px * c - py * s, wy = px * s + py * c;
+    if (wx < view.x0 - 12 || wx > view.x1 + 12 || wy < view.y0 - 12 || wy > view.y1 + 12) continue;
+    // density rises across the grind radius on a smoothstep (a hard step
+    // multiplier at WORLD_R read as a drawn front): with no boundary line,
+    // this gradual thickening of stochastic dust is what marks the wall
+    const face = Math.min(1, Math.max(0, (rr - CFG.WORLD_R + 200) / 400));
+    const aIn = Math.min(1, (rr - inner) / 600) * (0.55 + 0.45 * face * face * (3 - 2 * face));
+    const aDeep = 1 / (1 + Math.max(0, rr - CFG.WORLD_R) / 2600);
+    const al = (0.14 + ((h >> 8) & 3) * 0.09) * aIn * aDeep;
+    if (isShards) {
+      const sz = 3.5 + ((h >> 10) & 7) * 0.95;
+      const ra = ((h >> 4) & 255) / 255 * TAU + game.time * (((h >> 12) & 1) ? 0.35 : -0.28);
+      const cr = Math.cos(ra) * sz, sr = Math.sin(ra) * sz;
+      ctx.fillStyle = `rgba(196, 222, 255, ${al})`;
+      ctx.beginPath();
+      ctx.moveTo(wx + cr, wy + sr);
+      ctx.lineTo(wx - sr, wy + cr);
+      ctx.lineTo(wx - cr, wy - sr);
+      ctx.lineTo(wx + sr, wy - cr);
+      ctx.closePath(); ctx.fill();
+    } else {
+      const sz = 0.9 + ((h >> 10) & 7) * 0.32;
+      ctx.fillStyle = `rgba(205, 228, 255, ${al})`;
+      ctx.fillRect(wx - sz / 2, wy - sz / 2, sz, sz);
+    }
+  }
+}
+
+// ─── The Oort cloud ─────────────────────────────────────────────────────────
+// The world edge is a towering glacial wall, not a dotted line: a deep haze
+// bank thickening outward, aurora curtains hanging off its inner face, banded
+// shells of tumbling ice (seeded in initRender), and a crisp ember kill line
+// at the exact grind radius (physics starts damaging at WORLD_R — the line IS
+// the gameplay boundary, so it must sit exactly there). Everything here is
+// render-only, same law as the solar storms: it never touches bodies, rails,
+// or velocities. All motion is a pure function of game.time, so the wall
+// freezes with the sim behind menus like the rest of the world.
+function drawOort(game) {
+  const t = game.time;
+  const camR = Math.hypot(game.cam.x, game.cam.y);
+
+  // Deep haze: a radial fog annulus centered on the origin — transparent at
+  // the wall's foot, thickening fast into the pale bank the ice sinks into.
+  // Compressed on purpose: at gameplay zoom you only ever see ~600u past the
+  // line before the grind kills you, so the fog must close in within that.
+  const g = ctx.createRadialGradient(0, 0, Math.max(0, CFG.WORLD_R - 900), 0, 0, CFG.WORLD_R + 2600);
+  g.addColorStop(0, 'rgba(150, 195, 255, 0)');
+  g.addColorStop(0.26, 'rgba(150, 195, 255, 0.03)');
+  g.addColorStop(0.45, 'rgba(160, 200, 255, 0.08)');
+  g.addColorStop(0.7, 'rgba(170, 208, 255, 0.15)');
+  g.addColorStop(1, 'rgba(190, 220, 255, 0.22)');
+  ctx.fillStyle = g;
+  ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, view.y1 - view.y0);
+
+  // Aurora curtains: slow drapery of light on the wall's inner face. Only the
+  // visible arc is drawn — the angular window the view subtends from the
+  // origin (the full ring would be thousands of segments). Fat overlapping
+  // radial strokes at low alpha blend into one continuous band whose length
+  // and brightness breathe along the ring; the hue slides cyan<->violet.
+  // Each stroke fades to nothing along its length (per-segment gradient) so
+  // curtains dissolve upward instead of ending in hard-capped bars.
+  {
+    const a0 = Math.atan2(view.cy, view.cx);
+    const span = (view.r >= camR ? Math.PI : Math.asin(view.r / camR)) + 0.02;
+    // ~34u segments: neighbors differ so little in alpha that no seam shows
+    // (90u steps drew visible Mach-band stripes); capped at ~120 segments
+    const step = Math.max(34 / CFG.WORLD_R, span / 60);
+    ctx.globalCompositeOperation = 'lighter';
+    // width EXACTLY abuts adjacent strokes: any overlap double-brightens
+    // under 'lighter' and bands the curtain into stripes; the rays diverge
+    // outward but the gradient tips hide those hairline gaps
+    ctx.lineWidth = step * CFG.WORLD_R;
+    // Foot alpha is CONSTANT along the arc (it breathes in time only): any
+    // per-segment alpha step reads as a Mach-band stripe between the flat
+    // 50px bars. All spatial variation lives in curtain LENGTH — the
+    // gradient falloff turns smooth length waves into smooth brightness
+    // waves at every height, with nothing left to band.
+    const alpha = 0.13 + 0.03 * Math.sin(t * 0.37);
+    // snap the first segment to the step grid: segments must be
+    // world-anchored, or the per-frame re-quantization of the wave field
+    // crawls visibly as the camera pans along the wall
+    const aStart = Math.floor((a0 - span) / step) * step;
+    for (let a = aStart; a <= a0 + span; a += step) {
+      // wave periods tuned to the ~400u arc a gameplay screen spans —
+      // curtain heights must visibly vary across ONE screen of wall
+      const n = 0.5 + 0.5 * Math.sin(a * 430 + t * 0.5) * Math.sin(a * 127 - t * 0.21 + 1.7);
+      const mix = 0.5 + 0.5 * Math.sin(a * 160 + t * 0.13);
+      // rare tall pillars: a shaft of light reaching deep into the fog —
+      // a landmark you can steer by, maybe one per few screens of wall
+      const p = Math.max(0, Math.sin(a * 37 + t * 0.07) - 0.86) / 0.14;
+      // ragged feet: each curtain roots at its OWN radius, weaving in and
+      // out across the warning band, and its alpha rises from ZERO at the
+      // foot. A shared exact start radius (even at soft constant alpha)
+      // reads as a hard drawn line — the user rejected that twice.
+      // foot weave is LOW frequency and the alpha rise is LONG (peak at a
+      // third of the stroke): neighbors must agree closely on brightness at
+      // every radius, or the steep rise region stair-steps between segments
+      const fw = 0.5 * Math.sin(a * 130 + t * 0.09) + 0.5 * Math.sin(a * 47 - t * 0.05 + 0.9);
+      const foot = CFG.WORLD_R - 180 + 260 * fw;
+      const len = 420 + 900 * n + 1400 * p;
+      const cr = Math.round(lerp(140, 185, mix));
+      const cg = Math.round(lerp(215, 160, mix));
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const fx = ca * foot, fy = sa * foot;
+      const tx = ca * (foot + len), ty = sa * (foot + len);
+      // smooth rise-and-fall profile: peaks land at different radii per
+      // segment (foot and length both vary), so no coherent bright ridge —
+      // and no Mach contour, the slope never breaks hard
+      const lg = ctx.createLinearGradient(fx, fy, tx, ty);
+      lg.addColorStop(0, `rgba(${cr}, ${cg}, 255, 0)`);
+      lg.addColorStop(0.32, `rgba(${cr}, ${cg}, 255, ${alpha * 0.75})`);
+      lg.addColorStop(0.55, `rgba(${cr}, ${cg}, 255, ${alpha * 0.5})`);
+      lg.addColorStop(0.78, `rgba(${cr}, ${cg}, 255, ${alpha * 0.2})`);
+      lg.addColorStop(1, `rgba(${cr}, ${cg}, 255, 0)`);
+      ctx.strokeStyle = lg;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 1;   // the fat curtain width must not leak downstream
+  }
+
+  // The dust field — the body of the cloud (two counter-drifting layers:
+  // fine grains + tumbling small shards)
+  drawOortDust(game, 34, 0.0011, false);
+  drawOortDust(game, 90, -0.0007, true);
+
+  // There is deliberately NO drawn boundary line — and no shared edge of
+  // any kind at WORLD_R: a crisp stroke read as a UI ring, and even a soft
+  // glow starting at one exact radius read as a hard line (the user
+  // rejected both — don't reintroduce either). The grind radius is legible
+  // from natural cues only: curtain feet weaving through the warning band,
+  // dust density smoothstepping up across it, flurries starting early, and
+  // the frost vignette + OORT warnings carrying the gameplay alarm.
+
+  // Hero shards: drift along their shells, tumble in place. Ghost masses are
+  // dim silhouettes in the deep fog; bergs get a rim and a kiss of sunlight
+  // on their inner face; crystals throw a rare glint.
+  for (const p of oortShards) {
+    const a = p.th + p.w * t;
+    const x = Math.cos(a) * p.r, y = Math.sin(a) * p.r;
+    const m = p.size * 2 + 8;
+    if (x < view.x0 - m || x > view.x1 + m || y < view.y0 - m || y > view.y1 + m) continue;
+    const rot = p.rot + p.spin * t;
+    const n = p.verts.length;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const va = rot + (i / n) * TAU;
+      const vr = p.size * p.verts[i];
+      const px = x + Math.cos(va) * vr, py = y + Math.sin(va) * vr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    if (p.kind === 'ghost') {
+      ctx.fillStyle = `rgba(140, 175, 225, ${p.b * 0.28})`;
+      ctx.fill();
+      continue;
+    }
+    ctx.fillStyle = `rgba(196, 222, 255, ${p.b * 0.8})`;
+    ctx.fill();
+    if (p.kind === 'berg') {
+      ctx.strokeStyle = `rgba(228, 242, 255, ${p.b * 0.55})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.lineWidth = 1;
+      // sunward kiss: the inner face catches the far sun
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(255, 236, 200, ${p.b * 0.1})`;
+      ctx.beginPath();
+      ctx.arc(x - Math.cos(a) * p.size * 0.45, y - Math.sin(a) * p.size * 0.45, p.size * 0.62, 0, TAU);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    } else if (p.kind === 'crystal') {
+      const tw = Math.sin(t * p.gs + p.gp);
+      if (tw > 0.98) {   // a crystal catching the light for a blink
+        const k = (tw - 0.98) / 0.02;
+        const gl = p.size * (1.5 + k * 2);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(230, 246, 255, ${k * 0.8})`;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x - gl, y); ctx.lineTo(x + gl, y);
+        ctx.moveTo(x, y - gl); ctx.lineTo(x, y + gl);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+  }
+
+  // Inside the wall the grind becomes visible: ice grains on a hashed world
+  // grid streak past, smeared opposite the ship's motion — billboard smears,
+  // not objects. Fades in over the last stretch of the approach.
+  const s = game.ship;
+  if (s.alive) {
+    const depth = Math.min(1, (Math.hypot(s.x, s.y) - CFG.WORLD_R + 150) / 900);
+    const spd = Math.hypot(s.vx, s.vy);
+    if (depth > 0 && spd > 40) {
+      const cell = 130;
+      const sm = Math.min(64, spd * 0.07);
+      const ux = -s.vx / spd * sm, uy = -s.vy / spd * sm;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineWidth = 2;
+      const ix0 = Math.floor(view.x0 / cell), ix1 = Math.ceil(view.x1 / cell);
+      const iy0 = Math.floor(view.y0 / cell), iy1 = Math.ceil(view.y1 / cell);
+      for (let iy = iy0; iy <= iy1; iy++) for (let ix = ix0; ix <= ix1; ix++) {
+        let h = (ix * 73856093) ^ (iy * 19349663);
+        h = ((h ^ (h >> 13)) * 1274126177) & 0x7fffffff;
+        if ((h & 7) > 2) continue;   // ~3/8 of cells hold a grain
+        const gx = (ix + (h % 97) / 97) * cell, gy = (iy + ((h >> 7) % 97) / 97) * cell;
+        ctx.strokeStyle = `rgba(210, 235, 255, ${depth * (0.1 + ((h >> 3) & 3) * 0.05)})`;
+        ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + ux, gy + uy); ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
 }
 
 // Asteroids are jagged polygons, not discs — and the bigger the rock, the
@@ -1911,7 +2181,12 @@ function drawMinimap(game) {
   {
     const dSun = Math.hypot(fx, fy);
     if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_RANGE * 1.2) {
-      ctx.strokeStyle = 'rgba(255, 130, 130, 0.3)';
+      // world edge: the icy band of the Oort wall with the ember kill line
+      // at its foot — matches the wall's in-world reading
+      ctx.strokeStyle = 'rgba(150, 200, 255, 0.18)';
+      ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.arc(sunX, sunY, CFG.WORLD_R * scale + 4, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 130, 120, 0.5)';
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(sunX, sunY, CFG.WORLD_R * scale, 0, TAU); ctx.stroke();
       ctx.lineWidth = 1;
@@ -2085,24 +2360,10 @@ export function render(game) {
   const shakeY = (Math.random() - 0.5) * game.shake;
   worldTransform(game, shakeX, shakeY);
 
-  // Oort cloud: icy fog band + speck field beyond the world edge. Only drawn
-  // when the view can actually reach the edge — deep in the system, all 420
-  // specks (and the giant ring strokes) are guaranteed off-screen.
-  if (Math.hypot(game.cam.x, game.cam.y) + view.r > CFG.WORLD_R - 200) {
-    ctx.strokeStyle = 'rgba(150, 190, 255, 0.05)';
-    ctx.lineWidth = 3400;
-    ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R + 1750, 0, TAU); ctx.stroke();
-    ctx.strokeStyle = 'rgba(170, 120, 120, 0.22)';
-    ctx.lineWidth = 26;
-    ctx.beginPath(); ctx.arc(0, 0, CFG.WORLD_R, 0, TAU); ctx.stroke();
-    ctx.fillStyle = 'rgba(190, 215, 255, 0.5)';
-    for (const p of oortSpecks) {
-      if (p.x < view.x0 - 12 || p.x > view.x1 + 12 || p.y < view.y0 - 12 || p.y > view.y1 + 12) continue;
-      ctx.globalAlpha = p.b;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, TAU); ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
+  // Oort cloud: only drawn when the view can actually reach the wall — deep
+  // in the system every part of it is guaranteed off-screen. The margin
+  // covers the approach haze and the inner stray grains (WORLD_R - 600).
+  if (Math.hypot(game.cam.x, game.cam.y) + view.r > CFG.WORLD_R - 900) drawOort(game);
 
   armedSet = (game.volleyCharging && game.volleySel > 0)
     ? new Set(volleyPick(game, game.volleySel)) : null;
@@ -2422,6 +2683,25 @@ export function render(game) {
     hgrad.addColorStop(1, `rgba(255, 160, 60, ${ha})`);
     ctx.fillStyle = hgrad;
     ctx.fillRect(0, 0, vw, vh);
+  }
+
+  // OORT FROST vignette: ice creeps in from the screen edges across the
+  // warning band, then whites out with depth once the grind begins — the
+  // cold mirror of the corona-heat vignette (fire at the core, ice at the rim)
+  if (game.ship.alive) {
+    const rc = Math.hypot(game.ship.x, game.ship.y);
+    const appr = Math.min(1, Math.max(0, (rc - (CFG.WORLD_R - CFG.OORT_WARN)) / CFG.OORT_WARN));
+    const f = Math.min(1, appr * 0.3 + Math.max(0, (rc - CFG.WORLD_R) / 1500));
+    if (f > 0.03) {
+      const shimmer = 1 + 0.1 * Math.sin(game.time * 11) + 0.05 * Math.sin(game.time * 23);
+      const fa = Math.min(0.8, f * 0.75 * shimmer);
+      const fg = ctx.createRadialGradient(vw / 2, vh / 2, vh * (0.62 - 0.3 * f), vw / 2, vh / 2, vh * 0.9);
+      fg.addColorStop(0, 'transparent');
+      fg.addColorStop(0.65, `rgba(140, 190, 255, ${fa * 0.45})`);
+      fg.addColorStop(1, `rgba(225, 240, 255, ${fa})`);
+      ctx.fillStyle = fg;
+      ctx.fillRect(0, 0, vw, vh);
+    }
   }
 
   // Low-hull vignette
