@@ -122,8 +122,11 @@ re-arms it for a fresh run.
   so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
   so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
   sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
-- **Settings** (Music/SFX volume sliders, Trajectory prediction) persist to
+- **Settings** (Music/SFX volume sliders, Trajectory prediction, FPS counter, Performance metrics,
+  World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
+  `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
+  first world, and loading after it would make every boot world random regardless of the setting.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
   entirely, not just silences them). The Web Audio context must still first be created *inside* a
   user gesture (a context built at page load starts suspended and never resumes): `sfx.initAudio`
@@ -134,6 +137,28 @@ re-arms it for a fresh run.
   licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship. The **CREDITS**
   panel carries the full attribution (every track title, both licenses); the settings line stays put
   regardless, because `CREDITS.md` names it specifically.
+- **The world seed is RANDOM per run.** `main.pickSeed` resolves it in one order — `?seed=` on the URL
+  (wins outright, so a repro link works even for a player who has pinned one), then the Settings field,
+  then `Math.random`. `main.regenWorld(seed)` is the single builder: boot, `resetRun`, and a seed
+  committed on the splash all go through it, and it records the live seed as `game.worldSeed`.
+  `generateWorld`'s own `20260721` default stays put — `devtest.js` leans on it for its fixed baseline.
+  `util.seedFrom` maps typed text to the uint32 mulberry32 wants: plain digits stay themselves (so the
+  number shown in the settings note regenerates exactly that world), anything else is FNV-1a hashed, so
+  worlds can be named. Committing a seed (blur/Enter) re-rolls **only from the title screen**, where the
+  splash backdrop is a live sim and the new world can be seen before START; mid-run it waits for the
+  next run and the note line says so. Typing never re-rolls — that would rebuild the system per keystroke.
+- **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
+  keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
+  fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`
+  `preventDefault` swallows those letters before the field ever sees them. ESC is deliberately let
+  through first, so it still backs out of a panel from inside the field.
+- **The perf overlay** (`#perfBadge`) has two independent Settings toggles: FPS counter (top line) and
+  Performance metrics (frame/sim/draw ms, substeps, and the live array counts). `main.frame` owns the
+  sampling into `game.perf`; hud.js only formats it. Frame time is the RAW rAF delta, never `dtReal` —
+  `dtReal` is clamped to a 20 fps floor and would flatline at 50ms exactly when the overlay matters.
+  Timings are EMA-smoothed and the text refreshes at ~5 Hz (per-frame digits strobe too fast to read);
+  both toggles off costs one `classList` check. Amber, like `#speedBadge` — this HUD's helper/debug
+  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 
@@ -251,7 +276,10 @@ re-arms it for a fresh run.
   `window.musicState()`; `window.tick` advances it with the sim. The sun channel has a DEADZONE on its outer
   third (spawn sits ~3.3 sun-radii out and the dread bed must not brood over a fresh run — tune in
   `music.computeMood`).
-- **Determinism:** world *generation* uses a seeded `mulberry32` RNG (default seed `20260721`). Runtime
+- **Determinism:** world *generation* uses a seeded `mulberry32` RNG, but the seed is **random per run**
+  (see the world-seed bullet in the shell section) — pin one with `?seed=` for a repeatable world.
+  The 17-planet/45-moon `layout` table in world.js is FIXED, so the seed varies placement, masses and
+  features, never the structural counts: the balance baseline holds on any seed. Runtime
   spawns/spall/AI intentionally use `Math.random`. Procedural sprite geometry is seeded off `b.id` and cached.
 
 ## Physics invariants — DO NOT REGRESS
@@ -519,6 +547,12 @@ about it — this is a hard rule.
   script, NOT in the workflow YAML — builds are **unsigned** and every release must carry them.
   The `build:` block in package.json controls what gets packaged and the installer targets. App
   icons live in `build/` (`icon.icns/.ico/.png`, generated from `build/icon-src/`).
+- **The version line in CREDITS** comes from a RELATIVE `fetch('package.json')` in main.js — the one
+  version source `src/` can read without breaking host-agnosticism (it resolves the same under serve.py
+  and over `app://`, which is registered `supportFetchAPI`). `package.json` is listed in the
+  electron-builder `files` block so it stays fetchable from the asar. It is **only accurate on a release
+  build**: a dev checkout's package.json lags the newest `v*` tag, which is the real source of truth. A
+  failed fetch drops the version silently rather than showing a broken line.
 
 ## Testing (headless + live fast-forward, no framework)
 
@@ -530,6 +564,9 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   `{ planets: "17/17", moons: "45/45", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
+  **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
+  bit-comparable with an earlier soak. The 17/45 criteria hold on any seed (the layout table is fixed);
+  `game.worldSeed` records which world a given result came from, so quote it when reporting.
 - `window.tick(seconds)` — steps the whole game headlessly at fixed dt (physics still subdivides to
   `CFG.DT`), then renders once. `window.tick(300)` fast-forwards 5 minutes. The raw primitive under
   `soak` — use it directly when you need custom instrumentation between chunks.
