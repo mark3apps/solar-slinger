@@ -247,13 +247,20 @@ export const PROG = {
   START_LIVES: 3,
   MAX_LIVES: 5,
   PICKS_PER_TIER: 3,       // small picks before a tier-up milestone
-  // XP-to-next-pick rises with level: BASE + STEP * level. Tuned so that a tier
-  // (3 small + 1 milestone = 4 picks) costs the SAME total XP the old 5-per-tier
-  // curve did (old tier t = 930 + 936*t XP; solving 4*BASE + STEP*(16t+6) for
-  // that gives BASE 145 / STEP 58, within ~1% of every tier). Fewer, meatier
-  // picks — the grind per tier is unchanged.
-  XP_BASE: 145,
-  XP_STEP: 58,
+  // XP-to-next-pick: BASE + STEP*level + CURVE*level² (level = picks taken).
+  // FRONT-LOADED PACING (user design rule): tier 0 must feel MUCH faster than
+  // the old flat band, with the cost shifted onto the later tiers — the old
+  // linear curve (145 + 58*level) priced every tier in the same band (tier t
+  // total = ~928*(t+1)), so the opening crawled exactly like the midgame. The
+  // quadratic redistributes it: per-tier totals run 462 / 1278 / 2478 / 4062 /
+  // 6030 vs the old 928 / 1856 / 2784 / 3712 / 4640 — tier 0 is ~2x faster,
+  // tiers 1-2 cheaper, tiers 3+ pricier, and the WHOLE climb to max tier stays
+  // within ~3% of the old grind (14310 vs 13920), so it's a reshape, not a
+  // buff. First pick lands at 60 XP: a survey + a catch, or a few smashes —
+  // the opening upgrade should arrive inside the first couple of minutes.
+  XP_BASE: 60,
+  XP_STEP: 30,
+  XP_CURVE: 3,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
@@ -293,23 +300,39 @@ export const PROG = {
 // modal). It sets your starting kit and gates which named ABILITIES you can be
 // offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats
 // bases), so every spec is playable from the first frame; the kit + tree layer on.
+// KIT RULE (design law): every kit must contain at least THREE abilities with
+// max > 1 — tier-0 small picks can only deepen owned abilities (rankChoices), so
+// fewer rankable tracks makes the first three picks a non-choice (SCOUT once
+// shipped with a lone rankable track because Retro Jets is a max-1 unlock that
+// arrives already maxed — count max-1 unlocks as flavor, not as a track).
 export const SPECS = [
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
-    start: ['kineticSling', 'reinforcedHull'] },
+    start: ['kineticSling', 'reinforcedHull', 'heavyRounds'] },
   { id: 'hauler', name: 'HAULER', icon: '◎',
     desc: 'Master of the beam — long reach, big hauls, orbit shields.',
-    start: ['longArmTractor', 'salvageMagnet'] },
+    start: ['longArmTractor', 'salvageMagnet', 'heavyWinch'] },
   { id: 'scout', name: 'SCOUT', icon: '◇',
     desc: 'Eyes and speed — sensors, precision, and mobility.',
-    start: ['tunedThrusters', 'retroJets'] },
+    start: ['tunedThrusters', 'retroJets', 'navPlotter', 'leadComputer'] },
 ];
 
-// The named-ability catalog. Each ability belongs to ONE spec, has ranks (small
-// picks deepen it), and a `minTier` soft-floor (it can't be OFFERED until you've
-// reached that tier). `channel` is the stat bucket it feeds — shipStats sums each
-// owned ability's rank into its channel and derives everything from those totals,
-// so several abilities can stack the same channel. BRAWLER's runtime abilities
+// The named-ability catalog. Each ability has an OWNER spec, ranks (small picks
+// deepen it), and a `minTier` soft-floor (it can't be OFFERED until you've
+// reached that tier). An optional `also: { specId: minTier }` map shares the
+// ability with OTHER specs at (usually higher) tier floors — the Scout sensor/
+// QoL chain (Retro Jets, Gravity Compass, Nav Plotter, Lead Computer, Impact
+// Warning) reaches every spec this way: Scout gets them at tier 0, everyone
+// else buys in later. `channel` is the stat bucket it feeds — shipStats sums
+// each owned ability's rank into its channel and derives everything from those
+// totals, so several abilities can stack the same channel.
+// NAMING LAW (user design rule): two abilities that DO the same thing carry the
+// SAME name/icon/desc even across specs (Heavy Winch is the catch starter in
+// both BRAWLER and HAULER; Reinforced Hull is the hull track in both — ids stay
+// distinct, they're separate catalog rows). Same-spec second tracks (Grapple
+// Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter, Juggernaut) are the
+// deliberate exception: they must stay separately named to coexist as distinct
+// cards, so their descs read as "more of the same" instead. BRAWLER's runtime abilities
 // (Ram Prow, Cluster Rounds, Shockwave, Berserker, Demolition, Juggernaut) are
 // live — their hooks live in physics.js (collideShipBody + brawlerThrowKill) and
 // tractor.js (Berserker fling). HAULER's: Recovery Tether + Twin Grip (tractor.js),
@@ -323,7 +346,7 @@ export const ABILITIES = [
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
   { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
   { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
-  { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Rounds',   icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
+  { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A heavy regenerating shield — FRONT ARC ONLY. Your tail stays bare.' },
   { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Ram bodies for damage and take less from impacts.' },
@@ -337,10 +360,10 @@ export const ABILITIES = [
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
   { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
   { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
-  { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab heavier masses.' },
+  { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   // HAULER has NO energy shield ON PURPOSE (design law): the orbit rock wall IS
-  // its protection — Rockwall/Cargo Plating harden that identity instead.
-  { id: 'cargoPlating',   spec: 'hauler', name: 'Cargo Plating',    icon: '▤', channel: 'hull',   max: 4, minTier: 0, weight: 0.9, desc: 'Armor the freighter hull.' },
+  // its protection — Rockwall/Reinforced Hull harden that identity instead.
+  { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 4, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
   { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
   { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
   { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
@@ -351,15 +374,21 @@ export const ABILITIES = [
 
   // 🔭 SCOUT
   { id: 'tunedThrusters', spec: 'scout', name: 'Tuned Thrusters', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Faster thrust and a higher speed ceiling.' },
-  { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 1, minTier: 0, weight: 1.0, desc: 'Unlock reverse thrust (S).' },
-  { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 1, minTier: 0, weight: 1.0, desc: 'World-pull chevrons at your ship.' },
-  { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 3, minTier: 0, weight: 1.1, desc: 'Your flight-path forecast.' },
-  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
-  { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
+  // The sensor/QoL chain is SHARED (`also`): Scout-native at tier 0, offered to
+  // the other specs later — max-1 flight unlocks at tier 1, rankable sensor
+  // tracks at tier 2 (below the tier-3 capstone band so they don't crowd it).
+  { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'Unlock reverse thrust (S).' },
+  { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'World-pull chevrons at your ship.' },
+  { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
+  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
+  { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
   { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
   { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, weight: 0.9, desc: 'Long-range map and forecast.' },
   { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 3, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
-  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
+  // Afterburner is shared to BRAWLER only, and LATE (tier 4 — above even the
+  // capstone band): a burning brawler is an endgame reward, and HAULER never
+  // gets it (the freighter fantasy is mass, not speed).
+  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, also: { brawler: 4 }, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
   { id: 'evasionRoll',    spec: 'scout', name: 'Dash Jets',      icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap A / D to dart sideways (brief i-frames).' },
   { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 3, minTier: 2, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
   { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
@@ -387,7 +416,9 @@ export function newProgress() {
 
 // ---- XP + pick bookkeeping (pure helpers over game.prog) --------------------
 
-export function xpForPick(prog) { return PROG.XP_BASE + PROG.XP_STEP * prog.level; }
+export function xpForPick(prog) {
+  return PROG.XP_BASE + PROG.XP_STEP * prog.level + PROG.XP_CURVE * prog.level * prog.level;
+}
 export function owesPick(prog) { return prog.xp >= xpForPick(prog); }
 export function addXp(game, amount) {
   if (amount <= 0 || !game.ship || !game.ship.alive) return;
@@ -439,21 +470,32 @@ function drawWeighted(bag) {
   return bag.splice(idx, 1)[0].u;
 }
 
-// TIER-UP cards: `n` random NEW abilities from your spec's pool that you don't own
-// yet and whose soft-floor (minTier) has been reached. Weighted, no-replacement.
+// The tier floor for an ability under a given spec: the OWNER spec uses
+// `minTier`; a spec listed in `also` uses its own (usually higher) floor;
+// any other spec can never be offered it.
+export function tierFloorFor(a, spec) {
+  if (a.spec === spec) return a.minTier || 0;
+  if (a.also && a.also[spec] != null) return a.also[spec];
+  return Infinity;
+}
+// TIER-UP cards: `n` random NEW abilities from your offer pool (your spec's own
+// rows + shared `also` rows) that you don't own yet and whose tier floor has
+// been reached. Weighted, no-replacement.
 export function tierChoices(prog, n = 2) {
   const bag = ABILITIES
-    .filter((a) => a.spec === prog.spec && !(prog.upgrades[a.id] > 0) && prog.tier >= (a.minTier || 0))
+    .filter((a) => !(prog.upgrades[a.id] > 0) && prog.tier >= tierFloorFor(a, prog.spec))
     .map((a) => ({ u: a, w: a.weight || 1 }));
   const chosen = [];
   while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));
   return chosen;
 }
 // SMALL-PICK cards: `n` random abilities you already OWN that can still rank up —
-// between-tier picks only deepen what you've learned, never introduce new abilities.
+// between-tier picks only deepen what you've learned, never introduce new
+// abilities. Ownership alone qualifies (no spec filter): a shared `also` ability
+// a non-Scout picked up must stay deepenable or it dead-ends at rank 1.
 export function rankChoices(prog, n = 2) {
   const bag = ABILITIES
-    .filter((a) => a.spec === prog.spec && (prog.upgrades[a.id] || 0) > 0 && (prog.upgrades[a.id] || 0) < a.max)
+    .filter((a) => (prog.upgrades[a.id] || 0) > 0 && (prog.upgrades[a.id] || 0) < a.max)
     .map((a) => ({ u: a, w: a.weight || 1 }));
   const chosen = [];
   while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));
@@ -484,7 +526,8 @@ export function shipStats(prog) {
   // SCOUT runtime channels.
   const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'),
     slipC = c('slipstream'), autoevadeC = c('autoevade');
-  // Sensor chain — each is its own ability/channel now (Scout tree).
+  // Sensor chain — each is its own ability/channel (Scout-owned, shared to the
+  // other specs via `also`); reads spec-agnostically, so whoever owns it gets it.
   const compassC = c('compass'), plotterC = c('plotter'), collisionC = c('collision'),
     targetingC = c('targeting'), deepC = c('deep');
   const hasCompass = compassC > 0, hasPredict = plotterC > 0, hasTargeting = targetingC > 0,
