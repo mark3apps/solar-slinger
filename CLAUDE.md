@@ -444,20 +444,40 @@ about it — this is a hard rule.
   `serve.py`, it's wrong. Audio assets follow the same rule: always relative paths (`assets/audio/…`);
   the `app://` scheme carries the `stream` privilege so `<audio>` elements can stream the music beds.
 - **npm scripts** ([package.json](package.json)): `npm run serve` (= `python3 serve.py`),
-  `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`).
+  `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`),
+  `npm run changelog` (preview the pending release notes — needs `GH_TOKEN`).
   Electron + electron-builder are **devDependencies** — dev/build only, not shipped game deps, so
   the "no runtime dependencies" claim still holds.
 - `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
   `app://` for hot-ish iteration.
-- **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)): every push to
-  `main` builds a mac DMG (arm64 + x64), a Windows NSIS installer, and Linux `.deb` + `.rpm`
-  packages (x64 + arm64 each; deb for Debian/Ubuntu/Raspberry Pi OS 64-bit, rpm for
-  RHEL/Rocky/Fedora) and attaches them to a GitHub
-  release tagged `v<major>.<minor>.<run number>` — the patch digit is stamped from the CI run
-  number, so package.json's patch is ignored on CI; bump major/minor there when it matters. Builds are **unsigned** (mac: right-click → Open / clear
-  quarantine; Windows: click through SmartScreen). The `build:` block in package.json controls what
-  gets packaged and the installer targets. App icons live in `build/` (`icon.icns/.ico/.png`,
-  generated from `build/icon-src/`).
+- **Release CI** ([.github/workflows/release.yml](.github/workflows/release.yml)) is
+  **`workflow_dispatch` only — nothing runs on a push to `main`.** You trigger it and pick a
+  `bump` (patch/minor/major); `dry_run: true` builds and generates notes while publishing nothing.
+  Three jobs: **prepare** (compute version + notes) → **build** (mac DMG arm64 + x64, Windows NSIS,
+  Linux `.deb` + `.rpm` x64 + arm64 each — deb for Debian/Ubuntu/Raspberry Pi OS 64-bit, rpm for
+  RHEL/Rocky/Fedora) → **publish**. Every side effect lives in `publish` and is gated on a green
+  build, so a broken build can never leave a version commit or a dangling tag on `main`.
+- **The newest `v*` git tag is the version's source of truth**, not package.json — the bump is
+  applied to the tag, and `publish` then writes it into package.json and commits it. So checkouts
+  must use `fetch-depth: 0` + `fetch-tags: true` or every release computes as `0.0.1`. (History:
+  the patch digit used to be `github.run_number`, which made minor/major releases impossible and
+  left package.json stuck at `0.1.0`.) The release tag is **annotated**, because `git push
+  --follow-tags` silently refuses to push a lightweight one.
+- **Changelog** ([scripts/changelog.mjs](scripts/changelog.mjs)): zero-dependency Node, no Actions
+  context, so the same command runs on CI and on a laptop. It walks `git log <lastTag>..HEAD
+  --first-parent` (PRs land as merge commits here, so first-parent = one entry per PR), recovers each
+  PR number from the merge subject — falling back to the associated-PRs API for squashes and direct
+  pushes — and renders title + link + author plus a summary line lifted from the PR body (skipping
+  the leading `## What changed` heading and the Claude footer). Output goes to BOTH the release body
+  and a prepended [CHANGELOG.md](CHANGELOG.md) section. Commits with no PR behind them get an
+  "Other changes" list rather than being dropped. It's `.mjs` on purpose: package.json has no
+  `"type": "module"` and must not gain one — `electron/main.js` and `scripts/adhoc-sign-mac.js` are
+  CommonJS. The `SECTIONS` label map (enhancement→Features, bug→Fixes…) is a no-op today since no
+  PR carries labels; everything falls into **Changes** until they do.
+  The install instructions (Gatekeeper / SmartScreen / apt / dnf) live in `INSTALL_NOTES` in that
+  script, NOT in the workflow YAML — builds are **unsigned** and every release must carry them.
+  The `build:` block in package.json controls what gets packaged and the installer targets. App
+  icons live in `build/` (`icon.icns/.ico/.png`, generated from `build/icon-src/`).
 
 ## Testing (headless + live fast-forward, no framework)
 
