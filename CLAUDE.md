@@ -676,6 +676,32 @@ code "works."
     world rng in `world.seedGlowPockets`; collected on dtReal in `glow.updateGlow` (a proximity test like
     the life pods, NOT the fixed step); drawn additively in `drawGlow` (a green region-halo + motes,
     healing-green palette). Never touches bodies/rails/velocities — purely additive to the sim.
+- **Planet archetypes each carry ONE mechanic, every one built on an existing battle-tested shape**
+  (nine ptypes: lava/rocky/gas/ice + terran/ocean/desert/shroud/crystal; the world.js PTYPE comment
+  is the source of truth; gas giants also carry a render-only `gasKind` — amber/azure/violet looks,
+  physics keys on ptype `'gas'` alone):
+  - **TERRAN — atmosphere burn-up** (`CFG.ATMO_*`, physics.step, the corona-heat shape): loose
+    free-flying asteroids under `ATMO_MAX_MASS` burn inside 1.5x radius — railed bodies (the world's
+    own junk satellites live in the shell; damage would derail them), held rocks, and
+    premium/quest objects (core/cache/pod/carved/visitor/wreck) are exempt, the SHIP never burns,
+    and heavyweights punch through BY DESIGN: bombarding a terran world takes a real rock.
+    Render streak rides `b.reentryT/reentryAng` (stamped in physics, decays in the integrate loop).
+  - **OCEAN — waterspouts** (world.js hazard loop): the cryo-geyser branch with a sea-green cast —
+    railed `iceOf` pellets, same caps, so it can never flood the belt.
+  - **DESERT — dune skimming** pays `PROG.XP_SKIM_DUNE` (2x); hull cost UNCHANGED — the banded-moon
+    law (bonus XP never discounts the grind).
+  - **SHROUD — cloud cloak**: feeds the SAME `game.dustCloak` flag as dust moons (ai.js), halo
+    `CFG.SHROUD_HALO` (1.7x; render haze drawn wider at 2.1x — no hard mechanic edge). Fortified
+    shrouds don't cloak (a permanently cloaked siege is a free win).
+  - **CRYSTAL — the one NON-CIRCULAR collider in the sim.** `util.crystalShards(id)` is the single
+    source of the jagged shard polygon for BOTH render (traceCrystal) and physics — keep them on one
+    table or the drawn surface and the felt surface diverge. Physics: `surfRadius` radial narrow
+    phase in collideBodies/collideShipBody/collideAlienBody, `b._bp` broad-phase reach (the sweep
+    must see the tallest spike, 1.32r max = `util.CRYSTAL_REACH`), predictPaths mirrors both hit
+    tests, and ALL surface spawn offsets (chunk spray, shards) go through `surfReach` so nothing is
+    born inside a spike (invariant 7's feedback loop). A hard player smash also rings loose a `core`
+    shard (`damageBody`, floor dmg > 3 — planet mass dominance keeps throws under the moon-tuned 8).
+    Render: lit sunward limb + per-shard sheens keyed to sun alignment; the hitbox IS the drawn shape.
 
 ### Canvas discipline
 

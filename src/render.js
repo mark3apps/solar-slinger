@@ -1,7 +1,7 @@
 import { CFG, PROG, SHIP_HIT_FRAC } from './config.js';
 import { predictPaths, PARRY_FLICK } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, angDiff, lerp, mulberry32, shellModal } from './util.js';
+import { TAU, angDiff, lerp, mulberry32, shellModal, crystalShards } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
@@ -417,6 +417,25 @@ function traceAsteroid(b) {
   ctx.closePath();
 }
 
+// CRYSTAL WORLDS are jagged, not round: the seeded shard polygon
+// (util.crystalShards — SHARED with physics, which collides against the same
+// table) stands in for the disc everywhere the silhouette matters (base
+// fill, surface-detail clip, terminator clip), so shading and detail follow
+// the spikes — and what you see IS what rocks and the ship bounce off.
+function traceCrystal(b) {
+  const sh = (b.cjag ||= crystalShards(b.id));
+  ctx.beginPath();
+  for (let i = 0; i < sh.pts.length; i++) {
+    const p = sh.pts[i];
+    const vx = b.x + Math.cos(b.rot + p.a0) * b.radius * p.ri;
+    const vy = b.y + Math.sin(b.rot + p.a0) * b.radius * p.ri;
+    if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+    ctx.lineTo(b.x + Math.cos(b.rot + p.tip) * b.radius * p.ro,
+      b.y + Math.sin(b.rot + p.tip) * b.radius * p.ro);
+  }
+  ctx.closePath();
+}
+
 function nearestStar(game, x, y) {
   // frameStars is rebuilt each frame in beginFrame — looping all bodies here
   // made this O(bodies) per drawn body
@@ -588,6 +607,17 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
+  // Terran worlds carry a thin sunlit atmosphere — a calm, steady blue rim
+  // (real object state → solid gradient, no motion; same idiom as lava's glow)
+  if (b.ptype === 'terran') {
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.85, b.x, b.y, b.radius * 1.45);
+    g.addColorStop(0, 'rgba(120, 190, 255, 0)');
+    g.addColorStop(0.25, 'rgba(120, 190, 255, 0.25)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.45, 0, TAU); ctx.fill();
+  }
+
   // Comets stream an icy tail behind them. Comet Vesper instead grows a
   // physically-honest ANTI-SUNWARD tail that blooms as it falls toward
   // perihelion (and flares brighter when a solar storm front washes over it).
@@ -624,6 +654,32 @@ function drawBody(game, b) {
     ctx.lineCap = 'butt';
   }
 
+  // RE-ENTRY: a rock burning in a terran atmosphere streams fire opposite its
+  // motion through the air (physics stamps reentryT/reentryAng each substep
+  // it burns; the timer fades once clear). The comet-tail idiom: solid
+  // gradient stroke + head glow, no dashes.
+  if (b.reentryT > 0) {
+    // time fade x DEPTH fade (reentryK) — the streak grows with the burn, so
+    // there is no visible switch-on at the shell's outer radius
+    const k = Math.min(1, b.reentryT / 0.22) * (b.reentryK ?? 1);
+    const len = b.radius * (2 + 4 * (b.reentryK ?? 1));
+    const tx = b.x - Math.cos(b.reentryAng) * len;
+    const ty = b.y - Math.sin(b.reentryAng) * len;
+    const tg = ctx.createLinearGradient(b.x, b.y, tx, ty);
+    tg.addColorStop(0, `rgba(255, 190, 90, ${0.65 * k})`);
+    tg.addColorStop(1, 'transparent');
+    ctx.strokeStyle = tg;
+    ctx.lineWidth = b.radius * 1.6;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.lineCap = 'butt';
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.3, b.x, b.y, b.radius * 2.2);
+    g.addColorStop(0, `rgba(255, 160, 60, ${0.5 * k})`);
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
+  }
+
   // Hot magma bombs glow until they cool
   if (b.magma > 0) {
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.4, b.x, b.y, b.radius * 2.6);
@@ -657,6 +713,19 @@ function drawBody(game, b) {
   // drifting specks seeded off the id. Drawn WIDER than the stealth radius
   // (2.9 vs CFG.DUST_HALO 2.4) so the gradient IS the boundary read: no ring
   // stroke at the exact mechanic radius, no hard edges in-world.
+  // SHROUD PLANETS trail their concealing cloud haze — the dust-moon read at
+  // planet scale: the gradient reaches 2.1x, WIDER than the cloak mechanic
+  // (CFG.SHROUD_HALO 1.7), so the fade IS the boundary; no ring at the edge.
+  if (b.type === 'planet' && b.ptype === 'shroud') {
+    const R = b.radius * 2.1;
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.9, b.x, b.y, R);
+    g.addColorStop(0, 'rgba(201, 189, 122, 0.13)');
+    g.addColorStop(0.6, 'rgba(201, 189, 122, 0.08)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+  }
+
   if (b.type === 'moon' && b.moonType === 'dust') {
     const R = b.radius * 2.9;
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.8, b.x, b.y, R);
@@ -700,6 +769,9 @@ function drawBody(game, b) {
     drawNestSprite(game, b);
   } else if (b.dark) {
     drawDarkStarSprite(b);
+  } else if (b.type === 'planet' && b.ptype === 'crystal') {
+    traceCrystal(b);   // jagged facet silhouette instead of a disc
+    ctx.fill();
   } else {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
   }
@@ -745,11 +817,60 @@ function drawBody(game, b) {
   if (st && b.type !== 'asteroid' && b.type !== 'station' && b.type !== 'nest' && !b.dark) {
     const ang = Math.atan2(b.y - st.y, b.x - st.x);
     ctx.save();
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
+    // Crystal worlds clip to their jagged silhouette so the night side
+    // shades the spikes too (an unshaded spike tip reads as a stray mark)
+    if (b.ptype === 'crystal') traceCrystal(b);
+    else { ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); }
+    ctx.clip();
     ctx.fillStyle = 'rgba(2, 4, 14, 0.5)';
     ctx.beginPath();
-    ctx.arc(b.x + Math.cos(ang) * b.radius * 0.55, b.y + Math.sin(ang) * b.radius * 0.55, b.radius * 1.05, 0, TAU);
+    // 1.2 on crystal: the shade disc reaches for the tall shard tips (a tip
+    // near the terminator may escape it — a crystal edge catching stray
+    // light reads as intended, not as a bug)
+    ctx.arc(b.x + Math.cos(ang) * b.radius * 0.55, b.y + Math.sin(ang) * b.radius * 0.55,
+      b.radius * (b.ptype === 'crystal' ? 1.2 : 1.05), 0, TAU);
     ctx.fill();
+    ctx.restore();
+  }
+
+  // CRYSTAL LIGHTING: the jagged worlds catch the sun. Two additive layers,
+  // both clipped to the shard silhouette: a lit sunward LIMB (steady rim
+  // light), and per-shard facet SHEENS that brighten as their tip swings
+  // through the sun line and shimmer softly — light playing across facets,
+  // not sparkle sprites (the four-point crosses read as UI, and were cut).
+  if (b.type === 'planet' && b.ptype === 'crystal' && st) {
+    const sunA = Math.atan2(st.y - b.y, st.x - b.x);   // toward the star
+    ctx.save();
+    traceCrystal(b);   // also (re)builds the cached b.cjag shard table
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    // Lit limb: a soft gradient hugging the sunward edge
+    const lx = b.x + Math.cos(sunA) * b.radius, ly = b.y + Math.sin(sunA) * b.radius;
+    const rim = ctx.createRadialGradient(lx, ly, 0, lx, ly, b.radius * 1.5);
+    rim.addColorStop(0, 'rgba(235, 220, 255, 0.32)');
+    rim.addColorStop(0.45, 'rgba(190, 160, 255, 0.12)');
+    rim.addColorStop(1, 'transparent');
+    ctx.fillStyle = rim;
+    ctx.beginPath(); ctx.arc(lx, ly, b.radius * 1.5, 0, TAU); ctx.fill();
+    // Facet sheen: alignment (facet toward sun, cubed for a tight highlight)
+    // x a slow shimmer — as the world turns, the flare walks shard to shard
+    for (let i = 0; i < b.cjag.pts.length; i++) {
+      const p2 = b.cjag.pts[i];
+      const ta = b.rot + p2.tip;
+      const align = Math.max(0, Math.cos(ta - sunA));
+      if (align < 0.25) continue;
+      const shim = 0.55 + 0.45 * Math.sin(game.time * 1.3 + i * 2.1 + b.id);
+      const k = align * align * align * shim;
+      if (k < 0.05) continue;
+      const gx = b.x + Math.cos(ta) * b.radius * p2.ro * 0.8;
+      const gy = b.y + Math.sin(ta) * b.radius * p2.ro * 0.8;
+      const gr = b.radius * 0.34;
+      const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr);
+      g.addColorStop(0, `rgba(240, 228, 255, ${0.5 * k})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(gx, gy, gr, 0, TAU); ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -814,24 +935,54 @@ function drawBody(game, b) {
 }
 
 // Per-archetype surface detail, drawn clipped to the planet disc. This is
-// what makes the planet TYPES readable: bands = gas, cracks+glow = lava,
-// caps = ice, continents = rocky.
+// what makes the planet TYPES readable: bands = gas (three gasKind looks),
+// cracks+glow = lava, caps = ice, continents = rocky, seas+clouds = terran,
+// currents = ocean, dunes = desert, sheared decks = shroud, facets = crystal.
+// All geometry is seeded off b.id (stable frame to frame — no Math.random),
+// and every ambient drift rides multiples of b.rot, never wall-clock time.
 function drawPlanetDetail(b) {
   ctx.save();
-  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.clip();
+  // Crystal worlds clip to the jagged silhouette so facet detail fills the spikes
+  if (b.ptype === 'crystal') traceCrystal(b);
+  else { ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); }
+  ctx.clip();
   ctx.translate(b.x, b.y);
   // The surface turns under the fixed star-lit terminator (drawn after this in
-  // drawBody) — that rotation IS the day/night cycle. Ice caps are polar, so
-  // they stay put; everything else rides b.rot.
-  if (b.ptype !== 'ice') ctx.rotate(b.rot);
+  // drawBody) — that rotation IS the day/night cycle. Ice and terran caps are
+  // polar, so those frames stay put (they rotate their surface internally);
+  // everything else rides b.rot.
+  if (b.ptype !== 'ice' && b.ptype !== 'terran') ctx.rotate(b.rot);
 
   if (b.ptype === 'gas') {
     ctx.rotate(b.id % 2 ? 0.32 : -0.26);
-    const n = 5 + (b.id % 3);
-    const bandH = (2 * b.radius) / n;
-    for (let i = 0; i < n; i++) {
-      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.17)';
-      ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.72);
+    const kind = b.gasKind || 'amber';
+    if (kind === 'azure') {
+      // Ice giant: few wide soft bands under a bright polar hood — the calm,
+      // featureless read of a methane haze (vs the amber giant's busy stripes)
+      const n = 3 + (b.id % 2);
+      const bandH = (2 * b.radius) / n;
+      for (let i = 0; i < n; i++) {
+        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.08)' : 'rgba(0,10,40,0.13)';
+        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.85);
+      }
+      ctx.fillStyle = 'rgba(220, 245, 255, 0.22)';
+      ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.8, b.radius * 0.8, b.radius * 0.3, 0, 0, TAU); ctx.fill();
+    } else if (kind === 'violet') {
+      // Exotic giant: irregular thin/thick band stacking — turbulent, alien
+      let yy = -b.radius, i = 0;
+      while (yy < b.radius) {
+        const h = b.radius * (0.14 + (((b.id + i) % 4) / 4) * 0.22);
+        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.14)' : 'rgba(25,0,45,0.2)';
+        ctx.fillRect(-b.radius, yy, b.radius * 2, h * 0.78);
+        yy += h; i++;
+      }
+    } else {
+      const n = 5 + (b.id % 3);
+      const bandH = (2 * b.radius) / n;
+      for (let i = 0; i < n; i++) {
+        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.17)';
+        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.72);
+      }
     }
     if (b.landmark === 'storm') {
       // THE GREAT EYE — the system's landmark storm, big enough to steer by
@@ -849,8 +1000,8 @@ function drawPlanetDetail(b) {
       ctx.ellipse(-b.radius * 0.24, b.radius * 0.18, b.radius * 0.17, b.radius * 0.08, 0.25, 0, TAU);
       ctx.fill();
     } else {
-      // A great storm spot
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      // A great storm spot — dark on the hazy azure giant, bright elsewhere
+      ctx.fillStyle = kind === 'azure' ? 'rgba(10, 25, 60, 0.4)' : 'rgba(255,255,255,0.22)';
       ctx.beginPath();
       ctx.ellipse(b.radius * 0.34, b.radius * 0.3, b.radius * 0.2, b.radius * 0.1, 0.3, 0, TAU);
       ctx.fill();
@@ -884,6 +1035,139 @@ function drawPlanetDetail(b) {
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
     ctx.beginPath(); ctx.ellipse(0, b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
+  } else if (b.ptype === 'terran') {
+    // Living world: green continents ride the spin…
+    ctx.save();
+    ctx.rotate(b.rot);
+    ctx.fillStyle = 'rgba(140, 195, 110, 0.6)';
+    const n = 4 + (b.id % 3);
+    for (let i = 0; i < n; i++) {
+      const a = b.id * 2.1 + i * 2.4;
+      const rr = b.radius * (0.2 + ((b.id + i) % 4) * 0.08);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.5, Math.sin(a) * b.radius * 0.5, rr, rr * 0.62, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+    // …under cloud decks that drift a touch FASTER than the surface (weather
+    // shears past the ground — the multiple of b.rot is the drift, no clock)
+    ctx.save();
+    ctx.rotate(b.rot * 1.18);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.3 + i * 2.7;
+      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.12);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.3, a + 0.5, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+    // …with small polar caps pinned to the poles, like the ice worlds'
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
+  } else if (b.ptype === 'ocean') {
+    // World-sea: bright current bands sweep the globe…
+    ctx.strokeStyle = 'rgba(180, 220, 255, 0.28)';
+    ctx.lineWidth = Math.max(1.2, b.radius * 0.05);
+    for (let i = 0; i < 4; i++) {
+      const yy = -b.radius * 0.66 + i * b.radius * 0.44;
+      ctx.beginPath();
+      ctx.moveTo(-b.radius, yy);
+      ctx.quadraticCurveTo(0, yy + b.radius * 0.18 * (i % 2 ? 1 : -1), b.radius, yy);
+      ctx.stroke();
+    }
+    // …around a scatter of low archipelago flecks — land is the exception here
+    ctx.fillStyle = 'rgba(120, 160, 110, 0.6)';
+    const n = 5 + (b.id % 4);
+    for (let i = 0; i < n; i++) {
+      const a = b.id * 1.7 + i * 2.4;
+      const rr = b.radius * (0.05 + ((b.id + i) % 3) * 0.03);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55, rr, rr * 0.7, a, 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.ptype === 'desert') {
+    // Dune seas: long wind-carved bands…
+    ctx.strokeStyle = 'rgba(90, 55, 25, 0.22)';
+    ctx.lineWidth = Math.max(1.5, b.radius * 0.07);
+    for (let i = 0; i < 5; i++) {
+      const yy = -b.radius * 0.7 + i * b.radius * 0.35;
+      ctx.beginPath();
+      ctx.moveTo(-b.radius, yy);
+      ctx.quadraticCurveTo(0, yy + b.radius * 0.14 * (i % 2 ? 1 : -1), b.radius, yy + b.radius * 0.06);
+      ctx.stroke();
+    }
+    // …dark rimrock mesas…
+    ctx.fillStyle = 'rgba(0,0,0,0.14)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 2.3 + i * 2.1;
+      const rr = b.radius * (0.14 + ((b.id + i) % 3) * 0.06);
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * b.radius * 0.6, Math.sin(a) * b.radius * 0.6, rr, rr * 0.55, a, 0, TAU);
+      ctx.fill();
+    }
+    // …and one pale standing dust storm
+    ctx.fillStyle = 'rgba(255, 235, 200, 0.3)';
+    const sa = b.id * 1.3;
+    ctx.beginPath();
+    ctx.ellipse(Math.cos(sa) * b.radius * 0.35, Math.sin(sa) * b.radius * 0.35, b.radius * 0.34, b.radius * 0.16, sa, 0, TAU);
+    ctx.fill();
+  } else if (b.ptype === 'shroud') {
+    // Venusian shroud: total cloud cover, no surface ever visible. Each deck
+    // turns at its own rate (multiples of b.rot on top of the base spin), so
+    // the cover visibly shears without any wall-clock animation.
+    for (let i = 0; i < 4; i++) {
+      ctx.save();
+      ctx.rotate(b.rot * (0.55 + i * 0.3) + b.id * 1.7 + i * 2.1);
+      ctx.strokeStyle = i % 2 ? 'rgba(255, 250, 220, 0.2)' : 'rgba(120, 100, 40, 0.18)';
+      ctx.lineWidth = b.radius * (0.16 + (i % 3) * 0.05);
+      ctx.beginPath();
+      ctx.arc(0, 0, b.radius * (0.28 + i * 0.2), b.id + i, b.id + i + 4.2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // a pale chevron where the decks collide
+    ctx.fillStyle = 'rgba(255, 252, 230, 0.16)';
+    ctx.beginPath();
+    ctx.ellipse(b.radius * 0.1, -b.radius * 0.2, b.radius * 0.5, b.radius * 0.18, -0.4, 0, TAU);
+    ctx.fill();
+  } else if (b.ptype === 'crystal') {
+    // Faceted lattice: alternating light/dark shard wedges from the core…
+    // (reach 1.4r — past the tallest ~1.32r shard tips, so the clip decides
+    // the edge)
+    for (let i = 0; i < 6; i++) {
+      const a = b.id * 1.9 + i * (TAU / 6) + ((b.id + i) % 3) * 0.3;
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(30, 10, 60, 0.18)';
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(a) * b.radius * 1.4, Math.sin(a) * b.radius * 1.4);
+      ctx.lineTo(Math.cos(a + 0.7) * b.radius * 1.4, Math.sin(a + 0.7) * b.radius * 1.4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // …with bright facet seams (solid strokes — machined work, like the
+    // carved stone, never dashed)…
+    ctx.strokeStyle = 'rgba(230, 210, 255, 0.5)';
+    ctx.lineWidth = Math.max(1, b.radius * 0.035);
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 2.3 + i * 1.26;
+      ctx.moveTo(Math.cos(a) * b.radius * 0.2, Math.sin(a) * b.radius * 0.2);
+      ctx.lineTo(Math.cos(a + 0.4) * b.radius * 1.3, Math.sin(a + 0.4) * b.radius * 1.3);
+    }
+    ctx.stroke();
+    // …and a few bright glint points where facets catch the light (seeded,
+    // static — the cored-rock glint twinkles because it marks salvage; a
+    // world's sparkle is ambient state, so it holds still)
+    ctx.fillStyle = 'rgba(240, 225, 255, 0.55)';
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 1.3 + i * 1.9;
+      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.22);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, Math.max(1, b.radius * 0.035), 0, TAU);
+      ctx.fill();
+    }
   } else {  // rocky: mottled continents
     ctx.fillStyle = 'rgba(0,0,0,0.16)';
     const n = 4 + (b.id % 3);
@@ -1710,7 +1994,11 @@ function drawFort(game, b) {
   }
 }
 
-const PTYPE_LABELS = { lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD' };
+const PTYPE_LABELS = {
+  lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD',
+  terran: 'TERRAN WORLD', ocean: 'OCEAN WORLD', desert: 'DESERT WORLD',
+  shroud: 'SHROUDED WORLD', crystal: 'CRYSTAL WORLD',
+};
 
 // Approach indicator: nearing a planet (or rogue) fades in its name plate and
 // a soft ring marking its domain, so you always know what you're flying into.
@@ -1746,7 +2034,7 @@ function drawApproach(game) {
       : b.type === 'station' ? (b.name || 'Derelict Station').toUpperCase()
       : b.type === 'nest' ? 'ALIEN NEST'
       : b.dark ? (b.hidden ? 'UNRESOLVED MASS — SENSOR NULL' : `${b.name.toUpperCase()} — DWARF STAR`)
-      : `${(b.name || 'PLANET').toUpperCase()} — ${PTYPE_LABELS[b.ptype] || 'PLANET'}`
+      : `${(b.name || 'PLANET').toUpperCase()} — ${b.gasKind === 'azure' ? 'ICE GIANT' : PTYPE_LABELS[b.ptype] || 'PLANET'}`
         + (b.ember > 0.01 ? ' ⚠ EMBERKIN' : '');
     const fs = Math.max(13 / z, b.radius * 0.16);
     ctx.font = `600 ${fs}px system-ui, sans-serif`;

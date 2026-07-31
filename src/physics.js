@@ -2,7 +2,7 @@ import { CFG, PROG, addXp } from './config.js';
 import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
-import { TAU, clamp, angDiff } from './util.js';
+import { TAU, clamp, angDiff, crystalShards, crystalRadiusAt, CRYSTAL_REACH } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as sfx from './sfx.js';
 
@@ -369,6 +369,25 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     body.sulfurPopT = 0.2;
     game.sulfurWarn = true;
   }
+  // CRYSTAL WORLDS: a hard PLAYER smash rings a facet loose — one dense core
+  // shard (the cored-rock salvage economy: fat beam catch, 3.5x scrap) pops
+  // off the impact point. The sulfur-vent gates, except the damage floor is 3,
+  // not 8: mass dominance throttles what a thrown rock does to a PLANET (a
+  // solid 1000-mass throw lands ~6), so the moon-tuned floor was unreachable.
+  // earnsScrap credit only, a long cooldown (decayed in world.js's
+  // always-running pre-pass), never on the killing blow.
+  if (body.type === 'planet' && body.ptype === 'crystal' && earnsScrap(credit) &&
+      dmg > 3 && !(body.shardCd > 0) && body.hp - dmg > 0) {
+    body.shardCd = 45;
+    const sa = (hx !== undefined) ? Math.atan2(hy - body.y, hx - body.x) : Math.random() * TAU;
+    const sp = 150 + Math.random() * 90;
+    const shard = spawnAsteroid(game.bodies,
+      body.x + Math.cos(sa) * (surfReach(body) + 18), body.y + Math.sin(sa) * (surfReach(body) + 18),
+      body.vx + Math.cos(sa) * sp, body.vy + Math.sin(sa) * sp, 600 + Math.random() * 800);
+    shard.core = true; shard.color = '#b98cff';
+    addParticles(game, shard.x, shard.y, body.vx * 0.3, body.vy * 0.3, 16, '#d8b8ff', 170, 1.1, 3);
+    game.shardWarn = true;
+  }
   derail(body);
   body.hp -= dmg;
   if (body.hp <= 0) { shatter(game, body, credit); return; }
@@ -413,8 +432,8 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
         // spawn OUTSIDE the surface with outward velocity — a chunk born
         // overlapping its parent would take collision damage and shed again
         const f = spawnAsteroid(game.bodies,
-          body.x + Math.cos(th) * (body.radius * 1.03 + 14),
-          body.y + Math.sin(th) * (body.radius * 1.03 + 14),
+          body.x + Math.cos(th) * (surfReach(body) * 1.03 + 14),
+          body.y + Math.sin(th) * (surfReach(body) * 1.03 + 14),
           body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, m);
         f.color = body.color;   // chunks read as pieces of the world they left
         // shed pieces of worlds are PLANET CHUNKS (crust-shard sprite); big
@@ -657,6 +676,25 @@ function boundaryAccel(x, y) {
 
 // ---------- collisions ----------
 
+// Effective surface radius of `body` toward the world bearing `ang` (radians,
+// from the body's center). CRYSTAL planets collide as their drawn shard
+// polygon (util.crystalShards — the SAME table render draws, so the felt
+// surface is the seen surface, spikes included, and it turns with b.rot);
+// everything else is the circle it always was. Radial narrow phase: the
+// collision normal stays radial, which is what the resolver assumes anyway.
+function surfRadius(body, ang) {
+  if (body.ptype !== 'crystal') return body.radius;
+  const sh = (body.cjag ||= crystalShards(body.id));
+  return body.radius * crystalRadiusAt(sh, ang - body.rot);
+}
+// Spawn-clearance reach: anything born off a body's surface (chunks, shards)
+// must clear the TALLEST feature, not the mean disc — a chunk born inside a
+// crystal spike takes collision damage and sheds again (the exact feedback
+// loop invariant 7 warns about).
+function surfReach(body) {
+  return body.ptype === 'crystal' ? body.radius * CRYSTAL_REACH : body.radius;
+}
+
 function collideBodies(game, a, b) {
   // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
   // (or gets ground by it) until the flick launches it back into play.
@@ -671,8 +709,16 @@ function collideBodies(game, a, b) {
   // Twin Grip: your two beam-held rocks don't grind against each other
   if (a.heldBy === 'player' && b.heldBy === 'player') return;
   const dx = b.x - a.x, dy = b.y - a.y;
-  const rr = a.radius + b.radius;
+  let rr = a.radius + b.radius;
   const d2 = dx * dx + dy * dy;
+  // CRYSTAL planets collide as their shard polygon: bound with the max spike
+  // reach first (cheap), then refine rr along the actual bearing.
+  if (a.ptype === 'crystal' || b.ptype === 'crystal') {
+    const bound = surfReach(a) + surfReach(b);
+    if (d2 >= bound * bound) return;
+    const ang = Math.atan2(dy, dx);
+    rr = surfRadius(a, ang) + surfRadius(b, ang + Math.PI);
+  }
   if (d2 >= rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
   const overlap = rr - d;
@@ -914,8 +960,15 @@ function collideBodies(game, a, b) {
 
 function collideShipBody(game, s, b, dt) {
   const dx = b.x - s.x, dy = b.y - s.y;
-  const rr = s.radius + b.radius;
+  let rr = s.radius + b.radius;
   const d2 = dx * dx + dy * dy;
+  // CRYSTAL planets: the ship lands on (and skims along) the shard polygon,
+  // not the mean disc — same radial narrow phase as collideBodies.
+  if (b.ptype === 'crystal') {
+    const bound = s.radius + surfReach(b);
+    if (d2 > bound * bound) return;
+    rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+  }
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
 
@@ -1001,10 +1054,13 @@ function collideShipBody(game, s, b, dt) {
       const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
       damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
       // Skating a surface is risky XP — and BANDED MOONS are the skate park:
-      // same grind, same hull cost, triple the payout.
+      // same grind, same hull cost, triple the payout. DESERT WORLDS' dune
+      // seas pay double, same law (bonus XP, hull cost never discounted).
       const banded = b.type === 'moon' && b.moonType === 'banded';
-      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : 1));
+      const dune = b.type === 'planet' && b.ptype === 'desert';
+      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : dune ? PROG.XP_SKIM_DUNE : 1));
       if (banded && !game.tut.banded) game.bandedWarn = true;
+      if (dune && !game.tut.dune) game.duneWarn = true;
 
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
@@ -1191,8 +1247,13 @@ function updateParry(game, dt) {
 function collideAlienBody(game, al, b) {
   if (b === al.target) return;   // never collide with its own ammo (incl. during fetch approach)
   const dx = b.x - al.x, dy = b.y - al.y;
-  const rr = al.radius + b.radius;
+  let rr = al.radius + b.radius;
   const d2 = dx * dx + dy * dy;
+  if (b.ptype === 'crystal') {   // aliens bounce off the shard polygon too
+    const bound = al.radius + surfReach(b);
+    if (d2 > bound * bound) return;
+    rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+  }
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
 
@@ -1230,7 +1291,7 @@ const _sweep = [];       // collision broad-phase scratch (reused every substep)
 const _attractors = [];  // attractor list scratch (reused every substep)
 // Hoisted sort comparator — the sweep sorts every substep; an inline arrow
 // would allocate a fresh closure 120 times a second for nothing.
-const _byLeftEdge = (a, b) => (a.x - a.radius) - (b.x - b.radius);
+const _byLeftEdge = (a, b) => (a.x - a._bp) - (b.x - b._bp);   // _bp = broad-phase radius (set each substep)
 let nanWarned = false;   // the NaN tripwire below warns once per session
 
 export function step(game, dt) {
@@ -1241,6 +1302,10 @@ export function step(game, dt) {
   for (const b of bodies) {
     if (!b.alive) continue;
     aliveCount++;
+    // Broad-phase radius: crystal planets' spikes reach past the disc, and
+    // the sweep must see the TALLEST feature or spike hits get pruned before
+    // the narrow phase ever runs. Everything else: _bp IS the radius.
+    b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH : b.radius;
     if (!b.attractor) continue;
     // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
     // are never culled — the sun is the structural anchor of every orbit.
@@ -1631,6 +1696,7 @@ export function step(game, dt) {
     if (!b.alive || b.type === 'star') continue;
     b.rot += b.spin * dt;
     if (b.thrownTimer > 0) b.thrownTimer -= dt; else b.thrownBy = null;
+    if (b.reentryT > 0) b.reentryT -= dt;   // atmosphere fire streak fades once clear
     if (b.onRails) continue;
     b.liveT += dt;
     b.vx += b.ax * dt; b.vy += b.ay * dt;
@@ -1796,9 +1862,9 @@ export function step(game, dt) {
     if (!a.alive) continue;
     for (let j = i + 1; j < sweep.length; j++) {
       const b = sweep[j];
-      if (b.x - b.radius > a.x + a.radius) break;
+      if (b.x - b._bp > a.x + a._bp) break;
       if (!b.alive) continue;
-      if (Math.abs(a.y - b.y) > a.radius + b.radius) continue;
+      if (Math.abs(a.y - b.y) > a._bp + b._bp) continue;
       collideBodies(game, a, b);
     }
   }
@@ -1939,6 +2005,50 @@ export function step(game, dt) {
     }
   }
 
+  // TERRAN ATMOSPHERE: loose rocks entering a living world's air burn up —
+  // the corona-heat shape (depth² x maxHp fraction), scoped to the shell
+  // (CFG.ATMO_ZONE x radius). Only free-flying asteroids burn: railed bodies
+  // are exempt (the world's own junk satellites live INSIDE the shell, and
+  // damaging a railed body derails it — a cascade), and so are held rocks,
+  // parry-frozen rocks, and premium/quest objects (core, cache, pod, carved,
+  // visitor, wreck). Heavyweights (> ATMO_MAX_MASS) punch through: attacking
+  // a terran world is a feat that takes a real rock. The ship never burns.
+  {
+    let terrans = null;
+    for (const b of bodies) {
+      if (b.alive && b.type === 'planet' && b.ptype === 'terran') (terrans ??= []).push(b);
+    }
+    if (terrans) {
+      for (const b of bodies) {
+        if (!b.alive || b.type !== 'asteroid' || b.onRails || b.heldBy ||
+            b.mass > CFG.ATMO_MAX_MASS || b.core || b.cache || b.pod ||
+            b.carved || b.visitor || b.wreck || b.junk || b.parryFrozen) continue;
+        for (const p of terrans) {
+          const az = p.radius * CFG.ATMO_ZONE;
+          const dx = b.x - p.x, dy = b.y - p.y;
+          if (dx > az || dx < -az || dy > az || dy < -az) continue;
+          const d = Math.hypot(dx, dy);
+          if (d >= az) continue;
+          const t = Math.min(1, (az - d) / (az - p.radius));
+          // The fire trails opposite the motion THROUGH the air (planet-
+          // relative) — render draws the streak while reentryT holds, scaled
+          // by DEPTH (reentryK) so the burn fades in across the shell instead
+          // of switching on at the exact 1.5r boundary (no hard edges in-world).
+          b.reentryT = 0.22;
+          b.reentryK = t;
+          b.reentryAng = Math.atan2(b.vy - p.vy, b.vx - p.vx);
+          damageBody(game, b, t * t * CFG.ATMO_DPS_FRAC * b.maxHp * dt);
+          if (b.alive && Math.random() < dt * 8) {
+            addParticles(game, b.x, b.y, b.vx * 0.25, b.vy * 0.25, 1, '#ffb35c', 70, 0.6, 2.5);
+          }
+          if (!b.alive && !game.tut.atmo && s.alive &&
+              Math.hypot(b.x - s.x, b.y - s.y) < 3200) game.atmoWarn = true;
+          break;
+        }
+      }
+    }
+  }
+
   // Particles (updated + compacted in place — filter() would allocate at 120Hz)
   {
     const parts = game.particles;
@@ -1989,6 +2099,10 @@ export function predictPaths(game) {
         // gravity but the capture assist doesn't apply near a comet)
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
+        // crystal ghosts hit-test against the shard polygon at the CURRENT
+        // rot (spin drift over the horizon is smaller than the marker dot)
+        crystal: b.ptype === 'crystal', rot: b.rot,
+        cjag: b.ptype === 'crystal' ? (b.cjag ||= crystalShards(b.id)) : null,
         // Influence cutoffs for the GHOST sums (same constants as gravityAt —
         // the forecast must not disagree with the sim about what matters):
         // cull2 for loose-body sums, cull2Ship (the wide one) for the ship path.
@@ -2269,9 +2383,16 @@ export function predictPaths(game) {
       lastPx = px; lastPy = py;
       if (!shipEnd && i % 2 === 0) shipPts.push({ x: px, y: py });
       if (!shipEnd) for (const b of hitAtr) {
-        // Gas giants have no ship surface — the meaningful "hit" is the core
-        const hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
-        if ((b.x - ship.x) ** 2 + (b.y - ship.y) ** 2 < hr * hr) { shipHit = { x: px, y: py }; break; }
+        // Gas giants have no ship surface — the meaningful "hit" is the core.
+        // Crystal worlds hit at the shard polygon (bounding test first).
+        let hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
+        const hd2 = (b.x - ship.x) ** 2 + (b.y - ship.y) ** 2;
+        if (b.crystal) {
+          const bnd = b.radius * CRYSTAL_REACH + ship.r;
+          if (hd2 >= bnd * bnd) continue;
+          hr = b.radius * crystalRadiusAt(b.cjag, Math.atan2(ship.y - b.y, ship.x - b.x) - b.rot) + ship.r;
+        }
+        if (hd2 < hr * hr) { shipHit = { x: px, y: py }; break; }
       }
     }
     if (held && !heldHit && i < CFG.HELD_STEPS) {
@@ -2296,8 +2417,14 @@ export function predictPaths(game) {
       held.x += held.vx * dt; held.y += held.vy * dt;
       if (i % 2 === 0) heldPts.push({ x: held.x, y: held.y });
       for (const b of atr) {
-        const hr = b.radius + held.r;
-        if ((b.x - held.x) ** 2 + (b.y - held.y) ** 2 < hr * hr) { heldHit = { x: held.x, y: held.y }; break; }
+        let hr = b.radius + held.r;
+        const hd2 = (b.x - held.x) ** 2 + (b.y - held.y) ** 2;
+        if (b.crystal) {   // thrown-rock ✕ lands on the shard polygon
+          const bnd = b.radius * CRYSTAL_REACH + held.r;
+          if (hd2 >= bnd * bnd) continue;
+          hr = b.radius * crystalRadiusAt(b.cjag, Math.atan2(held.y - b.y, held.x - b.x) - b.rot) + held.r;
+        }
+        if (hd2 < hr * hr) { heldHit = { x: held.x, y: held.y }; break; }
       }
     }
   }

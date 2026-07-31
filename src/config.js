@@ -250,6 +250,22 @@ export const CFG = {
   // gradient reaches wider than the mechanic so the boundary never reads as a
   // hard edge (in-world transitions are organic, never geometric).
   DUST_HALO: 2.4,
+  // SHROUD PLANETS conceal the same way (ai.js feeds the same game.dustCloak
+  // flag, so every AI gate works unchanged) — a smaller multiple because the
+  // world is planet-sized. Fortified shrouds don't cloak (a permanently
+  // cloaked siege would be a free win). Render haze reaches 2.1x — wider than
+  // the mechanic, same no-hard-edge law as the dust moons.
+  SHROUD_HALO: 1.7,
+  // TERRAN ATMOSPHERE (physics.step): loose free-flying rocks entering the
+  // shell burn — depth² x maxHp-fraction dps, the corona-heat shape, so small
+  // rocks flash to nothing while a heavyweight (> ATMO_MAX_MASS) punches
+  // through to the surface: bombarding a terran world takes a real rock.
+  // Railed bodies are exempt (the world's own junk satellites live inside the
+  // shell, and damaging a railed body derails it — a cascade), as are held
+  // rocks and premium/quest objects. The SHIP is untouched: breathable sky.
+  ATMO_ZONE: 1.5,
+  ATMO_MAX_MASS: 1400,
+  ATMO_DPS_FRAC: 0.9,
 };
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your
@@ -408,6 +424,7 @@ export const PROG = {
   XP_TRADE: 150,           // the Tinker Barge's XP payment option
   XP_RESCUE: 180,          // docking a mayday pod at a station before its air runs out
   XP_SKIM_BANDED: 3,       // banded-moon skim XP multiplier (the skate park)
+  XP_SKIM_DUNE: 2,         // desert-world dune skim multiplier (a planet is an easier skate than a moon — pays less)
   // Life pods: sparse world collectibles that refill the buffer
   LIFE_R: 62,              // collect radius
   LIFE_MAX_ACTIVE: 1,      // at most this many adrift at once
