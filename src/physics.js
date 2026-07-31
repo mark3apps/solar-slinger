@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp, FIELD_LOBE_MAX } from './config.js';
+import { CFG, PROG, addXp, fieldXp, FIELD_LOBE_MAX } from './config.js';
 import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
 import { spawnAsteroid, markFieldRock } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
@@ -65,6 +65,12 @@ function orbitalFlow(game, x, y) {
 //   'alien'/'ram'/null — no player payout
 // earnsScrap gates every scrap drop; only 'player-throw' grows the fling.
 function earnsScrap(credit) { return credit === 'player' || credit === 'player-throw'; }
+// May `src` pass its billiards credit on to `dst`? Only the shoal is capped —
+// belt rock is sparse and self-limiting, so trick shots out in the open are
+// unchanged. See CFG.FIELD_CHAIN_MAX for the exploit this closes.
+function chainOk(src, dst) {
+  return !dst.fieldRock || (src.chainN || 0) + 1 <= CFG.FIELD_CHAIN_MAX;
+}
 function collisionCredit(target, other) {
   if (other.thrownBy === 'player' && other.thrownTimer > 0) return 'player-throw';
   // Cluster-Rounds shrapnel scores a player kill (scrap) but NOT 'player-throw',
@@ -97,7 +103,13 @@ function brawlerThrowKill(game, body) {
     }
   }
   if (st.shockwave > 0 || st.demolition > 0) {
-    const R = 240 + 90 * Math.max(st.shockwave, st.demolition);
+    // BLAST REACH. Was 240 + 90/rank — a maxed blast cleared a 510 radius, a
+    // circle about as wide as the screen, off EVERY throw-kill. Out in the belt
+    // that only looked generous; inside a shoal it erased a pocket faster than
+    // the eye could follow and made the fields a no-risk harvest. Trimmed to
+    // roughly HALF the area at every rank (rank 3: 510 -> 350) — still the
+    // loudest thing a brawler does, no longer a screen-wide delete key.
+    const R = 170 + 60 * Math.max(st.shockwave, st.demolition);
     const push = 130 * st.shockwave;
     const dmg = 16 * st.demolition * (1 + st.tier * 0.4);
     let hits = 0;
@@ -121,7 +133,11 @@ function brawlerThrowKill(game, body) {
         if (imp > 70) derail(nb);              // only a real shove derails — limits belt sandblasting
       }
       if (dmg > 0) damageBody(game, nb, dmg * falloff, 'player', body.x, body.y);
-      if (++hits >= 24) break;                 // cap the blast's reach
+      // Cap the blast's reach. This is the gate that actually BINDS in a dense
+      // field (a 350 radius still contains ~100 shoal rocks, vs a handful in
+      // the belt), so it doubles as the field limiter — 24 was a pocket-clearing
+      // volley off one kill.
+      if (++hits >= 16) break;
     }
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
     addShake(game, 5 + 3 * Math.max(st.shockwave, st.demolition));
@@ -300,11 +316,19 @@ export function shatter(game, body, credit = null) {
     game.cacheCracked = true;
   }
 
+  // SHOAL SALVAGE goes through the field gates too (fieldXp): debris chunks are
+  // pure XP now, so the scrap IS an XP stream and has to be capped with the
+  // rest, or the farm just moves to the pickups. Chunks are priced in `value`
+  // and pay `value * XP_SCRAP` when collected, so the budget is charged in XP
+  // and the allowance converted back — which leaves non-field drops bit-exact.
+  // (Charged at DROP time, not pickup: the chunk has no memory of its parent,
+  // and uncollected debris expiring is the player's loss either way.)
+  const fieldVal = (v) => v <= 0 ? v : fieldXp(game, body, v * PROG.XP_SCRAP) / PROG.XP_SCRAP;
   // Scrap is EARNED, not ambient: only a player throw or a shield-rock hit
   // (credit === 'player') pays out. A rock the player never touched — belt
   // traffic sandblasting itself, a rogue clipping a moon, a ram, star heat —
   // shatters with no salvage. Keeps the sky from minting free scrap.
-  if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, scrapValue(body));
+  if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, fieldVal(scrapValue(body)));
   // Wall Splat rides its own flag, not the credit: the dying body here is the
   // player's OWN projectile (credit 'player'), which never reaches the
   // 'player-throw' branch below.
@@ -322,10 +346,10 @@ export function shatter(game, body, credit = null) {
   // prow), so splattering a rock on your hull is good play — but it stays
   // scrap-less (earnsScrap) and combo-less, so bulldozing the belt never
   // outearns aimed throws.
-  if (credit === 'ram') addXp(game, PROG.XP_RAM + (isBig ? 8 : 0));
+  if (credit === 'ram') addXp(game, fieldXp(game, body, PROG.XP_RAM + (isBig ? 8 : 0)));
   if (credit === 'player-throw') {
     brawlerThrowKill(game, body);   // Cluster Rounds / Shockwave / Demolition (no-op unless owned)
-    addXp(game, PROG.XP_SMASH + (isBig ? 12 : 0));
+    addXp(game, fieldXp(game, body, PROG.XP_SMASH + (isBig ? 12 : 0)));
     game.prog.smashes++;
     // GRAVITY BILLIARDS: throw-kills chained within the window rack up a
     // combo (the chain is carried by propagated credit in collideBodies).
@@ -335,7 +359,9 @@ export function shatter(game, body, credit = null) {
     game.comboBest = Math.max(game.comboBest || 0, game.combo);
     if (game.combo >= 2) {
       game.comboShow = game.combo;
-      dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 8 * game.combo);
+      // Gated in a shoal too: a chain through touching rocks is the easiest
+      // combo in the game, and the bonus must not out-pay a real one.
+      dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, fieldVal(8 * game.combo));
     }
   }
 }
@@ -491,7 +517,14 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
 
   if (frac > 0.01) {
     // Chip scrap only from player-caused hits (throw / shield) — see shatter
-    if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, scrapValue(body) * frac * 0.5);
+    // CHIP scrap — the firehose in the shoal exploit: every chained impact that
+    // merely dents a rock dropped salvage, and there were thousands per second.
+    // Same gates as the kill drop above (fieldXp charges the pocket's budget).
+    if (earnsScrap(credit)) {
+      const v = scrapValue(body) * frac * 0.5;
+      dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5,
+        fieldXp(game, body, v * PROG.XP_SCRAP) / PROG.XP_SCRAP);
+    }
     body.mass = Math.max(body.baseMass * 0.25, body.mass - body.baseMass * frac * 0.35);
     addParticles(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, 8, body.color, 100, 0.7);
   }
@@ -904,14 +937,24 @@ function collideBodies(game, a, b) {
     // inherits your credit for a beat, so the NEXT rock it smashes still counts
     // as yours — trick shots chain. Only ASTEROIDS carry it (never moons/
     // planets, which would then take undamped impulses and wander).
+    // In a DENSE FIELD that chain is bounded (CFG.FIELD_CHAIN_MAX): the rocks
+    // touch, so an unbounded mark spread through the whole pocket and laundered
+    // it into one endless player throw — full lethality (the FIELD_TOUGH damp
+    // exempts player throws) and full payout. `chainN` is the link number, set
+    // to 0 at every REAL launch (tractor.releaseHeld / flingAllFromOrbit /
+    // the parry riposte) so a rock you re-throw always starts a fresh chain.
     if (closing > 60) {
       const aPlayer = (a.thrownBy === 'player' && a.thrownTimer > 0) || a.heldBy === 'orbit';
       const bPlayer = (b.thrownBy === 'player' && b.thrownTimer > 0) || b.heldBy === 'orbit';
-      if (aPlayer && bMoves && b.type === 'asteroid' && b.thrownBy !== 'player') {
+      if (aPlayer && bMoves && b.type === 'asteroid' && b.thrownBy !== 'player' &&
+          chainOk(a, b)) {
         b.thrownBy = 'player'; b.thrownTimer = Math.max(b.thrownTimer, 1.4);
+        b.chainN = (a.chainN || 0) + 1;
       }
-      if (bPlayer && aMoves && a.type === 'asteroid' && a.thrownBy !== 'player') {
+      if (bPlayer && aMoves && a.type === 'asteroid' && a.thrownBy !== 'player' &&
+          chainOk(b, a)) {
         a.thrownBy = 'player'; a.thrownTimer = Math.max(a.thrownTimer, 1.4);
+        a.chainN = (b.chainN || 0) + 1;
       }
     }
     const thrown = a.thrownTimer > 0 || b.thrownTimer > 0;
@@ -1171,9 +1214,19 @@ function collideShipBody(game, s, b, dt) {
     // The saturation knee grows with beam tier: a dreadnought shrugs off
     // the pebbles that used to sting the scout — big slams always hurt.
     const massSat = b.mass / (b.mass + 1500 * (1 + game.st.tier * 1.2));
+    // SHOAL ROCK BITES (CFG.FIELD_SHIP_DMG) — the exact mirror of FIELD_TOUGH:
+    // field rock is tough against ITS OWN KIND and dangerous to YOU. This is
+    // what makes a dense field high-risk/high-reward instead of just high-
+    // reward. It costs nothing to fly through one: the pocket is RIGID (one
+    // shared rail w, zero relative drift), so ambient closing speeds are ~0 and
+    // the `closing > 25` gate below means gentle contact still cannot hurt. The
+    // danger is entirely SELF-INFLICTED — once you start smashing, the space
+    // around you fills with fast loose rock, and a Shockwave detonation is now
+    // a genuine double-edged sword rather than free area denial.
+    const field = b.fieldRock ? CFG.FIELD_SHIP_DMG : 1;
     // RAM PROW / JUGGERNAUT: a reinforced prow takes less from impacts (ramArmor
     // <= 1; exactly 1 for non-ram builds, so nothing else changes).
-    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * field * game.st.ramArmor,
       game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
       // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
@@ -1287,9 +1340,13 @@ function updateParry(game, dt) {
       b.vx = s.vx + dx * st.deflectPower;
       b.vy = s.vy + dy * st.deflectPower;
       b.thrownBy = 'player'; b.thrownTimer = 2.5;  // the riposte is YOUR shot — full billiards credit
+      b.chainN = 0;                                // ...and link 0 of a fresh chain (chainOk)
       b.throwX = b.x; b.throwY = b.y;              // achievements: launch point (see tractor.releaseHeld)
       b.killedByParry = true;                      // ...and the verb that set the kill up
-      addXp(game, PROG.XP_PARRY);                  // good play pays — per rock, at the launch
+      // Good play pays — per rock, at the launch. Damped in a shoal
+      // (fieldXp): the parry catches any loose rock closing on the nose, and
+      // inside a pocket you can fly into a full window's worth on purpose.
+      addXp(game, fieldXp(game, b, PROG.XP_PARRY));
       addParticles(game, b.x, b.y, b.vx * 0.3, b.vy * 0.3, 12, '#9fd6ff', 200, 0.7, 3);
     }
     game.parry = null;

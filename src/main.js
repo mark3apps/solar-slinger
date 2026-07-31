@@ -706,6 +706,13 @@ const EVENT_MSGS = [
     first: ['DEFLECTED — the rock is frozen! Flick your mouse to hurl it that way.', 5] },
   { flag: 'wallSplatWarn', tut: 'wallsplat', snd: sfx.sfxChime,
     first: ['WALL SPLAT — smashed against the world. Nearby rocks scatter off the impact as yours.', 5] },
+  // A worked-out shoal (config.fieldXp spent its run budget). The rocks still
+  // shatter exactly as before — only the salvage is gone — so this has to SAY
+  // so, or a payout that quietly stops reads as a bug. sfxWarnLow: bad news,
+  // not danger. Carries the field's name, so "which one" is never a guess.
+  { flag: 'fieldDryName', tut: 'fieldDry', snd: sfx.sfxWarnLow,
+    first: [(v) => `${v.toUpperCase()} IS PICKED OVER — no salvage left in this shoal. The rocks are still good ammunition.`, 6],
+    repeat: [(v) => `${v.toUpperCase()} is picked over — no salvage left here.`, 4] },
   { flag: 'cometWarn', tut: 'comet', snd: sfx.sfxWarnLow,
     first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
     repeat: ['COMET SHOWER inbound!', 3] },
@@ -1116,14 +1123,22 @@ function update(dtReal) {
 // be able to overwrite a warning — or be overwritten by one. Several can land
 // together (a tier-up trips a handful of thresholds at once), so the toast
 // stack takes them all and the sound fires once.
+// This is also where achievements PAY: pts x XP_PER_ACH_POINT into the normal
+// stream, so a row feeds the pick purse and every ability pool exactly like any
+// other good play. It happens HERE, in the drain, and not in achievements.js
+// `award` — the sweep stays a pure read over the game, the same split that
+// keeps it out of the DOM and the audio engine.
 function drainAchievements() {
   const q = game.achQueue;
   let loudest = 0;
+  let xp = 0;
   for (const a of q) {
     hud.achToast(a);
+    xp += a.pts;
     if (a.pts > loudest) loudest = a.pts;
   }
   q.length = 0;
+  addXp(game, xp * PROG.XP_PER_ACH_POINT);
   // The audio grammar (CLAUDE.md): triumph. A big one gets the tier-up fanfare,
   // an ordinary one the quieter upgrade tick — the same split the pick modal uses.
   if (loudest >= 60) sfx.sfxTierUp(); else sfx.sfxUpgrade();
