@@ -119,6 +119,30 @@ export const CFG = {
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
+  // PLANET DURABILITY (user design law: "killing a planet should feel like a
+  // feat"). Planet hp is a BIG FLAT BASE plus a gentle mass slope, NOT the
+  // mass-scaled curve every other body uses — because mass-scaled hp gets the
+  // sizing exactly backwards once mass dominance is in play. Dominance already
+  // throttles what a small impactor does to a heavy body (damage roughly
+  // 1/targetMass), so a mass-proportional hp curve punished big worlds twice
+  // and left SMALL planets — barely heavier than a big moon, so dominance
+  // barely protects them — as paper: at the old `massToHp x 0.4`, ONE thrown
+  // moon (4.7k-12k damage) vaporized a 96-hp world outright. The flat base is
+  // what makes a planet survive a moon; the slope keeps a giant meaningfully
+  // tougher without running away.
+  // The intended ladder, and the reason the numbers are where they are:
+  //   thrown ROCK   -> chips and scars it. Hundreds of hits. Planets are not
+  //                    rock-killable, on purpose.
+  //   thrown MOON   -> a real wound, several to many hits. It SURVIVES one.
+  //   thrown PLANET -> the killing blow. That's the feat.
+  // Damage still lands in full — scars, craters, chunk spray and mass loss are
+  // all gated on ABSOLUTE damage as well as hp fraction (CHUNK_DMG_MIN, see
+  // below), which is exactly why raising hp doesn't quietly stop a planet from
+  // visibly coming apart. Corona heat is a fraction of maxHp per second, so a
+  // planet still melts in the sun at the same rate as before.
+  PLANET_HP_BASE: 18000,
+  PLANET_HP_MUL: 1.2,
+
   // CHUNK SHEDDING: big bodies don't fail all-or-nothing — a single hit that
   // bites hard enough (≥ CHUNK_DMG_MIN absolute damage, or ≥ CHUNK_DMG_FRAC of
   // maxHp for smaller "big" bodies like moons) knocks real chunk asteroids off
@@ -275,33 +299,95 @@ export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnoug
 // (SPECS — main.startGame -> the 'spec' modal); it sets your starting kit and gates
 // which named ABILITIES you can be offered. The core grab/throw/fly loop is base
 // (shipStats), so every spec is playable at once. Doing good things (grab, smash,
-// skim, kill, collect, survey, slingshot, shield-block) grants XP; crossing a
-// threshold PAUSES the game for a pick. SMALL picks (rankChoices) only DEEPEN
-// abilities you already own. Every PICKS_PER_TIER small picks the next pick is a
-// TIER-UP milestone: choose 1 of 2 random NEW abilities from your spec's pool
-// (tierChoices — soft-floored by minTier), and the tier-up also auto-levels your
-// whole learned build once (applyTierUp) + a life. Death spends a life (build
-// kept); 0 lives = game over and a fresh spec choice.
+// skim, kill, collect, survey, slingshot, shield-block) grants XP.
+//
+// TWO PROGRESSION TRACKS, ONE XP STREAM (user design rule). Every XP award feeds
+// BOTH at once — they are parallel accumulators, not a shared purse:
+//   1. RANKS ARE AUTOMATIC. Each ability you own carries its OWN xp pool
+//      (prog.abilXp[id]) and its own per-rank threshold (abilityRankCost —
+//      specific to that ability, and RISING with every rank taken). Cross the
+//      threshold and the rank lands by itself, mid-flight, no modal. The HUD
+//      draws a fill bar under every learned ability so you can watch each one
+//      climb. Nothing is ever spent to rank up — growAbilities only accrues.
+//   2. NEW ABILITIES ARE CHOSEN. Crossing xpForPick PAUSES the game (the
+//      frame() gate) for a card, and a card ONLY ever offers abilities you do
+//      NOT own yet (tierChoices, soft-floored by minTier). There is exactly ONE
+//      such pick between tier-ups (PICKS_PER_TIER), then the next one is the
+//      TIER-UP milestone: same new-ability choice, plus the tier bump and +1
+//      life. So a tier hands you two new abilities and ranks up everything you
+//      already fly, continuously.
+// Death spends a life (build kept); 0 lives = game over and a fresh spec choice.
 export const PROG = {
   START_LIVES: 3,
   MAX_LIVES: 5,
-  PICKS_PER_TIER: 3,       // small picks before a tier-up milestone
+  PICKS_PER_TIER: 1,       // new-ability picks between tier-up milestones
   // XP-to-next-pick: BASE + STEP*level + CURVE*level² (level = picks taken).
-  // FRONT-LOADED PACING (user design rule): tier 0 must feel MUCH faster than
-  // the old flat band, with the cost shifted onto the later tiers — the old
-  // linear curve (145 + 58*level) priced every tier in the same band (tier t
-  // total = ~928*(t+1)), so the opening crawled exactly like the midgame. The
-  // quadratic redistributes it: per-tier totals run 308 / 852 / 1652 / 2708 /
-  // 4020 — early tiers cheapest, later tiers pricier, same shape as before.
-  // SPEED PASS (user design rule, second round): the reshape alone kept the
-  // total climb at the old ~14310 grind and the user asked for ALL tiers
-  // faster — so the whole curve is scaled by ⅔ (total now 9540, every tier
-  // ~33% quicker) while preserving the front-loaded ratios above. First pick
-  // lands at 40 XP: one survey, or a couple of smashes — the opening upgrade
-  // should arrive inside the first minute or two.
-  XP_BASE: 40,
-  XP_STEP: 20,
-  XP_CURVE: 2,
+  // FRONT-LOADED PACING (user design rule, tightened three times now). The
+  // original linear curve (145 + 58*level) priced every tier in the same band,
+  // so the opening crawled exactly like the midgame; the quadratic redistributes
+  // the climb onto the later tiers, and successive speed passes have scaled the
+  // whole thing down while pushing the weighting further forward. Per-tier
+  // totals (2 picks each, T_t = 2B + S(4t+1) + C(8t²+4t+1)):
+  //     183 / 595 / 1247 / 2139 / 3271   — total climb 7435
+  // The pass before this ran 308 / 852 / 1652 / 2708 / 4020 (9540): the current
+  // numbers are ~22% faster overall and DELIBERATELY not uniformly so — tier 0
+  // is 41% quicker, tier 1 30%, tier 2 25%, tier 3 21%, tier 4 19%. The opening
+  // is where speed is felt, so that is where the cuts went.
+  // AUTO-RANK RESHAPE: a tier used to cost FOUR picks (3 rank-ups + the
+  // milestone). Ranks are automatic now, so a tier is TWO picks — both of them
+  // whole NEW abilities. The first lands at 55 XP: one survey, or a couple of
+  // smashes. And the ability bars start filling from XP #1, so the opening
+  // minute answers back continuously between the cards.
+  XP_BASE: 55,
+  XP_STEP: 58,
+  XP_CURVE: 15,
+  // ---- automatic ability ranks (growAbilities / abilityRankCost) ----
+  // ABIL_XP_TOTAL is the budget for the LONGEST track (6 ranks) at weight 1.0
+  // to climb from rank 1 to max — sized just under the 7435 full climb, so a
+  // kit ability owned from frame one tops out around tier 4-5. KEEP IT IN RATIO
+  // with the pick curve above: shorten the climb without shortening this and
+  // every ability ends the run mid-ladder.
+  // GROWTH splits that budget across the (max - 1) rank-ups with linearly
+  // rising weights (1, 1+G, 1+2G, …) — every rank costs more than the last.
+  // SHORT is how much of the budget a track keeps when it has FEWER ranks. At
+  // 1.0 (a flat budget per ability) a 3-rank track's first rank cost ~2200 XP,
+  // five times a long track's, and short abilities sat visibly inert for two
+  // tiers. At 0 (budget straight-line with length) they'd max in the opening
+  // minutes and their bar would be decoration for the rest of the run. 0.45
+  // sits between those: short tracks rank noticeably sooner AND still finish
+  // late-ish. Per-row `xpMul` then scales an individual ability (late-tier rows
+  // discount it — they're learned with far less run left to earn in).
+  ABIL_XP_TOTAL: 6500,
+  ABIL_XP_GROWTH: 0.9,
+  ABIL_XP_SHORT: 0.45,
+  // STAGGER (user design rule: abilities must never rank up in lockstep). Every
+  // owned ability's pool receives the SAME award, so two tracks with the same
+  // `max` and `xpMul` — three of the four BRAWLER kit abilities, say — hold
+  // identical pools forever and would cross identical thresholds on the same
+  // frame. That fired as one useless "3 ABILITY RANKS GAINED" instead of three
+  // separate moments. Two deterministic offsets (hashed off the ability id, so
+  // the bars stay rock-steady frame to frame and runs stay repeatable) pull
+  // them apart:
+  //   SPREAD — a per-ABILITY scale on its whole ladder. This is what actually
+  //     separates two same-shaped tracks, and the gap widens with every rank
+  //     since it's proportional.
+  //   WOBBLE — a per-RANK nudge on top, so an ability's own steps aren't a
+  //     clean multiple of each other either. It is deliberately SMALLER than
+  //     SPREAD and BOUNDED: the tightest consecutive-rank ratio in the ladder
+  //     is 1.243 (ranks 4->5 of a 6-rank track), so a wobble beyond ~0.108
+  //     could make a later rank cost LESS than an earlier one and break the
+  //     "thresholds always rise" rule. Keep it under 0.10.
+  // These two values are SEARCHED, not guessed: they maximize the smallest gap
+  // between any two rank-ups within a spec's STARTING KIT (the only abilities
+  // learned at the same instant, so the only ones whose pools stay equal — and
+  // therefore the only real lockstep risk). At 0.23/0.08 the tightest kit gap
+  // is 49 XP; the first pass at 0.15/0.08 left ramProw and kineticSling landing
+  // 6 XP apart, i.e. the same second. A per-ability scale alone can't fix that
+  // — ladders of different LENGTH cross no matter how they're scaled — which is
+  // why the pair is tuned together against the real catalog. devtest T5c
+  // asserts both properties, so adding an ability that collides fails the suite.
+  ABIL_XP_SPREAD: 0.23,
+  ABIL_XP_WOBBLE: 0.08,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
@@ -353,10 +439,13 @@ export const PROG = {
 // offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats
 // bases), so every spec is playable from the first frame; the kit + tree layer on.
 // KIT RULE (design law): every kit must contain at least THREE abilities with
-// max > 1 — tier-0 small picks can only deepen owned abilities (rankChoices), so
-// fewer rankable tracks makes the first three picks a non-choice (SCOUT once
-// shipped with a lone rankable track because Retro Jets is a max-1 unlock that
-// arrives already maxed — count max-1 unlocks as flavor, not as a track).
+// max > 1. A max-1 unlock arrives already maxed and can never rank, so a kit
+// short on rankable tracks opens the run with almost no automatic progress to
+// watch — the ability bars ARE the minute-one feedback, and the first card is a
+// couple of minutes out. (The rule predates automatic ranks: it used to be that
+// between-tier picks could only deepen owned abilities, so a thin kit made the
+// first picks a non-choice. Same rule, same fix, different failure mode —
+// SCOUT once shipped with a lone rankable track behind Retro Jets.)
 export const SPECS = [
   // Kit carries Ram Prow + Deflector, not Heavy Winch: the brawler's frame-one
   // identity is MECHANICS (the innate prow and the parry, each deepened by its
@@ -374,9 +463,14 @@ export const SPECS = [
     start: ['tunedThrusters', 'retroJets', 'navPlotter', 'leadComputer'] },
 ];
 
-// The named-ability catalog. Each ability has an OWNER spec, ranks (small picks
-// deepen it), and a `minTier` soft-floor (it can't be OFFERED until you've
-// reached that tier). An optional `also: { specId: minTier }` map shares the
+// The named-ability catalog. Each ability has an OWNER spec, `max` ranks (which
+// it climbs AUTOMATICALLY off its own XP pool — see abilityRankCost), and a
+// `minTier` soft-floor (it can't be OFFERED until you've reached that tier).
+// An optional `xpMul` scales that ability's whole rank ladder: rows floored at
+// a late tier discount it (0.5 at minTier 3, 0.7 at 2) because they're learned
+// with only a fraction of the run's XP left to earn — at 1.0 a capstone would
+// dead-end one rank short of its max no matter how well you played. Omit it
+// (default 1) for anything offered from tier 0. An optional `also: { specId: minTier }` map shares the
 // ability with OTHER specs at (usually higher) tier floors — the Scout sensor/
 // QoL chain (Retro Jets, Gravity Compass, Nav Plotter, Lead Computer, Impact
 // Warning) reaches every spec this way: Scout gets them at tier 0, everyone
@@ -413,9 +507,9 @@ export const ABILITIES = [
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 3, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
   { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 3, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
-  { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 3, minTier: 3, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
-  { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 3, minTier: 3, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
-  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 3, minTier: 3, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
+  { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
+  { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
+  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
 
   // 📡 HAULER
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
@@ -428,10 +522,10 @@ export const ABILITIES = [
   { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
   { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
   { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
-  { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, weight: 0.9, desc: 'Haul planet-scale masses.' },
+  { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Haul planet-scale masses.' },
   { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
   { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 3, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
-  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
+  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
   { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 1, minTier: 3, weight: 0.9, desc: 'Hold and throw two rocks at once.' },
 
   // 🔭 SCOUT
@@ -445,15 +539,15 @@ export const ABILITIES = [
   { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
   { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
   { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
-  { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, weight: 0.9, desc: 'Long-range map and forecast.' },
+  { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
   { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 3, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
   // Afterburner is shared to BRAWLER only, and LATE (tier 4 — above even the
   // capstone band): a burning brawler is an endgame reward, and HAULER never
   // gets it (the freighter fantasy is mass, not speed).
   { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, also: { brawler: 4 }, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
   { id: 'evasionRoll',    spec: 'scout', name: 'Dash Jets',      icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap A / D to dart sideways (brief i-frames).' },
-  { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 3, minTier: 2, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
-  { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
+  { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 3, minTier: 2, xpMul: 0.7, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
+  { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
   { id: 'slipstream',     spec: 'scout', name: 'Slipstream',     icon: '➸', channel: 'slipstream',  max: 1, minTier: 3, weight: 0.9, desc: 'Tap F to warp forward toward the cursor.' },
 ];
 
@@ -468,6 +562,7 @@ export function newProgress() {
     picksThisTier: 0,      // toward the next tier-up milestone
     spec: null,            // chosen at run start (applySpec seeds the starting kit)
     upgrades: {},          // { abilityId: rank } — empty until a spec is chosen
+    abilXp: {},            // { abilityId: xp banked toward its NEXT rank } — growAbilities
     lives: PROG.START_LIVES,
     masterChart: false,    // 100% chart completion (shipStats grants the sensor/forecast bonus)
     maxLivesBonus: 0,      // permanent cap raises (charting the dark star) — read via maxLives()
@@ -488,12 +583,88 @@ export function xpForPick(prog) {
   return PROG.XP_BASE + PROG.XP_STEP * prog.level + PROG.XP_CURVE * prog.level * prog.level;
 }
 export function owesPick(prog) { return prog.xp >= xpForPick(prog); }
+// EVERY XP award feeds BOTH tracks: the pick purse (prog.xp, spent on the next
+// new-ability card) and, in parallel, every owned ability's own rank pool. They
+// are separate accumulators — ranking up costs the pick purse nothing, and
+// consumePickCost never touches an ability pool.
 export function addXp(game, amount) {
   if (amount <= 0 || !game.ship || !game.ship.alive) return;
   game.prog.xp += amount;
+  growAbilities(game.prog, amount, game.rankUps);
 }
-// The next owed pick is a tier-up milestone once enough small picks are banked
-// (until the top tier, after which it's small picks forever).
+
+// ---- automatic ability ranks ----------------------------------------------
+// The XP an ability needs to climb from `rank` to `rank+1` — its OWN threshold,
+// rising with every rank it has already taken. The ability's whole ladder (rank
+// 1 -> max) gets a budget of ABIL_XP_TOTAL x its xpMul x a track-length factor
+// (see ABIL_XP_SHORT — a 3-rank track must not be priced like a 6-rank one),
+// split across its (max - 1) steps by the ABIL_XP_GROWTH weights. Memoized:
+// this runs per owned ability on every single XP award, over pure catalog data.
+// FNV-1a over a key, mapped to 0..1. Deliberately NOT util.seedFrom: config is
+// the root leaf and imports nothing, and this must stay that way. Used only for
+// the ability-cost stagger — a HASH, not an RNG, because the HUD reads these
+// costs every frame to draw the bars and Math.random would make them shiver.
+function hash01(key) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return ((h >>> 0) % 1e6) / 1e6;
+}
+const signed = (key) => hash01(key) * 2 - 1;   // -1..1
+
+const rankCostCache = new Map();
+let longestTrack = 0;
+export function abilityRankCost(a, rank) {
+  if (!a || !(a.max > 1) || !(rank >= 1) || rank >= a.max) return Infinity;
+  const key = `${a.id}:${rank}`;
+  let cost = rankCostCache.get(key);
+  if (cost === undefined) {
+    if (!longestTrack) for (const x of ABILITIES) longestTrack = Math.max(longestTrack, x.max);
+    const steps = a.max - 1;
+    let sum = 0;
+    for (let i = 0; i < steps; i++) sum += 1 + PROG.ABIL_XP_GROWTH * i;
+    const lenF = PROG.ABIL_XP_SHORT
+      + (1 - PROG.ABIL_XP_SHORT) * (steps / Math.max(1, longestTrack - 1));
+    const w = 1 + PROG.ABIL_XP_GROWTH * (rank - 1);
+    // Stagger (ABIL_XP_SPREAD / _WOBBLE): a per-ability ladder scale plus a
+    // per-rank nudge, so no two tracks ever cross a threshold together.
+    const spread = 1 + PROG.ABIL_XP_SPREAD * signed(a.id);
+    const wobble = 1 + PROG.ABIL_XP_WOBBLE * signed(key);
+    cost = Math.round(PROG.ABIL_XP_TOTAL * (a.xpMul || 1) * lenF * w / sum * spread * wobble);
+    rankCostCache.set(key, cost);
+  }
+  return cost;
+}
+// Pour `amount` XP into every owned ability's pool and cash in any thresholds
+// crossed. Pushes { id, name, rank } onto `out` (game.rankUps) for each rank
+// landed — main.js drains that into the message/sfx/hull-heal pass, the same
+// event-flag shape the rest of the sim uses. The while loop handles a single
+// fat award crossing two thresholds at once; the queue is capped so an undrained
+// list (splash frames) can't grow without bound.
+export function growAbilities(prog, amount, out) {
+  if (!(amount > 0) || !prog || !prog.upgrades) return;
+  const bank = prog.abilXp || (prog.abilXp = {});
+  for (const id of Object.keys(prog.upgrades)) {
+    const a = abilityById(id);
+    let rank = prog.upgrades[id];
+    if (!a || !(a.max > 1) || !(rank > 0) || rank >= a.max) continue;
+    let pool = (bank[id] || 0) + amount;
+    let cost = abilityRankCost(a, rank);
+    while (rank < a.max && pool >= cost) {
+      pool -= cost;
+      rank++;
+      if (out && out.length < 16) out.push({ id, name: a.name, rank });
+      cost = abilityRankCost(a, rank);
+    }
+    prog.upgrades[id] = rank;
+    // A maxed track banks nothing — its bar reads FULL, not a stalled fraction.
+    bank[id] = rank >= a.max ? 0 : pool;
+  }
+}
+// The next owed pick is a tier-up milestone once enough picks are banked in
+// this tier (until the top tier, after which it's plain picks forever).
 export function pickIsMilestone(prog) {
   return prog.tier < TIERS.caps.length - 1 && prog.picksThisTier >= PROG.PICKS_PER_TIER;
 }
@@ -501,29 +672,33 @@ export function consumePickCost(prog) {
   prog.xp = Math.max(0, prog.xp - xpForPick(prog));
   prog.level++;
 }
-// Add one rank to an ability (capped at its max). New abilities come in at rank 1.
+// Learn an ability (or add a rank to one, capped at its max). New abilities come
+// in at rank 1 with an EMPTY xp pool — its bar starts at zero and fills from the
+// next award, so a late pick is visibly a fresh track, not a half-earned one.
 export function applyAbility(prog, id) {
   const a = abilityById(id);
   if (!a) return;
   const cur = prog.upgrades[id] || 0;
   if (cur < a.max) prog.upgrades[id] = cur + 1;
+  if (!cur) (prog.abilXp || (prog.abilXp = {}))[id] = 0;
 }
 // Run start: lock in the spec and grant its starting kit at rank 1.
 export function applySpec(prog, id) {
   const s = specById(id);
   if (!s) return;
   prog.spec = id;
-  for (const aid of s.start) prog.upgrades[aid] = Math.max(1, prog.upgrades[aid] || 0);
-}
-// TIER-UP DIVIDEND + bump. Every ability already LEARNED ranks up once (capped) —
-// the tier's power spike, on top of whichever NEW ability the milestone grants
-// (main.js grants that AFTER this, so it comes in fresh at rank 1). (Object.keys
-// is a snapshot; the loop only bumps existing keys, so mutating mid-iterate is safe.)
-export function applyTierUp(prog) {
-  for (const id of Object.keys(prog.upgrades)) {
-    const a = abilityById(id);
-    if (a && prog.upgrades[id] > 0 && prog.upgrades[id] < a.max) prog.upgrades[id]++;
+  const bank = prog.abilXp || (prog.abilXp = {});
+  for (const aid of s.start) {
+    prog.upgrades[aid] = Math.max(1, prog.upgrades[aid] || 0);
+    if (bank[aid] == null) bank[aid] = 0;
   }
+}
+// TIER-UP: the tier bump, and the pick counter resets for the new tier. It does
+// NOT rank your build up any more — that used to be the tier "dividend", and it
+// double-counts now that ranks come from XP continuously (a kit ability would
+// hit its max on tier-ups alone, making its own xp bar decorative). The tier's
+// power spike is the NEW ability main.js grants right after this, plus the life.
+export function applyTierUp(prog) {
   prog.tier = Math.min(TIERS.caps.length - 1, prog.tier + 1);
   prog.picksThisTier = 0;
 }
@@ -546,24 +721,15 @@ export function tierFloorFor(a, spec) {
   if (a.also && a.also[spec] != null) return a.also[spec];
   return Infinity;
 }
-// TIER-UP cards: `n` random NEW abilities from your offer pool (your spec's own
+// UPGRADE CARDS: `n` random NEW abilities from your offer pool (your spec's own
 // rows + shared `also` rows) that you don't own yet and whose tier floor has
-// been reached. Weighted, no-replacement.
+// been reached. Weighted, no-replacement. This is the ONLY card draw — a pick
+// is always "learn something new" now, at the milestone and between them alike;
+// deepening what you own is the automatic track (growAbilities), never a card.
+// (There used to be a second draw, rankChoices, for the between-tier picks.)
 export function tierChoices(prog, n = 2) {
   const bag = ABILITIES
     .filter((a) => !(prog.upgrades[a.id] > 0) && prog.tier >= tierFloorFor(a, prog.spec))
-    .map((a) => ({ u: a, w: a.weight || 1 }));
-  const chosen = [];
-  while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));
-  return chosen;
-}
-// SMALL-PICK cards: `n` random abilities you already OWN that can still rank up —
-// between-tier picks only deepen what you've learned, never introduce new
-// abilities. Ownership alone qualifies (no spec filter): a shared `also` ability
-// a non-Scout picked up must stay deepenable or it dead-ends at rank 1.
-export function rankChoices(prog, n = 2) {
-  const bag = ABILITIES
-    .filter((a) => (prog.upgrades[a.id] || 0) > 0 && (prog.upgrades[a.id] || 0) < a.max)
     .map((a) => ({ u: a, w: a.weight || 1 }));
   const chosen = [];
   while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));

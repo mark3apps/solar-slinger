@@ -1,4 +1,4 @@
-import { PROG, xpForPick, abilityById, ABILITIES, SPECS } from './config.js';
+import { PROG, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS } from './config.js';
 
 const el = {};
 let msgTimer = null;
@@ -9,6 +9,7 @@ let prevCombo = 0;         // combo stamp retriggers its pop on every increment
 let prevSpec = '';         // spec chip identity — restyle only when it changes
 let livesSig = '';         // lives-pip signature — rebuild on change
 let iconSig = '';          // acquired-upgrade chip signature — rebuild on change
+let abilBars = [];         // cached { fill, id, cost } per learned ability — the per-frame XP fills
 let pickCb = null;         // click callback for the open upgrade card set
 const lastText = new Map(); // last written string per node — DOM writes happen on change only
 
@@ -49,8 +50,10 @@ export function initHud(game) {
     el[id] = document.getElementById(id);
   }
   el.gametitle = document.querySelector('.gametitle');   // the boot scramble's target (no id)
-  // Tick period on the XP bar = one upgrade pick (tracks PICKS_PER_TIER)
-  el.xpBar.style.setProperty('--tick', `${100 / PROG.PICKS_PER_TIER}%`);
+  // Tick period on the XP bar = one upgrade pick. The bar spans a whole tier,
+  // which is PICKS_PER_TIER picks PLUS the milestone (see the span math in
+  // updateHud) — divide by that same total or the ticks drift off the picks.
+  el.xpBar.style.setProperty('--tick', `${100 / (PROG.PICKS_PER_TIER + 1)}%`);
   void game;
 }
 
@@ -277,8 +280,11 @@ export function setGameOverVisible(v, cause = '') {
 }
 
 // Build (or hide) the choice modal. `kind` is 'spec' (run-opening specialization
-// cards), 'tier' (a new ability at a tier-up), or 'upgrade' (deepen an owned one).
-const UP_TITLES = { spec: 'CHOOSE YOUR SPECIALIZATION', tier: 'TIER UP — CHOOSE AN ABILITY', upgrade: 'CHOOSE AN UPGRADE' };
+// cards), 'tier' (the tier-up milestone) or 'upgrade' (the between-tier pick) —
+// the last two both offer NEW abilities; deepening never comes through here.
+// Both ability kinds title as LEARN — a card is always a new ability now, and
+// only the milestone one also carries the tier.
+const UP_TITLES = { spec: 'CHOOSE YOUR SPECIALIZATION', tier: 'TIER UP — LEARN AN ABILITY', upgrade: 'LEARN AN ABILITY' };
 export function setUpgradeVisible(game, choices, kind, onPick) {
   if (!choices || !choices.length) {
     el.upgradeScreen.classList.add('hidden');
@@ -303,8 +309,10 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
       const kit = (c.start || []).map((id) => abilityById(id)?.name).filter(Boolean).join(' · ');
       sub = `<div class="uplevel">Start: ${kit}</div>`;
     } else {
-      const cur = game.prog.upgrades[c.id] || 0;
-      sub = `<div class="uplevel">${cur > 0 ? `Rank ${cur} → ${cur + 1}` : 'New ability'} · max ${c.max}</div>`;
+      // Cards only ever offer abilities you don't own, so the sub-line sells the
+      // TRACK it opens: how deep it goes, and that it deepens on its own from
+      // here (there is no rank-up card to come back for).
+      sub = `<div class="uplevel">New ability · ${c.max > 1 ? `${c.max} ranks, earned automatically` : 'single unlock'}</div>`;
     }
     row.innerHTML =
       `<div class="upnum">${i + 1}</div>` +
@@ -506,22 +514,47 @@ export function updateHud(game) {
   if (barFrac > prevXpFrac + 0.0005) flash(el.xpBar, 'gain');
   prevXpFrac = barFrac;
 
-  // Acquired abilities — a detailed list; rebuild only when the build changes
+  // Acquired abilities — a detailed list, each with its own XP bar: ranks are
+  // AUTOMATIC now (config.growAbilities), so every learned ability is a track
+  // you can watch fill toward its next rank. The rows are rebuilt only when the
+  // build changes (a new ability, or a rank landing); the FILLS then ride every
+  // frame off cached element refs, since they move continuously.
   const sig = ABILITIES.map((u) => prog.upgrades[u.id] || 0).join(',');
   if (sig !== iconSig) {
     iconSig = sig;
     const owned = ABILITIES.filter((u) => (prog.upgrades[u.id] || 0) > 0);
     const rows = owned.map((u) => {
       const rk = prog.upgrades[u.id];
+      const maxed = rk >= u.max;
       const rankEl = u.max > 1
         ? `<span class="ui-rk">${Array.from({ length: u.max }, (_, i) =>
             `<span class="rp${i < rk ? ' on' : ''}"></span>`).join('')}</span>`
         : `<span class="ui-on">ON</span>`;
-      return `<div class="uprow2"><span class="ui-ic">${u.icon}</span>` +
-        `<span class="ui-nm">${u.name}</span>${rankEl}</div>`;
+      // A max-1 unlock and a maxed track have nothing left to earn — their bar
+      // reads solid rather than sitting at a fraction that will never move.
+      return `<div class="ab2" data-ab="${u.id}">` +
+        `<div class="uprow2"><span class="ui-ic">${u.icon}</span>` +
+        `<span class="ui-nm">${u.name}</span>${rankEl}</div>` +
+        `<div class="ui-xp${maxed ? ' max' : ''}"><span class="ui-xpf"></span></div></div>`;
     }).join('');
     el.upList2.innerHTML = owned.length
       ? `<div class="ulhead">ABILITIES</div>${rows}`
       : '';
+    // Cache the fills + their current thresholds so the per-frame pass is a
+    // width write and nothing else — no queries, no cost lookups.
+    abilBars = owned.map((u) => ({
+      fill: el.upList2.querySelector(`.ab2[data-ab="${u.id}"] .ui-xpf`),
+      id: u.id,
+      cost: abilityRankCost(u, prog.upgrades[u.id]),
+    }));
+  }
+  const bank = prog.abilXp || {};
+  for (const b of abilBars) {
+    // A maxed track's cost is Infinity — that divides to 0, so it's pinned full
+    // explicitly (the .max class dims it; the width is what makes it READ full).
+    const frac = Number.isFinite(b.cost)
+      ? Math.max(0, Math.min(1, (bank[b.id] || 0) / b.cost))
+      : 1;
+    setWidth(b.fill, `${(frac * 100).toFixed(1)}%`);
   }
 }

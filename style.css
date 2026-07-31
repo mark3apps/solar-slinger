@@ -345,11 +345,41 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
 }
 .uprow2 .ui-on { font-size: 9px; color: var(--green); letter-spacing: 1px; text-shadow: 0 0 7px rgba(120, 255, 180, .7); }
 
+/* Per-ability XP track. Ranks are earned automatically (config.growAbilities),
+   so every learned ability gets its own hairline bar filling toward its next
+   rank — this is the readout for the whole automatic half of progression.
+   VIOLET, not the rank pips' green: violet is XP everywhere in this HUD (the
+   big #xpBar is the same stick), and green/blue/pink stay semantic for the
+   hull / shield / lives instruments. Kept to 2px and seated under the row so a
+   dozen of them read as texture under the list, never as twelve more gauges. */
+.ab2 { display: flex; flex-direction: column; gap: 2px; }
+.ab2 .ui-xp {
+  height: 2px; margin: 0 0 1px 22px;   /* indented past the icon column */
+  border-radius: 999px;
+  background: rgba(176, 112, 255, .16);
+  overflow: hidden;
+}
+.ab2 .ui-xpf {
+  display: block; height: 100%; width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(163, 92, 255, .85), #d9bcff);
+  box-shadow: 0 0 5px rgba(176, 112, 255, .8);
+  transition: width .18s ease;
+}
+/* Maxed (or a single-unlock ability): nothing left to earn — the bar sits full
+   and DIM, so a finished track reads as done rather than as a live gauge. */
+.ab2 .ui-xp.max { background: rgba(120, 255, 180, .14); }
+.ab2 .ui-xp.max .ui-xpf {
+  background: rgba(120, 255, 180, .5);
+  box-shadow: none;
+}
+
 /* XP bar: promoted to the top centre of the canopy — the run's throughline.
    A pointed hex pill with a white-hot violet core, straight from the kit.
    It spans the WHOLE current tier; the ticks mark each intermediate upgrade
    pick, and a full bar = the tier-up milestone. The tick period is set inline
-   (100 / PICKS_PER_TIER %) from hud.js so it tracks the constant. */
+   from hud.js (100 / picks-per-tier-including-the-milestone %) so it tracks
+   the constant. */
 #xpBar {
   --hx: 13px;
   position: absolute; top: 16px; left: 50%;

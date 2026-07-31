@@ -29,7 +29,7 @@ variable-timestep presentation loop.
 | Module | Owns |
 |---|---|
 | [main.js](src/main.js) | Orchestrator + the `game` object + the rAF/`update`/`render` loop. Runs at import time (no `init()` wrapper). |
-| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `PROG`), the `SPECS` + `ABILITIES` catalog, and the pure `newProgress()` / `shipStats(prog)` / `tierChoices` / `rankChoices` / `applySpec` / `applyTierUp` / `addXp` derivations. |
+| [config.js](src/config.js) | All tuning constants (`CFG`, `TIERS`, `PROG`), the `SPECS` + `ABILITIES` catalog, and the pure `newProgress()` / `shipStats(prog)` / `tierChoices` / `applySpec` / `applyTierUp` / `addXp` / `growAbilities` / `abilityRankCost` derivations. |
 | [entities.js](src/entities.js) | The only classes: `Body`, `Ship`, `Alien`. Plus `railBody`/`derail`, `scrapValue`, `makeScrap`. |
 | [world.js](src/world.js) | `generateWorld` (seeded), `respawnShip`, `replenishWorld`, `spawnAsteroid`. |
 | [physics.js](src/physics.js) | `step` — N-body integration, collisions/damage, rails, the trajectory predictor. **The load-bearing file.** |
@@ -175,8 +175,8 @@ re-arms it for a fresh run.
   choice of one of three **specs** (`SPECS` in config.js — BRAWLER / HAULER / SCOUT; `main.openSpec`
   from `startGame`). `applySpec` locks `prog.spec` and grants that spec's **starting-kit**
   abilities at rank 1. **Kit rule:** every kit carries at least THREE abilities with `max > 1` —
-  small picks only deepen owned abilities, so fewer rankable tracks makes tier 0's picks a
-  non-choice (max-1 unlocks like Retro Jets arrive already maxed and don't count).
+  a max-1 unlock arrives already maxed and never ranks, so a thin kit opens the run with almost
+  nothing climbing (the ability bars are the minute-one feedback; the first card is minutes out).
   The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
   XP bar starts empty (a paid opener read as "it skipped my first upgrade").
 - **Named abilities, spec-scoped, one currency.** `ABILITIES` (config.js) is the whole catalog: each
@@ -185,7 +185,9 @@ re-arms it for a fresh run.
   map shares an ability with other specs at their own (usually higher) floors — the Scout sensor/QoL
   chain (Retro Jets, Gravity Compass at tier 1; Nav Plotter, Lead Computer, Impact Warning at tier 2)
   reaches BRAWLER/HAULER this way, and Afterburner reaches BRAWLER only at tier 4 (`tierFloorFor` is
-  the one resolver; `rankChoices` filters on ownership alone so a shared pick stays deepenable). `channel` is the stat bucket it feeds;
+  the one resolver). An optional **`xpMul`** scales that ability's whole automatic rank ladder —
+  late-floored rows discount it (0.5 at `minTier` 3, 0.7 at 2) because they're learned with only a
+  fraction of the run's XP left to earn. `channel` is the stat bucket it feeds;
   `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one
   channel (e.g. HAULER's Orbital Sling + Expanded Bay both feed `orbit`). Add an ability by adding a
   catalog row + reading its channel in `shipStats` — nothing else needs to know it exists.
@@ -194,22 +196,41 @@ re-arms it for a fresh run.
   distinct). Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
   Freighter, Juggernaut) are the exception — they must stay separately named to coexist as cards, and
   their descs read as "more of the same".
-- **Two kinds of pick.** Good play (catch, smash, ram-kill, parry, skim/skate, kill, collect scrap,
-  survey, slingshot, shield-block) grants XP via `addXp(game, amount)` (`PROG.XP_*`). Ram kills pay
-  `XP_RAM` in `shatter`'s `'ram'` branch (kills only — chip damage, scrap, and combos stay off, so
-  bulldozing never outearns aimed throws); a completed Deflector parry pays `XP_PARRY` at the
-  LAUNCH, not the catch. Crossing `xpForPick(prog)` sets
-  `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) for a card:
-  - **TIER-UP milestone** (every `PROG.PICKS_PER_TIER` small picks): `tierChoices(prog, 2)` offers 2
-    random **NEW** abilities from your spec's pool that clear their `minTier`. Taking one runs
-    `applyTierUp` (the **dividend**: every already-learned ability ranks up once, capped) and bumps
-    `prog.tier`, THEN grants the chosen ability fresh at rank 1 — that order matters, or the dividend
-    double-bumps it. Plus +1 life.
-  - **SMALL pick** (between tiers): `rankChoices(prog, 2)` only DEEPENS abilities you already own —
-    small picks never introduce a new ability.
-  Both empty-pool branches must keep progression moving: an empty `rankChoices` still advances
-  `picksThisTier` (else a spec whose abilities are all maxed can never reach its tier-up — this
-  stalled SCOUT at tier 2), and an empty `tierChoices` tiers up anyway.
+- **TWO PROGRESSION TRACKS, ONE XP STREAM.** Good play (catch, smash, ram-kill, parry, skim/skate,
+  kill, collect scrap, survey, slingshot, shield-block) grants XP via `addXp(game, amount)`
+  (`PROG.XP_*`). Ram kills pay `XP_RAM` in `shatter`'s `'ram'` branch (kills only — chip damage,
+  scrap, and combos stay off, so bulldozing never outearns aimed throws); a completed Deflector
+  parry pays `XP_PARRY` at the LAUNCH, not the catch. Every award then feeds BOTH tracks at once —
+  they are **parallel accumulators, not a shared purse**, so ranking up costs the pick purse nothing:
+  - **RANKS ARE AUTOMATIC — deepening is never a card.** Each owned ability holds its own pool
+    (`prog.abilXp[id]`) and its own rising per-rank threshold (`abilityRankCost`); `growAbilities`
+    (called from `addXp`) pours every award into every owned ability and cashes in what crosses.
+    Ranks land mid-flight with no modal. A landed rank is queued on `game.rankUps`, which
+    `main.update` drains into one message + `sfxUpgrade` + the hull-gain heal (the event-flag shape).
+    `abilityRankCost` budgets an ability's whole ladder as `ABIL_XP_TOTAL × xpMul × a track-length
+    factor` and splits it across its `max - 1` steps with rising weights — keep `ABIL_XP_TOTAL` in
+    ratio with the pick curve or abilities end the run mid-ladder.
+    **Two laws hold over that ladder, and devtest T5c asserts both:** thresholds always RISE, and no
+    two abilities in a spec's STARTING KIT rank up together. Kit abilities are the only ones learned
+    at the same instant, so their pools stay equal forever and only the cost stagger separates them —
+    `ABIL_XP_SPREAD` (a per-ability ladder scale) + `ABIL_XP_WOBBLE` (a per-rank nudge), both hashed
+    off the ability id so the HUD bars stay steady and runs stay repeatable. The pair is SEARCHED
+    against the real catalog to maximize the tightest kit gap (49 XP at 0.23/0.08); a per-ability
+    scale alone cannot do it, because ladders of different LENGTH cross however they are scaled.
+    `ABIL_XP_WOBBLE` must stay under ~0.108 or a later rank can cost less than an earlier one.
+  - **PICKS ONLY EVER OFFER NEW ABILITIES.** Crossing `xpForPick(prog)` sets `game.choosingUpgrade`
+    and PAUSES the sim (`frame()` gate) for a card; both kinds draw from `tierChoices(prog, 2)` —
+    2 random abilities you do NOT own that clear their `minTier`. There is exactly ONE such pick
+    between milestones (`PROG.PICKS_PER_TIER` = 1); the next one is the **TIER-UP milestone**, which
+    also runs `applyTierUp` (tier bump — it grants NO ranks; a "dividend" would double-count against
+    the automatic track and make a kit ability's own bar decorative) and pays +1 life. A tier is
+    therefore two new abilities.
+  Both empty-pool branches must keep progression moving: with nothing left to offer, a plain pick
+  still advances `picksThisTier` (else a spec whose pool is exhausted can never reach its tier-up)
+  and a milestone tiers up anyway.
+  The XP curve is **front-loaded on purpose** (`XP_BASE`/`XP_STEP`/`XP_CURVE`): per-tier totals run
+  183 / 595 / 1247 / 2139 / 3271, so tier 0 is a fraction of tier 4. Speed passes shorten the whole
+  climb by cutting the EARLY tiers hardest — that is where pace is felt.
 - **The pick modal is deferred, never lost.** It won't open while a rock is in the beam
   (`game.held`) nor for ~2s after any fling (`game.flingDelayT`, set in `releaseHeld` /
   `flingAllFromOrbit`) — freezing the sim mid-aim feels awful. `owesPick` stays true until consumed,
@@ -348,6 +369,18 @@ comments in [physics.js](src/physics.js) / [config.js](src/config.js) — read t
    velocity (a chunk born overlapping its parent takes collision damage and sheds again — feedback
    loop), body counts are capped, and only a direct `'player-throw'` hit propagates player credit onto
    chunks (shard/Demolition chains stay bounded). (`physics.js damageBody`/`shatter`, `config.js CHUNK_*`)
+8. **A PLANET IS ITS OWN DURABILITY CLASS** (user design law: *killing a planet should feel like a
+   feat*). Planet hp is a big flat `CFG.PLANET_HP_BASE` plus a gentle `PLANET_HP_MUL × massToHp`
+   slope — deliberately NOT the mass-scaled curve every other body uses. Mass dominance already
+   throttles what a small impactor does to a heavy body (damage ≈ 1/targetMass), so mass-proportional
+   hp punished big worlds twice while leaving SMALL planets — barely heavier than a big moon, so
+   dominance barely shields them — as paper: one thrown moon (4.7k–12k damage) vaporized a 96-hp
+   world outright. The intended ladder is **rock chips it → moon wounds it (it SURVIVES one; ~7 slams
+   kill a mid planet) → a thrown PLANET is the killing blow.** Raising hp does NOT quiet the damage:
+   scars, crater bites, chunk spray and mass loss are gated on ABSOLUTE damage as well as hp fraction
+   (invariant 7's dual gate exists for exactly this reason), and corona heat is a fraction of maxHp
+   per second, so a planet still melts in the sun at the same rate. (`entities.js Body`, `config.js
+   PLANET_HP_*`)
 
 ### Rails (the biggest architectural fact)
 
@@ -520,8 +553,12 @@ code "works."
   quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
   - **BRAWLER (War Plating)** — STRONG (38%→65% of the pool) but **FRONT ARC ONLY** (`shieldArc` π/2):
     a directional hit from behind (`hitAng` in `physics.damageShip`) skips the shield entirely — the
-    tail is bare, so facing the threat matters. Directionless damage (heat/crush/Oort — no `hitAng`)
-    always soaks. Render clips every shield visual to the covered wedge — the bare tail must READ.
+    tail is bare, so facing the threat matters. **Directionless damage** (heat, gas crush, Oort
+    grinding — no `hitAng`, nothing to face) can't be dodged by aiming, so it is SPLIT by coverage:
+    the shield soaks its share (`arc / π` — half, for the brawler) and the rest goes straight to
+    hull. Half a shield stops half of an all-over effect; soaking all of it made the front-arc
+    drawback free in exactly the places it should bite. Full-wrap shields are unaffected (share 1).
+    Render clips every shield visual to the covered wedge — the bare tail must READ.
   - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
     regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability.
   - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
