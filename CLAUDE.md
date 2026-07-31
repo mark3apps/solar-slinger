@@ -76,20 +76,52 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
   the substeps-per-frame count wobbles, and the ship visibly jerks back and forth around screen centre
   (worse the higher the zoom). Phase-locking ship and camera to one clock is what keeps flight smooth.
 
-### The front-end shell (splash / pause / settings)
+### The front-end shell (splash / pause / settings / controls / credits)
 
-The game boots to a **splash screen**, not straight into play — three flags on `game` gate it, and the
+The game boots to a **splash screen**, not straight into play — flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), `settingsOpen` (settings modal). `choosingUpgrade` still freezes independently —
-and START goes straight into it: `startGame` calls `openSpec`, so the first thing after the splash is the
-**specialization choice**, held over the frozen just-started world. `resetRun` re-arms it for a fresh run.
+`paused` (pause menu), and the three **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen`.
+Those three are separate flags (each is its own panel) but every gate treats them alike, so they're asked
+about through one leaf helper — **`util.shellModal(game)`** — which main, hud, music and render all use.
+They're mutually exclusive: each fully REPLACES the panel it opened over, so `openX` clears the others
+rather than stacking (a panel peeking out around another's edges looks broken). `choosingUpgrade` still
+freezes independently — and START goes straight into it: `startGame` calls `openSpec`, so the first thing
+after the splash is the **specialization choice**, held over the frozen just-started world. `resetRun`
+re-arms it for a fresh run.
 - **Transitions live in main.js** (it owns the state); **hud.js only routes the clicks** and derives which
   overlay is visible from those flags every frame in `syncMenus` (guarded, so the DOM is touched only when
   a flag flips) — same owner-split as the upgrade modal. `hud.initMenus(handlers)` wires the buttons once.
-- **ESC / P** are one context-sensitive handler (`toggleMenu`): resume↔pause in-game, back out of settings,
-  never dismiss an upgrade card, no-op on the splash or over the death/game-over panels. The on-screen **☰
-  button** (top-right, below the minimap) just calls `pauseGame`. Player input (grab/fling/RMB) is gated
-  behind `menuBlocking()` so nothing reaches the sim through a menu.
+- **ESC / P** are one context-sensitive handler (`toggleMenu`): resume↔pause in-game, back out of whichever
+  shell modal is up, never dismiss an upgrade card, no-op on the splash or over the death/game-over panels.
+  The on-screen **☰ button** (top-right, below the minimap) just calls `pauseGame`. Player input
+  (grab/fling/RMB) is gated behind `menuBlocking()` so nothing reaches the sim through a menu.
+- **The splash backdrop is a LIVE sim, not a still.** `driftSplash` (main.js) flies a slow wide
+  establishing shot — the camera orbits the sun at `SPLASH_ZOOM` — while running the fixed-step
+  **physics only**: `step(game, CFG.DT)` on its own accumulator, never `update()`. update() is the
+  player's loop, and a title screen must not spend a life, bank XP, or queue a message. Two guards keep
+  it consequence-free: the ship is pinned invulnerable (a belt hit can't kill it and charge `prog.lives`
+  for a run that hasn't started), and every `EVENT_MSGS` flag `step` raises is CLEARED each frame instead
+  of drained (else they'd all fire as messages the instant START ran). `replenishWorld` and `updateAliens`
+  stay out on purpose — the survey scan pays `XP_SURVEY` and sets `b.seen`, so idling on the menu would
+  bank progress and burn off the minimap fog before the run began.
+  Two things must ride the physics clock or the backdrop misbehaves, and both were real bugs the moment
+  it went live: **`game.shake` is zeroed every splash frame** — `step` pumps it on any heavy ambient
+  collision system-wide (`physics.addShake`, capped at 30) but its DECAY lives in `update()`, so it
+  saturated and render's ±15px random jitter shook the whole sky forever; and **the camera advances
+  INSIDE the substep loop**, not on `dtReal` — same phase-locking law as the in-game follow cam, because
+  a live backdrop moving in quantized `CFG.DT` chunks is something a `dtReal` camera beats against.
+- **The title console boots, it doesn't just appear.** `.boot` on the splash (added by `hud.playBoot`)
+  runs a ~1.2s power-on: scan sweep → wordmark resolving out of a glyph scramble (`scrambleTitle`, a
+  same-length substitution so the centered title never reflows) → subtitle tracking closing → buttons
+  staggering in. Every entry animation needs `backwards` fill or the stagger does nothing. It replays on
+  every fresh showing of the splash but NOT when a shell modal closes back onto it — the console is
+  already booted, and re-running it there reads as a glitch (`prevSplash` / `prevModal` in `syncMenus`).
+- **CONTROLS is a schematic, not a table** — real key caps in their true WASD geometry plus a drawn mouse,
+  with a readout strip that answers "what does this do?" when you point at one. Each cap carries its own
+  `data-fn` / `data-note` and `hud.initControlMap` delegates hover/focus to mirror them into the readout,
+  so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
+  so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
+  sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
 - **Settings** (Music/SFX volume sliders, Trajectory prediction) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
@@ -99,7 +131,9 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   The volume DEFAULTS are deliberately lopsided (music 0.85, SFX 0.5): the ambient tracks are mastered
   quiet while the CC0 sample packs run hot — at equal gains the SFX buried the soundtrack.
   The settings panel's credit line ("Music: Scott Buckley … Kenney.nl") is REQUIRED by the CC-BY music
-  licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship.
+  licenses — see `assets/audio/CREDITS.md`; don't remove it while those tracks ship. The **CREDITS**
+  panel carries the full attribution (every track title, both licenses); the settings line stays put
+  regardless, because `CREDITS.md` names it specifically.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 
@@ -341,6 +375,13 @@ code "works."
   for *events* (recharge sweep, absorb ripple). **Shield down draws nothing at all** — a naked hull is the
   indicator; the blinking `SHLD` HUD label carries the alarm. (`render.js:609`, `:619`)
 - **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
+- **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
+  vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and
+  the cockpit frame (`--fr`) plus a soft edge wash take that color — violet when calm, corona amber near
+  the sun, ember under threat (danger blends last so it wins a tie). **CHROME ONLY**: hull green, shield
+  blue and lives pink stay semantic so the instruments still read at a glance. The `lowhull` / `heat`
+  alarm classes override `--fr` outright — an alarm always outranks a mood — and mood is all zeros until
+  `game.started`, so the title screen and a calm cruise look exactly as they always did.
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests are the *only* alien source — there is no global wave spawner; a destroyed nest quiets its
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).

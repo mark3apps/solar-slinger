@@ -1,7 +1,7 @@
 import { CFG, PROG, SHIP_HIT_FRAC } from './config.js';
 import { predictPaths } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, lerp, mulberry32 } from './util.js';
+import { TAU, lerp, mulberry32, shellModal } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
@@ -1791,8 +1791,8 @@ function drawAlien(game, al) {
 
 function drawPrediction(game) {
   // The Trajectory Plotter is an upgrade; the throw line also hides while the
-  // sim is frozen behind any overlay (splash, settings, pause, or upgrade card)
-  if (!game.predict || !game.started || game.paused || game.settingsOpen ||
+  // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
+  if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
   const { shipPts, heldPts, shipHit, heldHit } = predictPaths(game);
   const z = game.cam.zoom;
