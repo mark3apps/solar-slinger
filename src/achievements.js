@@ -343,6 +343,12 @@ export const ACHIEVEMENTS = [
     (g, s) => s.sulfurs >= 1),
   A('sulfurPop8', 'combat', PTS.tricky, 'Seismologist', 'Vent a sulfur moon eight times.',
     (g, s) => s.sulfurs >= 8),
+  // Killing a WORLD is already scored by ptype (kIce/kLava); these two name
+  // the new archetypes whose deaths carry their own weight.
+  A('killCrystal', 'combat', PTS.hard, 'Shatterpoint', 'Break a crystal world apart.',
+    (g, s) => s.kCrystal >= 1),
+  A('killTerran', 'combat', PTS.brutal, 'Ecocide', 'Destroy the living world. It was the only one.',
+    (g, s) => s.kTerran >= 1),
 
   // ---- PILOTING ---------------------------------------------------------
   A('speed500', 'flight', PTS.trivial, 'Underway', 'Top 500 speed.',
@@ -393,6 +399,8 @@ export const ACHIEVEMENTS = [
     (g, s) => s.skimT >= 120),
   A('skimBanded', 'flight', PTS.normal, 'Skate Park', "Skim a banded moon's stripes.",
     (g) => !!g.tut.banded),
+  A('skimDune', 'flight', PTS.normal, 'Dune Runner', "Skate a desert world's dune seas.",
+    (g) => !!g.tut.dune),
   A('skimGas', 'flight', PTS.normal, 'Cloud Surfer', "Skim a gas giant's cloud tops.",
     (g) => !!g.tut.skim),
   A('coast120', 'flight', PTS.normal, 'Drifter', 'Coast for two minutes without touching the throttle.',
@@ -461,6 +469,8 @@ export const ACHIEVEMENTS = [
     (g, s) => s.dustT >= 3),
   A('dustHide60', 'peril', PTS.tricky, 'Ghost Protocol', 'Spend a minute hidden inside a dust shroud.',
     (g, s) => s.dustT >= 60),
+  A('shroudHide', 'peril', PTS.normal, 'Into the Weather', "Break a pursuer's lock in a shrouded world's cloud cover.",
+    (g) => !!g.tut.shroudCloak),
   A('shieldBreak', 'peril', PTS.easy, 'Bare Hull', 'Have your shield broken through.',
     (g, s) => s.shieldBreaks >= 1),
   A('shieldBreak25', 'peril', PTS.tricky, 'Overwhelmed', 'Have your shield broken through 25 times.',
@@ -561,6 +571,20 @@ export const ACHIEVEMENTS = [
     (g, s) => s.geysers >= 1),
   A('geyser10', 'explore', PTS.tricky, 'Harvest', 'See ten cryo-geysers erupt.',
     (g, s) => s.geysers >= 10),
+  // ---- planet archetypes: one row per new world's mechanic, plus a deeper
+  // second rung where the mechanic repeats (see the world.js PTYPE comment)
+  A('atmoBurn', 'explore', PTS.normal, 'Falling Star', "Watch a rock burn up in a living world's air.",
+    (g) => !!g.tut.atmo),
+  A('atmoBurn20', 'explore', PTS.tricky, 'Meteor Shower', 'Burn twenty rocks up in a terran atmosphere.',
+    (g, s) => s.atmoBurns >= 20),
+  A('spout', 'explore', PTS.normal, 'Waterspout', 'Catch an ocean world flinging brine ice.',
+    (g, s) => s.spouts >= 1),
+  A('spout10', 'explore', PTS.tricky, 'Tidewater', 'See ten waterspouts erupt.',
+    (g, s) => s.spouts >= 10),
+  A('crystalShard', 'explore', PTS.normal, 'Struck a Chord', 'Ring a shard loose from a crystal world.',
+    (g, s) => s.shards >= 1),
+  A('crystalShard8', 'explore', PTS.tricky, 'Lapidary', 'Chip eight shards off the crystal worlds.',
+    (g, s) => s.shards >= 8),
   A('magma', 'explore', PTS.normal, 'Magma Ejection', 'Watch a lava world hurl molten rock.',
     (g, s) => s.magmas >= 1),
   A('magma10', 'explore', PTS.tricky, 'Foundry', 'Watch ten magma ejections.',
@@ -778,6 +802,10 @@ export const ACHIEVEMENTS = [
   // ---- CLASSIFIED (hidden until earned) ---------------------------------
   A('secretComet', 'secret', PTS.hard, 'Tail Grab', 'You caught Comet Vesper itself.',
     (g, s) => s.cComet >= 1),
+  // Every skateable surface in the system, in one run — four one-shot flags,
+  // no loop (the predicate contract)
+  A('secretGrandTour', 'secret', PTS.brutal, 'Grand Tour', 'You skimmed every skateable surface in the system: bands, dunes, cloud tops and bare rock.',
+    (g, s) => !!g.tut.banded && !!g.tut.dune && !!g.tut.skim && s.scrapes >= 1),
   A('secretVisitor', 'secret', PTS.insane, 'Once in a Lifetime', 'You caught the interstellar visitor before it left forever.',
     (g, s) => s.cVisitor >= 1),
   A('secretCarved', 'secret', PTS.tricky, 'Archaeology', 'You picked up the carved stone. Somebody made that.',
@@ -926,6 +954,8 @@ export function noteKill(game, b, credit, impactor) {
   // planet are the same feat to a player, so this reads ptype and not type.
   if (b.ptype === 'ice') s.kIce = (s.kIce || 0) + 1;
   else if (b.ptype === 'lava') s.kLava = (s.kLava || 0) + 1;
+  else if (b.ptype === 'terran') s.kTerran = (s.kTerran || 0) + 1;
+  else if (b.ptype === 'crystal') s.kCrystal = (s.kCrystal || 0) + 1;
   if (b.type === 'moon') s.kMoon = (s.kMoon || 0) + 1;
   else if (b.type === 'planet') {
     if (b.ptype === 'gas') s.kGas = (s.kGas || 0) + 1;
@@ -1191,6 +1221,8 @@ export const ACH_EVENT_STATS = {
   deadStopWarn: 'deadStops',
   sulfurWarn: 'sulfurs',
   geyserWarn: 'geysers',
+  spoutWarn: 'spouts',      // ocean-world waterspouts (the archetype mechanics)
+  shardWarn: 'shards',      // a crystal world rang a facet loose
   magmaWarn: 'magmas',
   emberWarn: 'emberSeen',
   emberSeededName: 'emberSeeded',

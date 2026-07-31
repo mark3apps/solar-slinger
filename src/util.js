@@ -52,3 +52,55 @@ export function seedFrom(text) {
 
 export function rand(rng, a, b) { return a + rng() * (b - a); }
 export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length) % arr.length]; }
+
+// ---- CRYSTAL WORLD shard geometry ----
+// Shared by render (the drawn silhouette) and physics (the polygon COLLIDER):
+// both read the SAME table or the drawn surface and the felt surface disagree
+// — which is exactly the mismatch this replaced. Unitless (fractions of body
+// radius), seeded off the body id, deliberately irregular: shards claim
+// uneven angular slots, tips sit off-center in their slot, and a few run
+// huge. `verts` is the flattened polar vertex ring crystalRadiusAt walks.
+// Spike reach never exceeds CRYSTAL_REACH (the broad-phase bound).
+// GUARD: world.js floats a crystal world's railed junk ring at 1.45r + 80
+// specifically to clear these spikes — raise CRYSTAL_REACH past ~1.4 and the
+// turning spikes grind the railed probes every rotation (collision → damage
+// → derail, a perpetual on-screen churn). Keep the two in ratio.
+export const CRYSTAL_REACH = 1.32;
+export function crystalShards(id) {
+  const rng = mulberry32(id * 6151 + 7);
+  const n = 9 + Math.floor(rng() * 4);
+  const shares = [];
+  let tot = 0;
+  for (let i = 0; i < n; i++) { const w = 0.5 + rng() * 1.1; shares.push(w); tot += w; }
+  const pts = [];
+  let a = 0;
+  for (let i = 0; i < n; i++) {
+    const w = (shares[i] / tot) * TAU;
+    const big = rng() < 0.3;   // a few dominant shards tower over the rest
+    pts.push({
+      a0: a,
+      tip: a + w * (0.25 + rng() * 0.5),
+      ro: big ? 1.16 + rng() * 0.16 : 1.05 + rng() * 0.08,
+      ri: 1.0 + rng() * 0.05,
+    });
+    a += w;
+  }
+  const verts = [];
+  for (const p of pts) { verts.push({ a: p.a0, r: p.ri }, { a: p.tip, r: p.ro }); }
+  return { pts, verts };
+}
+// Surface reach (fraction of radius) along a LOCAL bearing (body frame —
+// callers subtract b.rot). Polar interpolation of the straight polygon edge
+// between the bracketing vertices, so the queried surface IS the drawn edge.
+export function crystalRadiusAt(shards, ang) {
+  const v = shards.verts;
+  let th = ang % TAU;
+  if (th < 0) th += TAU;
+  let i = 0;
+  while (i < v.length && v[i].a <= th) i++;
+  const hi = v[i % v.length], lo = v[(i + v.length - 1) % v.length];
+  const aa = i === 0 ? lo.a - TAU : lo.a;
+  const ab = i === v.length ? hi.a + TAU : hi.a;
+  const denom = hi.r * Math.sin(ab - th) + lo.r * Math.sin(th - aa);
+  return denom > 1e-9 ? (lo.r * hi.r * Math.sin(ab - aa)) / denom : Math.min(lo.r, hi.r);
+}

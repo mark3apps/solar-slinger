@@ -312,17 +312,26 @@ export function updateAliens(game, dt) {
   // is ever fortified — world.js keeps them out of the fortify pass).
   {
     const s = game.ship;
-    let inHalo = false;
+    let inHalo = false, inShroud = false;
     if (s.alive) {
       for (const b of game.bodies) {
-        if (!b.alive || b.type !== 'moon' || b.moonType !== 'dust') continue;
-        if (Math.hypot(b.x - s.x, b.y - s.y) < b.radius * CFG.DUST_HALO) { inHalo = true; break; }
+        if (!b.alive) continue;
+        const dust = b.type === 'moon' && b.moonType === 'dust';
+        // SHROUD PLANETS conceal the same way — same game.dustCloak flag, so
+        // every AI gate below works unchanged. Fortified shrouds don't cloak:
+        // a fort is an artillery emplacement, and a permanently cloaked siege
+        // would be a free win.
+        const shroud = b.type === 'planet' && b.ptype === 'shroud' && !b.fort;
+        if (!dust && !shroud) continue;
+        const halo = b.radius * (dust ? CFG.DUST_HALO : CFG.SHROUD_HALO);
+        if (Math.hypot(b.x - s.x, b.y - s.y) < halo) { inHalo = true; inShroud = shroud; break; }
       }
     }
     if (inHalo) {
       game.dustCloak = true;
       game.dustCloakT = 1.2;
-      if (!game.tut.dust) game.dustWarn = true;
+      if (inShroud) { if (!game.tut.shroudCloak) game.shroudWarn = true; }
+      else if (!game.tut.dust) game.dustWarn = true;
     } else if (game.dustCloakT > 0) {
       game.dustCloakT -= dt;
       if (game.dustCloakT <= 0) game.dustCloak = false;

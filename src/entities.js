@@ -34,7 +34,7 @@ export class Body {
     this.baseRadius = o.radius;
     this.color = o.color || '#888';
     this.ring = o.ring || false;
-    this.ptype = o.ptype || '';   // planet archetype: lava | rocky | gas | ice
+    this.ptype = o.ptype || '';   // planet archetype: lava | rocky | gas | ice | terran | ocean | desert | shroud | crystal (each carries one mechanic — see world.js PTYPE comment)
     this.parent = o.parent || null;   // moons orbit a planet; used for gravity weighting
     // Axial spin (rad/s). Planets and moons rotate gently — their surface
     // detail turns under the FIXED star-lit terminator (render.js), so a point

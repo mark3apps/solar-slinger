@@ -28,13 +28,35 @@ const ECHOES = {
 };
 
 // Planet archetypes — each type has its own palette and its own look in the
-// renderer (lava glow, rocky continents, gas bands, ice caps) so the kinds
-// read at a glance.
+// renderer (lava glow, rocky continents, gas bands, ice caps, terran seas,
+// dune fields, cloud shrouds, crystal facets) so the kinds read at a glance.
+// Beyond gas/lava's core physics (dive/no-surface, heat immunity + magma
+// lobs), each new archetype carries ONE mechanic, every one built on an
+// existing battle-tested shape: terran = atmosphere burn-up (physics.step,
+// the corona-heat shape), ocean = waterspout ammo (the cryo-geyser branch
+// below), desert = dune-skim XP (the banded-moon rule, collideShipBody),
+// shroud = cloud cloak (the dust-moon flag, ai.js), crystal = shard-polygon
+// COLLIDER (util.crystalShards, shared with render) + facet-shard salvage
+// (physics.damageBody).
 const PTYPE_COLORS = {
-  lava:  ['#e0603a', '#d4502c', '#e8784a'],
-  rocky: ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
-  gas:   ['#d9a95c', '#5a9dc9', '#b05ac9', '#7bd9c9'],
-  ice:   ['#a8cbe8', '#8fd9d0', '#9a9ad9'],
+  lava:    ['#e0603a', '#d4502c', '#e8784a'],
+  rocky:   ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
+  gas:     ['#d9a95c', '#5a9dc9', '#b05ac9', '#7bd9c9'],
+  ice:     ['#a8cbe8', '#8fd9d0', '#9a9ad9'],
+  terran:  ['#4f86c9', '#4a80bd', '#5a8fd0'],
+  ocean:   ['#3a6fc4', '#3568b8', '#4278cf'],
+  desert:  ['#d4a55a', '#c9974e', '#ddb26a'],
+  shroud:  ['#c9bd7a', '#bfae66', '#d2c489'],
+  crystal: ['#a98fd9', '#9a7fd4', '#b89fe4'],
+};
+// Gas giants additionally vary by gasKind (render-only — physics keys on
+// ptype 'gas' alone, so a kind can never fork the sim): amber = classic
+// banded giant, azure = smooth ice giant, violet = exotic swirl. The color
+// pick still burns exactly ONE rng draw, keeping the seeded stream identical.
+const GAS_KIND_COLORS = {
+  amber:  ['#d9a95c', '#d4a24e', '#e0b26a'],
+  azure:  ['#5a9dc9', '#4f93c4', '#7bd9c9'],
+  violet: ['#b05ac9', '#a04fc0', '#c06ad4'],
 };
 const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex'];
 
@@ -138,12 +160,13 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   const ptype = opts.ptype || 'rocky';
   const p = new Body({
     type: 'planet', x, y, vx: v.vx, vy: v.vy, mass, radius,
-    color: pick(rng, PTYPE_COLORS[ptype]),
+    color: pick(rng, opts.gasKind ? GAS_KIND_COLORS[opts.gasKind] : PTYPE_COLORS[ptype]),
     name: opts.name || pick(rng, PLANET_NAMES),
     ring: opts.ring || false,
     ptype,
     parent: star,
   });
+  if (opts.gasKind) p.gasKind = opts.gasKind;
   bodies.push(p);
   railBody(p, star);
 
@@ -421,8 +444,14 @@ export function generateWorld(game, seed = 20260721) {
   });
   bodies.push(sun);
 
-  // Inner system is scorched lava worlds, the middle is rocky with huge
-  // ringed gas giants, and the far reaches are ice. Top-end planet radius 520.
+  // Inner system is scorched lava worlds, then a warm world-sea, the terran
+  // world, a fortified desert, huge ringed gas giants of three kinds, a
+  // crystal binary and a cloud-shrouded ringed world in the middle, and ice
+  // in the far reaches. Top-end planet radius 520.
+  // NOTE: the new archetypes live on what were ROCKY slots, with r/mass/
+  // radius/moons untouched — only the type/palette changed, so the seeded
+  // rng stream, positions, and the 17/45 balance baseline are all identical
+  // to the four-type sky.
   // Each planet is an ECOSYSTEM: stations, nests, trojans, ring fields, junk
   // satellites, and type hazards all hang off these anchor worlds.
   // Spread wide: plenty of open flying and unoccupied worlds between the
@@ -431,17 +460,22 @@ export function generateWorld(game, seed = 20260721) {
   const layout = [
     { r: 3600,  mass: 2e4,   radius: 60,  ptype: 'lava' },
     { r: 5000,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
-    { r: 6600,  mass: 6e4,   radius: 105, ptype: 'rocky', moons: 1 },
+    // Ocean at 6600, desert at 13000 — NOT the other way round: the Bastion
+    // fortify pass always takes the 13000 slot, waterspouts are gated on
+    // !fort (below), and an ocean world there would ship with its one
+    // mechanic suppressed on every seed. Dune skimming is not fort-gated,
+    // so the desert world under siege keeps its mechanic.
+    { r: 6600,  mass: 6e4,   radius: 105, ptype: 'ocean', moons: 1 },
     { r: 8000,  belt: true, spread: 450, count: 60 },
     { r: 9500,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3, nest: true },
-    { r: 11200, mass: 2e5,   radius: 235, ptype: 'rocky', moons: 4, station: true },
-    { r: 13000, mass: 1.3e5, radius: 170, ptype: 'rocky', moons: 2 },
-    { r: 14800, mass: 5e5,   radius: 430, ptype: 'gas', ring: true, moons: 7 },
-    { r: 16800, mass: 2.2e5, radius: 220, ptype: 'rocky', binary: true },
+    { r: 11200, mass: 2e5,   radius: 235, ptype: 'terran', moons: 4, station: true },
+    { r: 13000, mass: 1.3e5, radius: 170, ptype: 'desert', moons: 2 },
+    { r: 14800, mass: 5e5,   radius: 430, ptype: 'gas', gasKind: 'violet', ring: true, moons: 7 },
+    { r: 16800, mass: 2.2e5, radius: 220, ptype: 'crystal', binary: true },
     { r: 18400, belt: true, spread: 500, count: 50 },
-    { r: 20200, mass: 3.5e5, radius: 340, ptype: 'gas', ring: true, moons: 6, station: true },
-    { r: 22000, mass: 1.8e5, radius: 205, ptype: 'rocky', ring: true, moons: 3 },
-    { r: 24000, mass: 6.5e5, radius: 520, ptype: 'gas', ring: true, moons: 8 },
+    { r: 20200, mass: 3.5e5, radius: 340, ptype: 'gas', gasKind: 'azure', ring: true, moons: 6, station: true },
+    { r: 22000, mass: 1.8e5, radius: 205, ptype: 'shroud', ring: true, moons: 3 },
+    { r: 24000, mass: 6.5e5, radius: 520, ptype: 'gas', gasKind: 'amber', ring: true, moons: 8 },
     { r: 26500, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3, nest: true },
     { r: 28500, belt: true, spread: 600, count: 45 },
     { r: 30200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2, station: true },
@@ -546,13 +580,21 @@ export function generateWorld(game, seed = 20260721) {
     }
   }
 
-  // SATELLITE JUNK: rocky worlds are littered with dead probes — triple scrap
+  // SATELLITE JUNK: settled solid worlds are littered with dead probes —
+  // triple scrap. Every solid archetype but the hostile extremes (lava/ice)
+  // qualifies; this set covers exactly the planets that were ROCKY before the
+  // archetype split, so the junk economy (and the rng draw order) is unchanged.
+  const JUNK_WORLDS = new Set(['rocky', 'terran', 'desert', 'ocean', 'shroud', 'crystal']);
   for (const p of planets) {
-    if (p.ptype !== 'rocky') continue;
+    if (!JUNK_WORLDS.has(p.ptype)) continue;
     const n = 3 + Math.floor(rng() * 2);
     for (let i = 0; i < n; i++) {
       const a = rng() * TAU;
-      const jr = p.radius + rand(rng, 80, 300);
+      // Crystal worlds: the junk ring floats above the SPIKE reach (1.32r,
+      // util.CRYSTAL_REACH), not the mean disc — at radius + 80 the old floor
+      // left ~5u between a railed probe and the tallest turning spike, one
+      // tuning nudge away from a perpetual grind-derail churn.
+      const jr = p.radius * (p.ptype === 'crystal' ? 1.45 : 1) + rand(rng, 80, 300);
       const x = p.x + Math.cos(a) * jr, y = p.y + Math.sin(a) * jr;
       const v = orbitVel(p, x, y, 1);
       const j = spawnAsteroid(bodies, x, y, v.vx, v.vy, rand(rng, 60, 350));
@@ -1260,6 +1302,7 @@ export function replenishWorld(game, dt) {
     if (p.auroraT > 0) p.auroraT -= dt;
     if (p.eclipseT > 0) p.eclipseT -= dt;
     if (p.sulfurCd > 0) p.sulfurCd -= dt;
+    if (p.shardCd > 0) p.shardCd -= dt;   // crystal-world facet chip (physics.damageBody)
     const iceMoon = p.type === 'moon' && p.moonType === 'ice';
     const sulfurVenting = p.type === 'moon' && p.moonType === 'sulfur' && p.sulfurPops > 0;
     if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon && !sulfurVenting)) continue;
@@ -1320,6 +1363,32 @@ export function replenishWorld(game, dt) {
           c.color = '#bfe3f2'; c.ice = true; c.iceOf = p;
           railBody(c, p);
           game.geyserWarn = true;
+        }
+      }
+    } else if (p.ptype === 'ocean' && !p.fort) {
+      // WATERSPOUTS: the world-sea flings condensed brine ice into low orbit —
+      // the cryo-geyser loop with a sea-green cast. Same caps (iceOf), same
+      // rails, so the pellet economy can never flood the belt. NOT while
+      // fortified (the shroud-cloak rule): the spouts only fire with the
+      // player inside 4200 — i.e. exactly during a siege — and a Bastion
+      // handing its attacker free railed shield ammo undercuts the siege.
+      p.hazT = (p.hazT ?? 6) - dt;
+      if (p.hazT <= 0) {
+        p.hazT = 13 + rng() * 10;
+        let n = 0;
+        for (const b of game.bodies) {
+          if (b.alive && b.iceOf === p && !b.heldBy &&
+              Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 600) n++;
+        }
+        if (n < 5) {
+          const a = rng() * TAU;
+          const cr = p.radius + 110 + rng() * 220;
+          const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
+          const v = orbitVel(p, x, y, 1);
+          const c = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, 110 + rng() * 280);
+          c.color = '#b9e9d9'; c.ice = true; c.iceOf = p;
+          railBody(c, p);
+          game.spoutWarn = true;
         }
       }
     } else if (iceMoon) {

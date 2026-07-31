@@ -312,7 +312,7 @@ re-arms it for a fresh run.
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
   other player input.
-- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~370 rows in
+- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~380 rows in
   [achievements.js](src/achievements.js) grant **points** (`prog.ach.score`) — never XP, never ranks,
   never picks — so the balance of the XP curve is untouched by them. **Run-scoped on purpose:** the
   score answers "how was THIS run", so the ledger lives on `prog` and dies with it; nothing is
@@ -328,7 +328,7 @@ re-arms it for a fresh run.
     splice out, so the sweep shrinks as the run goes. **No loops, no allocation inside a predicate** —
     anything that needs scanning is computed once into the shared context `c` (the ONE loop the
     sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it at seven).
-    Measured at 0.02 ms per sweep across all 370 rows — 0.1% of a 60 fps frame.
+    Measured at 0.02 ms per sweep across all 380 rows — 0.1% of a 60 fps frame.
   - **Adding one is a catalog row.** Only reach for a new `bump` if nothing already records the event.
     Several discovery rows ride the existing `EVENT_MSGS` one-shot flags through `ACH_EVENT_STATS`
     (main's drain feeds them) rather than instrumenting world.js a second time; the heat/oort/gas/skim/
@@ -676,6 +676,38 @@ code "works."
     world rng in `world.seedGlowPockets`; collected on dtReal in `glow.updateGlow` (a proximity test like
     the life pods, NOT the fixed step); drawn additively in `drawGlow` (a green region-halo + motes,
     healing-green palette). Never touches bodies/rails/velocities — purely additive to the sim.
+- **Planet archetypes each carry ONE mechanic, every one built on an existing battle-tested shape**
+  (nine ptypes: lava/rocky/gas/ice + terran/ocean/desert/shroud/crystal; the world.js PTYPE comment
+  is the source of truth; gas giants also carry a render-only `gasKind` — amber/azure/violet looks,
+  physics keys on ptype `'gas'` alone):
+  - **TERRAN — atmosphere burn-up** (`CFG.ATMO_*`, physics.step, the corona-heat shape): loose
+    free-flying asteroids under `ATMO_MAX_MASS` burn inside 1.5x radius — railed bodies (the world's
+    own junk satellites live in the shell; damage would derail them), held rocks, and
+    premium/quest objects (core/cache/pod/carved/visitor/wreck) are exempt, the SHIP never burns,
+    and heavyweights punch through BY DESIGN: bombarding a terran world takes a real rock.
+    Render streak rides `b.reentryT/reentryAng` (stamped in physics, decays in the integrate loop).
+  - **OCEAN — waterspouts** (world.js hazard loop): the cryo-geyser branch with a sea-green cast —
+    railed `iceOf` pellets, same caps, so it can never flood the belt.
+  - **DESERT — dune skimming** pays `PROG.XP_SKIM_DUNE` (2x); hull cost UNCHANGED — the banded-moon
+    law (bonus XP never discounts the grind).
+  - **SHROUD — cloud cloak**: feeds the SAME `game.dustCloak` flag as dust moons (ai.js), halo
+    `CFG.SHROUD_HALO` (1.7x; render haze drawn wider at 2.1x — no hard mechanic edge). Fortified
+    shrouds don't cloak (a permanently cloaked siege is a free win).
+  - **CRYSTAL — the one NON-CIRCULAR collider in the sim.** `util.crystalShards(id)` is the single
+    source of the jagged shard polygon for BOTH render (traceCrystal) and physics — keep them on one
+    table or the drawn surface and the felt surface diverge. Physics: `surfRadius` radial narrow
+    phase in collideBodies/collideShipBody/collideAlienBody, `b._bp` broad-phase reach (the sweep
+    must see the tallest spike, 1.32r max = `util.CRYSTAL_REACH`), predictPaths mirrors both hit
+    tests, and ALL surface spawn offsets (chunk spray, shards) go through `surfReach` so nothing is
+    born inside a spike (invariant 7's feedback loop). A hard player smash also rings loose a `core`
+    shard (`damageBody`, floor dmg > 3 — planet mass dominance keeps throws under the moon-tuned 8).
+    Render: lit sunward limb + per-shard sheens keyed to sun alignment; the hitbox IS the drawn shape.
+  - **Each archetype carries achievements too** (11 rows + a secret): the discovery rows ride the
+    existing one-shot `tut` flags (`atmo` / `dune` / `shroudCloak`) or a counter fed from
+    `ACH_EVENT_STATS` (`spoutWarn`→`spouts`, `shardWarn`→`shards`) rather than instrumenting the sim
+    twice; only the terran burn needed a real `bump` (`atmoBurns`), because its warn flag is
+    tut-gated to one message and cannot count. `noteKill` classifies terran/crystal deaths
+    (`kTerran` / `kCrystal`) alongside the existing ice/lava/gas buckets.
 
 ### Canvas discipline
 
