@@ -47,6 +47,7 @@
   <canvas id="radar" width="200" height="200"></canvas>
   <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
   <div id="speedBadge" class="hidden"></div>
+  <div id="perfBadge" class="hidden"></div>
   <div id="msg" class="hidden"></div>
 </div>
 
@@ -118,6 +119,24 @@
       <span class="setname">Trajectory prediction</span>
       <button class="toggle" id="setPredict" role="switch" aria-checked="true"><span class="knob"></span></button>
     </div>
+    <div class="setrow">
+      <span class="setname">FPS counter</span>
+      <button class="toggle" id="setFps" role="switch" aria-checked="false"><span class="knob"></span></button>
+    </div>
+    <div class="setrow">
+      <span class="setname">Performance metrics</span>
+      <button class="toggle" id="setPerf" role="switch" aria-checked="false"><span class="knob"></span></button>
+    </div>
+    <!-- WORLD SEED: blank rolls a new system every run. Typing one and leaving
+         the field re-rolls the live title backdrop, so the world is visible
+         before START; mid-run it waits for the next run. -->
+    <div class="setrow">
+      <span class="setname">World seed</span>
+      <input type="text" class="seedin" id="setSeed" placeholder="random"
+             spellcheck="false" autocomplete="off" maxlength="24"
+             aria-label="World seed — leave blank for a new world every run">
+    </div>
+    <button class="setnote" id="seedNote" type="button"></button>
   </div>
   <div class="menucol">
     <button class="menubtn primary" id="btnSettingsBack">BACK</button>
@@ -199,6 +218,8 @@
       <div class="creddet">opengameart.org (CC0)</div>
     </div>
   </div>
+  <!-- Build version — filled in from package.json once the fetch lands -->
+  <p class="small" id="credVersion">Solar Slinger</p>
   <div class="menucol">
     <button class="menubtn primary" id="btnCreditsBack">BACK</button>
   </div>

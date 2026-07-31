@@ -29,6 +29,7 @@
     "files": [
       "electron/**/*",
       "index.html",
+      "package.json",
       "style.css",
       "src/**/*",
       "assets/**/*",
