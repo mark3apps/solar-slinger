@@ -1,18 +1,70 @@
 name: Build & Release
 
+# Releases are a deliberate act, not a side effect of merging: nothing runs on
+# push. Trigger this from the Actions tab (or `gh workflow run release.yml`)
+# when main is in a good place, and pick the semver bump.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      dry_run:
+        description: Build and generate notes, but publish nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
-  group: release-main
+  group: release
   cancel-in-progress: false
 
 jobs:
+  # Version + notes are computed once, up front, so all three build runners and
+  # the publish step agree on the same number.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.notes.outputs.version }}
+      since: ${{ steps.notes.outputs.since }}
+    steps:
+      # The version comes from the newest v* tag, so the tags must actually be
+      # fetched — a shallow checkout has none and every release would be 0.0.1.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate release notes
+        id: notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          json=$(node scripts/changelog.mjs --bump "${{ inputs.bump }}" --json --notes-out release-notes.md)
+          echo "$json"
+          echo "version=$(jq -r .version <<<"$json")" >> "$GITHUB_OUTPUT"
+          echo "since=$(jq -r '.since // ""' <<<"$json")" >> "$GITHUB_OUTPUT"
+
+      - name: Preview notes in the job summary
+        run: cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -41,14 +93,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y rpm
 
-      # Patch version is stamped from the CI run number so every release is
-      # unique and monotonic (v0.1.41, v0.1.42, ...). Bump major/minor by
-      # editing package.json; its patch digit is ignored on CI.
+      # Stamped locally for this build only — the committed bump happens in
+      # `publish`, after every runner has proved the build is green.
       - name: Stamp release version
         shell: bash
-        run: |
-          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
-          npm pkg set version="${base}.${{ github.run_number }}"
+        run: npm pkg set version="${{ needs.prepare.outputs.version }}"
 
       - name: Build installers
         run: npx electron-builder ${{ matrix.args }} --publish never
@@ -63,48 +112,54 @@ jobs:
             dist/*.rpm
           if-no-files-found: error
 
-  release:
-    needs: build
+  # Everything with a side effect lives here, gated on a green build, so a
+  # broken build can never leave a version commit or a dangling tag on main.
+  publish:
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Compute release version
-        id: ver
-        run: |
-          base=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
-          echo "version=${base}.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Record the release in the repo
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          npm pkg set version="${{ needs.prepare.outputs.version }}"
+          # --since is pinned to what `prepare` resolved so the committed entry
+          # can't drift from the notes already attached to the release.
+          node scripts/changelog.mjs \
+            --bump "${{ inputs.bump }}" \
+            --since "${{ needs.prepare.outputs.since }}" \
+            --write-changelog --json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json CHANGELOG.md
+          git commit -m "Release v${{ needs.prepare.outputs.version }}"
+          # Annotated on purpose: --follow-tags refuses to push lightweight tags,
+          # so a plain `git tag` here would leave the release tag local-only.
+          # The tag points at the bump commit; the installers were built one
+          # commit earlier and differ only by the version the build stamps in.
+          git tag -a "v${{ needs.prepare.outputs.version }}" \
+            -m "Solar Slinger v${{ needs.prepare.outputs.version }}"
+          git push origin main --follow-tags
+
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: Solar Slinger v${{ steps.ver.outputs.version }}
-          body: |
-            Automated build of `${{ github.sha }}`.
-
-            **macOS:** the app is ad-hoc signed but not notarized, so Gatekeeper will
-            block the first launch. Either clear quarantine before opening:
-            `xattr -dr com.apple.quarantine "/Applications/Solar Slinger.app"`
-            or, after the blocked launch attempt, allow it under
-            System Settings → Privacy & Security → "Open Anyway".
-            (Right-click → Open no longer bypasses Gatekeeper on modern macOS.)
-
-            **Windows:** SmartScreen may warn because the installer is unsigned —
-            choose "More info" → "Run anyway".
-
-            **Debian / Ubuntu (x86_64):** install with
-            `sudo apt install ./solar-slinger_*_amd64.deb`
-
-            **Raspberry Pi / Linux arm64:** requires a 64-bit OS (Raspberry Pi OS
-            64-bit on a Pi 3 or later). Install with:
-            `sudo apt install ./solar-slinger_*_arm64.deb`
-
-            **RHEL / Rocky / Fedora:** install with
-            `sudo dnf install ./solar-slinger-*.x86_64.rpm`
-            (or the `.aarch64.rpm` on arm64)
-          files: artifacts/*
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: Solar Slinger v${{ needs.prepare.outputs.version }}
+          body_path: artifacts/release-notes.md
+          files: artifacts/*.dmg,artifacts/*.exe,artifacts/*.deb,artifacts/*.rpm

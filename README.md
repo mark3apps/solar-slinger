@@ -57,7 +57,15 @@ npm start          # run the desktop app locally
 npm run dist       # build installers into dist/
 ```
 
-Every push to `main` triggers the **Build & Release** workflow, which builds a macOS DMG (arm64 + Intel), a Windows NSIS installer, and Linux `.deb` + `.rpm` packages (x64 + arm64), attached to a GitHub release tagged `v<major>.<minor>.<run number>`. Builds are unsigned — see the release notes on each release for the macOS Gatekeeper / Windows SmartScreen steps.
+Releases are **manual**. Nothing runs on a push to `main`; when the tree is in a good place, run the **Build & Release** workflow from the Actions tab (or `gh workflow run release.yml -f bump=minor`) and choose a `patch` / `minor` / `major` bump. It builds a macOS DMG (arm64 + Intel), a Windows NSIS installer, and Linux `.deb` + `.rpm` packages (x64 + arm64), then tags `v<version>`, commits the version bump and a new [CHANGELOG.md](CHANGELOG.md) section, and publishes a release. `dry_run: true` does the whole build and prints the notes without publishing anything.
+
+Release notes are generated from the pull requests merged since the previous tag — one bullet per PR with a summary line lifted from its description. Preview them at any time without releasing:
+
+```sh
+GH_TOKEN=$(gh auth token) npm run changelog
+```
+
+Builds are unsigned — every release carries the macOS Gatekeeper / Windows SmartScreen steps in its notes.
 
 The Electron shell ([electron/main.js](electron/main.js)) serves the exact same static files over an internal `app://` scheme — the game code has no idea it's in Electron, and browser development is unchanged.
 
