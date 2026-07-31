@@ -604,6 +604,22 @@ export const SPECS = [
 // else buys in later. `channel` is the stat bucket it feeds — shipStats sums
 // each owned ability's rank into its channel and derives everything from those
 // totals, so several abilities can stack the same channel.
+// An optional `needs: '<channel>'` is a HARD PREREQUISITE, not a soft floor: the
+// ability is not OFFERED at all until you own something feeding that channel
+// (prereqMet). It exists for rows that are literally inert on their own —
+// Scattergun/Rockwall/Aegis/Recovery Tether all act on ORBIT rocks, and with no
+// orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
+// never a rock for them to act on; Impact Warning marks a spot on the FORECAST
+// PATH, and shipStats gates it behind the plotter outright (`hasCrashWarn =
+// collisionC > 0 && hasPredict`). Offering one of those was a dead card: it
+// spent the pick, its bar started climbing, and nothing whatsoever happened in
+// the world. It names a CHANNEL, not an id, so it resolves across specs without
+// a per-spec table (the orbit channel is BRAWLER's War Rack and HAULER's
+// Orbital Sling / Expanded Bay alike) — the same reason shipStats reads
+// channels. Keep it for genuinely-inert rows ONLY: the second-track duplicates
+// (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter,
+// Juggernaut) READ like extensions but are fully functional standing alone, and
+// gating them would just thin the early pool for flavour.
 // NAMING LAW (user design rule): two abilities that DO the same thing carry the
 // SAME name/icon/desc even across specs (Heavy Winch is the catch starter in
 // both BRAWLER and HAULER; Reinforced Hull is the hull track in both — ids stay
@@ -625,7 +641,7 @@ export const ABILITIES = [
   // 🥊 BRAWLER
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
   { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
-  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
+  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, needs: 'orbit', weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A heavy regenerating shield — FRONT ARC ONLY. Your tail stays bare.' },
@@ -648,11 +664,11 @@ export const ABILITIES = [
   { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 4, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
   { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
   { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
-  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
+  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
   { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Haul planet-scale masses.' },
-  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
   { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 3, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
-  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
+  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
   { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 1, minTier: 3, weight: 0.9, desc: 'Hold and throw two rocks at once.' },
 
   // 🔭 SCOUT
@@ -663,7 +679,7 @@ export const ABILITIES = [
   { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'Unlock reverse thrust (S).' },
   { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'World-pull chevrons at your ship.' },
   { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
-  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
+  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, also: { brawler: 2, hauler: 2 }, needs: 'plotter', weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
   { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
   { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
   { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
@@ -848,15 +864,29 @@ export function tierFloorFor(a, spec) {
   if (a.also && a.also[spec] != null) return a.also[spec];
   return Infinity;
 }
+// PREREQUISITES: a row carrying `needs` is only offerable once you OWN an
+// ability feeding that channel (see the `needs` note on the catalog) — the
+// rows that do nothing at all on their own. It's a plain scan of the owned
+// upgrades rather than a shipStats call: this runs inside the card draw, and
+// shipStats derives the whole stat block. Rank 0 doesn't count as owned
+// anywhere else, so it doesn't here either.
+export function prereqMet(a, prog) {
+  if (!a.needs) return true;
+  const u = prog.upgrades || {};
+  for (const x of ABILITIES) if (x.channel === a.needs && u[x.id] > 0) return true;
+  return false;
+}
 // UPGRADE CARDS: `n` random NEW abilities from your offer pool (your spec's own
-// rows + shared `also` rows) that you don't own yet and whose tier floor has
-// been reached. Weighted, no-replacement. This is the ONLY card draw — a pick
+// rows + shared `also` rows) that you don't own yet, whose tier floor has been
+// reached, and whose prerequisite channel (if any) you already own. Weighted,
+// no-replacement. This is the ONLY card draw — a pick
 // is always "learn something new" now, at the milestone and between them alike;
 // deepening what you own is the automatic track (growAbilities), never a card.
 // (There used to be a second draw, rankChoices, for the between-tier picks.)
 export function tierChoices(prog, n = 2) {
   const bag = ABILITIES
-    .filter((a) => !(prog.upgrades[a.id] > 0) && prog.tier >= tierFloorFor(a, prog.spec))
+    .filter((a) => !(prog.upgrades[a.id] > 0) && prog.tier >= tierFloorFor(a, prog.spec)
+      && prereqMet(a, prog))
     .map((a) => ({ u: a, w: a.weight || 1 }));
   const chosen = [];
   while (chosen.length < n && bag.length) chosen.push(drawWeighted(bag));

@@ -1,5 +1,5 @@
 import { PROG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
-  abilityById, abilityRankCost } from './config.js';
+  abilityById, abilityRankCost, tierChoices, tierFloorFor } from './config.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
@@ -227,6 +227,66 @@ export function runMechTest(game, hooks, opts = {}) {
       // as one event and the stagger has failed.
       expect(worst >= 40, `kit rank-ups only ${worst} XP apart — ${where}`);
       return `all ladders rise; tightest kit gap ${worst} XP (${where})`;
+    });
+
+    // T5d — DESIGN LAW: an ability that is INERT without another is never
+    // OFFERED without it (`needs` -> config.prereqMet, filtered in
+    // tierChoices). Three properties, and the third is the one that bites: a
+    // gate that no reachable card can open turns a dead card into a dead
+    // BRANCH, which is strictly worse. Pure catalog + draw — no sim.
+    t('prerequisite abilities gate their dependents', () => {
+      const draw = (spec, tier, upgrades, n = 3000) => {
+        const prog = { tier, spec, upgrades };
+        const seen = new Set();
+        for (let i = 0; i < n; i++) for (const a of tierChoices(prog, 2)) seen.add(a.id);
+        return seen;
+      };
+      const gated = ABILITIES.filter((a) => a.needs);
+      expect(gated.length > 0, 'no ability carries a `needs` — the gate is unwired');
+      // 1. With an EMPTY build, nothing gated can be drawn, at any tier.
+      for (const s of SPECS) {
+        for (let tier = 0; tier <= 5; tier++) {
+          const seen = draw(s.id, tier, {}, 800);
+          for (const a of gated) {
+            expect(!seen.has(a.id), `${s.id} tier ${tier} was offered ${a.id} with no ${a.needs}`);
+          }
+        }
+      }
+      // 2. Owning ANY provider of the needed channel opens the gate — the
+      //    prereq names a channel, not an id, so any feeder must satisfy it.
+      let opened = 0;
+      for (const a of gated) {
+        for (const p of ABILITIES.filter((x) => x.channel === a.needs)) {
+          for (const s of SPECS) {
+            const floor = Math.max(tierFloorFor(a, s.id), tierFloorFor(p, s.id));
+            if (!isFinite(floor)) continue;   // this spec can be offered neither
+            const seen = draw(s.id, 5, { [p.id]: 1 }, 2500);
+            expect(seen.has(a.id), `${s.id} owns ${p.id} (${a.needs}) but ${a.id} stayed locked`);
+            opened++;
+          }
+        }
+      }
+      // 3. NO DEAD BRANCHES: from each spec's real starting kit, greedily
+      //    taking every card on offer must eventually reach every ability that
+      //    spec can be offered at all. A gate whose provider is itself gated
+      //    (or floored out of reach) would strand its dependent here.
+      const stranded = [];
+      for (const s of SPECS) {
+        const upgrades = {};
+        for (const id of s.start) upgrades[id] = 1;
+        const prog = { tier: 5, spec: s.id, upgrades };
+        for (let i = 0; i < 200; i++) {
+          const c = tierChoices(prog, 2);
+          if (!c.length) break;
+          for (const a of c) upgrades[a.id] = 1;
+        }
+        for (const a of ABILITIES) {
+          if (!isFinite(tierFloorFor(a, s.id))) continue;
+          if (!(upgrades[a.id] > 0)) stranded.push(`${s.id}:${a.id}`);
+        }
+      }
+      expect(!stranded.length, `unreachable from the starting kit: ${stranded.join(', ')}`);
+      return `${gated.length} gated rows locked on an empty build, ${opened} provider/spec pairs unlock them, 0 stranded`;
     });
 
     // T6 — shield ability: rank>0 unlocks a pool that absorbs BEFORE the hull.
