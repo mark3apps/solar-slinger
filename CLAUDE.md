@@ -312,7 +312,7 @@ re-arms it for a fresh run.
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
   other player input.
-- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~370 rows in
+- **ACHIEVEMENTS are a THIRD track, and they cost the other two nothing.** ~380 rows in
   [achievements.js](src/achievements.js) grant **points** (`prog.ach.score`) — never XP, never ranks,
   never picks — so the balance of the XP curve is untouched by them. **Run-scoped on purpose:** the
   score answers "how was THIS run", so the ledger lives on `prog` and dies with it; nothing is
@@ -328,7 +328,7 @@ re-arms it for a fresh run.
     splice out, so the sweep shrinks as the run goes. **No loops, no allocation inside a predicate** —
     anything that needs scanning is computed once into the shared context `c` (the ONE loop the
     sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it at seven).
-    Measured at 0.02 ms per sweep across all 370 rows — 0.1% of a 60 fps frame.
+    Measured at 0.02 ms per sweep across all 380 rows — 0.1% of a 60 fps frame.
   - **Adding one is a catalog row.** Only reach for a new `bump` if nothing already records the event.
     Several discovery rows ride the existing `EVENT_MSGS` one-shot flags through `ACH_EVENT_STATS`
     (main's drain feeds them) rather than instrumenting world.js a second time; the heat/oort/gas/skim/
@@ -702,6 +702,12 @@ code "works."
     born inside a spike (invariant 7's feedback loop). A hard player smash also rings loose a `core`
     shard (`damageBody`, floor dmg > 3 — planet mass dominance keeps throws under the moon-tuned 8).
     Render: lit sunward limb + per-shard sheens keyed to sun alignment; the hitbox IS the drawn shape.
+  - **Each archetype carries achievements too** (11 rows + a secret): the discovery rows ride the
+    existing one-shot `tut` flags (`atmo` / `dune` / `shroudCloak`) or a counter fed from
+    `ACH_EVENT_STATS` (`spoutWarn`→`spouts`, `shardWarn`→`shards`) rather than instrumenting the sim
+    twice; only the terran burn needed a real `bump` (`atmoBurns`), because its warn flag is
+    tut-gated to one message and cannot count. `noteKill` classifies terran/crystal deaths
+    (`kTerran` / `kCrystal`) alongside the existing ice/lava/gas buckets.
 
 ### Canvas discipline
 

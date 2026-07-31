@@ -2041,8 +2041,13 @@ export function step(game, dt) {
           if (b.alive && Math.random() < dt * 8) {
             addParticles(game, b.x, b.y, b.vx * 0.25, b.vy * 0.25, 1, '#ffb35c', 70, 0.6, 2.5);
           }
-          if (!b.alive && !game.tut.atmo && s.alive &&
-              Math.hypot(b.x - s.x, b.y - s.y) < 3200) game.atmoWarn = true;
+          if (!b.alive) {
+            // The burn-up itself is the counter (the atmoWarn flag is
+            // tut-gated to one message, so it can't feed a "twenty of them" row)
+            bump(game, 'atmoBurns');
+            if (!game.tut.atmo && s.alive &&
+                Math.hypot(b.x - s.x, b.y - s.y) < 3200) game.atmoWarn = true;
+          }
           break;
         }
       }
