@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp } from './config.js';
+import { CFG, PROG, addXp, maxLives } from './config.js';
 import { Body, railBody, railEllipse } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
@@ -17,6 +17,14 @@ const ECHOES = {
   herald: 'RECOVERED LOG — "…final entry: we followed the ping past the ice line. It was already old when this sun was young."',
   carved: 'ANALYSIS — these facets are machined, not tumbled. Whoever cut this stone counted in sixes.',
   visitor: 'ANALYSIS — the lattice is annealed by aeons of starlight. This object is older than the sun.',
+  // Expedition layer — payoff lines for the delivery quests + rescues.
+  heraldWake: 'SIGNAL — "…wreck received. Our crew is home. The Herald resumes its watch — this reach of sky is yours to read."',
+  wanderer: 'ANALYSIS — a cold dwarf, older than every chart. The relay was right: the sky was never finished being counted.',
+  rescue: [
+    'RESCUED PILOT — "Three days in that can. I had started naming the asteroids. Thank you."',
+    'RESCUED PILOT — "I watched your beam light up through the pod glass. Prettiest thing I ever saw."',
+    'RESCUED PILOT — "The nests took my ship past the ice line. Do not fly where I flew."',
+  ],
 };
 
 // Planet archetypes — each type has its own palette and its own look in the
@@ -220,10 +228,94 @@ function spawnShepherd(game, host, th) {
     hp: 120,
   });
   sh.shepherd = true;
+  sh.chartKey = 'shepherd';   // set HERE so a respawned shepherd stays chartable
   game.bodies.push(sh);
   railBody(sh, host);
   game.shepherd = sh;
   return sh;
+}
+
+// THE TINKER BARGE's rotating shopping list. Matching is by the same flags
+// the rest of the sim already uses; the junk want EXCLUDES wrecks, the carved
+// stone, and the interstellar visitor — they're junk-flagged for scrap value,
+// and the barge must never eat a landmark.
+const TINKER_WANTS = [
+  { id: 'crystal', label: 'a mineral core crystal', match: (b) => !!b.core },
+  { id: 'ice',     label: 'an ice chunk',           match: (b) => !!b.ice },
+  { id: 'wreck',   label: 'graveyard wreck salvage', match: (b) => !!b.wreck },
+  { id: 'junk',    label: 'a dead satellite',       match: (b) => !!b.junk && !b.wreck && !b.carved && !b.visitor },
+];
+
+// Does this body satisfy (or crackably precede) a want? Cored rocks count
+// toward crystal — the shell just needs one smash, so a cored rock in the
+// neighborhood makes the crystal want fair to ask.
+function wantSupply(w, b) {
+  if (w.id === 'crystal') return !!(b.core || b.cored);
+  return !!w.match(b);
+}
+
+// Census of what's actually obtainable near the barge right now.
+function tinkerWantCounts(game) {
+  const counts = { crystal: 0, ice: 0, wreck: 0, junk: 0 };
+  const tk = game.tinker;
+  if (!tk || !tk.alive) return counts;
+  for (const b of game.bodies) {
+    if (!b.alive || b === tk) continue;
+    if (Math.hypot(b.x - tk.x, b.y - tk.y) > CFG.TINKER_WANT_R) continue;
+    for (const w of TINKER_WANTS) if (wantSupply(w, b)) counts[w.id]++;
+  }
+  return counts;
+}
+
+// The barge only asks for things CLOSE BY (user design rule): offer only
+// wants with a couple of matches in the neighborhood census; if nothing is
+// plentiful, ask for whatever there's most of. The graveyard-wreck want thus
+// only ever comes up when wrecks have actually been hauled into the region.
+function pickTinkerWant(game, not) {
+  const counts = tinkerWantCounts(game);
+  const bag = TINKER_WANTS.filter((w) => w !== not && counts[w.id] >= 2);
+  if (bag.length) return bag[Math.floor(Math.random() * bag.length)];
+  // Nothing plentiful: ask for whatever there's most of — but only a want
+  // with NONZERO supply (bc starts at 0), never a bare impossible ask.
+  let best = null, bc = 0;
+  for (const w of TINKER_WANTS) {
+    if (w === not) continue;
+    if (counts[w.id] > bc) { bc = counts[w.id]; best = w; }
+  }
+  return best || TINKER_WANTS[1];   // truly nothing around: ice — the barge's own payments reseed it
+}
+
+// The Tinker Barge, working its trade lane at r≈12000 — the system's ONE
+// friendly vessel. Shared by generateWorld (seeded angle) and the replenish
+// respawn (ambient deaths only — a player kill is permanent, exactly the
+// shepherd's rule: consequence must trace to a player choice, and a trader
+// you can lose forever gives its hp meaning). type 'station' + a live parent
+// puts it in the physics `install` set for free, so it station-keeps and can
+// never wander off its lane.
+function spawnTinker(game, sun, th) {
+  const r = 12000;
+  const x = sun.x + Math.cos(th) * r, y = sun.y + Math.sin(th) * r;
+  const v = orbitVel(sun, x, y, 1);
+  const tk = new Body({
+    type: 'station', x, y, vx: v.vx, vy: v.vy,
+    // Mass 1900 like the derelicts, and DELIBERATELY under ATTRACT_MIN
+    // (2000): installations are never attractors — a knocked-loose attractor
+    // feels celestials at full gravity while they feel it at CROSS_GRAV, the
+    // asymmetry the weighted-gravity invariant exists to avoid.
+    mass: 1900, radius: 24,
+    color: '#c9a86a', name: 'Tinker Barge', parent: sun,
+    // Override hp (derelicts run 130): the barge must shrug off belt noise —
+    // losing the one trader to ambient traffic is not a story. A deliberate
+    // player assault still kills it, permanently.
+    hp: 400,
+  });
+  tk.tinker = true;
+  tk.chartKey = 'tinker';   // set HERE so a respawned barge stays chartable
+  game.bodies.push(tk);
+  railBody(tk, sun);
+  game.tinker = tk;   // assigned BEFORE the want pick — the census reads tk's position
+  game.tinkerWant = pickTinkerWant(game, game.tinkerWant || null);
+  return tk;
 }
 
 // Comet Vesper at perihelion, falling into a fresh pass. Shared by
@@ -236,6 +328,7 @@ function spawnVesper(game, sun, th) {
     -Math.sin(th) * vp, Math.cos(th) * vp, 2400);
   c.comet = true; c.cometT = Infinity; c.majorComet = true;
   c.name = 'Comet Vesper'; c.color = '#d8f4ff';
+  c.chartKey = 'vesper';   // set HERE so a respawned Vesper stays chartable (keys, not bodies)
   // A landmark must outlive ambient traffic: its orbit crosses every belt
   // and planet lane between 3900 and 20100, and at default massToHp (~29)
   // a single hard crunch shattered it within ~10 minutes in soak testing.
@@ -422,7 +515,7 @@ export function generateWorld(game, seed = 20260721) {
   const forgeHost = planetAtOrbit(14800);
   if (forgeHost) {
     const m = bodies.find((b) => b.type === 'moon' && b.parent === forgeHost);
-    if (m) { m.volcanic = true; m.color = '#c98a6a'; m.name = 'Forge Moon'; }
+    if (m) { m.volcanic = true; m.color = '#c98a6a'; m.name = 'Forge Moon'; m.chartKey = 'forge'; }
   }
 
   // RING SHEPHERD: one ringed giant has a visible ring gap held open by a
@@ -481,6 +574,7 @@ export function generateWorld(game, seed = 20260721) {
       const wv = orbitVel(sun, wx, wy, 1);
       const w = spawnAsteroid(bodies, wx, wy, wv.vx, wv.vy, i === 0 ? 2800 : rand(rng, 200, 700));
       w.color = '#9fb0c2'; w.junk = true;
+      w.wreck = true;   // graveyard salvage: the Herald's price, the barge's want
       if (i === 0) w.echo = ECHOES.hulk;
       railBody(w, sun);
     }
@@ -513,6 +607,7 @@ export function generateWorld(game, seed = 20260721) {
       color: '#5a6472', name: 'The Herald',
     });
     gh.ghost = true; gh.spin = 0.18; gh.echo = ECHOES.herald;
+    gh.chartKey = 'herald';
     bodies.push(gh);
     railBody(gh, sun);
     game.ghost = gh;
@@ -529,6 +624,7 @@ export function generateWorld(game, seed = 20260721) {
     const cs = spawnAsteroid(bodies, cx2, cy2, cv2.vx, cv2.vy, 777);
     cs.carved = true; cs.junk = true; cs.color = '#95a3b5';
     cs.echo = ECHOES.carved;
+    cs.chartKey = 'carved'; cs.name = 'Carved Stone';
     railBody(cs, sun);
   }
 
@@ -536,7 +632,14 @@ export function generateWorld(game, seed = 20260721) {
   {
     let ei = 0;
     for (const b of bodies) {
-      if (b.type === 'station' && !b.ghost && ei < ECHOES.stations.length) b.echo = ECHOES.stations[ei++];
+      if (b.type === 'station' && !b.ghost && ei < ECHOES.stations.length) {
+        b.echo = ECHOES.stations[ei++];
+        // THE RELAY: the first station's log IS the breadcrumb ("…the relay
+        // still points at a star none of our charts contain") — so that
+        // station is the relay itself. Feed its dish a core crystal
+        // (updateDeliveries.powerRelay) and it reveals the dark star.
+        if (ei === 1) { b.relay = true; b.name = 'Relay Station'; game.relay = b; }
+      }
     }
   }
 
@@ -557,8 +660,10 @@ export function generateWorld(game, seed = 20260721) {
   };
   const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
   fortify(planetAtR(13000), 260, 3);
-  // (volcanic/shepherd moons are discovery content — never fortified)
-  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 && !b.volcanic && !b.shepherd).slice(0, 1);
+  // (volcanic/shepherd moons are discovery content — never fortified — and a
+  // fort on a DUST moon would contradict its stealth-haven job)
+  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 &&
+    !b.volcanic && !b.shepherd && b.moonType !== 'dust').slice(0, 1);
   for (const m of bigMoons) fortify(m, 150, 2);
 
   // THE EMBERKIN: living plasma already blooming on the innermost lava world.
@@ -596,7 +701,23 @@ export function generateWorld(game, seed = 20260721) {
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
-  game.surveyTotal = planets.length;   // worlds the CHART track can log
+  // CHART EVERYTHING: every world, moon, and station is chartable (b.chartKey;
+  // named landmarks set their own keys at their spawn sites so respawns keep
+  // them). game.charted records KEYS, not bodies. Worldgen bodies only —
+  // replenish-spawned moons get no key, so the chart total never inflates
+  // mid-run. Pure flagging, no rng draws: the seeded stream and the mechTest
+  // world checksum are untouched.
+  {
+    let pi = 0, mi = 0, si = 0;
+    for (const b of bodies) {
+      if (b.chartKey) continue;
+      if (b.type === 'planet') b.chartKey = 'p' + pi++;
+      else if (b.type === 'moon') b.chartKey = 'm' + mi++;
+      else if (b.type === 'station') b.chartKey = 'st' + si++;
+    }
+  }
+  game.charted = {};
+  game.surveyTotal = 0;   // recomputed live by the chart scan (replenishWorld)
   // Roguelite life pods: one seeded near the starting belt so the +1-life
   // mechanic is discoverable; replenishWorld/main.js trickle in more.
   game.pickups = [];
@@ -605,6 +726,47 @@ export function generateWorld(game, seed = 20260721) {
   // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
   // they reset with the world). Seeded off the same world rng — see glow.js.
   seedGlowPockets(game, rng);
+  // ---- EXPEDITION LAYER (seeded). Everything below draws rng AFTER
+  // seedGlowPockets ON PURPOSE: the whole sky above stays bit-identical to
+  // the pre-expedition worldgen (and the mechTest T1 checksum with it). Any
+  // new seeded content must keep appending here, never draw rng earlier. ----
+  // The Tinker Barge — the system's one friendly vessel (see spawnTinker).
+  // Clear the want FIRST: game state survives resetRun until reassigned, and
+  // a fresh run must not exclude the previous run's want from the pick.
+  game.tinkerWant = null;
+  spawnTinker(game, sun, rng() * TAU);
+  game.tinkerCd = 0;
+  game.tinkerSaid = null;
+  game.tinkerPlayerKilled = false;
+  // THE WANDERER'S STAR — a cold dark dwarf on the outermost rail, the payoff
+  // of the relay questline. hidden = sensor-null: the fog scan and the chart
+  // scan both skip it, so no amount of flying reveals it — only the powered
+  // relay does. Type 'planet' ON PURPOSE: 'star' would bypass minimap fog
+  // (render draws stars from anywhere) and vaporize the ship on contact, and
+  // a custom type would fall through the physics re-rail scan — rogues DO
+  // wander out here (they spawn at WORLD_R*0.92 ≈ 38.6k) and can derail it,
+  // so it must be re-railable. Mass 4.5e4 stays under the replenish
+  // moon-host filter (5e4: no moons accrete around it), and its sun
+  // anchorage exempts it from the boundary force the ordinary way — NO
+  // noBoundary; that flag is the interstellar visitor's alone.
+  {
+    const th = rng() * TAU;
+    const dr2 = 39500;   // inside WORLD_R 42000, beyond the last planet at 36800
+    const dx = Math.cos(th) * dr2, dy = Math.sin(th) * dr2;
+    const dv = orbitVel(sun, dx, dy, 1);
+    const dk = new Body({
+      type: 'planet', x: dx, y: dy, vx: dv.vx, vy: dv.vy,
+      mass: 4.5e4, radius: 70, color: '#241f2e',
+      name: "The Wanderer's Star", parent: sun,
+    });
+    dk.dark = true; dk.hidden = true; dk.chartKey = 'wanderer';
+    bodies.push(dk);
+    railBody(dk, sun);
+    game.darkStar = dk;
+  }
+  game.relayPowered = false;
+  game.relayBeamT = 0;
+  game.wandererEchoT = 0;
   respawnShip(game);
 }
 
@@ -634,6 +796,153 @@ export function respawnShip(game) {
   s.alive = true;
   s.invuln = 4;
   game.deathCause = '';
+}
+
+// A little handover sparkle. world.js can't import physics.addParticles (that
+// would close an import cycle with physics's spawnAsteroid import), so the few
+// particles are pushed directly in the same shape physics uses.
+function puff(game, x, y, color, n = 14) {
+  for (let i = 0; i < n; i++) {
+    const th = Math.random() * TAU, sp = Math.random() * 140;
+    game.particles.push({
+      x, y, vx: Math.cos(th) * sp, vy: Math.sin(th) * sp,
+      life: 0.7 * (0.4 + Math.random() * 0.6), maxLife: 0.7,
+      size: 2.5 * (0.5 + Math.random()), color,
+    });
+  }
+  if (game.particles.length > 900) game.particles.splice(0, game.particles.length - 900);
+}
+
+// ---- DELIVERIES: the shared "fling or tow an object into a target's catch
+// radius" verb. One helper serves every consumer — a graveyard wreck wakes
+// the Herald; (more targets join it: the relay, the Tinker Barge, mayday-pod
+// docks). Runs per-frame (not the throttled scan: a flung rock at 800 u/s
+// crosses a catch radius in well under half a second). Consumption is a
+// HANDOVER, not a kill: alive = false with no shatter, so no debris, no
+// scrap, no death-log drama; a beam-held delivery auto-drops from the beam
+// (tractor.springHeld drops dead bodies from either Twin Grip slot). The
+// target's own rail and velocity are never touched.
+function updateDeliveries(game) {
+  const targets = [];
+  const gh = game.ghost;
+  if (gh && gh.alive && !gh.awake) {
+    targets.push({ b: gh, r: CFG.DELIVER_R + 40, match: (x) => x.wreck, on: wakeHerald });
+  }
+  const tk = game.tinker;
+  if (tk && tk.alive && game.tinkerWant && !(game.tinkerCd > 0)) {
+    targets.push({ b: tk, r: CFG.DELIVER_R, match: game.tinkerWant.match, on: payBarge });
+  }
+  const rl = game.relay;
+  if (rl && rl.alive && !game.relayPowered) {
+    targets.push({ b: rl, r: CFG.DELIVER_R, match: (x) => !!x.core, on: powerRelay });
+  }
+  if (game.mayday && game.mayday.alive) {
+    const pod = game.mayday;
+    for (const st of game.bodies) {
+      if (!st.alive || st.type !== 'station') continue;
+      targets.push({ b: st, r: CFG.DELIVER_R + 60, match: (x) => x === pod, on: rescuePod });
+    }
+  }
+  if (!targets.length) return;
+  for (const b of game.bodies) {
+    if (!b.alive) continue;
+    // Never consume the orbit wall (a flyby would auto-deliver the shield) or
+    // an alien's carried rock — only free-flying, thrown, or player-held cargo.
+    if (b.heldBy && b.heldBy !== 'player') continue;
+    // RAILED bodies are scenery, not cargo: legit deliveries are always loose
+    // (a grab derails, and thrown rocks can't re-rail in view). Without this,
+    // a planet's railed junk satellites silently self-deliver to the barge
+    // whenever their lanes conjoin — a reward leak with no player act behind it.
+    if (b.onRails) continue;
+    for (const t of targets) {
+      if (b === t.b || !t.match(b)) continue;
+      if (Math.hypot(b.x - t.b.x, b.y - t.b.y) < t.r + b.radius) { t.on(game, b, t.b); break; }
+    }
+  }
+}
+
+// FEATURE: THE HERALD, RESOLVED. Its log mourns a crew the graveyard kept —
+// tow any graveyard wreck the 28,000u from the sun's corona to the outer dark
+// (the longest quest in the game, on purpose) and the ghost ship wakes: XP,
+// the crew's last life pod offered in thanks, and its mournful ping becomes a
+// friendly beacon (the fog scan sees farther near it; render lights the hull).
+function wakeHerald(game, b, gh) {
+  if (gh.awake) return;   // re-entry guard: two matches in one frame pay once
+  b.alive = false;
+  gh.awake = true;
+  gh.wakeEchoT = 7;   // the echo payoff follows the wake announcement, not over it
+  puff(game, gh.x, gh.y, '#b8ffd9', 24);
+  addXp(game, PROG.XP_HERALD);
+  game.heraldWakeWarn = true;
+  spawnLifePod(game, gh.x + 120, gh.y);
+}
+
+// FEATURE: THE TINKER BARGE trade. Consume the matching want, fling back a
+// rotating payment, then rest (tinkerCd) before broadcasting a new want.
+// Payments are loose light objects — never railed, never boundary-flagged.
+function payBarge(game, b, tk) {
+  // RE-ENTRY GUARD, load-bearing: the delivery loop iterates game.bodies by
+  // index, so bodies pushed DURING the sweep are visited too — and the ice
+  // payment spawns inside the catch radius. Without this check an ice-for-ice
+  // trade consumes its own payment (each pellet 1/3 likely to spawn 4 more:
+  // branching mean > 1, i.e. a runaway) the same frame the cd was armed.
+  if (game.tinkerCd > 0) return;
+  b.alive = false;
+  puff(game, tk.x, tk.y, '#ffd98a', 18);
+  const roll = Math.floor(Math.random() * 3);
+  let paid;
+  if (roll === 0) {
+    // premium ice ammo, lobbed gently out of the catch ring
+    for (let i = 0; i < 4; i++) {
+      const th = Math.random() * TAU, sp = 60 + Math.random() * 80;
+      const pel = spawnAsteroid(game.bodies,
+        tk.x + Math.cos(th) * (tk.radius + 14), tk.y + Math.sin(th) * (tk.radius + 14),
+        tk.vx + Math.cos(th) * sp, tk.vy + Math.sin(th) * sp, 150 + Math.random() * 150);
+      pel.ice = true; pel.color = '#bfe3f2';
+    }
+    paid = 'premium ice ammo';
+  } else if (roll === 1) {
+    spawnLifePod(game, tk.x + 90, tk.y - 60);   // full lives convert to XP on collect
+    paid = 'a life pod';
+  } else {
+    addXp(game, PROG.XP_TRADE);
+    paid = `+${PROG.XP_TRADE} XP`;
+  }
+  game.tinkerPaidWarn = paid;
+  game.tinkerCd = 30;
+  game.tinkerWant = pickTinkerWant(game, game.tinkerWant);
+}
+
+// FEATURE: MAYDAY PODS. Any station is a rescue dock — the derelicts, the
+// relay, the barge, even the Herald. Dock the pod in time for XP, sometimes a
+// life, and the pilot's one-liner (delayed past the announcement). Too late,
+// and it just goes quiet — the loss IS the penalty; nothing else is docked.
+function rescuePod(game, b, st) {
+  if (game.mayday !== b) return;   // re-entry guard, same rule as the others
+  b.alive = false;
+  game.mayday = null;
+  puff(game, st.x, st.y, '#b8ffd9', 18);
+  addXp(game, PROG.XP_RESCUE);
+  if (Math.random() < 0.25 && game.prog.lives < maxLives(game.prog)) game.prog.lives++;
+  game.maydaySavedWarn = true;
+  game.rescueEchoT = 5;
+}
+
+// FEATURE: THE UNCHARTED STAR. Feed the relay's dish a dense core crystal
+// (cracked from a cored belt rock) and it powers up, locks a bearing, and the
+// sensor-null dark dwarf becomes real: seen (a violet rim pin on the minimap
+// until charted) and finally chartable. Charting it pays XP_SURVEY_STAR,
+// fires the payoff echo, and permanently raises the lives cap (+1 — "the
+// star keeps you"; see the chart scan + config.maxLives).
+function powerRelay(game, b, rl) {
+  if (game.relayPowered) return;   // re-entry guard: one crystal is enough
+  b.alive = false;
+  puff(game, rl.x, rl.y, '#b89aff', 22);
+  game.relayPowered = true;
+  game.relayBeamT = 12;   // render: the dish's bearing beam, fading out
+  game.relayWarn = true;
+  const dk = game.darkStar;
+  if (dk && dk.alive) { dk.hidden = false; dk.seen = true; }
 }
 
 // The world refills itself: asteroids near the player, fresh rogues at the
@@ -787,6 +1096,75 @@ export function replenishWorld(game, dt) {
     }
   }
 
+  // ---- MAYDAY PODS: an escape pod adrift on a bad trajectory — falling
+  // sunward, or drifting straight into nest territory — with a failing air
+  // supply. Tow it to ANY station in time. Sparse and genuinely random like
+  // every ambient event; never before 3 minutes in; one at a time. A loss
+  // costs nothing but the silence.
+  game.maydayTimer = (game.maydayTimer ?? 260) - dt;
+  if (game.maydayTimer <= 0) {
+    game.maydayTimer = 320 + rng() * 300;
+    if (game.time > 180 && !game.mayday && s.alive) {
+      const th = rng() * TAU;
+      const d0 = (game.viewR || 1200) * 1.2 + 400;   // arrive just off-view
+      const px = s.x + Math.cos(th) * d0, py = s.y + Math.sin(th) * d0;
+      // The bad trajectory: 50/50 sunward drift, or toward the nearest nest
+      // (the drama it fell out of). Aliens CAN grab it — that's the story.
+      let ang = Math.atan2(game.homeStar.y - py, game.homeStar.x - px);
+      if (rng() < 0.5) {
+        let nest = null, nd = Infinity;
+        for (const b of game.bodies) {
+          if (!b.alive || b.type !== 'nest') continue;
+          const dd = Math.hypot(b.x - px, b.y - py);
+          if (dd < nd) { nd = dd; nest = b; }
+        }
+        if (nest) ang = Math.atan2(nest.y - py, nest.x - px);
+      }
+      const sp = 140 + rng() * 60;
+      const pod = spawnAsteroid(game.bodies, px, py, Math.cos(ang) * sp, Math.sin(ang) * sp, 140);
+      pod.pod = true; pod.color = '#9fd8b0'; pod.name = 'Escape Pod';
+      pod.radius = pod.baseRadius = 9;
+      // Override hp (massToHp(140) ≈ 4): a stray pebble must not end the
+      // rescue before it starts; a real hit still can.
+      pod.hp = pod.maxHp = 60;
+      pod.podT = 90 + rng() * 30;   // the air supply, in seconds
+      game.mayday = pod;
+      // Bearing shout, computed at spawn (y-down screen space: +y = south)
+      const oct = ['east', 'south-east', 'south', 'south-west',
+        'west', 'north-west', 'north', 'north-east'][Math.round((((th % TAU) + TAU) % TAU) / (TAU / 8)) % 8];
+      game.maydayWarn = oct;
+    }
+  }
+  // Pod life cycle: air ticks down, an urgent fast ping, loss handling.
+  // (Rescue is a delivery — rescuePod nulls game.mayday before this runs.)
+  if (game.mayday) {
+    const pod = game.mayday;
+    if (!pod.alive) {
+      game.maydayLostWarn = true;   // smashed by the drama it drifted through
+      game.mayday = null;
+    } else {
+      pod.podT -= dt;
+      if (pod.podT <= 0) {
+        pod.alive = false;   // gone quiet — a dim fade, no wreck drama
+        puff(game, pod.x, pod.y, '#5a7a68', 8);
+        game.maydayLostWarn = true;
+        game.mayday = null;
+      } else if (s.alive) {
+        const pd = Math.hypot(pod.x - s.x, pod.y - s.y);
+        game.maydayPingT = (game.maydayPingT ?? 0.5) - dt;
+        if (pd < 4000 && game.maydayPingT <= 0) {
+          game.maydayPingT = 2.5;   // urgent — faster than the Herald or barge
+          game.maydayPing = { x: pod.x, y: pod.y, t: 1.2, t0: 1.2, friendly: true };
+          sfxPing(0.8 * (1 - pd / 4200));
+        }
+      }
+    }
+  }
+  if (game.maydayPing) {
+    game.maydayPing.t -= dt;
+    if (game.maydayPing.t <= 0) game.maydayPing = null;
+  }
+
   // Comet Vesper is a permanent landmark: comets keep coming. If cosmic
   // chaos (or the player) ever claims it, a fresh incarnation falls sunward
   // from a new angle a few minutes later — THE comet is always out there.
@@ -799,6 +1177,20 @@ export function replenishWorld(game, dt) {
       const px = Math.cos(th) * 3900, py = Math.sin(th) * 3900;
       if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
       spawnVesper(game, game.homeStar, th);
+    }
+  }
+
+  // The Tinker Barge, like the shepherd below, is only replaced after an
+  // AMBIENT death (a new trader eventually works the lane, arriving off-view).
+  // A player kill is permanent — the system remembers who shot the trader.
+  if (game.tinker && !game.tinker.alive && !game.tinkerPlayerKilled) {
+    game.tinkerRespawnT = (game.tinkerRespawnT ?? 300) - dt;
+    if (game.tinkerRespawnT <= 0) {
+      game.tinkerRespawnT = null;
+      let th = Math.random() * TAU;
+      const px = Math.cos(th) * 12000, py = Math.sin(th) * 12000;
+      if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
+      spawnTinker(game, game.homeStar, th);
     }
   }
 
@@ -863,11 +1255,14 @@ export function replenishWorld(game, dt) {
   // ---- planet-type hazards & gifts (only fire while the player is close) ----
   for (const p of game.bodies) {
     if (!p.alive) continue;
-    // Aurora / eclipse timers fade even while the player is far away or dead
+    // Aurora / eclipse / sulfur timers fade even while the player is far away
+    // or dead (the d>4200 skip below would stall a distant cooldown forever)
     if (p.auroraT > 0) p.auroraT -= dt;
     if (p.eclipseT > 0) p.eclipseT -= dt;
+    if (p.sulfurCd > 0) p.sulfurCd -= dt;
     const iceMoon = p.type === 'moon' && p.moonType === 'ice';
-    if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon)) continue;
+    const sulfurVenting = p.type === 'moon' && p.moonType === 'sulfur' && p.sulfurPops > 0;
+    if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon && !sulfurVenting)) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);
     if (d > 4200) { continue; }
     if (p.volcanic) {
@@ -951,6 +1346,30 @@ export function replenishWorld(game, dt) {
           game.geyserWarn = true;
         }
       }
+    } else if (sulfurVenting) {
+      // SULFUR MOONS: the pop chain a player smash queued (physics.damageBody
+      // sets sulfurPops). Each pop fountains one loose ballistic rock — the
+      // forge-magma precedent: NEVER railed — capped like the geysers so a
+      // pop party can't flood the belt.
+      if (p.heldBy) continue;
+      p.sulfurPopT = (p.sulfurPopT ?? 0.2) - dt;
+      if (p.sulfurPopT <= 0) {
+        p.sulfurPopT = 0.3 + rng() * 0.2;
+        let n = 0;
+        for (const b of game.bodies) {
+          if (b.alive && b.sulfurOf === p && !b.heldBy &&
+              Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 400) n++;
+        }
+        if (n < 6 && game.bodies.length < 400) {
+          const a = rng() * TAU;
+          const sp = 160 + rng() * 100;
+          const c = spawnAsteroid(game.bodies,
+            p.x + Math.cos(a) * (p.radius + 10), p.y + Math.sin(a) * (p.radius + 10),
+            p.vx + Math.cos(a) * sp, p.vy + Math.sin(a) * sp, 60 + rng() * 140);
+          c.color = '#d4b45a'; c.sulfurOf = p;
+        }
+        p.sulfurPops--;
+      }
     }
   }
   // ---- discovery scans (throttled — none of this needs frame precision) ----
@@ -963,10 +1382,18 @@ export function replenishWorld(game, dt) {
     // types the minimap actually draws are worth flagging.
     if (s.alive) {
       // Deep Sensors upgrade widens the reveal radius (st.sensorMul)
-      const seeR = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1);
+      let seeR = Math.max(2600, (game.viewR || 1200) * 1.25) * (game.st.sensorMul || 1);
+      // The awakened Herald is a live beacon: near it the scan sees half again
+      // as far. render.js mirrors this in the minimap sensor bubble — keep the
+      // two in sync or the bubble lies about the reveal.
+      const gh0 = game.ghost;
+      if (gh0 && gh0.alive && gh0.awake &&
+          Math.hypot(gh0.x - s.x, gh0.y - s.y) < 6000) seeR *= 1.5;
       const seeR2 = seeR * seeR;
       for (const b of game.bodies) {
-        if (b.seen || !b.alive) continue;
+        // b.hidden = sensor-null (the dark star): NEVER revealed by the scan,
+        // only by the powered relay (updateDeliveries sets seen directly).
+        if (b.seen || !b.alive || b.hidden) continue;
         const bt = b.type;
         if (bt !== 'planet' && bt !== 'moon' && bt !== 'rogue' && bt !== 'station' &&
             bt !== 'nest' && !b.comet && !b.visitor) continue;
@@ -974,19 +1401,78 @@ export function replenishWorld(game, dt) {
         if (ddx * ddx + ddy * ddy < seeR2) b.seen = true;
       }
     }
+    // CHART: reading a nameplate (the approach zone) charts the body — the old
+    // planets-only survey, generalized to every chartKey carrier: moons,
+    // stations, and named landmarks. Exploring IS the mechanic, no extra
+    // button. The TOTAL is recomputed live each tick so a chartable destroyed
+    // while uncharted drops out of the denominator instead of softlocking the
+    // 100% MASTER CHART (and hidden bodies stay out until revealed).
+    if (s.alive) {
+      // RECON DRONE (scout) auto-charts from far beyond the nameplate zone;
+      // its reach is HALVED for small bodies so a ranked drone doesn't chart
+      // a whole moon family from across the well.
+      const recon = game.st.recon || 0;
+      let uncharted = 0, justCharted = null;
+      for (const b of game.bodies) {
+        if (!b.alive || !b.chartKey || b.hidden || game.charted[b.chartKey]) continue;
+        const d = Math.hypot(b.x - s.x, b.y - s.y);
+        // Chart zone = the nameplate zone (drawApproach): planets keep their
+        // wide ring, named POIs their 900/1400 POI zones, plain moons a
+        // tighter ring of their own — reading the nameplate IS the chart.
+        const zone = (b.type === 'planet' ? b.radius * 5 + 600
+          : b.shepherd || b.volcanic || b.carved ? 900
+            : b.type === 'station' || b.majorComet ? 1400
+              : b.type === 'moon' ? b.radius * 5 + 300 : 900)
+          + recon * (b.type === 'planet' ? 2600 : 1300);
+        if (d < zone) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
+        else uncharted++;
+      }
+      game.surveyTotal = game.prog.surveyed + uncharted;
+      if (justCharted) {
+        const b = justCharted;
+        addXp(game, b.dark ? PROG.XP_SURVEY_STAR
+          : b.type === 'planet' ? PROG.XP_SURVEY
+            : b.type === 'moon' ? PROG.XP_SURVEY_MOON : PROG.XP_SURVEY_POI);
+        const nm = b.name || (b.type === 'moon' && b.parent && b.parent.name
+          ? `moon of ${b.parent.name}` : b.type);
+        game.surveyMsg = `CHARTED: ${nm.toUpperCase()} — ${game.prog.surveyed}/${game.surveyTotal} logged. +XP.`;
+        if (b.dark) {
+          // The questline payoff: a permanent +1 lives cap (config.maxLives
+          // reads the bonus), an immediate life, and the final echo — which
+          // FOLLOWS the chart message (wandererEchoT) instead of overwriting
+          // it in the same frame's single HUD slot.
+          game.prog.maxLivesBonus = (game.prog.maxLivesBonus || 0) + 1;
+          game.prog.lives = Math.min(maxLives(game.prog), game.prog.lives + 1);
+          game.surveyMsg = `THE WANDERER'S STAR — charted at last. Lives cap raised. +XP.`;
+          game.wandererEchoT = 6;
+        }
+        // MASTER CHART: every chartable body logged. One-shot; the permanent
+        // sensor/forecast bonus reads prog.masterChart in shipStats.
+        if (uncharted === 0 && !game.prog.masterChart) {
+          game.prog.masterChart = true;
+          addXp(game, PROG.XP_MASTER_CHART);
+          game.masterChartWarn = true;
+        }
+      }
+    }
+    // IRON MOON tut: fires the first time you SEE the pooling happen —
+    // several chunks gathered in a magnet halo with the ship close enough
+    // to watch (the pull itself lives in physics's debris loop).
+    if (s.alive && !game.tut.iron) {
+      for (const b of game.bodies) {
+        if (!b.alive || b.type !== 'moon' || b.moonType !== 'iron') continue;
+        if (Math.hypot(b.x - s.x, b.y - s.y) > 1500) continue;
+        let n = 0;
+        for (const d2 of game.debris) {
+          if (Math.hypot(d2.x - b.x, d2.y - b.y) < CFG.IRON_MAGNET_R) n++;
+        }
+        if (n >= 3) { game.ironWarn = true; break; }
+      }
+    }
     if (s.alive) for (const p of game.bodies) {
       if (!p.alive || p.type !== 'planet') continue;
       if (p.eclipseCd > 0) p.eclipseCd -= 0.5;
       const d = Math.hypot(p.x - s.x, p.y - s.y);
-      // SURVEY: reading a world's nameplate (the approach zone) charts it —
-      // exploring IS the mechanic, no extra button.
-      // RECON DRONE (scout) auto-charts worlds from much farther than the nameplate zone.
-      if (!p.surveyed && d < p.radius * 5 + 600 + (game.st.recon || 0) * 2600) {
-        p.surveyed = true;
-        game.prog.surveyed++;
-        addXp(game, PROG.XP_SURVEY);   // charting a world pays XP
-        game.surveyMsg = `WORLD CHARTED: ${(p.name || 'planet').toUpperCase()} — ${game.prog.surveyed}/${game.surveyTotal} surveyed. +XP.`;
-      }
       if (d > 6500) continue;
       // MOONSHADOW: a moon sitting on the sun-planet line casts its shadow
       // on the world. Pure geometry, only checked for planets near the player.
@@ -1034,17 +1520,81 @@ export function replenishWorld(game, dt) {
     }
   }
 
+  // Deliveries — the shared handover verb (per-frame; see updateDeliveries)
+  updateDeliveries(game);
+
+  // The Wanderer's Star payoff echo, delayed so it lands after the chart
+  // message instead of fighting it for the single HUD slot.
+  if (game.wandererEchoT > 0) {
+    game.wandererEchoT -= dt;
+    if (game.wandererEchoT <= 0) game.echoMsg = ECHOES.wanderer;
+  }
+  // The rescued pilot's line, same delayed-beat idiom.
+  if (game.rescueEchoT > 0) {
+    game.rescueEchoT -= dt;
+    if (game.rescueEchoT <= 0) game.echoMsg = pick(Math.random, ECHOES.rescue);
+  }
+
+  // Tinker Barge: a chime ping (a slower, friendlier cousin of the Herald's
+  // sonar — 4.5s vs 3.5s so the two are tellable apart by ear) plus the want
+  // hail once you're in trading range.
+  if (game.tinker && game.tinker.alive && s.alive) {
+    const tk = game.tinker;
+    if (game.tinkerCd > 0) game.tinkerCd -= dt;
+    const td = Math.hypot(tk.x - s.x, tk.y - s.y);
+    game.tinkerPingT = (game.tinkerPingT ?? 1) - dt;
+    if (td < 3200 && game.tinkerPingT <= 0) {
+      game.tinkerPingT = 4.5;
+      game.tinkerPing = { x: tk.x, y: tk.y, t: 1.6, friendly: true };
+      sfxPing(0.7 * (1 - td / 3400));
+    }
+    // A want the neighborhood can no longer supply is quietly re-rolled — the
+    // barge only ever asks for things that are actually close by, not just
+    // things that WERE when the want was picked (rails sweep supply in and
+    // out of the lane). Never while the player is HOLDING a match: re-rolling
+    // out from under a delivery in progress would be the worst kind of rude.
+    game.tinkerCensusT = (game.tinkerCensusT ?? 8) - dt;
+    if (game.tinkerCensusT <= 0) {
+      game.tinkerCensusT = 8;
+      const w = game.tinkerWant;
+      const holdingMatch = w && ((game.held && wantSupply(w, game.held)) ||
+        (game.held2 && wantSupply(w, game.held2)));
+      if (w && !holdingMatch && tinkerWantCounts(game)[w.id] === 0) {
+        game.tinkerWant = pickTinkerWant(game, w);
+        game.tinkerSaid = null;   // re-hail the new want on approach
+      }
+    }
+    // Hail once per want per approach (leaving resets it, so a return visit
+    // re-hails; a rotated want re-hails immediately).
+    if (td > 2600) game.tinkerSaid = null;
+    if (td < 1800 && game.tinkerWant && !(game.tinkerCd > 0) &&
+        game.tinkerSaid !== game.tinkerWant.id) {
+      game.tinkerSaid = game.tinkerWant.id;
+      game.tinkerWantWarn = game.tinkerWant.label;
+    }
+  }
+  if (game.tinkerPing) {
+    game.tinkerPing.t -= dt;
+    if (game.tinkerPing.t <= 0) game.tinkerPing = null;
+  }
+
   // Ghost ship ping — found by ear: a sonar blip (louder as you close in)
-  // plus a visible ring rippling out of the wreck
+  // plus a visible ring rippling out of the wreck. Once AWAKE (a wreck
+  // delivered — wakeHerald) the same cadence turns friendly: no more UNKNOWN
+  // CONTACT warnings, and the ring renders warm instead of mournful.
   if (game.ghost && game.ghost.alive && s.alive) {
     const gh = game.ghost;
+    if (gh.awake && gh.wakeEchoT > 0) {
+      gh.wakeEchoT -= dt;   // the two-beat resolution: announcement, then the echo
+      if (gh.wakeEchoT <= 0) game.echoMsg = ECHOES.heraldWake;
+    }
     const gd = Math.hypot(gh.x - s.x, gh.y - s.y);
     game.ghostPingT = (game.ghostPingT ?? 1) - dt;
     if (gd < 3000 && game.ghostPingT <= 0) {
       game.ghostPingT = 3.5;
-      game.ghostPing = { x: gh.x, y: gh.y, t: 1.6 };
+      game.ghostPing = { x: gh.x, y: gh.y, t: 1.6, friendly: !!gh.awake };
       sfxPing(1 - gd / 3200);
-      if (!game.tut.ghost) game.ghostWarn = true;
+      if (!game.tut.ghost && !gh.awake) game.ghostWarn = true;
     }
   }
   if (game.ghostPing) {

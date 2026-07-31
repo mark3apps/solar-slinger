@@ -95,8 +95,15 @@ function updateAlien(game, al, dt) {
   // Non-grabber kinds have their own simple minds
   if (al.kind === 'wright') { updateWright(game, al, dt); return; }
   if (al.kind === 'golem') {
-    // Relentless: your leftovers hunt you until one of you is gone
-    if (s.alive) steer(al, s.x + s.vx * 0.3, s.y + s.vy * 0.3, CFG.ALIEN_SPEED * 0.85);
+    // Relentless: your leftovers hunt you until one of you is gone. DUST
+    // SHROUD: a cloaked ship breaks the track — it prowls the last place it
+    // saw you, slower, instead of tracking through the dust.
+    if (s.alive && !game.dustCloak) {
+      al.lastSeenX = s.x; al.lastSeenY = s.y;
+      steer(al, s.x + s.vx * 0.3, s.y + s.vy * 0.3, CFG.ALIEN_SPEED * 0.85);
+    } else if (s.alive && al.lastSeenX !== undefined) {
+      steer(al, al.lastSeenX, al.lastSeenY, CFG.ALIEN_SPEED * 0.45);
+    }
     avoidStars(game, al);
     return;
   }
@@ -107,8 +114,12 @@ function updateAlien(game, al, dt) {
   // comes back. (A destroyed nest leaves orphans that hunt freely 'til dead.)
   const home = (al.nest && al.nest.alive) ? al.nest : null;
   const homeDist = home ? Math.hypot(home.x - al.x, home.y - al.y) : 0;
+  // DUST SHROUD: a cloaked ship reads as "player left the territory" — the
+  // return-home branch below is the battle-tested lose-lock path (drops the
+  // carried rock, resets state), so disengagement reuses it wholesale.
   const playerHome = home
-    ? (s.alive && Math.hypot(s.x - home.x, s.y - home.y) < CFG.ALIEN_TERRITORY)
+    ? (s.alive && !game.dustCloak &&
+       Math.hypot(s.x - home.x, s.y - home.y) < CFG.ALIEN_TERRITORY)
     : true;
   if (home && (homeDist > CFG.ALIEN_TERRITORY || !playerHome)) {
     if (al.target && al.target.heldBy === al) {
@@ -125,6 +136,18 @@ function updateAlien(game, al, dt) {
     al.state = 'seek';   // ready to re-engage the instant the player returns
     avoidStars(game, al);
     return;
+  }
+
+  // ORPHAN grabbers (nest destroyed) never take the home branch above — route
+  // a cloaked player straight to the cooldown strafe, or they'd deadlock
+  // chasing a target they can't see.
+  if (game.dustCloak && al.state !== 'cooldown') {
+    if (al.target && al.target.heldBy === al) {
+      al.target.heldBy = null; al.target.extAx = 0; al.target.extAy = 0;
+    }
+    al.target = null;
+    al.state = 'cooldown';
+    al.cool = 1.5;
   }
 
   switch (al.state) {
@@ -170,9 +193,10 @@ function updateAlien(game, al, dt) {
       if (am > cap) { ax *= cap / am; ay *= cap / am; }
       r.extAx = ax; r.extAy = ay;
 
-      // Close to throwing range, lead the target, and throw
+      // Close to throwing range, lead the target, and throw. (No throw while
+      // the player is dust-cloaked — you can't lead a target you can't see.)
       steer(al, s.x, s.y, CFG.ALIEN_SPEED);
-      if (distShip < 950) {
+      if (distShip < 950 && !game.dustCloak) {
         const t = distShip / CFG.ALIEN_THROW;
         const px = s.x + s.vx * t, py = s.y + s.vy * t;
         const ang = Math.atan2(py - r.y, px - r.x);
@@ -280,6 +304,33 @@ function updateForts(game, dt) {
 }
 
 export function updateAliens(game, dt) {
+  // DUST SHROUD: inside a dust moon's halo (CFG.DUST_HALO x radius) the ship
+  // is invisible to alien senses. Computed ONCE per frame — every gate below
+  // reads game.dustCloak — with a 1.2s release grace so hovering the halo's
+  // edge can't strobe the AI between engage and disengage. Forts are exempt
+  // on purpose: they're artillery emplacements, not hunters (and no dust moon
+  // is ever fortified — world.js keeps them out of the fortify pass).
+  {
+    const s = game.ship;
+    let inHalo = false;
+    if (s.alive) {
+      for (const b of game.bodies) {
+        if (!b.alive || b.type !== 'moon' || b.moonType !== 'dust') continue;
+        if (Math.hypot(b.x - s.x, b.y - s.y) < b.radius * CFG.DUST_HALO) { inHalo = true; break; }
+      }
+    }
+    if (inHalo) {
+      game.dustCloak = true;
+      game.dustCloakT = 1.2;
+      if (!game.tut.dust) game.dustWarn = true;
+    } else if (game.dustCloakT > 0) {
+      game.dustCloakT -= dt;
+      if (game.dustCloakT <= 0) game.dustCloak = false;
+    } else {
+      game.dustCloak = false;
+    }
+  }
+
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
   updateForts(game, dt);
 
@@ -323,6 +374,7 @@ export function updateAliens(game, dt) {
 
   const s = game.ship;
   if (!s.alive) return;
+  if (game.dustCloak) return;   // a nest can't scramble at a ship it can't see
   // A nest holds a garrison scaling gently with level, and scrambles a whole
   // burst (up to ALIEN_BURST) at once when the player enters its territory.
   const cap = CFG.ALIEN_BURST + Math.min(3, Math.floor(game.st.totalLevel / 5));
