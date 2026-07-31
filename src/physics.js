@@ -1,6 +1,6 @@
 import { CFG, PROG, addXp } from './config.js';
 import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
-import { spawnAsteroid } from './world.js';
+import { spawnAsteroid, markFieldRock } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
 import { TAU, clamp, angDiff } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
@@ -179,6 +179,39 @@ export function shatter(game, body, credit = null) {
   // are the only reason it exists.
   noteKill(game, body, credit, body.hitBy);
   if (body.heldBy === 'player' && game.held === body) game.held = null;
+
+  // FIELD GIANT: cracking one sprays a cascade of smaller FIELD rock — the
+  // chaos engine of a shoal. The shards inherit the whole material through
+  // world.markFieldRock (gravity-free, tough, livelier bounce) and the
+  // parent's pocket index, or the pocket would slowly launder itself into
+  // ordinary belt gravel every time something big broke. Mass is conserved
+  // (roughly) rather than invented, and the spray is capped by the global
+  // body budget like every other shed.
+  if (body.fieldRock && body.giant) {
+    const lo = CFG.FIELD_GIANT_SHARDS[0], hi = CFG.FIELD_GIANT_SHARDS[1];
+    // Budget headroom must sit ABOVE the world's steady-state body count
+    // (~9700 with four pockets) or the cascade silently never fires — keep it
+    // in step with the caps in world.replenishWorld.
+    const n = Math.min(lo + Math.floor(Math.random() * (hi - lo + 1)),
+      Math.max(0, 11200 - game.bodies.length));
+    const share = (body.mass * 0.72) / Math.max(1, n);
+    for (let i = 0; i < n; i++) {
+      const th = (i / n) * TAU + Math.random() * 0.6;
+      const sp = 40 + Math.random() * 110;
+      const shard = spawnAsteroid(game.bodies,
+        body.x + Math.cos(th) * (body.radius * 0.7),
+        body.y + Math.sin(th) * (body.radius * 0.7),
+        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp,
+        share * (0.6 + Math.random() * 0.8));
+      markFieldRock(shard, body.field);
+      // A shard big enough to be worth breaking again keeps the cascade
+      // going — one more level, not an unbounded chain (the threshold sits
+      // above what a second-generation shard can inherit, so it terminates).
+      if (shard.mass > 3000) shard.giant = true;
+    }
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 34, body.color, 210, 1.3, 4);
+    addShake(game, 9);
+  }
 
   const isBig = body.mass > 5e4;
   // A dying WORLD comes apart into a TON of planet chunks — a dense, jostling
@@ -479,6 +512,7 @@ export function killAlien(game, alien) {
   game.alienKills++;
   if (alien.kind === 'wright') bump(game, 'kWright');
   else if (alien.kind === 'golem') bump(game, 'kGolem');
+  else if (alien.kind === 'lurker') bump(game, 'kLurker');
 }
 
 export function damageShip(game, dmg, cause, hitAng) {
@@ -737,6 +771,9 @@ function collideBodies(game, a, b) {
     const small = big === a ? b : a;
     if (big.mass >= small.mass * 15 && !small.heldBy && small.type !== 'rogue' &&
         small.type !== 'station' && small.type !== 'nest' &&   // artificial structures don't melt into planets
+        !(small.fieldRock && big.fieldRock) &&   // shoal rocks BOUNCE off their giants — a pocket that
+                                                 // quietly ate every gentle contact with a 15x mass
+                                                 // ratio digested itself around its own giants
         !small.majorComet) {   // ...and the landmark comet bounces off worlds instead of melting into them
       small.alive = false;
       if (small === game.held) game.held = null;
@@ -782,7 +819,13 @@ function collideBodies(game, a, b) {
     // Lopsided impacts bounce HARDER: the more dominant the heavy body, the
     // livelier the light one is flung away (e: 0.35 equal -> ~0.75 extreme).
     const dom = Math.max(a.mass, b.mass) / (a.mass + b.mass);
-    const e = CFG.RESTITUTION * (1 + (dom - 0.5) * 2.3);
+    let e = CFG.RESTITUTION * (1 + (dom - 0.5) * 2.3);
+    // FIELD ROCK caroms. Its whole point is that a shoal plays like a pinball
+    // table, so field-vs-field contact uses a FLAT near-elastic restitution
+    // instead of scaling the world's deliberately deadened one (that scaling
+    // still left equal-mass hits at ~0.74 — thuds, not caroms). Kept under 1:
+    // e >= 1 ADDS energy on every hit and a pocket this size boils itself apart.
+    if (a.fieldRock && b.fieldRock) e = CFG.FIELD_BOUNCE;
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
     let j = ((1 + e) * closing) / (invA + invB || 1);
@@ -854,6 +897,18 @@ function collideBodies(game, a, b) {
     // loop keeps full effect. The bomb itself still takes full damage.
     if (celestial(a) && b.magmaBorn && b.thrownTimer <= 0) dmgToA = 0;
     if (celestial(b) && a.magmaBorn && a.thrownTimer <= 0) dmgToB = 0;
+    // FIELD ROCK has a thick hide against ITS OWN KIND: the pocket is meant
+    // to be knocked around INDEFINITELY — hits send rocks flying, they don't
+    // erase them. The damp covers every field-vs-field impact, including
+    // lurker body-checks and chain caroms (those are 'thrown', and at full
+    // damage every shove vaporized its target instead of billiarding it);
+    // ONLY a player's own throw punches at full strength, because smashing
+    // field rock deliberately still works and still pays.
+    if (a.fieldRock && b.fieldRock &&
+        !((a.thrownBy === 'player' && a.thrownTimer > 0) ||
+          (b.thrownBy === 'player' && b.thrownTimer > 0))) {
+      dmgToA *= CFG.FIELD_TOUGH; dmgToB *= CFG.FIELD_TOUGH;
+    }
     // Debug tap: set game.collisionLog = [] from devtools to record impacts
     if (game.collisionLog && (dmgToA > 2 || dmgToB > 2)) {
       game.collisionLog.push({
@@ -1189,7 +1244,11 @@ function updateParry(game, dt) {
 }
 
 function collideAlienBody(game, al, b) {
-  if (b === al.target) return;   // never collide with its own ammo (incl. during fetch approach)
+  // Grabbers never collide with the rock they're fetching. A LURKER is the
+  // opposite case: its target is the rock it intends to BODY-CHECK, so this
+  // early-out silently cancelled the entire mechanic (measured: 1 shove a
+  // minute, all of them incidental hits on other rocks).
+  if (b === al.target && al.kind !== 'lurker') return;
   const dx = b.x - al.x, dy = b.y - al.y;
   const rr = al.radius + b.radius;
   const d2 = dx * dx + dy * dy;
@@ -1197,6 +1256,56 @@ function collideAlienBody(game, al, b) {
   const d = Math.sqrt(d2) || 0.001;
 
   if (b.type === 'star') { killAlien(game, al); return; }
+
+  // SHOAL LURKER BODY-CHECK. The lurker is the dense field's native predator
+  // and fights like a brawler ramming: ambient rock contact does it NO harm
+  // (a creature that died to its own habitat could never survive to reach
+  // you — before this it suicided on the nearest rock within seconds of
+  // spawning), and instead of bouncing it SHOVES the rock along its charge
+  // heading, turning the field's own ammo into a projectile. The rock is
+  // marked alien-thrown, so it plugs straight into every existing counter:
+  // the orbit shield blocks it for XP, the Deflector can parry it, Dead Stop
+  // primes on catching it. A PLAYER-thrown rock is excluded here and falls
+  // through to the damage path below — throwing rocks back is how you kill it.
+  if (al.kind === 'lurker' && b.type === 'asteroid' && !b.heldBy &&
+      !(b.thrownTimer > 0 && b.thrownBy === 'player')) {
+    const nx0 = dx / d, ny0 = dy / d;
+    const overlap0 = al.radius + b.radius - d;
+    al.x -= nx0 * overlap0; al.y -= ny0 * overlap0;
+    const sh = game.ship;
+    // ONLY a committed charge throws. At shoal density (~88u between rocks)
+    // a lurker brushes rocks constantly just manoeuvring, and letting those
+    // brushes shove meant every cooldown was burnt on a random rock flung a
+    // random way — the aimed shot never got to happen (measured: 3 shoves a
+    // minute, none landing within 1300u of the ship). Incidental contact now
+    // just separates, free of charge.
+    if (al.state === 'charge' && !(al.shovedT > 0) && sh.alive &&
+        Math.hypot(al.vx, al.vy) > 60) {
+      // Heavier rock, lazier shove — this is muscle, not a tractor beam
+      const push = CFG.LURKER_SHOVE * Math.min(1, 1400 / Math.max(300, b.mass));
+      // AIMED, with the grabber's lead solve. The velocity is set outright
+      // rather than added to the lurker's: the whole pocket is carried by
+      // orbital motion, and inheriting that carry threw every shot wide of
+      // the lead it just solved for.
+      const speed = push + Math.hypot(al.vx, al.vy) * 0.25;
+      // Two-pass lead solve: the first pass' flight time is wrong by however
+      // far the ship travels during it, so feed it back once. Cheap, and the
+      // difference is the whole shot at these speeds.
+      let t = Math.hypot(sh.x - b.x, sh.y - b.y) / speed;
+      t = Math.hypot(sh.x + sh.vx * t - b.x, sh.y + sh.vy * t - b.y) / speed;
+      const ang = Math.atan2(sh.y + sh.vy * t - b.y, sh.x + sh.vx * t - b.x);
+      derail(b);
+      b.vx = Math.cos(ang) * speed;
+      b.vy = Math.sin(ang) * speed;
+      b.thrownBy = 'alien'; b.thrownTimer = 5;
+      b.guideT = CFG.LURKER_GUIDE_T;   // helped along — see the guidance pass in step()
+      al.vx *= 0.5; al.vy *= 0.5;          // the body-check costs it its charge
+      al.shovedT = CFG.LURKER_SHOVE_CD;
+      addParticles(game, b.x, b.y, 0, 0, 8, '#c9b9a2', 120, 0.5);
+      sfx.sfxBump(0.55 * sfx.distVol(game, b.x, b.y));
+    }
+    return;
+  }
 
   const nx = dx / d, ny = dy / d;
   const closing = -((b.vx - al.vx) * nx + (b.vy - al.vy) * ny);
@@ -1233,13 +1342,103 @@ const _attractors = [];  // attractor list scratch (reused every substep)
 const _byLeftEdge = (a, b) => (a.x - a.radius) - (b.x - b.radius);
 let nanWarned = false;   // the NaN tripwire below warns once per session
 
-export function step(game, dt) {
+// ---------- dense-field LOD ----------
+// THE FIELD LOD is what makes ~8000 field rocks affordable: full physics is a
+// LOCAL privilege. Once per FRAME (main.update and driftSplash call this —
+// never per substep) every field rock is classified:
+//   AWAKE — its field is the one the ship is actually at (f.active) AND the
+//     rock is inside the wake bubble around the view. Full physics.
+//   DORMANT — everything else: the far side of your own field, and the
+//     fields you are not in. Dormant rocks are skipped by the collision
+//     sweep, both gravity phases, the per-substep rails pass, the ship/alien
+//     collision loops and the NaN tripwire. Railed dormants are advanced
+//     HERE, once per frame with exact trig — the pocket is RIGID (shared w),
+//     so the group travels as one and the minimap stays truthful; LOOSE
+//     dormants freeze mid-drift where they are (they are off-view by
+//     definition — nobody sees the pause, and they resume on wake).
+// Held, thrown, and parry-frozen rocks are ALWAYS awake: a player throw must
+// not freeze mid-flight because it crossed the bubble. Waking is seamless:
+// dormant advancement drives the SAME rail state the substep path reads, and
+// rl.rdt = 0 invalidates the incremental rotor so the first awake substep
+// resyncs from rail.ang instead of a stale cached heading.
+// It ALSO builds THE AWAKE LIST (game.bodies._awake): every alive, awake
+// body, gathered in this same single pass. step()'s hot loops iterate that
+// list instead of the full array — before it existed they walked all ~8000
+// bodies 10-15 times per frame just to `continue` past dormants (measured:
+// ~1.4ms/frame, ~40% of sim time, spent skipping bodies we had already
+// decided not to simulate). The list lives ON the bodies array so
+// world.generateWorld's `bodies.length = 0` can invalidate it in the same
+// breath (`bodies._awake = null`) — a stale list holding the DEAD world's
+// bodies would be catastrophic. Failure mode is deliberately soft: a body
+// created after the list was built (spall, shards, pellets) is simply not
+// simulated until the next frame's rebuild — one frame of stasis for a
+// fresh fragment, invisible; spawnAsteroid registers its spawns eagerly
+// anyway, covering nearly every runtime creation site.
+export function updateFieldLOD(game, dt) {
   const bodies = game.bodies;
-  const attractors = _attractors;
-  attractors.length = 0;
-  let aliveCount = 0;   // for the sweep-list staleness check below
+  const awake = bodies._awake || (bodies._awake = []);
+  awake.length = 0;
+  const flds = game.fields;
+  const s = game.ship;
+  const cx = s.alive ? s.x : game.cam.x;
+  const cy = s.alive ? s.y : game.cam.y;
+  const wakeR = (game.viewR || 1200) * 2.2 + 600;
+  const wakeR2 = wakeR * wakeR;
+  if (flds) {
+    for (const f of flds) {
+      f.active = Math.hypot(f.x - cx, f.y - cy) < CFG.FIELD_LEN + wakeR;
+    }
+  }
   for (const b of bodies) {
     if (!b.alive) continue;
+    if (b.field == null || !flds) {   // non-field bodies are always awake
+      b.dormant = false;
+      awake.push(b);
+      continue;
+    }
+    let dormant;
+    if (b.heldBy || b.thrownTimer > 0 || b.parryFrozen) dormant = false;
+    else {
+      const f = flds[b.field];
+      if (f && !f.active) dormant = true;
+      else {
+        const dx = b.x - cx, dy = b.y - cy;
+        dormant = dx * dx + dy * dy > wakeR2;
+      }
+    }
+    b.dormant = dormant;
+    if (!dormant) { awake.push(b); continue; }
+    if (b.onRails) {
+      const rl = b.rail;
+      const p = rl.parent;
+      if (!p.alive) { derail(b); b.dormant = false; awake.push(b); continue; }
+      rl.ang += rl.w * dt;
+      const c = Math.cos(rl.ang), sn = Math.sin(rl.ang);
+      b.x = p.x + c * rl.r;
+      b.y = p.y + sn * rl.r;
+      b.vx = p.vx - sn * rl.w * rl.r;   // truthful velocity: grabs/minimap/wake read it
+      b.vy = p.vy + c * rl.w * rl.r;
+      rl.rdt = 0;   // invalidate the substep rotor — wake resyncs from rail.ang
+    }
+  }
+}
+
+export function step(game, dt) {
+  const bodies = game.bodies;
+  // THE AWAKE LIST (built once per frame by updateFieldLOD): every per-substep
+  // loop below iterates `live`, not the full array — at ~8000 bodies with
+  // ~6900 dormant, walking the array 10-15 times per frame just to skip them
+  // measured ~1.4ms (~40% of sim). Null until the first LOD build after a
+  // world regen, so the fallback is the plain array — correctness never
+  // depends on the list existing, only speed does. Loops keep their alive/
+  // dormant guards: entries can die mid-frame, and the fallback path needs them.
+  const live = bodies._awake || bodies;
+  const attractors = _attractors;
+  attractors.length = 0;
+  let aliveCount = 0;   // AWAKE count — the sweep-list staleness check below compares
+                        // against sweep membership, and dormant bodies are not members
+  for (const b of live) {
+    if (!b.alive || b.dormant) continue;
     aliveCount++;
     if (!b.attractor) continue;
     // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
@@ -1256,15 +1455,32 @@ export function step(game, dt) {
   if (game.railScanT <= 0) {
     game.railScanT = CFG.RAIL_RETRY;
     const disturbers = [];
-    for (const b of bodies) {
+    for (const b of live) {   // thrown giants are always awake (LOD exemption)
       if (!b.alive) continue;
       if (b.type === 'rogue' || (b.thrownTimer > 0 && b.mass > 5e4)) disturbers.push(b);
     }
-    for (const b of bodies) {
+    // live list: dormant railed rocks can't be disturbed (their disturbers
+    // would be awake near the ship anyway) and frozen dormant strays simply
+    // wait for wake before they can re-rail — both are the LOD's documented
+    // "the chaos near you" trade.
+    for (const b of live) {
       if (!b.alive) continue;
       if (b.onRails) {
-        for (const d of disturbers) {
-          if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { derail(b); break; }
+        // PLANETS never derail from mere proximity — only a real impact can
+        // knock a world off its rail. The proximity derail is what opened
+        // the rogue-capture window: a railed planet ignores gravity, but
+        // once knocked live beside a rogue 7-13x its mass it gets BOUND as
+        // the rogue's satellite and dragged wherever the rogue falls — in
+        // soaks the outer-band worlds (~50 u/s lanes, right where rogues
+        // apogee at their slowest) were captured and carried into the sun
+        // within minutes, and each one derailed every lane it crossed on
+        // the way down (a three-planet cascade). Moons/asteroids/stations
+        // keep the full disturb drama: they're replenished; planets are
+        // permanent, and "rogues stir up but can't shred" is the design law.
+        if (b.type !== 'planet') {
+          for (const d of disturbers) {
+            if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { derail(b); break; }
+          }
         }
       } else if (!b.heldBy && b.thrownTimer <= 0 && b.liveT > 6 && !b.majorComet && !b.shepherd &&
                  (b.type === 'asteroid' || b.type === 'moon' || b.type === 'planet' ||
@@ -1284,6 +1500,49 @@ export function step(game, dt) {
         // their planet, a binary companion around its primary, everything
         // else (and orphans) around the sun
         const parent = (b.parent && b.parent.alive) ? b.parent : game.homeStar;
+        // PLANET RESCUE: a knocked-loose world re-rails by FIAT — off-view,
+        // still near its home lane (±15%), but with NO circularity test and
+        // NO disturber-clear wait. A live planet parked beside a heavier
+        // rogue gets gravitationally BOUND (the pair orbits at ~200u and the
+        // rogue drags the world wherever it falls — in soaks, into the sun,
+        // derailing every lane crossed on the way). The bound orbit is never
+        // near-circular and the rogue never clears, so the ordinary path
+        // below can NEVER rescue it; the fiat snap is what breaks the bond.
+        // Radial velocity is discarded (the rail is circular) — invisible
+        // off-view, and worth the tiny energy fudge to keep the sky whole.
+        // Same class of law as installation station-keeping: worlds are the
+        // sky's anchor content, and they must never wander (far).
+        if (b.type === 'planet') {
+          // The fiat fires ONLY with a rogue adjacent — that is the capture
+          // case it exists for. Gating on the captor also keeps it from
+          // quietly ending a legitimate off-view player planet-throw (a
+          // thrown world starts inside its own ±15% band), and lets a
+          // rogue-free loose planet fall through to the ordinary
+          // near-circular path below instead of being stranded railless
+          // forever when it drifts out of the band.
+          let captor = false;
+          for (const d of disturbers) {
+            if (d.type === 'rogue' &&
+                Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB * 1.5 + d.radius) { captor = true; break; }
+          }
+          if (captor) {
+            const dx = b.x - parent.x, dy = b.y - parent.y;
+            const r = Math.hypot(dx, dy);
+            const home = b.homeR || r;
+            if (r > parent.radius + b.radius + 60 && Math.abs(r - home) < home * 0.15) {
+              const vC = Math.sqrt((CFG.G * parent.mass * r * r) / Math.pow(r * r + CFG.GRAV_SOFT ** 2, 1.5));
+              const rvx = b.vx - parent.vx, rvy = b.vy - parent.vy;
+              const dir = Math.sign((dx * rvy - dy * rvx) / r) || 1;
+              b.vx = parent.vx - (dy / r) * dir * vC;
+              b.vy = parent.vy + (dx / r) * dir * vC;
+              railBody(b, parent);
+              b.homeR = home;   // rescue cycles must not random-walk the lane
+            }
+            // Rogue adjacent either way: the ordinary path below could never
+            // fire (its disturber-clear check fails), so stop here.
+            continue;
+          }
+        }
         let clear = true;
         for (const d of disturbers) {
           if (Math.hypot(d.x - b.x, d.y - b.y) < CFG.RAIL_DISTURB + d.radius) { clear = false; break; }
@@ -1301,6 +1560,13 @@ export function step(game, dt) {
               b.vx = parent.vx - (dy / r) * Math.sign(vT) * vC;
               b.vy = parent.vy + (dx / r) * Math.sign(vT) * vC;
               railBody(b, parent);
+              // DENSE-FIELD rocks rejoin the RIGID pocket, not the jittered
+              // flow: railBody just re-applied the id-hashed ±4% w, and a
+              // mis-w rock inside an ~85u-spacing pocket shears and grinds
+              // (the exact failure the shared field w exists to prevent).
+              // Also covers the field HEART, whose rail.ang is the AI anchor.
+              const ff = b.field != null && game.fields && game.fields[b.field];
+              if (ff && parent === game.homeStar) b.rail.w = ff.w;
             }
           }
         }
@@ -1313,12 +1579,50 @@ export function step(game, dt) {
   // later bodies see earlier bodies' updated positions — which violates
   // Newton's third law and pumps energy into tight planet-moon pairs.)
   // Railed bodies skip gravity entirely — that's the point of rails.
-  for (const b of bodies) {
-    if (!b.alive || b.type === 'star' || b.onRails) continue;
+  for (const b of live) {
+    if (!b.alive || b.type === 'star' || b.onRails || b.dormant) continue;
     // majorComet (Vesper) rides the weighted path as an honorary celestial:
     // under full planet gravity, gravitational focusing funneled it into a
     // planet impact or a sun plunge every ~15 minutes. CROSS_GRAV keeps its
     // long ellipse stable the same way it keeps every other orbit stable.
+    // FIELD ROCK feels NO gravity at all (CFG.FIELD_* — its own material).
+    // Knocked out of the shoal it drifts and caroms in a straight line
+    // instead of falling into an orbit, which is what makes a pocket play
+    // like a pinball table; it also keeps a thousand-rock sky free in the
+    // hottest loop in the game. The heart is a normal body and is excluded.
+    // A body-checked rock is HELPED for a moment (CFG.LURKER_GUIDE_*): it
+    // keeps steering toward the ship's lead point just after the hit, so a
+    // lurker's shot reads as aimed instead of being walked off target by the
+    // pocket's own drift. Strictly time-boxed and gentle — it corrects a
+    // near-miss into a threat, it does not chase you down.
+    if (b.guideT > 0) {
+      b.guideT -= dt;
+      // NB: game.ship, not the `s` binding — that const is declared further
+      // down in step() and is in its temporal dead zone up here.
+      const sg = game.ship;
+      if (sg.alive && b.thrownBy === 'alien') {
+        const sp2 = Math.hypot(b.vx, b.vy) || 1;
+        let t2 = Math.hypot(sg.x - b.x, sg.y - b.y) / sp2;
+        t2 = Math.hypot(sg.x + sg.vx * t2 - b.x, sg.y + sg.vy * t2 - b.y) / sp2;
+        const ax2 = sg.x + sg.vx * t2 - b.x, ay2 = sg.y + sg.vy * t2 - b.y;
+        const ad2 = Math.hypot(ax2, ay2) || 1;
+        // steer the VELOCITY toward the lead bearing, never add speed
+        const dvx = (ax2 / ad2) * sp2 - b.vx, dvy = (ay2 / ad2) * sp2 - b.vy;
+        const dm = Math.hypot(dvx, dvy) || 1;
+        const k = Math.min(1, CFG.LURKER_GUIDE_A * dt / dm);
+        b.vx += dvx * k; b.vy += dvy * k;
+      }
+    }
+    if (b.fieldRock) {
+      b.ax = b.extAx; b.ay = b.extAy;
+      // Gravity-free, but NOT exempt from the world edge: without gravity a
+      // knocked rock leaves in a straight line forever, and the map edge is
+      // the one thing that still has to turn it back (noBoundary remains the
+      // interstellar visitor's alone).
+      const bnd0 = boundaryAccel(b.x, b.y);
+      if (bnd0) { b.ax += bnd0.ax; b.ay += bnd0.ay; }
+      continue;
+    }
     const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet;
     const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
@@ -1627,8 +1931,8 @@ export function step(game, dt) {
   }
 
   // Phase 2: integrate live bodies (semi-implicit Euler)
-  for (const b of bodies) {
-    if (!b.alive || b.type === 'star') continue;
+  for (const b of live) {
+    if (!b.alive || b.type === 'star' || b.dormant) continue;
     b.rot += b.spin * dt;
     if (b.thrownTimer > 0) b.thrownTimer -= dt; else b.thrownBy = null;
     if (b.onRails) continue;
@@ -1640,8 +1944,8 @@ export function step(game, dt) {
   // Rails pass: advance precomputed orbits analytically. Array order puts
   // planets before their moons, so a moon's (possibly live) parent has its
   // final position before the moon reads it.
-  for (const b of bodies) {
-    if (!b.alive || !b.onRails) continue;
+  for (const b of live) {
+    if (!b.alive || !b.onRails || b.dormant) continue;   // dormant rails advance in updateFieldLOD
     const rl = b.rail;
     const p = rl.parent;
     if (!p.alive) { derail(b); continue; }
@@ -1682,7 +1986,8 @@ export function step(game, dt) {
   // substeps — NaN comparisons defeat every broad-phase reject, so it "hits"
   // everything, and if it's an attractor it NaN-poisons every live body's
   // gravity. Contain the blast radius to the buggy body: cull it, warn once.
-  for (const b of bodies) {
+  for (const b of live) {
+    if (b.dormant) continue;   // frozen or group-railed — it cannot go non-finite
     if (b.alive && !isFinite(b.x + b.y + b.vx + b.vy)) {
       b.alive = false;
       // Counter for headless soaks (window.soak) — the console warn fires once
@@ -1781,13 +2086,13 @@ export function step(game, dt) {
   const sweep = _sweep;
   {
     let w = 0;
-    for (const b of sweep) { if (b.alive && b._sw) sweep[w++] = b; else b._sw = false; }
+    for (const b of sweep) { if (b.alive && !b.dormant && b._sw) sweep[w++] = b; else b._sw = false; }
     sweep.length = w;
-    for (const b of bodies) if (b.alive && !b._sw) { b._sw = true; sweep.push(b); }
+    for (const b of live) if (b.alive && !b.dormant && !b._sw) { b._sw = true; sweep.push(b); }
     if (sweep.length !== aliveCount) {   // stale ghosts (world regen) — hard reset
       for (const b of sweep) b._sw = false;
       sweep.length = 0;
-      for (const b of bodies) if (b.alive) { b._sw = true; sweep.push(b); }
+      for (const b of live) if (b.alive && !b.dormant) { b._sw = true; sweep.push(b); }
     }
   }
   sweep.sort(_byLeftEdge);
@@ -1806,8 +2111,8 @@ export function step(game, dt) {
   // Ship & alien collisions with bodies (aliens are usually absent — skip
   // spinning up an iterator per body for an empty list at 120Hz)
   const aliens = game.aliens;
-  for (const b of bodies) {
-    if (!b.alive) continue;
+  for (const b of live) {
+    if (!b.alive || b.dormant) continue;   // ship and hunters are inside the wake bubble by definition
     if (s.alive) collideShipBody(game, s, b, dt);
     if (aliens.length) for (const al of aliens) if (al.alive) collideAlienBody(game, al, b);
   }
@@ -1823,7 +2128,9 @@ export function step(game, dt) {
       s.vx += nx * 180; s.vy += ny * 180;
       al.vx -= nx * 180; al.vy -= ny * 180;
       damageShip(game, al.contactDmg || CFG.ALIEN_CONTACT_DMG,
-        al.kind === 'golem' ? 'Crushed by a scrap-golem.' : 'Rammed by an alien grabber.',
+        al.kind === 'golem' ? 'Crushed by a scrap-golem.'
+          : al.kind === 'lurker' ? 'Shredded by a shoal lurker.'
+            : 'Rammed by an alien grabber.',
         Math.atan2(al.y - s.y, al.x - s.x));
       al.hp -= 12;
       if (al.hp <= 0) killAlien(game, al);
@@ -1913,7 +2220,7 @@ export function step(game, dt) {
     const sun2 = game.homeStar;
     if (sun2) {
       const hz = sun2.radius * CFG.HEAT_ZONE;
-      for (const b of bodies) {
+      for (const b of live) {   // dormant field rock is nowhere near the corona
         if (!b.alive || b.type === 'star') continue;
         const hx = b.x - sun2.x, hy = b.y - sun2.y;
         if (hx > hz || hx < -hz || hy > hz || hy < -hz) continue;
@@ -1952,8 +2259,14 @@ export function step(game, dt) {
     parts.length = w;
   }
 
-  // Cull dead / escaped bodies (in place, squared distance)
-  {
+  // Cull dead / escaped bodies (in place, squared distance). THROTTLED to
+  // every 4th substep: this is the one remaining full-array pass in step(),
+  // and a dead body lingering in the array a few substeps is harmless —
+  // every consumer checks b.alive, the sweep compacts its own list, and the
+  // awake list holds references (never indices), so compaction can't
+  // invalidate it.
+  game._cullTick = (game._cullTick || 0) + 1;
+  if ((game._cullTick & 3) === 0) {
     const cullR2 = (CFG.WORLD_R * 1.35) ** 2;
     let w = 0;
     for (const b of bodies) {
@@ -1961,8 +2274,10 @@ export function step(game, dt) {
       else b._sw = false;   // leaving the world (dead or escaped) → leave the sweep list too
     }
     bodies.length = w;
+  }
+  {
     const aliens = game.aliens;
-    w = 0;
+    let w = 0;
     for (const a of aliens) if (a.alive) aliens[w++] = a;
     aliens.length = w;
   }
@@ -1976,7 +2291,7 @@ export function predictPaths(game) {
   const atr = [];
   const src = [];
   const dtP = CFG.PREDICT_DT;
-  for (const b of game.bodies) {
+  for (const b of (game.bodies._awake || game.bodies)) {   // attractors are never dormant
     if (b.alive && b.attractor) {
       const railed = b.onRails;
       const circ = railed && !(b.rail.e > 0);

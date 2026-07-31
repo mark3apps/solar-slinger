@@ -171,7 +171,7 @@ export class Ship {
 export class Alien {
   constructor(x, y, kind = 'grabber') {
     this.id = NEXT_ID++;
-    this.kind = kind;        // 'grabber' | 'wright' | 'golem'
+    this.kind = kind;        // 'grabber' | 'wright' | 'golem' | 'lurker'
     this.x = x; this.y = y;
     this.vx = 0; this.vy = 0;
     this.angle = 0;
@@ -193,6 +193,12 @@ export class Alien {
       this.radius = 21; this.hp = 150;
       this.contactDmg = 40;
       this.hoard = 0;
+    } else if (kind === 'lurker') {  // dense-field ambusher: fast, frail, hit-and-run
+      this.radius = CFG.LURKER_RADIUS; this.hp = CFG.LURKER_HP;
+      this.contactDmg = CFG.LURKER_DMG;
+      this.state = 'stalk';          // lurker: stalk -> pounce -> slip (ai.js)
+      this.field = 0;                // index into game.fields — its home shoal
+      this.slipDir = 1;              // which way the next break-off curls
     }
   }
 }

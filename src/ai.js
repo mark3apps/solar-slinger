@@ -1,6 +1,7 @@
-import { CFG } from './config.js';
+import { CFG, fieldFrac } from './config.js';
 import { Alien, derail } from './entities.js';
 import { damageShip, damageBody, addParticles } from './physics.js';
+import { bump } from './achievements.js';
 import * as sfx from './sfx.js';
 import { TAU, clamp } from './util.js';
 
@@ -85,6 +86,146 @@ function updateWright(game, al, dt) {
   avoidStars(game, al);
 }
 
+// SHOAL LURKER: the dense fields' ambush predator (spawned by updateFields).
+// Hit-and-run in three beats — STALK weaves toward you through the rocks,
+// POUNCE is a full-speed slash pass at your lead point, SLIP curls away into
+// the field before it comes around again. The physics ram loop does the
+// actual damage (al.contactDmg) and costs the lurker hp per pass, so a
+// lurker naturally dies after ~3 slashes even if you never swing back.
+function updateLurker(game, al, dt) {
+  const s = game.ship;
+  const f = game.fields && game.fields[al.field];
+  if (!f) { al.alive = false; return; }
+  // Containment is the POCKET FOOTPRINT (config.fieldFrac), not a circle: a
+  // circle wide enough to cover the lane's long axis overshot its short axis
+  // by 2x, and lurkers visibly hunted open space outside their own rocks.
+  // The engage bound (1.15) sits above the chase bound (1.3 on the LURKER)
+  // deliberately UNDER-hysteresized the other way round: the ship slipping
+  // just past the edge doesn't instantly break the hunt, but a lurker can
+  // never be dragged more than a fringe past its own rocks before it turns.
+  const engaged = s.alive && !game.dustCloak && fieldFrac(f, s.x, s.y) < 1.15;
+  // Lose the ship (it left the shoal, died, or slipped into a dust shroud) or
+  // stray past the fringe yourself, and slink home to prowl the rocks until
+  // the player comes back in.
+  if (!engaged || fieldFrac(f, al.x, al.y) > 1.3) {
+    const homeDist = Math.hypot(f.x - al.x, f.y - al.y);
+    if (homeDist > 500) {
+      steer(al, f.x, f.y, CFG.ALIEN_SPEED);
+    } else {   // prowl the shoal — a slow circuit among the rocks
+      const around = Math.atan2(al.y - f.y, al.x - f.x) + 0.8;
+      steer(al, f.x + Math.cos(around) * 380, f.y + Math.sin(around) * 380,
+        CFG.ALIEN_SPEED * 0.45);
+    }
+    al.state = 'stalk';   // re-engage the instant the player returns
+    avoidStars(game, al);
+    return;
+  }
+  const sp = CFG.ALIEN_SPEED * CFG.LURKER_SPEED;
+  const dist = Math.hypot(s.x - al.x, s.y - al.y);
+  if (al.shovedT > 0) al.shovedT -= dt;
+  switch (al.state) {
+    case 'stalk': {
+      // Line up a rock to body-check at the player. Failing that (nothing
+      // catchable nearby), close the distance with a sideways sine weave —
+      // it reads skittery, slipping between the rocks, not a grabber's
+      // beeline — and fall back to a direct slash pass.
+      // It only sets up a body-check from CLOSE IN (CFG.LURKER_SHOVE_R): a
+      // rock punted from across the pocket never reads as aimed and wastes
+      // the charge. Further out it closes the distance first.
+      const rock = (al.shovedT > 0 || dist > CFG.LURKER_SHOVE_R)
+        ? null : pickShoveRock(game, al, s);
+      if (rock) { al.target = rock; al.state = 'line'; al.fetchT = 0; break; }
+      const wob = Math.sin(game.time * 5 + al.wobble);
+      steer(al, s.x - Math.sin(al.angle) * wob * 220,
+        s.y + Math.cos(al.angle) * wob * 220, sp * 0.85);
+      if (dist < 400) { al.state = 'pounce'; al.cool = 1.1; }
+      break;
+    }
+    case 'line': {
+      // Swing around to the far side of the rock — the staging point on the
+      // line from the player THROUGH the rock — so the charge that follows
+      // sends it at the ship. This arc behind the rock is the tell that
+      // reads as "it's setting something up", and the window to move.
+      const r = al.target;
+      if (!r || !r.alive || r.heldBy) { al.target = null; al.state = 'stalk'; break; }
+      al.fetchT = (al.fetchT || 0) + dt;
+      // Give up on a rock that isn't coming together and re-pick: chasing one
+      // bad angle for long is what made the body-check feel rare.
+      if (al.fetchT > 3.5) { al.target = null; al.state = 'stalk'; break; }
+      const rdx = r.x - s.x, rdy = r.y - s.y;
+      const rd = Math.hypot(rdx, rdy) || 1;
+      const stage = r.radius + al.radius + 70;
+      const sx = r.x + (rdx / rd) * stage, sy = r.y + (rdy / rd) * stage;
+      steer(al, sx, sy, sp);
+      if (Math.hypot(sx - al.x, sy - al.y) < 95) { al.state = 'charge'; al.cool = 1.6; }
+      break;
+    }
+    case 'charge': {
+      // Straight through the rock at the ship. The shove itself happens in
+      // physics.collideAlienBody (which sets shovedT); this just drives.
+      const r = al.target;
+      al.cool -= dt;
+      if (!r || !r.alive || r.heldBy || al.shovedT > 0 || al.cool <= 0) {
+        al.target = null;
+        al.state = 'slip'; al.cool = 0.9;
+        al.slipDir = Math.random() < 0.5 ? -1 : 1;
+        break;
+      }
+      // Aim PAST the rock along the rock->ship line, so it drives through
+      // the contact instead of parking on the surface
+      const adx = s.x - r.x, ady = s.y - r.y;
+      const ad = Math.hypot(adx, ady) || 1;
+      steer(al, r.x + (adx / ad) * 90, r.y + (ady / ad) * 90, sp * 1.4);
+      break;
+    }
+    case 'pounce': {   // no rock to hand: the old slash pass, straight at you
+      al.cool -= dt;
+      const t = dist / (sp * 1.4);
+      steer(al, s.x + s.vx * t, s.y + s.vy * t, sp * 1.4);
+      if (al.cool <= 0) {
+        al.state = 'slip'; al.cool = 1.3;
+        al.slipDir = Math.random() < 0.5 ? -1 : 1;
+      }
+      break;
+    }
+    case 'slip': {     // break off through the rocks before coming around
+      al.cool -= dt;
+      const away = Math.atan2(al.y - s.y, al.x - s.x) + al.slipDir * 0.7;
+      steer(al, al.x + Math.cos(away) * 500, al.y + Math.sin(away) * 500, sp);
+      if (al.cool <= 0) al.state = 'stalk';
+      break;
+    }
+    default: al.state = 'stalk';
+  }
+  avoidStars(game, al);
+}
+
+// A rock the lurker can actually body-check AT the player: loose, light
+// enough to move, close to hand, and already roughly between it and the ship
+// (score favours a small swing-around, so it commits to shots that look
+// aimed rather than dragging one across the whole pocket). Deliberately NOT
+// the grabber's nearestRock — that one ignores geometry because a beam can
+// carry ammo anywhere; a shove only works along the line it charges.
+function pickShoveRock(game, al, s) {
+  const sdx = s.x - al.x, sdy = s.y - al.y;
+  const sd = Math.hypot(sdx, sdy) || 1;
+  const ux = sdx / sd, uy = sdy / sd;
+  let best = null, bestScore = 0;
+  for (const b of game.bodies) {
+    if (!b.alive || b.type !== 'asteroid' || b.heldBy) continue;
+    if (b.mass > 2000 || b.majorComet || b.pod) continue;   // muscle, not a beam
+    const dx = b.x - al.x, dy = b.y - al.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 60 || d > 700) continue;
+    // How well the rock sits on the line toward the ship (1 = dead ahead)
+    const align = (dx * ux + dy * uy) / (d || 1);
+    if (align < 0.3) continue;
+    const score = align * (1 - d / 700);
+    if (score > bestScore) { bestScore = score; best = b; }
+  }
+  return best;
+}
+
 function updateAlien(game, al, dt) {
   const s = game.ship;
   al.wobble += dt * 3;
@@ -93,6 +234,7 @@ function updateAlien(game, al, dt) {
   al.angle = s.alive ? Math.atan2(s.y - al.y, s.x - al.x) : al.angle;
 
   // Non-grabber kinds have their own simple minds
+  if (al.kind === 'lurker') { updateLurker(game, al, dt); return; }
   if (al.kind === 'wright') { updateWright(game, al, dt); return; }
   if (al.kind === 'golem') {
     // Relentless: your leftovers hunt you until one of you is gone. DUST
@@ -229,6 +371,66 @@ function updateAlien(game, al, dt) {
   avoidStars(game, al);
 }
 
+// DENSE-FIELD anchors + SHOAL LURKER broods. The anchor tracks the field's
+// heart rock EXACTLY while it rides its rail (splash frames advance rails but
+// not this function, so deriving from the rail is what keeps the anchor glued
+// to the visible rocks across the title screen); a stolen or destroyed heart
+// hands off to the anchor's own clock at the same shared w. Each field holds
+// a FINITE brood (CFG.FIELD_BROOD): entering the shoal springs ambushes —
+// a lurker "detaches" from a nearby field rock — until the budget is spent,
+// and once the last of the brood dies the field is quiet for the rest of the
+// run (the nest rule: consequence traces to a player choice; no respawner).
+function updateFields(game, dt) {
+  if (!game.fields) return;
+  const s = game.ship;
+  for (let fi = 0; fi < game.fields.length; fi++) {
+    const f = game.fields[fi];
+    const h = f.heart;
+    if (h && h.alive && h.onRails) f.ang = h.rail.ang;
+    else f.ang += f.w * dt;
+    const hs = game.homeStar;
+    f.x = hs.x + Math.cos(f.ang) * f.r;
+    f.y = hs.y + Math.sin(f.ang) * f.r;
+    if (f.wakeT > 0) f.wakeT -= dt;
+    if (f.brood <= 0) {
+      // Brood spent: the field goes QUIET the moment the last lurker dies
+      if (!f.cleared &&
+          !game.aliens.some((a) => a.alive && a.kind === 'lurker' && a.field === fi)) {
+        f.cleared = true;
+        bump(game, 'fieldClear');
+        game.fieldClearWarn = f.name;
+      }
+      continue;
+    }
+    if (!s.alive || game.dustCloak || f.wakeT > 0) continue;
+    // Ambushes spring only when the ship is actually IN the rocks — the
+    // pocket footprint, not a circle around the anchor (config.fieldFrac).
+    if (fieldFrac(f, s.x, s.y) > 1.02) continue;
+    let awake = 0;
+    for (const a of game.aliens) if (a.alive && a.kind === 'lurker' && a.field === fi) awake++;
+    if (awake >= 2) continue;   // at most a pair hunting at once
+    f.wakeT = 6 + Math.random() * 4;
+    f.brood--;
+    // The ambush: it was one of the rocks — spawn at a field rock near the
+    // player (close enough to menace, far enough to see coming).
+    let spot = null, bd = Infinity;
+    for (const b of game.bodies) {
+      if (!b.alive || b.field !== fi || b.heldBy) continue;
+      const d = Math.hypot(b.x - s.x, b.y - s.y);
+      if (d > 280 && d < 1000 && d < bd) { bd = d; spot = b; }
+    }
+    const th = Math.random() * TAU;
+    const x = spot ? spot.x + Math.cos(th) * (spot.radius + 8) : s.x + Math.cos(th) * 600;
+    const y = spot ? spot.y + Math.sin(th) * (spot.radius + 8) : s.y + Math.sin(th) * 600;
+    const al = new Alien(x, y, 'lurker');
+    al.field = fi;
+    if (spot) { al.vx = spot.vx; al.vy = spot.vy; }
+    game.aliens.push(al);
+    addParticles(game, x, y, 0, 0, 10, '#8d8577', 90, 0.6);
+    game.lurkerWarn = true;
+  }
+}
+
 // BASTION fortresses: shield upkeep, turret fire, and bolt flight/impacts
 function updateForts(game, dt) {
   const s = game.ship;
@@ -330,6 +532,10 @@ export function updateAliens(game, dt) {
       game.dustCloak = false;
     }
   }
+
+  // Field anchors advance BEFORE the alien loop so lurkers steer at this
+  // frame's anchor, not last frame's.
+  updateFields(game, dt);
 
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
   updateForts(game, dt);
