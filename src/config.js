@@ -235,7 +235,10 @@ export const CFG = {
   // smear: the design goal is that flying in you get LOST in it, and a wide
   // arc you cross in one straight line never does that no matter how long it
   // is. At 6200 x 4600 against a ~450u view radius, the far side is a dozen
-  // screens away in every direction.
+  // screens away in every direction. These are the EXTENTS of the outline,
+  // not a rectangle: the actual boundary is the lobed blob in fieldLobe()
+  // below, sampled by world.fieldPoint — a rectangular scatter at these
+  // numbers read as an obvious square of rocks.
   FIELD_LEN: 2950,         // tangential half-length of the pocket (world units)
   FIELD_SPREAD: 2200,      // radial half-thickness (world units)
   // A few GIANTS per pocket: landmark rocks big enough to navigate by and to
@@ -282,7 +285,8 @@ export const CFG = {
   FIELD_BOUNCE: 0.92,
   FIELD_TOUGH: 0.08,       // x damage on field-vs-field impacts (unless a player throw is involved)
   FIELD_HP_MUL: 6,         // field rock is MUCH tougher stuff than belt rock
-  FIELD_BROOD: 4,          // lurkers per field per run — finite; a cleared field is QUIET
+  FIELD_BROOD: 7,          // lurkers per field per run — finite; a cleared field is QUIET
+  FIELD_HUNTERS: 3,        // how many of that brood may hunt at once (ai.updateFields)
   LURKER_HP: 34,           // frail: ~2 solid hits, or ~3 of its own ram passes
   LURKER_RADIUS: 10,
   LURKER_DMG: 16,          // contact damage per slash pass (grabbers hit for 24)
@@ -291,12 +295,22 @@ export const CFG = {
   // BODY-CHECKS field rocks at you. Ambient rock contact can't hurt it (it
   // lives in the rocks — see the shove branch in physics.collideAlienBody);
   // a PLAYER-thrown rock still guts it, which is the counterplay.
-  LURKER_SHOVE: 420,       // speed imparted to a rock it charges through
-  LURKER_SHOVE_CD: 1.0,    // seconds before it can body-check again
+  // Shove speed is a REAL THREAT SPEED, not a nudge: at 420 the rock crawled
+  // across the pocket and you simply flew around it, and the guidance window
+  // (below) was doing all the work of making the shot connect. It sits above
+  // ALIEN_THROW (430) on purpose — a body-check is the lurker's whole attack,
+  // where a grabber's throw is one of several.
+  LURKER_SHOVE: 700,       // speed imparted to a rock it charges through
+  LURKER_SHOVE_CD: 0.7,    // seconds before it can body-check again
   // It only sets up a body-check when it is genuinely CLOSE — a rock punted
   // from across the pocket is a random event the player never reads as aimed,
   // and it wastes the charge. Inside this range the shot is a real threat.
   LURKER_SHOVE_R: 950,     // ship must be within this before it lines a rock up
+  // Heaviest rock a body-check can actually LAUNCH — shared by the AI's pick
+  // and the physics gate so they can't disagree. A charge that clips a giant
+  // (or a monolith) on the way in now just separates instead of "throwing" it
+  // at 40u/s and burning the cooldown on a shot that visibly did nothing.
+  LURKER_SHOVE_MASS: 2600,
   // The shove is HELPED: the rock keeps steering toward its lead solution for
   // a moment after the hit, so a body-check reads as a deliberate aimed shot
   // instead of a hopeful nudge that the pocket's own drift walks off target.
@@ -362,20 +376,45 @@ export const CFG = {
   ATMO_DPS_FRAC: 0.9,
 };
 
+// THE POCKET OUTLINE. A pocket sampled straight from the FIELD_LEN x
+// FIELD_SPREAD extents reads as a SQUARE of rocks — the eye finds the four
+// corners immediately and the shoal stops being a place and becomes a box.
+// The outline is therefore a lobed blob: a few low harmonics (deterministic
+// per field, seeded in world.seedDenseFields) bulge and pinch the boundary,
+// so every approach shows a different silhouette and the edge never runs
+// straight. Amplitudes are capped well under 1 so the radius stays positive
+// and the pocket stays roughly as big as its extents claim (~0.67x-1.33x).
+// Returns the outline radius in NORMALIZED pocket units (1 = the plain
+// ellipse). A field with no lobe table (an older save, a test stub) falls
+// back to the ellipse.
+export function fieldLobe(f, th) {
+  const L = f && f.lobe;
+  if (!L) return 1;
+  return 1 + L[0] * Math.cos(2 * th + L[1])
+           + L[2] * Math.cos(3 * th + L[3])
+           + L[4] * Math.cos(5 * th + L[5]);
+}
+export const FIELD_LOBE_MAX = 1.42;   // ceiling on fieldLobe — see seedDenseFields' amplitudes
+
 // Normalized position of (x, y) in a dense field's POCKET frame: <= 1 means
-// inside the elliptical footprint (FIELD_LEN along the lane, FIELD_SPREAD
-// across it), values above 1 scale linearly with how far outside. This is
-// THE containment test for everything field-scoped — the lurker leash and
-// wake (ai.js), the hunting-eye mirror (render.js), and the entry announce
-// (world.js) all share it so they can never disagree about where a field
-// ends. Lives in config because config is a leaf every consumer already
-// imports, and it needs CFG.
+// inside the lobed footprint (FIELD_LEN along the lane, FIELD_SPREAD across
+// it, modulated by fieldLobe), values above 1 scale with how far outside.
+// This is THE containment test for everything field-scoped — the lurker leash
+// and wake (ai.js), the hunting-eye mirror (render.js), and the entry
+// announce (world.js) all share it so they can never disagree about where a
+// field ends; the rock SCATTER is sampled from the same outline (world.js
+// fieldPoint) so what the containment test calls "inside" is exactly where
+// the rocks are. Lives in config because config is a leaf every consumer
+// already imports, and it needs CFG.
 export function fieldFrac(f, x, y) {
   const dx = x - f.x, dy = y - f.y;
   const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
   const rad = dx * ca + dy * sa;        // radial offset (across the lane)
   const tan = -dx * sa + dy * ca;       // tangential offset (along the lane)
-  return Math.hypot(tan / CFG.FIELD_LEN, rad / CFG.FIELD_SPREAD);
+  const nx = tan / CFG.FIELD_LEN, ny = rad / CFG.FIELD_SPREAD;
+  const q = Math.hypot(nx, ny);
+  if (q < 1e-6) return 0;
+  return q / fieldLobe(f, Math.atan2(ny, nx));
 }
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your

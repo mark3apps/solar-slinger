@@ -1,4 +1,4 @@
-import { CFG, PROG, addXp, maxLives, fieldFrac } from './config.js';
+import { CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, FIELD_LOBE_MAX } from './config.js';
 import { Body, railBody, railEllipse } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
@@ -889,6 +889,37 @@ export function markFieldRock(b, fi) {
   return b;
 }
 
+// A scatter point inside a field's LOBED outline, returned in the pocket
+// frame (tangential along the lane, radial across it). sqrt(u) keeps the
+// scatter area-uniform inside the outline instead of piling up at the middle,
+// and the direction is drawn against the lobe radius (rejection, bounded) so
+// the bulges are as densely packed as the pinches — sampling directions flat
+// would leave every bulge visibly thinner than the waist.
+// The last few percent land OUTSIDE the outline as stragglers: a shoal that
+// stops dead at its boundary has a drawn edge, which is exactly the hard
+// in-world line the design law forbids. The ragged fringe is what makes the
+// pocket end the way weather does.
+// Returns WORLD coords, because the flat pocket frame config.fieldFrac
+// measures in is not the sun-polar frame the rails want: the arc term has to
+// use the LOCAL radius, and the tan²/2r term undoes the chord bow. Without
+// that correction a 3900u-long pocket at the inner lane sags ~730u sunward at
+// its ends — a third of its own half-thickness — and the containment test
+// stops agreeing with where the rocks visibly are.
+function fieldPoint(f, sun, rng) {
+  let th = rng() * TAU, lb = fieldLobe(f, th);
+  for (let k = 0; k < 3; k++) {
+    if (rng() < (lb * lb) / (FIELD_LOBE_MAX * FIELD_LOBE_MAX)) break;
+    th = rng() * TAU; lb = fieldLobe(f, th);
+  }
+  let q = Math.sqrt(rng()) * lb;
+  if (rng() < 0.07) q *= 1 + rng() * 0.35;   // fringe straggler
+  const tan = Math.cos(th) * q * CFG.FIELD_LEN;
+  const rad = Math.sin(th) * q * CFG.FIELD_SPREAD;
+  const rr = f.r + rad + (tan * tan) / (2 * f.r);
+  const a = f.ang + tan / rr;
+  return { x: sun.x + Math.cos(a) * rr, y: sun.y + Math.sin(a) * rr };
+}
+
 function seedDenseFields(game, sun, rng) {
   game.fields = [];
   for (let fi = 0; fi < FIELD_DEFS.length; fi++) {
@@ -906,9 +937,19 @@ function seedDenseFields(game, sun, rng) {
       r: fd.r, ang: ang0, w, name: fd.name, heart: null,
       x: sun.x + Math.cos(ang0) * fd.r, y: sun.y + Math.sin(ang0) * fd.r,
       brood: CFG.FIELD_BROOD, wakeT: 0, cleared: false, near: false, seen: false,
+      // The pocket's own SILHOUETTE (config.fieldLobe): three harmonics drawn
+      // once here, so a field's shape is part of the world seed and every
+      // consumer of fieldFrac sees the same blob. Amplitudes sum to at most
+      // 0.41 — under CFG's FIELD_LOBE_MAX ceiling (so the rejection sampler
+      // and the LOD reach stay honest), and enough that no two of the four
+      // shoals look alike from the same bearing.
+      lobe: [
+        rand(rng, 0.12, 0.20), rng() * TAU,
+        rand(rng, 0.08, 0.13), rng() * TAU,
+        rand(rng, 0.05, 0.08), rng() * TAU,
+      ],
     };
     game.fields.push(f);
-    const arc = CFG.FIELD_LEN / fd.r;   // physical pocket size at every radius
     const placed = [];
     for (let i = 0; i < CFG.FIELD_ROCKS; i++) {
       // Reject positions that land on top of something already placed: a rock
@@ -918,11 +959,16 @@ function seedDenseFields(game, sun, rng) {
       // The scan is bounded to the heart plus the last 40 placements: a full
       // O(n^2) sweep at this rock count is millions of checks per worldgen,
       // and freshRun/mechTest regenerate the world constantly.
-      let x = 0, y = 0;
-      for (let tries = 0; tries < 6; tries++) {
-        const a = ang0 + rand(rng, -arc, arc);
-        const rr = fd.r + rand(rng, -CFG.FIELD_SPREAD, CFG.FIELD_SPREAD);
-        x = sun.x + Math.cos(a) * rr; y = sun.y + Math.sin(a) * rr;
+      // The HEART sits at the pocket's CENTRE, not at a scatter draw. Its
+      // rail angle IS the field's anchor (f.ang, read back every frame in
+      // ai.updateFields), so a heart placed off-centre silently drags the
+      // whole containment frame with it — measured before this: 40% of a
+      // shoal's own rocks fell OUTSIDE fieldFrac <= 1, which is the leash,
+      // the wake and the entry announce all disagreeing with the rocks.
+      let x = f.x, y = f.y;
+      if (i > 0) for (let tries = 0; tries < 6; tries++) {
+        const p = fieldPoint(f, sun, rng);
+        x = p.x; y = p.y;
         if (f.heart && Math.hypot(f.heart.x - x, f.heart.y - y) < 120) continue;
         let clash = false;
         for (let k = Math.max(0, placed.length - 40); k < placed.length; k++) {
@@ -1410,10 +1456,10 @@ export function replenishWorld(game, dt) {
       }
       if (n >= CFG.FIELD_ROCKS * 0.8 || game.bodies.length > 10600) continue;
       for (let i = 0; i < 55; i++) {   // scales with FIELD_ROCKS (see the cadence note above)
-        const a = f.ang + rand(rng, -CFG.FIELD_LEN, CFG.FIELD_LEN) / f.r;
-        const rr = f.r + rand(rng, -CFG.FIELD_SPREAD, CFG.FIELD_SPREAD);
-        const x = game.homeStar.x + Math.cos(a) * rr;
-        const y = game.homeStar.y + Math.sin(a) * rr;
+        // Same lobed sampler as the seed pass — reknitting from a rectangle
+        // would slowly square off a pocket that was born organic.
+        const p = fieldPoint(f, game.homeStar, rng);
+        const x = p.x, y = p.y;
         // Never in view — a rock fading into existence mid-screen reads wrong
         if (Math.hypot(x - s.x, y - s.y) < (game.viewR || 1200) * 1.3) continue;
         const v = orbitVel(game.homeStar, x, y, 1);

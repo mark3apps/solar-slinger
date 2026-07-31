@@ -715,6 +715,20 @@ code "works."
     outer field into a dilute 11,000u arc): the design goal is that you fly in and GET LOST, and a
     long lane-shaped smear never does that no matter how big it is — against a ~450u view radius the
     far side is a dozen screens away in every direction.
+    **But round is not RECTANGULAR** — `FIELD_LEN`/`FIELD_SPREAD` are the EXTENTS of an organic
+    outline, not a box to scatter inside. A uniform draw across those extents read as an obvious
+    SQUARE of rocks (the eye finds the four corners instantly and the shoal stops being a place).
+    The boundary is a lobed blob: three low harmonics per field (`f.lobe`, seeded at worldgen,
+    evaluated by `config.fieldLobe`, ceiling `FIELD_LOBE_MAX`) bulge and pinch it ~0.6-1.4x, so no
+    two shoals share a silhouette. `world.fieldPoint` is the ONE sampler — seed pass and reknit both
+    — and it draws directions AGAINST the lobe radius (bulges stay as dense as pinches), places
+    ~7% of rocks past the outline as a ragged fringe (a shoal that stops dead at its boundary is
+    the hard in-world edge the design law forbids), and converts the flat pocket frame back to
+    sun-polar with the chord-bow correction (`tan²/2r`) so the rocks sit where `fieldFrac` says
+    they do. **The HEART is placed at the pocket CENTRE, never a scatter draw** — its rail angle IS
+    `f.ang`, so an off-centre heart drags the whole containment frame with it (measured before the
+    fix: 40% of a shoal's own rocks fell outside `fieldFrac <= 1`, i.e. outside its own leash, wake
+    and entry announce).
     **The whole shoal shares ONE `rail.w`** (the id-hashed ±4% jitter is overridden per rock, at seed,
     at reknit, AND in the physics re-rail scan): a pocket with mixed angular speeds shears apart and
     same-radius rocks grind each other, so a rigid pocket is what keeps a field a field. Each field's
@@ -789,7 +803,8 @@ code "works."
     Measured at ~8000 bodies, in-field: sim 3.6 -> 2.3ms, draw 2.2 -> 1.6ms, locked 120 fps.
   - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
     BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
-    one from a nearby rock (<=2 hunting at once); it picks a rock roughly between itself and the ship,
+    one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at
+    once); it picks a rock roughly between itself and the ship,
     swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
     launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
     counter (orbit shield blocks it for XP, Deflector parries it, Dead Stop primes on the catch). Three
@@ -801,11 +816,16 @@ code "works."
       (measured: 1 shove/min, none landing within 1300u).
     - **`collideAlienBody`'s "never collide with your own ammo" early-out must skip lurkers** — for a
       lurker the target IS the rock it means to hit, and that one line silently cancelled the whole mechanic.
+    - **Only rocks under `LURKER_SHOVE_MASS` are shovable, in the AI pick AND the physics gate.**
+      Without the physics half, a charge that clipped a giant on the way in "threw" it at ~40u/s and
+      burnt the cooldown on a shot that visibly did nothing.
     The shot is *helped*: it only sets up from close in (`LURKER_SHOVE_R`) and the launched rock keeps
     steering toward the lead point briefly (`LURKER_GUIDE_*`) so a busy pocket deflecting it off a
-    neighbour doesn't turn every shot into a graze. Lurkers respect the dust shroud, and their
+    neighbour doesn't turn every shot into a graze. `LURKER_SHOVE` sits ABOVE `ALIEN_THROW` on
+    purpose — the body-check is the lurker's whole attack, and at the old 420 the rock crawled over
+    and the guidance window was doing all the work. Lurkers respect the dust shroud, and their
     containment is the POCKET FOOTPRINT itself via **`config.fieldFrac`** — the ONE shared
-    elliptical test (ai.js leash + wake, render.js hunting-eye mirror, world.js entry announce all
+    lobed-outline test (ai.js leash + wake, render.js hunting-eye mirror, world.js entry announce all
     use it, so they can never disagree about where a field ends). A circular territory wide enough
     to cover the lane's long axis overshot the short axis 2x and lurkers visibly hunted empty space;
     now they engage while the ship is inside ~1.15 of the footprint, turn back at 1.3, and ambushes
