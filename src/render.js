@@ -2638,13 +2638,31 @@ function drawPrediction(game) {
   drawPath(heldPts, heldHit, 'rgba(255, 200, 90, 0.55)');
 }
 
-// The minimap is a SHIP-CENTERED RADAR: it shows the local neighborhood
-// (MINIMAP_RANGE world units to the rim), not the whole system — worlds drift
-// across it as you fly. Neon rim with bearing ticks, a slow rotating sweep and
-// locator ping centered on you, your sensor bubble, and glowing blips. Same
-// data rules as ever — fog of war (b.seen) decides what exists; the sun is
-// pinned to the rim when out of range so you can always fly home by the map.
+// The minimap is a SHIP-CENTERED RADAR: it shows the local neighborhood, not
+// the whole system — worlds drift across it as you fly. Neon rim with bearing
+// ticks, a slow rotating sweep and locator ping centered on you, your sensor
+// bubble, and glowing blips. Fog of war (b.seen) still decides what is
+// IDENTIFIED; the sun is an ordinary object on the map, drawn where it is at
+// the size it is (never pinned to the rim — a fake sun in a direction you
+// can't actually reach is a lie the pilot then flies by).
+//
+// TWO SCALES, one radius. The INNER half of the dial is the tactical picture
+// at 1:1 with the old radar (MINIMAP_NEAR world units); the OUTER half is
+// zoomed out 2x, so it covers TWICE the world span it used to (MINIMAP_RANGE
+// more, out to MINIMAP_FAR) in the same pixels. Everything positional goes
+// through radarR() — and because a radial warp turns world-space circles into
+// non-circles, every ring around the sun is SAMPLED through it (worldCirclePath)
+// instead of drawn with ctx.arc.
+//
+// The outer band is a SCAN, not a chart: blips there exist only for the second
+// or so after the sweep line crosses them, and an unexplored contact shows as
+// an anonymous gray dot — a return, not an identification. Fly closer (into
+// the inner half) and it becomes a real, persistent blip.
 const MINIMAP_RANGE = 5200;
+const MINIMAP_NEAR = MINIMAP_RANGE / 2;              // inner half, unchanged scale
+const MINIMAP_FAR = MINIMAP_NEAR + MINIMAP_RANGE;    // outer half at half scale
+const MINIMAP_SWEEP_T = 7;                           // seconds per sweep revolution
+const MINIMAP_PING_T = 1.1;                          // how long an outer contact lingers
 const RADAR_SIZE = 200;   // CSS px of the #radar canvas (positioned + tilted by style.css)
 function drawMinimap(game) {
   // The radar has its OWN canvas so the DOM can tilt it on the 3D canopy —
@@ -2654,10 +2672,32 @@ function drawMinimap(game) {
   ctx.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
   const cx = RADAR_SIZE / 2, cy = RADAR_SIZE / 2;
   const r = 95;
-  const scale = (r - 4) / MINIMAP_RANGE;
+  const rim = r - 4;                    // usable dial radius
+  const mid = rim / 2;                  // the scale break, halfway out
+  const scale = rim / MINIMAP_RANGE;    // inner-half px-per-world-unit (the old scale)
   // Radar origin: the ship, or the camera while the wreck drifts
   const fx = game.ship.alive ? game.ship.x : game.cam.x;
   const fy = game.ship.alive ? game.ship.y : game.cam.y;
+
+  // The piecewise dial: 1x out to MINIMAP_NEAR, then half scale (MINIMAP_FAR
+  // lands exactly on the rim). It stays CONTINUOUS past the rim rather than
+  // clamping — a clamped sample smears along the rim as a false arc, whereas an
+  // over-rim one just falls outside the clip. Range culling is done by distance.
+  const radarR = (d) => d <= MINIMAP_NEAR ? d * scale
+    : mid + (d - MINIMAP_NEAR) * scale * 0.5;
+  // A world-space circle is NOT a circle once the radius is warped — sample it
+  // and push every point through radarR so the ring says where the edge truly is.
+  const worldCirclePath = (wx, wy, wr) => {
+    ctx.beginPath();
+    for (let i = 0; i <= 96; i++) {
+      const a = (i / 96) * TAU;
+      const dx = wx + Math.cos(a) * wr - fx, dy = wy + Math.sin(a) * wr - fy;
+      const d = Math.hypot(dx, dy) || 1;
+      const rr = radarR(d);
+      const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+  };
 
   // Dark well with a faint lit horizon toward the top
   const bg = ctx.createRadialGradient(cx, cy - r * 0.6, r * 0.2, cx, cy, r);
@@ -2669,15 +2709,21 @@ function drawMinimap(game) {
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.clip();
 
-  // Grid: two range rings + cross axes, barely-there
+  // Grid: range rings + cross axes, barely-there
   ctx.strokeStyle = 'rgba(176, 112, 255, 0.10)';
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.arc(cx, cy, r * (1 / 3), 0, TAU); ctx.stroke();
-  ctx.beginPath(); ctx.arc(cx, cy, r * (2 / 3), 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, mid * 0.5, 0, TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, mid + rim * 0.25, 0, TAU); ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
   ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
   ctx.stroke();
+  // …and the SCALE BREAK itself, dashed (helper-UI grammar) so the jump in
+  // scale is something the eye can see rather than a lie about distance.
+  ctx.strokeStyle = 'rgba(176, 112, 255, 0.28)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.arc(cx, cy, mid, 0, TAU); ctx.stroke();
+  ctx.setLineDash([]);
 
   // Sensor bubble: how far the scan actually reveals (mirrors replenishWorld).
   // Centered on the ship = the radar center.
@@ -2688,7 +2734,7 @@ function drawMinimap(game) {
     const gh = game.ghost;
     if (gh && gh.alive && gh.awake &&
         Math.hypot(gh.x - game.ship.x, gh.y - game.ship.y) < 6000) seeW *= 1.5;
-    const seeR = seeW * scale;
+    const seeR = radarR(seeW);
     ctx.fillStyle = 'rgba(176, 112, 255, 0.05)';
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.fill();
     ctx.strokeStyle = 'rgba(176, 112, 255, 0.22)';
@@ -2696,35 +2742,48 @@ function drawMinimap(game) {
   }
 
   // The sun sits at the world origin: storm front + world edge both circle it,
-  // drawn in ship-relative space (the clip discards whatever falls outside).
-  const sunX = cx - fx * scale, sunY = cy - fy * scale;
+  // sampled through the warp (the clip discards whatever falls outside).
+  const dSun = Math.hypot(fx, fy);
   if (game.storm) {
     ctx.strokeStyle = 'rgba(255, 200, 90, 0.55)';
     ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(sunX, sunY, game.storm.r * scale, 0, TAU); ctx.stroke();
+    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
     ctx.lineWidth = 4;
     ctx.strokeStyle = 'rgba(255, 180, 80, 0.15)';
-    ctx.beginPath(); ctx.arc(sunX, sunY, game.storm.r * scale, 0, TAU); ctx.stroke();
+    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
     ctx.lineWidth = 1;
   }
+  if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_FAR * 1.2) {
+    // world edge: the icy band of the Oort wall with the ember kill line
+    // at its foot — matches the wall's in-world reading
+    ctx.strokeStyle = 'rgba(150, 200, 255, 0.18)';
+    ctx.lineWidth = 7;
+    worldCirclePath(0, 0, CFG.WORLD_R + 240); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 130, 120, 0.5)';
+    ctx.lineWidth = 1.5;
+    worldCirclePath(0, 0, CFG.WORLD_R); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  // THE SUN, as a body and not a compass rose: drawn only when it is actually
+  // within radar reach, at its true radius. (History: it used to pin to the rim
+  // from anywhere as a homeward marker, which put a sun-coloured dot in a
+  // direction where there was no sun.) Sampled through the warp like the rings —
+  // straddling the scale break, its disc genuinely is pinched.
   {
-    const dSun = Math.hypot(fx, fy);
-    if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_RANGE * 1.2) {
-      // world edge: the icy band of the Oort wall with the ember kill line
-      // at its foot — matches the wall's in-world reading
-      ctx.strokeStyle = 'rgba(150, 200, 255, 0.18)';
-      ctx.lineWidth = 7;
-      ctx.beginPath(); ctx.arc(sunX, sunY, CFG.WORLD_R * scale + 4, 0, TAU); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 130, 120, 0.5)';
+    const sun = game.bodies.find(b => b.type === 'star' && b.alive);
+    if (sun && dSun - sun.radius < MINIMAP_FAR) {
+      ctx.fillStyle = 'rgba(255, 200, 105, 0.28)';
+      worldCirclePath(sun.x, sun.y, sun.radius); ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 226, 150, 0.75)';
       ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(sunX, sunY, CFG.WORLD_R * scale, 0, TAU); ctx.stroke();
+      worldCirclePath(sun.x, sun.y, sun.radius); ctx.stroke();
       ctx.lineWidth = 1;
     }
   }
 
   // Radar sweep: a trailing glow wedge behind a bright leading edge, spinning
   // around the ship. Runs on game.time, so it freezes with the sim behind menus.
-  const sweepAng = (game.time * TAU / 7) % TAU;
+  const sweepAng = (game.time * TAU / MINIMAP_SWEEP_T) % TAU;
   if (ctx.createConicGradient) {
     const sweep = ctx.createConicGradient(sweepAng, cx, cy);
     sweep.addColorStop(0, 'rgba(176, 112, 255, 0)');
@@ -2738,34 +2797,61 @@ function drawMinimap(game) {
     ctx.lineTo(cx + Math.cos(sweepAng) * r, cy + Math.sin(sweepAng) * r);
     ctx.stroke();
   }
-  // A blip FLARES as the beam crosses its bearing, then cools until the next
-  // pass — the radar reads as actively scanning, not as a static chart.
-  const sweepFlare = (dx, dy) => {
+  // How far BEHIND the sweep line a bearing sits, in seconds since it was last
+  // swept — the one time base both the inner flare and the outer ping read from.
+  const sweepAge = (dx, dy) => {
     let lag = sweepAng - Math.atan2(dy, dx);
     lag %= TAU; if (lag < 0) lag += TAU;
-    return Math.min(1, 0.68 + 0.6 * Math.exp(-lag * 2.5));
+    return lag * MINIMAP_SWEEP_T / TAU;
+  };
+  // INNER half: a blip FLARES as the beam crosses its bearing, then cools until
+  // the next pass — the radar reads as actively scanning, not as a static chart.
+  const sweepFlare = (age) => Math.min(1, 0.68 + 0.6 * Math.exp(-age * 2.24));
+  // OUTER half: no persistence at all. A contact exists for MINIMAP_PING_T after
+  // the beam touches it and then it's gone — out there the radar is a scan, not
+  // a chart, which is what buys the doubled reach without the dial turning into
+  // a wall of dots.
+  const sweepPing = (age) => {
+    if (age >= MINIMAP_PING_T) return 0;
+    const k = 1 - age / MINIMAP_PING_T;
+    return k * k;
   };
 
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
   for (const b of game.bodies) {
-    // Fog of war: only the sun is visible from anywhere; everything else
-    // appears once it has come within sensor range (b.seen, set by the
-    // replenishWorld scan) — the map fills in as you actually explore.
-    if (b.type !== 'star' && !b.seen) continue;
+    if (b.type === 'star') continue;               // drawn as a real disc, above
     const dx = b.x - fx, dy = b.y - fy;
     const d = Math.hypot(dx, dy) || 1;
-    if (b.type !== 'star' && d > MINIMAP_RANGE * 1.05) continue;   // beyond radar range
-    ctx.globalAlpha = sweepFlare(dx, dy);
-    let x = cx + dx * scale, y = cy + dy * scale;
-    if (b.type === 'star') {
-      // Off-range the sun pins to the rim as a homeward direction marker
-      const pinned = d * scale > r - 9;
-      if (pinned) { x = cx + (dx / d) * (r - 9); y = cy + (dy / d) * (r - 9); }
-      ctx.shadowColor = '#ffd76a';
-      ctx.fillStyle = b.color;
-      ctx.beginPath(); ctx.arc(x, y, pinned ? 3 : 4.5, 0, TAU); ctx.fill();
-    } else if (b.type === 'rogue') {
+    if (d > MINIMAP_FAR) continue;                 // beyond radar range
+    const outer = d > MINIMAP_NEAR;
+    // Fog of war: a body is IDENTIFIED once it has come within sensor range
+    // (b.seen, set by the replenishWorld scan). Unexplored contacts have no
+    // place on the chart half of the dial at all; in the scan half they come
+    // back as an anonymous return — something is out there, that's all. That
+    // return is offered only for the kinds of thing the scan itself considers
+    // findable — the type list MIRRORS world.js's fog scan, so belt rock never
+    // fills the outer band with gray confetti, and b.hidden (the sensor-null
+    // dark dwarf) still returns nothing at all: the relay's breadcrumb stays
+    // the ONLY way to learn it exists.
+    if (!b.seen && (!outer || b.hidden ||
+      (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue' &&
+        b.type !== 'station' && b.type !== 'nest' && !b.comet && !b.visitor))) continue;
+    const alpha = outer ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
+    if (alpha <= 0.01) continue;
+    const rr = radarR(d);
+    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    if (!b.seen) {
+      // Unidentified return: gray, faint, uniform — never the body's own colour
+      // or shape, or the scan would be charting what you haven't explored.
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.shadowColor = '#8a8f9c';
+      ctx.fillStyle = '#8a8f9c';
+      ctx.beginPath(); ctx.arc(x, y, 1.5, 0, TAU); ctx.fill();
+      continue;
+    }
+    ctx.globalAlpha = alpha;
+    if (b.type === 'rogue') {
       ctx.shadowColor = '#b07aff';
       ctx.fillStyle = '#b07aff';
       ctx.fillRect(x - 2, y - 2, 4, 4);
@@ -2808,14 +2894,21 @@ function drawMinimap(game) {
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   }
-  // Aliens: hot red deltas
+  // Aliens: hot red deltas. Hostiles obey the same two-scale law as everything
+  // else — a steady contact once they're inside the tactical half, a ping-only
+  // return while they're still out in the scan band.
   ctx.shadowColor = '#ff4a4a';
   ctx.fillStyle = '#ff4a4a';
   for (const al of game.aliens) {
     const dx = al.x - fx, dy = al.y - fy;
-    if (Math.hypot(dx, dy) > MINIMAP_RANGE * 1.05) continue;
-    ctx.globalAlpha = sweepFlare(dx, dy);
-    const x = cx + dx * scale, y = cy + dy * scale;
+    const d = Math.hypot(dx, dy) || 1;
+    if (d > MINIMAP_FAR) continue;
+    const age = sweepAge(dx, dy);
+    const alpha = d > MINIMAP_NEAR ? sweepPing(age) : sweepFlare(age);
+    if (alpha <= 0.01) continue;
+    ctx.globalAlpha = alpha;
+    const rr = radarR(d);
+    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
     ctx.beginPath();
     ctx.moveTo(x, y - 2.6); ctx.lineTo(x + 2.4, y + 2); ctx.lineTo(x - 2.4, y + 2);
     ctx.closePath(); ctx.fill();
@@ -2831,7 +2924,7 @@ function drawMinimap(game) {
     if (dk && dk.alive && dk.seen && !(game.charted && game.charted.wanderer)) {
       const dx = dk.x - fx, dy = dk.y - fy;
       const d = Math.hypot(dx, dy) || 1;
-      if (d > MINIMAP_RANGE * 1.05) {
+      if (d > MINIMAP_FAR) {
         const x = cx + (dx / d) * (r - 9), y = cy + (dy / d) * (r - 9);
         ctx.fillStyle = '#b89aff';
         ctx.beginPath();
@@ -2848,7 +2941,7 @@ function drawMinimap(game) {
   if (game.mayday && game.mayday.alive && game.mayday.heldBy !== 'player') {
     const dx = game.mayday.x - fx, dy = game.mayday.y - fy;
     const d = Math.hypot(dx, dy) || 1;
-    const rr = Math.min(d * scale, r - 9);
+    const rr = Math.min(radarR(d), r - 9);
     const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
     // mint-white, not nest-green: friendly-rescue must not share a hue with
     // the hostile-source blips
@@ -2885,7 +2978,7 @@ function drawMinimap(game) {
     if (dock) {
       const dx = dock.x - fx, dy = dock.y - fy;
       const d = Math.hypot(dx, dy) || 1;
-      const rr = Math.min(d * scale, r - 9);
+      const rr = Math.min(radarR(d), r - 9);
       const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
       // guide line: "fly this way" — dim so the marker stays the star
       ctx.strokeStyle = 'rgba(216, 255, 232, 0.3)';
