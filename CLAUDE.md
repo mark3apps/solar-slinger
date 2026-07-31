@@ -114,15 +114,27 @@ and START goes straight into it: `startGame` calls `openSpec`, so the first thin
   comment without understanding the bug it names.
 - **Roguelite progression is SPECIALIZATION-based.** There is NO passive leveling. The run OPENS on a
   choice of one of three **specs** (`SPECS` in config.js — BRAWLER / HAULER / SCOUT; `main.openSpec`
-  from `startGame`). `applySpec` locks `prog.spec` and grants that spec's two **starting-kit**
-  abilities at rank 1. The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
+  from `startGame`). `applySpec` locks `prog.spec` and grants that spec's **starting-kit**
+  abilities at rank 1. **Kit rule:** every kit carries at least THREE abilities with `max > 1` —
+  small picks only deepen owned abilities, so fewer rankable tracks makes tier 0's picks a
+  non-choice (max-1 unlocks like Retro Jets arrive already maxed and don't count).
+  The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
   XP bar starts empty (a paid opener read as "it skipped my first upgrade").
 - **Named abilities, spec-scoped, one currency.** `ABILITIES` (config.js) is the whole catalog: each
-  entry belongs to ONE `spec`, has `max` ranks, a `weight`, and a **`minTier` soft floor** (it can't be
-  OFFERED until you reach that tier — capstones sit at 3). `channel` is the stat bucket it feeds;
+  entry has an OWNER `spec`, `max` ranks, a `weight`, and a **`minTier` soft floor** (it can't be
+  OFFERED until you reach that tier — capstones sit at 3). An optional **`also: { specId: minTier }`**
+  map shares an ability with other specs at their own (usually higher) floors — the Scout sensor/QoL
+  chain (Retro Jets, Gravity Compass at tier 1; Nav Plotter, Lead Computer, Impact Warning at tier 2)
+  reaches BRAWLER/HAULER this way, and Afterburner reaches BRAWLER only at tier 4 (`tierFloorFor` is
+  the one resolver; `rankChoices` filters on ownership alone so a shared pick stays deepenable). `channel` is the stat bucket it feeds;
   `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one
   channel (e.g. HAULER's Orbital Sling + Expanded Bay both feed `orbit`). Add an ability by adding a
   catalog row + reading its channel in `shipStats` — nothing else needs to know it exists.
+  **Naming law:** two abilities that DO the same thing share one name/icon/desc even across specs
+  (Heavy Winch = the catch starter in BRAWLER and HAULER; Reinforced Hull = both hull tracks; ids stay
+  distinct). Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
+  Freighter, Juggernaut) are the exception — they must stay separately named to coexist as cards, and
+  their descs read as "more of the same".
 - **Two kinds of pick.** Good play (catch, smash, skim/skate, kill, collect scrap, survey, slingshot,
   shield-block) grants XP via `addXp(game, amount)` (`PROG.XP_*`). Crossing `xpForPick(prog)` sets
   `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) for a card:
@@ -344,7 +356,7 @@ code "works."
   - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
     regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability.
   - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
-    Cargo Plating armors the hull); never add a `shield`-channel ability to its pool.
+    Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
 - **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
   existing throw/grab/collision loop, no new subsystems):
