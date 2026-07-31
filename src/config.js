@@ -298,6 +298,14 @@ export const CFG = {
   // behaviour meant to cost the most. It also puts a real price on the brawler
   // blasts, which used to be free area denial in here.
   FIELD_SHIP_DMG: 2.5,
+  // FRIENDLY FIRE on the brawler blast (physics.brawlerThrowKill): the share of
+  // its body damage the SHIP takes for standing inside the DAMAGE radius, with
+  // the same linear falloff. At Demolition 3 / tier 3 that is ~63 at point
+  // blank — a fifth of the hull, and hull does not self-heal — so detonating on
+  // top of yourself is a real mistake rather than a free screen-clear. Keyed to
+  // the damage radius only: the long push may still shove rock past you
+  // harmlessly, because the lesson is "not that close", not "never use it".
+  BLAST_SELF_DMG: 0.6,
   // BILLIARDS CHAIN DEPTH, field rock only. THE fix for the shoal exploit: the
   // gravity-billiards rule stamps thrownBy='player' onto any rock your throw
   // knocks hard, so the NEXT rock it smashes still counts as yours. In the belt
@@ -316,7 +324,18 @@ export const CFG = {
   FIELD_HP_MUL: 6,         // field rock is MUCH tougher stuff than belt rock
   FIELD_BROOD: 7,          // lurkers per field per run — finite; a cleared field is QUIET
   FIELD_HUNTERS: 3,        // how many of that brood may hunt at once (ai.updateFields)
-  LURKER_HP: 34,           // frail: ~2 solid hits, or ~3 of its own ram passes
+  // NOT frail any more. At 34 hp a lurker was a jump-scare that died to the
+  // first thing you threw, so an ambush resolved before it could develop and
+  // the shoals' one predator never actually threatened anyone. At 90 it eats
+  // several solid hits and you have to keep flying while you deal with it —
+  // which is the whole point, because the danger is the ROCKS it is aiming at
+  // you, and that only lands if it lives long enough to line one up.
+  LURKER_HP: 90,
+  // Ceiling on what ONE rock hit can take off a lurker, as a fraction of its
+  // max hp — so it always costs at least ceil(1 / this) solid hits. This, not
+  // LURKER_HP, is what actually makes it hard to kill: see the note at the cap
+  // in physics.collideAlienBody for why hp alone cannot work here.
+  LURKER_HIT_CAP: 0.34,    // => 3 hits minimum
   LURKER_RADIUS: 10,
   LURKER_DMG: 16,          // contact damage per slash pass (grabbers hit for 24)
   LURKER_SPEED: 1.35,      // x ALIEN_SPEED — the fastest thing in the sky up close
@@ -329,8 +348,11 @@ export const CFG = {
   // (below) was doing all the work of making the shot connect. It sits above
   // ALIEN_THROW (430) on purpose — a body-check is the lurker's whole attack,
   // where a grabber's throw is one of several.
-  LURKER_SHOVE: 700,       // speed imparted to a rock it charges through
-  LURKER_SHOVE_CD: 0.7,    // seconds before it can body-check again
+  // 700 -> 1000 and the cadence tightened: a body-check now arrives faster than
+  // you can comfortably reposition, and a shoal under attack is a place with
+  // rock genuinely flying AT you rather than a place where rock exists.
+  LURKER_SHOVE: 1000,      // speed imparted to a rock it charges through
+  LURKER_SHOVE_CD: 0.5,    // seconds before it can body-check again
   // It only sets up a body-check when it is genuinely CLOSE — a rock punted
   // from across the pocket is a random event the player never reads as aimed,
   // and it wastes the charge. Inside this range the shot is a real threat.
@@ -339,7 +361,10 @@ export const CFG = {
   // and the physics gate so they can't disagree. A charge that clips a giant
   // (or a monolith) on the way in now just separates instead of "throwing" it
   // at 40u/s and burning the cooldown on a shot that visibly did nothing.
-  LURKER_SHOVE_MASS: 2600,
+  // Raised with the shove speed: ship damage scales with the ROCK'S MASS, so
+  // letting a body-check pick up something heavier is most of what "throws
+  // harder" means in the damage formula — not just a faster pebble.
+  LURKER_SHOVE_MASS: 3400,
   // The shove is HELPED: the rock keeps steering toward its lead solution for
   // a moment after the hit, so a body-check reads as a deliberate aimed shot
   // instead of a hopeful nudge that the pocket's own drift walks off target.
@@ -768,7 +793,7 @@ export const ABILITIES = [
   { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, needs: 'orbit', weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
-  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A heavy regenerating shield — FRONT ARC ONLY. Your tail stays bare.' },
+  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
   { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull — flick the mouse to hurl it that way. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
   { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
@@ -1080,17 +1105,33 @@ export function shipStats(prog) {
   const maxHull = 120 + 40 * tier + 55 * hullC + 30 * ramC;   // ram armor beefs the hull too
   // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
   // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
-  // bar. BRAWLER (War Plating) carves a BIG slice of the pool but covers the
-  // FRONT ARC ONLY — shieldArc is the half-angle around the nose; hits from
-  // behind skip the shield entirely (physics.damageShip). SCOUT (Phase Screen)
-  // is a THIN full wrap that recharges fast (regen/regenDelay below). HAULER
-  // has no shield ability at all — the orbit rock wall is its protection.
-  // It trades max hull for a recharging layer; only the shield regens.
+  // bar. It trades max hull for a recharging layer; only the shield regens.
+  // BRAWLER (War Plating) is a SMALL, FAST-RE-FORMING FRONT PLATE — shieldArc is
+  // the half-angle around the nose, and hits from behind skip it entirely
+  // (physics.damageShip). It used to carve a BIG slice of the pool (38% -> 65%),
+  // which made it simply the best shield in the game: converting most of a
+  // brawler's health into a regenerating layer meant the front-arc drawback
+  // never cost anything, because the pool was deep enough to never run out
+  // while you were facing the right way. Its identity is the CYCLE, not the
+  // capacity: a thin plate that soaks one hit and is back almost immediately
+  // (regenDelay below), which rewards a ship built to keep its nose on the
+  // threat. SCOUT (Phase Screen) is a thin FULL WRAP that also recharges fast —
+  // forgiving of any angle, which is what a scout needs. HAULER has no shield
+  // ability at all; the orbit rock wall is its protection.
   let shieldFrac = 0, shieldArc = Math.PI;
   if (shieldC > 0) {
     if (prog.spec === 'brawler') {
-      shieldFrac = Math.min(0.65, 0.38 + 0.055 * (shieldC - 1));
-      shieldArc = Math.PI / 2;   // the front half — the tail is bare
+      shieldFrac = Math.min(0.26, 0.12 + 0.028 * (shieldC - 1));
+      // Coverage is `shieldArc / PI` — the fraction of all bearings the plate
+      // covers, and the exact share it soaks from DIRECTIONLESS damage (heat,
+      // gas crush, Oort grind) in physics.damageShip. Deliberately well UNDER
+      // half: at a clean 50% the plate covered everything ahead of the beam, so
+      // "front arc only" was barely a drawback in practice — anything you were
+      // flying toward was covered. 35% is a genuinely NARROW nose plate (±63°):
+      // you have to point at the thing that is hurting you, glancing threats
+      // get through, and an all-over effect is soaked by only about a third.
+      // Render clips the shield visual to this same wedge.
+      shieldArc = Math.PI * 0.35;
     } else {
       shieldFrac = Math.min(0.28, 0.16 + 0.05 * (shieldC - 1));
     }
@@ -1207,10 +1248,15 @@ export function shipStats(prog) {
     // sharpens it further — the completionist reward reads through the same
     // stat every consumer already uses.
     sensorMul: (1 + 0.3 * deepC) * (prog.masterChart ? 1.25 : 1),
-    // Scout's Phase Screen is thin but SNAPPY — it recharges sooner and faster
-    // (that speed is the ability's identity; the other specs keep the base rate).
-    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
-    regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
+    // RECHARGE IS SPEC DNA, like the shield's shape above. Both shields are thin
+    // now, so the CYCLE is what separates them: BRAWLER's plate is the quickest
+    // to re-form of anything in the game (a ~1.75s lull and the nose is covered
+    // again) because that is the whole point of a small front plate on a ship
+    // built to keep charging; SCOUT's wrap is a touch slower to return but
+    // covers every angle. HAULER keeps the base rate — it has no shield anyway.
+    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : prog.spec === 'brawler' ? 1.5 : 1),
+    regenDelay: CFG.SHIP_REGEN_DELAY
+      * (prog.spec === 'scout' ? 0.6 : prog.spec === 'brawler' ? 0.35 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
     // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.

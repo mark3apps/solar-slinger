@@ -309,13 +309,17 @@ export function runMechTest(game, hooks, opts = {}) {
       damageShip(game, 10, 'suite: rear probe', s.angle + Math.PI);
       expect(s.shield === sh0, 'the front arc soaked a hit from behind');
       expect(Math.abs(hull0 - s.hull - 10) < 1e-9, 'a rear hit did not go straight to hull');
-      // ...and DIRECTIONLESS damage splits: half soaked, half through
+      // ...and DIRECTIONLESS damage splits by COVERAGE SHARE (shieldArc / PI),
+      // derived rather than hardcoded: the brawler wedge is deliberately under
+      // half (see shipStats), so a literal 5 here would just re-break every
+      // time that angle is tuned.
       s.shield = game.st.shieldMax; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
+      const share = game.st.shieldArc / Math.PI;
       damageShip(game, 10, 'suite: directionless probe');
-      expect(Math.abs(sh0 - s.shield - 5) < 1e-9,
-        `half a shield soaked ${sh0 - s.shield} of 10 directionless, wanted 5`);
-      expect(Math.abs(hull0 - s.hull - 5) < 1e-9, 'the other half never reached the hull');
+      expect(Math.abs(sh0 - s.shield - 10 * share) < 1e-9,
+        `the wedge soaked ${sh0 - s.shield} of 10 directionless, wanted ${10 * share}`);
+      expect(Math.abs(hull0 - s.hull - 10 * (1 - share)) < 1e-9, 'the rest never reached the hull');
       s.shield = game.st.shieldMax;
       return `pool=${Math.round(game.st.shieldMax)}`;
     });

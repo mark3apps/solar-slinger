@@ -109,10 +109,40 @@ function brawlerThrowKill(game, body) {
     // the eye could follow and made the fields a no-risk harvest. Trimmed to
     // roughly HALF the area at every rank (rank 3: 510 -> 350) — still the
     // loudest thing a brawler does, no longer a screen-wide delete key.
-    const R = 170 + 60 * Math.max(st.shockwave, st.demolition);
+    // TWO RADII, and the split is the whole point:
+    //   PUSH keeps its long reach — the shove is the spectacle, it costs the
+    //     world nothing, and a wide wave of rock scattering off the impact is
+    //     what the ability is FOR.
+    //   DAMAGE is tight. Erasing a body is the part that has to be earned, so
+    //     it now needs the target genuinely close to the detonation (rank 3:
+    //     204 vs the original 510 — 16% of the area).
+    // A rock between the two radii gets thrown, not deleted, which is the more
+    // interesting outcome anyway: it becomes YOUR next projectile.
+    const pushR = 170 + 60 * st.shockwave;
+    const dmgR = 90 + 38 * st.demolition;
+    const R = Math.max(pushR, dmgR);          // one sweep, widest of the two
     const push = 130 * st.shockwave;
     const dmg = 16 * st.demolition * (1 + st.tier * 0.4);
-    let hits = 0;
+    // FRIENDLY FIRE: detonating on top of yourself hurts. Without it the blast
+    // was the one brawler tool with no downside — pure area denial — and in a
+    // dense field, where the next rock is always within arm's reach, that is
+    // exactly what made a shoal safe to harvest. Keyed to the DAMAGE radius, so
+    // the long shove still never hurts you: the danger is specifically about
+    // detonating TOO CLOSE.
+    const s = game.ship;
+    if (dmg > 0 && s.alive) {
+      const sdx = s.x - body.x, sdy = s.y - body.y;
+      const sd = Math.hypot(sdx, sdy);
+      if (sd < dmgR) {
+        // hitAng points FROM the ship TOWARD the blast — the same convention
+        // collideShipBody uses, so a BRAWLER's front-arc shield really does
+        // cover a detonation it happens to be facing.
+        damageShip(game, dmg * (1 - sd / dmgR) * CFG.BLAST_SELF_DMG,
+          'Caught in your own detonation.', Math.atan2(-sdy, -sdx));
+        if (!s.alive) bump(game, 'ownGoal');   // your own ordnance still counts
+      }
+    }
+    let hits = 0, damaged = 0;
     for (const nb of game.bodies.slice()) {   // snapshot — shards/chain-kills don't recurse
       // ONLY loose asteroids (belt rocks + fragments). Never moons/planets/
       // installations/wrecks/comets — the blast must not derail a railed
@@ -126,18 +156,21 @@ function brawlerThrowKill(game, body) {
       const ddx = nb.x - body.x, ddy = nb.y - body.y;
       const dd = Math.hypot(ddx, ddy);
       if (dd > R || dd < 1) continue;
-      const falloff = 1 - dd / R;
-      if (push > 0) {
-        const imp = push * falloff * Math.min(1, 3000 / nb.mass);
+      if (push > 0 && dd < pushR) {
+        const imp = push * (1 - dd / pushR) * Math.min(1, 3000 / nb.mass);
         nb.vx += (ddx / dd) * imp; nb.vy += (ddy / dd) * imp;
         if (imp > 70) derail(nb);              // only a real shove derails — limits belt sandblasting
       }
-      if (dmg > 0) damageBody(game, nb, dmg * falloff, 'player', body.x, body.y);
-      // Cap the blast's reach. This is the gate that actually BINDS in a dense
-      // field (a 350 radius still contains ~100 shoal rocks, vs a handful in
-      // the belt), so it doubles as the field limiter — 24 was a pocket-clearing
-      // volley off one kill.
-      if (++hits >= 16) break;
+      if (dmg > 0 && dd < dmgR && damaged < 10) {
+        damageBody(game, nb, dmg * (1 - dd / dmgR), 'player', body.x, body.y);
+        damaged++;
+      }
+      // Body-count caps. These are what actually BIND inside a dense field (a
+      // pocket puts ~100 rocks inside any of these radii, vs a handful in the
+      // belt), so treat them as the field limiter, not just a perf guard. The
+      // damage cap is the tighter of the two on purpose — the shove is cheap
+      // spectacle, the deletions are not.
+      if (++hits >= 20) break;
     }
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
     addShake(game, 5 + 3 * Math.max(st.shockwave, st.demolition));
@@ -1213,7 +1246,17 @@ function collideShipBody(game, s, b, dt) {
     // (~70) without instantly gutting the hull. Capped at 45% per hit.
     // The saturation knee grows with beam tier: a dreadnought shrugs off
     // the pebbles that used to sting the scout — big slams always hurt.
-    const massSat = b.mass / (b.mass + 1500 * (1 + game.st.tier * 1.2));
+    // The saturation KNEE normally grows with tier, so a dreadnought shrugs off
+    // the pebbles that used to sting a scout. That rule is right for stray belt
+    // gravel and WRONG for a rock storm: it made the shoals get SAFER the
+    // stronger you got (a median field rock at 300 closing: 31% of hull at tier
+    // 0, 7% at tier 3, 4% at tier 5 — the tier you actually farm them at, which
+    // is why they read as harmless no matter how high FIELD_SHIP_DMG went).
+    // Field rock therefore keeps the BASE knee at every tier: the same absolute
+    // bite from tier 0 to 5, so a bigger hull endures more of a shoal without
+    // ever becoming immune to one. A big ship in a dense field is a big target.
+    const knee = 1500 * (b.fieldRock ? 1 : 1 + game.st.tier * 1.2);
+    const massSat = b.mass / (b.mass + knee);
     // SHOAL ROCK BITES (CFG.FIELD_SHIP_DMG) — the exact mirror of FIELD_TOUGH:
     // field rock is tough against ITS OWN KIND and dangerous to YOU. This is
     // what makes a dense field high-risk/high-reward instead of just high-
@@ -1223,7 +1266,14 @@ function collideShipBody(game, s, b, dt) {
     // danger is entirely SELF-INFLICTED — once you start smashing, the space
     // around you fills with fast loose rock, and a Shockwave detonation is now
     // a genuine double-edged sword rather than free area denial.
-    const field = b.fieldRock ? CFG.FIELD_SHIP_DMG : 1;
+    // NOT applied to an alien-thrown rock, which already carries its own
+    // `thrown` multiplier and its own tuning (LURKER_SHOVE speed + mass). The
+    // two stacked put a single lurker body-check on the 45% per-hit cap at
+    // EVERY tier — a two-shot kill from an ambush you may not have seen, with
+    // three of them hunting. Keeping them separate is also what lets the shoal
+    // and its predator be tuned independently instead of through each other.
+    const field = b.fieldRock && !(b.thrownBy === 'alien' && b.thrownTimer > 0)
+      ? CFG.FIELD_SHIP_DMG : 1;
     // RAM PROW / JUGGERNAUT: a reinforced prow takes less from impacts (ramArmor
     // <= 1; exactly 1 for non-ram builds, so nothing else changes).
     const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * field * game.st.ramArmor,
@@ -1404,7 +1454,14 @@ function collideAlienBody(game, al, b) {
       // rock it will even consider still leaves at a threatening clip (at a
       // 1400 knee the top of that range crawled out at 0.7x and read as a
       // shove that had failed).
-      const push = CFG.LURKER_SHOVE * Math.min(1, 1800 / Math.max(300, b.mass));
+      // The knee tracks LURKER_SHOVE_MASS (the ceiling pickShoveRock will even
+      // consider) so the HEAVIEST rock it can pick still leaves at ~0.9x — the
+      // reason main tuned it to 1800 against a 2000 ceiling. With the ceiling
+      // raised to 3400 a fixed 1800 would have sent the top of the range out at
+      // 0.53x, i.e. exactly the "shove that visibly failed" that knee exists to
+      // prevent — so it is DERIVED now and can't drift out of sync again.
+      const push = CFG.LURKER_SHOVE
+        * Math.min(1, (CFG.LURKER_SHOVE_MASS * 0.9) / Math.max(300, b.mass));
       // AIMED, with the grabber's lead solve. The velocity is set outright
       // rather than added to the lurker's: the whole pocket is carried by
       // orbital motion, and inheriting that carry threw every shot wide of
@@ -1440,7 +1497,19 @@ function collideAlienBody(game, al, b) {
     const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
     const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
-    const dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
+    let dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
+    // LURKERS TAKE A MINIMUM NUMBER OF HITS. Rock damage is QUADRATIC in
+    // closing speed and linear in mass, so it spans three orders of magnitude
+    // (a 200-mass lob at 400 does 139; a 1400-mass rock at 1000 does 7422) and
+    // NO hp value is tunable across that range — every one is either one-shot
+    // by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
+    // alone changed literally nothing: both were one-shot by all nine sample
+    // throws. So the per-hit damage is capped at a fraction of max hp, the same
+    // idiom invariant 3 uses to stop comparable rocks one-shotting each other.
+    // The predator now has to be FOUGHT rather than deleted in passing, which
+    // is what lets it live long enough to line up the rocks that are the actual
+    // threat. Lurkers only — grabbers and golems keep their existing feel.
+    if (al.kind === 'lurker') dmg = Math.min(dmg, CFG.LURKER_HIT_CAP * CFG.LURKER_HP);
     if (dmg > 1) {
       al.hp -= dmg;
       addParticles(game, al.x, al.y, 0, 0, 6, '#8aff6a', 100, 0.5);
