@@ -1,0 +1,13 @@
+# The music beds are the only large binaries in the repo — 24 full-length AAC
+# tracks, ~176 MB and growing every time a playlist gains a track. They are
+# write-once assets (transcoded from the artist's masters, never edited in
+# place), which is exactly the shape Git LFS is for: without it every future
+# clone pays for every track that was ever committed.
+#
+# NOTE for CI: actions/checkout does NOT fetch LFS objects by default. The
+# release workflow's BUILD job sets `lfs: true` — without it electron-builder
+# would happily package the 130-byte pointer files and ship a silent game.
+#
+# The SFX pack is deliberately NOT tracked here: it's ~3.3 MB across many small
+# files, where LFS's per-object overhead costs more than it saves.
+assets/audio/music/*.m4a filter=lfs diff=lfs merge=lfs -text

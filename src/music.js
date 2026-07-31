@@ -1,11 +1,14 @@
-// Adaptive music director. Ten Scott Buckley tracks (assets/audio/music/ —
-// CC-BY 4.0, see assets/audio/CREDITS.md + the settings-screen credit line;
+// Adaptive music director. Twenty-four Scott Buckley tracks (assets/audio/music/
+// — CC-BY 4.0, see assets/audio/CREDITS.md + the settings-screen credit line;
 // one composer ON PURPOSE so every mood stays in the same ethereal voice),
-// grouped into four mood PLAYLISTS:
+// grouped into six PLAYLISTS. Four are chosen by the MOOD vector:
 //   calm   — lost in deep space (the default)
 //   world  — closing in on planets/moons/stations
 //   sun    — dread as the star fills your sky
 //   danger — combat, forts, heavy damage
+// ...and two by GAME STATE, which outranks mood outright (wantBucket):
+//   title  — the splash screen, before a run starts
+//   menu   — paused / in a shell modal mid-run
 // EXACTLY ONE track plays at a time — these are full unrelated mixes, and
 // layering them (the first design) sounded like songs playing over each
 // other. The mood vector picks a playlist with enter/exit hysteresis + a
@@ -22,12 +25,27 @@ import { getAudio } from './sfx.js';
 import { lerp, shellModal } from './util.js';
 
 const DIR = 'assets/audio/music/';
+// Every playlist needs at least TWO tracks: nextTrack can only avoid a repeat
+// if there is something else to pick, and a one-track list that reaches its
+// natural end would rotate to itself (switchTo early-outs on file === current).
 const PLAYLISTS = {
-  calm:   { vol: 0.9,  files: ['adrift-among-infinite-stars', 'meanwhile', 'shadows-and-dust', 'permafrost'] },
-  world:  { vol: 0.85, files: ['hymn-to-the-dawn', 'the-distant-sun'] },
-  sun:    { vol: 1.0,  files: ['decoherence', 'incantation'] },
-  danger: { vol: 0.85, files: ['machina', 'nightfall'] },
+  // The title theme. Both are literal space-mission music — the wide
+  // establishing shot the splash backdrop is already flying.
+  title:  { vol: 0.95, files: ['starfire', 'artemis'] },
+  // Paused mid-run: low, unhurried, no big builds — you're reading settings,
+  // not being scored. Deliberately the quietest playlist (the duck sits on top).
+  menu:   { vol: 0.8,  files: ['cirrus', 'hiraeth'] },
+  calm:   { vol: 0.9,  files: ['adrift-among-infinite-stars', 'meanwhile', 'shadows-and-dust', 'permafrost',
+                               'in-search-of-solitude', 'the-long-dark', 'tears-in-rain'] },
+  world:  { vol: 0.85, files: ['hymn-to-the-dawn', 'the-distant-sun', 'last-and-first-light', 'celestial', 'aurora'] },
+  sun:    { vol: 1.0,  files: ['decoherence', 'incantation', 'unraveling'] },
+  // A file may only live in ONE playlist: players are keyed by file, and a
+  // switch that lands on the track already playing early-outs of switchTo,
+  // stranding it at the previous playlist's level.
+  danger: { vol: 0.85, files: ['machina', 'nightfall', 'simulacra', 'goliath', 'eyes-in-the-void'] },
 };
+// Chosen by game state, not by the mood vector — exempt from the mood dwell.
+const STATE_BUCKETS = new Set(['title', 'menu']);
 // User music level (settings slider, persisted). Defaults HIGH relative to the
 // SFX bus (0.5): the ambient tracks are mastered quiet while the sample packs
 // run hot — at equal gains the SFX buried the soundtrack.
@@ -42,6 +60,13 @@ const ENTER = { danger: 0.45, sun: 0.4, world: 0.55 };
 const EXIT  = { danger: 0.22, sun: 0.2, world: 0.3 };
 const DWELL_OUT = 8;      // min seconds in a playlist before leaving it...
 const DWELL_TO_DANGER = 1.5;   // ...except combat, which must answer fast
+// State buckets ignore the mood dwell (it measures time in the CURRENT bucket,
+// so pausing right after a mood switch would sit on the wrong music for 8s) and
+// instead need their own WANT to hold steady this long. It is short but nonzero:
+// a 3-second pause should just duck, not fire a crossfade you never hear the end
+// of and another one back. Leaving a state bucket uses the same hold, so START
+// doesn't cut the title theme dead the instant it's clicked.
+const DWELL_STATE = 2;
 
 // Body types that count as "a world you're approaching" (never the sun —
 // that's its own channel; never asteroids — the belt would pin the layer on).
@@ -54,8 +79,10 @@ const ENGAGED = new Set(['fetch', 'carry', 'harass', 'build']);
 const musicOn = () => musicVol >= 0.01;
 const players = new Map();   // file -> { el, gain } (MediaElementSource is once-ever per element)
 let current = null;          // file currently fading in / playing
-let bucket = 'calm';
+let bucket = 'title';        // the splash is up before anything else is
 let bucketT = 0;             // seconds spent in the current playlist
+let wantT = 0;               // seconds the CURRENT want has been asked for (state dwell)
+let lastWant = 'title';
 let lastInBucket = {};       // bucket -> last file played (rotation avoids repeats)
 let stopping = [];           // [{ file, at }] — fade-outs to pause once done
 let duckCur = 0;
@@ -72,9 +99,14 @@ function getPlayer(a, file) {
     gain.gain.value = 0;
     a.ctx.createMediaElementSource(el).connect(gain);
     gain.connect(a.musicBus);
-    // Natural end -> rotate to a DIFFERENT track in the current playlist
+    // Natural end -> rotate to a DIFFERENT track in the current playlist. If
+    // the playlist can only offer this same file back, replay it by hand —
+    // switchTo early-outs on file === current, which would leave silence.
     el.addEventListener('ended', () => {
-      if (current === file && musicOn()) switchTo(nextTrack(bucket), 2);
+      if (current !== file || !musicOn()) return;
+      const next = nextTrack(bucket);
+      if (next === file) { el.currentTime = 0; el.play().catch(() => {}); }
+      else switchTo(next, 2);
     });
     p = { el, gain };
     players.set(file, p);
@@ -189,9 +221,18 @@ function computeMood(game, dt) {
   game.mood = mood;
 }
 
-// Which playlist does the mood ask for? EXIT threshold for the one we're in,
-// ENTER for the others (hysteresis); fixed priority order.
-function wantBucket() {
+// Which playlist do we want? GAME STATE outranks mood: no run in progress is
+// the title theme, and a menu held open mid-run is its own bed. Everything else
+// is the mood vector — EXIT threshold for the one we're in, ENTER for the
+// others (hysteresis); fixed priority order.
+//
+// A shell modal opened FROM the splash stays on the title theme (the run hasn't
+// started, so there is nothing to pause), and choosingUpgrade is deliberately
+// NOT a menu — pick cards land mid-flight every couple of minutes and swapping
+// the score under each one would shred the soundtrack.
+function wantBucket(game) {
+  if (!game.started) return 'title';
+  if (game.paused || shellModal(game)) return 'menu';
   const above = (k) => mood[k] >= (bucket === k ? EXIT[k] : ENTER[k]);
   if (above('danger')) return 'danger';
   if (above('sun')) return 'sun';
@@ -205,13 +246,22 @@ export function updateMusic(game, dt) {
   // the playlist choice is already right the instant audio does come up.
   computeMood(game, dt);
   bucketT += dt;
+  // Track how long this want has been asked for, whether or not audio is up —
+  // so the first frame after a gesture already knows the state is settled.
+  const want = wantBucket(game);
+  if (want === lastWant) wantT += dt; else { lastWant = want; wantT = 0; }
   if (!musicOn()) return;
   const a = getAudio();
   if (!a) return;                    // no gesture yet — nothing to drive
 
-  // Playlist switching: dwell keeps it from flapping; danger answers fast.
-  const want = wantBucket();
-  if (want !== bucket && (want === 'danger' ? bucketT > DWELL_TO_DANGER : bucketT > DWELL_OUT)) {
+  // Playlist switching. A move into OR out of a state bucket waits on the want
+  // holding steady (DWELL_STATE); mood-to-mood moves wait on the dwell in the
+  // current bucket, and danger answers fast.
+  const stateMove = STATE_BUCKETS.has(want) || STATE_BUCKETS.has(bucket);
+  const ready = stateMove ? wantT > DWELL_STATE
+    : want === 'danger' ? bucketT > DWELL_TO_DANGER
+    : bucketT > DWELL_OUT;
+  if (want !== bucket && ready) {
     bucket = want;
     bucketT = 0;
     switchTo(nextTrack(bucket), want === 'danger' ? XFADE_HOT : XFADE);
@@ -221,8 +271,13 @@ export function updateMusic(game, dt) {
 
   // Menus duck the music instead of pausing it; death and game over sit low.
   // The duck rides musicBus so the per-track gains stay pure fade envelopes.
-  const duckTo = !game.started ? 0.55
+  // The splash and the pause menu have their OWN beds now, so once that bed is
+  // actually up it plays at full level — it IS the content, not something to
+  // hear under a panel. The old duck still covers the DWELL_STATE seconds
+  // before the crossfade lands, and the upgrade card (which never gets a bed).
+  const duckTo = STATE_BUCKETS.has(bucket) ? 1
     : game.gameOver ? 0.3
+    : !game.started ? 0.55
     : (game.paused || shellModal(game) || game.choosingUpgrade) ? 0.4
     : !game.ship.alive ? 0.4   // deep dip — give the death sequence the stage
     : 1;
@@ -253,6 +308,7 @@ export function updateMusic(game, dt) {
 export function musicState() {
   const out = {
     on: musicOn(), vol: musicVol, bucket, bucketT: +bucketT.toFixed(1), current,
+    want: lastWant, wantT: +wantT.toFixed(1),
     mood: { ...mood }, duck: duckCur, streams: {},
   };
   for (const [file, p] of players) {
