@@ -11,7 +11,7 @@ import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import { initRender, render } from './render.js';
 import * as hud from './hud.js';
-import { initInput, readControls, mouseWorld } from './input.js';
+import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import { lerp, shellModal, seedFrom } from './util.js';
@@ -434,14 +434,28 @@ hud.initMenus({
 });
 
 // Apply the chosen card (spec / tier-up ability / small rank-up), then unfreeze.
+// HULL UPGRADE HEAL (user design rule): any pick that RAISES hullMax also
+// heals the ship by the gain +20% — an upgrade should feel immediately good,
+// not just widen an empty bar. The one sanctioned mid-life hull gain besides
+// glow pockets (the split-health law notes this exception). Clamped to the
+// new max; a shield pick that CARVES hullMax down never hurts (gain <= 0 no-op).
+function healOnHullGain(oldHullMax) {
+  const gain = game.st.hullMax - oldHullMax;
+  if (gain > 0 && game.ship.alive) {
+    game.ship.hull = Math.min(game.st.hullMax, game.ship.hull + gain * 1.2);
+  }
+}
+
 function applyPick(i) {
   if (!game.choosingUpgrade || !game.upgradeChoices) return;
   const choice = game.upgradeChoices[i];
   if (!choice) return;
+  const oldHullMax = game.st.hullMax;   // healOnHullGain reads the pre-pick ceiling
   if (game.upgradeKind === 'spec') {
     // Free run-opener: lock the specialization, grant its starting kit, begin play.
     applySpec(game.prog, choice.id);
     game.st = shipStats(game.prog);
+    healOnHullGain(oldHullMax);   // a kit hull track must not open the run below full
     sfx.sfxTierUp();
     beginRunGuidance(choice);
   } else if (game.upgradeKind === 'tier') {
@@ -452,6 +466,7 @@ function applyPick(i) {
     applyAbility(game.prog, choice.id);
     game.prog.lives = Math.min(maxLives(game.prog), game.prog.lives + 1);
     game.st = shipStats(game.prog);
+    healOnHullGain(oldHullMax);   // tier + dividend usually raise hullMax — heal the gain
     game.lastTier = game.st.tier;
     sfx.sfxTierUp();
     hud.message(`TIER UP — ${game.st.label.toUpperCase()}. ${choice.name} acquired. +1 life.`, 6);
@@ -460,6 +475,7 @@ function applyPick(i) {
     applyAbility(game.prog, choice.id);
     game.prog.picksThisTier++;
     game.st = shipStats(game.prog);
+    healOnHullGain(oldHullMax);
     sfx.sfxUpgrade();
     hud.message(`${choice.name.toUpperCase()} rank ${game.prog.upgrades[choice.id]}.`, 3.5);
   }
@@ -552,6 +568,7 @@ function resetRun(seed) {
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
+  game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
   regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   hud.setDeathVisible(false);
@@ -581,6 +598,12 @@ const EVENT_MSGS = [
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
   { flag: 'jinkWarn', tut: 'jink', snd: sfx.sfxChime,
     first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
+  { flag: 'deadStopWarn', tut: 'deadstop', snd: sfx.sfxChime,
+    first: ['DEAD STOP — caught it mid-flight! The rock is primed: fling it back hard.', 5] },
+  { flag: 'parryWarn', tut: 'parry', snd: sfx.sfxChime,
+    first: ['DEFLECTED — the rock is frozen! Flick your mouse to hurl it that way.', 5] },
+  { flag: 'wallSplatWarn', tut: 'wallsplat', snd: sfx.sfxChime,
+    first: ['WALL SPLAT — smashed against the world. Nearby rocks scatter off the impact as yours.', 5] },
   { flag: 'cometWarn', tut: 'comet', snd: sfx.sfxWarnLow,
     first: ['COMET SHOWER — fast ice crossing your sector. Dangerous, but premium shield ammo and 4x scrap.', 5.5],
     repeat: ['COMET SHOWER inbound!', 3] },
@@ -737,6 +760,10 @@ function update(dtReal) {
     const { vw, vh } = view.getView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
+    // Raw SCREEN mouse, stashed for the Deflector parry's flick read
+    // (physics.updateParry): world-space aim deltas are contaminated by the
+    // camera chasing the ship, so the flick must come from screen deltas.
+    game.mouseSX = input.mouseX; game.mouseSY = input.mouseY;
     // World-space radius of the current view — the local asteroid spawner
     // keeps rocks in a ring just beyond this
     game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;

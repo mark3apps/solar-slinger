@@ -105,7 +105,11 @@ function brawlerThrowKill(game, body) {
       // installations/wrecks/comets — the blast must not derail a railed
       // celestial or damage one past its invariant-3 protections; and skip our
       // own shrapnel so a blast can't blow up the shards it just spawned.
-      if (nb === body || !nb.alive || nb.type !== 'asteroid' || nb.thrownBy === 'shard' || nb.heldBy) continue;
+      // Vesper is type 'asteroid' but an HONORARY CELESTIAL (majorComet) —
+      // every loose-rock filter must exclude it explicitly or the blast puts
+      // undamped impulse on the one body those rules exist to protect.
+      if (nb === body || !nb.alive || nb.type !== 'asteroid' || nb.majorComet ||
+          nb.thrownBy === 'shard' || nb.heldBy) continue;
       const ddx = nb.x - body.x, ddy = nb.y - body.y;
       const dd = Math.hypot(ddx, ddy);
       if (dd > R || dd < 1) continue;
@@ -121,6 +125,42 @@ function brawlerThrowKill(game, body) {
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
     addShake(game, 5 + 3 * Math.max(st.shockwave, st.demolition));
   }
+}
+
+// WALL SPLAT (brawler): your throw died against a world's face
+// (collideBodies sets body.splatWall around that one damage call). The
+// environment becomes part of the arsenal: bonus XP, and nearby LOOSE rocks
+// are shoved off the impact — hard shoves carry your billiards credit (same
+// closing>60 propagation idea as collideBodies), so a splat near a cluster
+// can open a combo. Push-only, asteroids only: like Shockwave, the blast
+// must never derail a railed celestial or touch an installation.
+function wallSplat(game, body) {
+  const st = game.st;
+  addXp(game, 8 + 7 * st.wallSplat);
+  const R = 170 + 55 * st.wallSplat;
+  let hits = 0;
+  for (const nb of game.bodies.slice()) {
+    // Same loose-rock filter as the Shockwave blast above — including the
+    // explicit majorComet exclusion (Vesper is type 'asteroid' by mechanics
+    // but an honorary celestial by law; see that comment).
+    if (nb === body || !nb.alive || nb.type !== 'asteroid' || nb.majorComet ||
+        nb.thrownBy === 'shard' || nb.heldBy) continue;
+    const ddx = nb.x - body.x, ddy = nb.y - body.y;
+    const dd = Math.hypot(ddx, ddy);
+    if (dd > R || dd < 1) continue;
+    const imp = (110 + 45 * st.wallSplat) * (1 - dd / R) * Math.min(1, 2500 / nb.mass);
+    nb.vx += (ddx / dd) * imp; nb.vy += (ddy / dd) * imp;
+    if (imp > 70) {
+      derail(nb);
+      // A real shove is a chain-link: the rock it smashes next is still yours
+      if (nb.thrownBy !== 'player') { nb.thrownBy = 'player'; nb.thrownTimer = Math.max(nb.thrownTimer, 1.4); }
+    }
+    if (++hits >= 12) break;
+  }
+  addParticles(game, body.x, body.y, body.vx * 0.2, body.vy * 0.2,
+    18, '#ffcaa0', 200, 0.9, 4);
+  addShake(game, 4 + 2 * st.wallSplat);
+  if (!game.tut.wallsplat) game.wallSplatWarn = true;   // main.js announces (first time)
 }
 
 export function shatter(game, body, credit = null) {
@@ -226,6 +266,10 @@ export function shatter(game, body, credit = null) {
   // traffic sandblasting itself, a rogue clipping a moon, a ram, star heat —
   // shatters with no salvage. Keeps the sky from minting free scrap.
   if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, scrapValue(body));
+  // Wall Splat rides its own flag, not the credit: the dying body here is the
+  // player's OWN projectile (credit 'player'), which never reaches the
+  // 'player-throw' branch below.
+  if (body.splatWall && game.st.wallSplat > 0) wallSplat(game, body);
   const big = isBig || isWorld;   // even a small moon dies like a world
   addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3,
     big ? 50 : 16, body.color, big ? 260 : 140, big ? 1.6 : 0.9, big ? 5 : 3);
@@ -234,7 +278,12 @@ export function shatter(game, body, credit = null) {
   sfx.sfxBoom(big ? 3 : 1, sfx.distVol(game, body.x, body.y));
 
   // XP: only a direct throw-kill pays combat XP (not your own projectile
-  // shattering or a shield brush — those still pay scrap, above)
+  // shattering or a shield brush — those still pay scrap, above).
+  // A RAM KILL pays a smaller cut: ramming is a real brawler verb (the innate
+  // prow), so splattering a rock on your hull is good play — but it stays
+  // scrap-less (earnsScrap) and combo-less, so bulldozing the belt never
+  // outearns aimed throws.
+  if (credit === 'ram') addXp(game, PROG.XP_RAM + (isBig ? 8 : 0));
   if (credit === 'player-throw') {
     brawlerThrowKill(game, body);   // Cluster Rounds / Shockwave / Demolition (no-op unless owned)
     addXp(game, PROG.XP_SMASH + (isBig ? 12 : 0));
@@ -553,6 +602,9 @@ function boundaryAccel(x, y) {
 // ---------- collisions ----------
 
 function collideBodies(game, a, b) {
+  // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
+  // (or gets ground by it) until the flick launches it back into play.
+  if (a.parryFrozen || b.parryFrozen) return;
   // Orbiting shield rocks don't grind against each other
   if (a.heldBy === 'orbit' && b.heldBy === 'orbit') return;
   // ...and your own throws (or the rock in your beam) pass through your
@@ -753,8 +805,21 @@ function collideBodies(game, a, b) {
         dmgToA: Math.round(dmgToA * 10) / 10, dmgToB: Math.round(dmgToB * 10) / 10,
       });
     }
-    if (dmgToA > 0.5) damageBody(game, a, dmgToA, creditA, b.x, b.y);
-    if (dmgToB > 0.5) damageBody(game, b, dmgToB, creditB, a.x, a.y);
+    // WALL SPLAT context: flag YOUR live throw dying AGAINST a world (its own
+    // shatter credit is only 'player' — own-projectile — so shatter can't tell
+    // a splat from open-space fragmentation without this). Set/cleared around
+    // the synchronous damage call — never persists.
+    const splats = (x, other) => x.thrownBy === 'player' && x.thrownTimer > 0 && celestial(other);
+    if (dmgToA > 0.5) {
+      a.splatWall = splats(a, b);
+      damageBody(game, a, dmgToA, creditA, b.x, b.y);
+      a.splatWall = false;
+    }
+    if (dmgToB > 0.5) {
+      b.splatWall = splats(b, a);
+      damageBody(game, b, dmgToB, creditB, a.x, a.y);
+      b.splatWall = false;
+    }
     if (closing > 60 && (a.mass > 1e4 || b.mass > 1e4)) addShake(game, 3);
 
     // SPALL: a violent hit that BOTH bodies survive still crunches — small
@@ -850,10 +915,15 @@ function collideShipBody(game, s, b, dt) {
   if (b === game.held) return;      // held object can't crush you
   if (b.heldBy === 'orbit') return; // your own shield can't crush you either
   if (b.thrownBy === 'player' && b.thrownTimer > 0) return; // your own throws pass through you
+  if (b.parryFrozen) return;        // the parried rock is pinned at the hull — no re-collide
 
   const nx = dx / d, ny = dy / d;
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
   const closing = -(rvx * nx + rvy * ny);
+
+  // (The Deflector parry catches BEFORE contact — updateParry's front-arc
+  // field scan — so a rock reaching this code either isn't deflectable or
+  // slipped in during the cooldown, and the impact resolves normally.)
 
   // Push the ship out (bodies barely notice the ship)
   const overlap = s.radius + b.radius - d;
@@ -899,6 +969,7 @@ function collideShipBody(game, s, b, dt) {
     // "you touched it". sfxBump self-throttles against substep repeats.
     sfx.sfxBump((closing / 300) * (0.35 + 0.65 * (b.mass / (b.mass + 2000))));
 
+
     // NEWTON'S OTHER HALF: the impact moves and damages the BODY too. The
     // ship's effective ram mass grows with level — a scout nudges pebbles,
     // a titan bulldozes boulders. Planets barely notice (mass ratio kills
@@ -911,7 +982,9 @@ function collideShipBody(game, s, b, dt) {
     }
     const effB = Math.max(0, closing - 100);
     // RAM PROW / JUGGERNAUT boost the ram (st.ramMul); BERSERKER adds more as the
-    // ship's hull drops. Both are brawler-only (ramMul 1 / berserk 0 otherwise).
+    // ship's hull drops. Brawler-only — and the brawler's ramMul/ramArmor have an
+    // INNATE spec-DNA floor (config.shipStats), so it bonks from frame one even
+    // before Ram Prow ranks (other specs stay at exactly 1 / 1).
     const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
     const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.3 * (1 - ramHullFrac) : 1);
     const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
@@ -935,6 +1008,113 @@ function collideShipBody(game, s, b, dt) {
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
         `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
     }
+  }
+}
+
+// DEFLECTOR PARRY — a FRONT-ARC field, not a contact reaction: each substep
+// the field scans for rocks closing on the nose (within PARRY_ARC of the
+// heading, inside hull + st.deflectReach) and freezes them where they are.
+// Capacity is the rank (rank 2 can hold two rocks mid-freeze, rank 3 three)
+// and late arrivals JOIN the running window rather than restarting it, so a
+// volley of alien throws freezes as a volley. While a session is live: every
+// rock is pinned at its capture bearing/distance riding with the ship (no
+// teleport to the hull — it freezes where the field caught it), the nose is
+// locked (the steering block checks game.parry), and the mouse is repurposed
+// as a FLICK — direction read from RAW SCREEN deltas (game.mouseSX/SY,
+// stashed by main.js), never from game.aim: the camera chases the ship, so
+// world-space aim deltas are contaminated by camera motion and a stationary
+// mouse would read as a flick. Launch fires on a decisive flick (snappy for
+// skilled hands) or at window's end: a flick hurls EVERY held rock that way
+// (the riposte volley); no flick sends each back out along its own capture
+// bearing. Screen axes map to world axes (translate+scale only), so the
+// screen direction IS the world direction. Deflectable = the same loose-rock
+// filter as everywhere (asteroid, never Vesper, not held/own-throw) plus the
+// beam-scale mass cap — render.drawDeflectable mirrors this exactly for the
+// incoming-rock indicator; keep them in sync or the hint lies.
+const PARRY_ARC = 1.05;   // half-angle around the nose (~60°) — "in front of the ship"
+// Screen-pixels of mouse travel that count as a deliberate FLICK (launches
+// early). Tuned UP twice — 46 fired on an ordinary aiming twitch, and even
+// 120 still felt hair-triggered (user: "even further before triggering").
+// Below it, motion only AIMS; the launch then waits for the window.
+// render.drawParry imports this so the arrow fills toward the real threshold.
+export const PARRY_FLICK = 210;
+function parryEligible(game, b) {
+  const s = game.ship;
+  return b.alive && b.type === 'asteroid' && !b.majorComet && !b.heldBy &&
+    !b.parryFrozen && !(b.thrownBy === 'player' && b.thrownTimer > 0) &&
+    b.mass <= game.st.capacity * 1.5 &&
+    Math.abs(angDiff(Math.atan2(b.y - s.y, b.x - s.x), s.angle)) <= PARRY_ARC;
+}
+function updateParry(game, dt) {
+  if (game.parryCd > 0) game.parryCd -= dt;
+  const s = game.ship, st = game.st;
+
+  // Field scan: start a session, or grow a live one up to capacity
+  if (st.deflect > 0 && s.alive && s.invuln <= 0 && !(game.parryCd > 0) &&
+      (!game.parry || game.parry.rocks.length < st.deflect)) {
+    const reach = st.deflectReach;
+    for (const b of game.bodies) {
+      if (game.parry && game.parry.rocks.length >= st.deflect) break;
+      // Cheap squared-distance cull FIRST — this scan runs per substep over
+      // every body, and parryEligible costs an atan2.
+      const dx = b.x - s.x, dy = b.y - s.y;
+      const rr = s.radius + b.radius + reach;
+      if (dx * dx + dy * dy > rr * rr) continue;
+      if (!parryEligible(game, b)) continue;
+      const d = Math.hypot(dx, dy) || 0.001;
+      const nx = dx / d, ny = dy / d;
+      const closing = -((b.vx - s.vx) * nx + (b.vy - s.vy) * ny);
+      if (closing <= 60) continue;               // drifting past, not incoming
+      if (!game.parry) {
+        game.parry = { t: 0, window: st.deflectWindow, rocks: [],
+          mx0: game.mouseSX ?? 0, my0: game.mouseSY ?? 0 };
+      }
+      game.parry.rocks.push({ b, nx, ny, hold: Math.max(d, s.radius + b.radius + 4) });
+      b.parryFrozen = true;
+      derail(b);
+      b.vx = s.vx; b.vy = s.vy;                  // caught: it rides with the ship
+      b.thrownBy = null; b.thrownTimer = 0;      // an alien throw is CAUGHT, not still hostile
+      s.shieldHitT = 0.35;                       // absorb-ripple grammar — event motion only
+      addShake(game, 5);
+      sfx.sfxShieldHit();
+      addParticles(game, b.x, b.y, s.vx * 0.5, s.vy * 0.5, 10, '#9fd6ff', 120, 0.5, 3);
+      if (!game.tut.parry) game.parryWarn = true;   // main.js announces (first time)
+    }
+  }
+
+  const p = game.parry;
+  if (!p) return;
+  // Drop rocks that died mid-freeze (heat, a chain-kill); ship death ends it
+  p.rocks = p.rocks.filter((r) => (r.b.alive ? true : (r.b.parryFrozen = false, false)));
+  if (!p.rocks.length || !s.alive) {
+    for (const r of p.rocks) r.b.parryFrozen = false;
+    game.parry = null;
+    return;
+  }
+  for (const r of p.rocks) {   // pin each at its capture bearing, riding along
+    r.b.x = s.x + r.nx * r.hold; r.b.y = s.y + r.ny * r.hold;
+    r.b.vx = s.vx; r.b.vy = s.vy;
+  }
+  p.t += dt;
+  const fx = (game.mouseSX ?? 0) - p.mx0, fy = (game.mouseSY ?? 0) - p.my0;
+  const mag = Math.hypot(fx, fy);
+  if (p.t >= p.window || mag > PARRY_FLICK) {
+    const flicked = mag > 12;
+    const fdx = flicked ? fx / mag : 0, fdy = flicked ? fy / mag : 0;
+    for (const r of p.rocks) {
+      const b = r.b;
+      const dx = flicked ? fdx : r.nx, dy = flicked ? fdy : r.ny;
+      b.parryFrozen = false;
+      b.vx = s.vx + dx * st.deflectPower;
+      b.vy = s.vy + dy * st.deflectPower;
+      b.thrownBy = 'player'; b.thrownTimer = 2.5;  // the riposte is YOUR shot — full billiards credit
+      addXp(game, PROG.XP_PARRY);                  // good play pays — per rock, at the launch
+      addParticles(game, b.x, b.y, b.vx * 0.3, b.vy * 0.3, 12, '#9fd6ff', 200, 0.7, 3);
+    }
+    game.parry = null;
+    game.parryCd = 2.5;                          // fixed — ranks buy field/slots/window/power, not uptime
+    addShake(game, 4 + 2 * p.rocks.length);
+    sfx.sfxFling();
   }
 }
 
@@ -1113,8 +1293,13 @@ export function step(game, dt) {
   let shipAx = 0, shipAy = 0;
   if (s.alive) {
     // The nose tracks the mouse; W thrusts forward, S thrusts backward.
-    const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
+    // NOSE LOCK during a Deflector parry: the mouse is being read as the
+    // flick (updateParry), so the ship must NOT also turn with it — steering
+    // and flicking off one input at once feels like the ship fighting you.
+    if (!game.parry) {
+      const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+      s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
+    }
 
     let th = game.st.thrust;
     const c = game.controls;
@@ -1480,6 +1665,10 @@ export function step(game, dt) {
     d.x += d.vx * dt; d.y += d.vy * dt;
     d.life -= dt;
   }
+
+  // Deflector parry: pin/flick/launch — before collisions so the frozen rock
+  // sits at its pinned spot for this substep's pair tests (which skip it).
+  updateParry(game, dt);
 
   // Collisions: body-body via sweep-and-prune on x. Sorting ~400 bodies by
   // left edge is cheap; the inner loop then stops at the first body whose

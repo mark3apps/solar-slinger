@@ -1,7 +1,7 @@
 import { CFG, PROG, SHIP_HIT_FRAC } from './config.js';
-import { predictPaths } from './physics.js';
+import { predictPaths, PARRY_FLICK } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, lerp, mulberry32, shellModal } from './util.js';
+import { TAU, angDiff, lerp, mulberry32, shellModal } from './util.js';
 
 let canvas, ctx, vw, vh, dpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
@@ -631,6 +631,17 @@ function drawBody(game, b) {
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.6, 0, TAU); ctx.fill();
+  }
+
+  // DEAD STOP prime (hauler): a caught counterpunch rock smolders — a steady
+  // ember halo (real object state -> solid/gradient, never dashed) that reads
+  // "this one is loaded" until the fling consumes it.
+  if (b.primed) {
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.6, b.x, b.y, b.radius * 2.2);
+    g.addColorStop(0, 'rgba(255, 170, 90, 0.45)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
   // The Forge Moon smolders — a small lava-style glow so it reads as alive
@@ -1744,6 +1755,97 @@ function drawApproach(game) {
     ctx.fillText(label, b.x, b.y - b.radius - fs * 0.9);
     ctx.textAlign = 'left';
   }
+}
+
+// DEFLECTOR PARRY: every frozen rock charges up. Aiming/helper UI, so DASHED
+// strokes are correct here (design law): a charge ring contracting onto each
+// rock over the window, and a flick arrow per rock showing the current hurl
+// direction. The energy glow itself is a solid additive gradient (event
+// motion — the parry IS an event, so animation is allowed).
+function drawParry(game) {
+  const p = game.parry;
+  if (!p || !p.rocks.length) return;
+  const z = game.cam.zoom;
+  const prog = Math.min(1, p.t / Math.max(0.01, p.window));
+  const fx = (game.mouseSX ?? 0) - p.mx0, fy = (game.mouseSY ?? 0) - p.my0;
+  const mag = Math.hypot(fx, fy);
+  const flicked = mag > 12;   // matches updateParry's aim dead-zone
+
+  for (const r of p.rocks) {
+    const b = r.b;
+    if (!b.alive) continue;
+
+    // Energy glow, swelling as the charge builds
+    ctx.globalCompositeOperation = 'lighter';
+    const gr = b.radius * (1.6 + 0.7 * prog);
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.3, b.x, b.y, gr);
+    g.addColorStop(0, `rgba(159, 214, 255, ${0.25 + 0.3 * prog})`);
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, gr, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Charge ring: contracts onto the rock as the window runs out
+    const ringR = b.radius * (2.6 - 1.45 * prog);
+    ctx.strokeStyle = 'rgba(159, 214, 255, 0.85)';
+    ctx.lineWidth = 2 / z;
+    ctx.setLineDash([6 / z, 5 / z]);
+    ctx.beginPath(); ctx.arc(b.x, b.y, ringR, 0, TAU); ctx.stroke();
+
+    // Flick arrow: where THIS rock goes right now (flick = all together;
+    // no flick = back out along its own capture bearing)
+    const dx = flicked ? fx / mag : r.nx, dy = flicked ? fy / mag : r.ny;
+    // Arrow length fills toward the REAL launch threshold — the player can
+    // see how close their motion is to firing the throw.
+    const len = b.radius + 34 / z + (Math.min(mag, PARRY_FLICK) / PARRY_FLICK) * 30 / z;
+    const tipX = b.x + dx * len, tipY = b.y + dy * len;
+    ctx.strokeStyle = flicked ? 'rgba(159, 214, 255, 0.95)' : 'rgba(159, 214, 255, 0.45)';
+    ctx.lineWidth = 2.5 / z;
+    ctx.setLineDash([8 / z, 6 / z]);
+    ctx.beginPath();
+    ctx.moveTo(b.x + dx * b.radius, b.y + dy * b.radius);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // chevron head (solid — it's the arrow's tip, tiny)
+    const side = 7 / z, ang = Math.atan2(dy, dx);
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - Math.cos(ang - 0.5) * side, tipY - Math.sin(ang - 0.5) * side);
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - Math.cos(ang + 0.5) * side, tipY - Math.sin(ang + 0.5) * side);
+    ctx.stroke();
+  }
+}
+
+// DEFLECTABLE INDICATOR: a rock the parry field could catch — incoming on
+// the nose, right mass class, field armed — carries a pulsing cyan circlet
+// (dashed = helper UI) so the player knows "this one, you can take". The
+// eligibility mirror of physics.parryEligible + the closing test; keep them
+// in sync or the hint lies. Range is a readable notice bubble, far wider
+// than the field itself, so the tell arrives BEFORE the catch.
+function drawDeflectable(game) {
+  const st = game.st, s = game.ship;
+  if (!st.deflect || !s.alive || game.parryCd > 0) return;
+  if (game.parry && game.parry.rocks.length >= st.deflect) return;   // no free slot
+  const z = game.cam.zoom;
+  const pulse = 0.55 + 0.45 * Math.sin(game.time * 9);
+  const RANGE = 520;
+  for (const b of game.bodies) {
+    const dx = b.x - s.x, dy = b.y - s.y;
+    if (dx * dx + dy * dy > RANGE * RANGE) continue;
+    if (!b.alive || b.type !== 'asteroid' || b.majorComet || b.heldBy || b.parryFrozen ||
+        (b.thrownBy === 'player' && b.thrownTimer > 0) || b.mass > st.capacity * 1.5) continue;
+    const d = Math.hypot(dx, dy) || 0.001;
+    const nx = dx / d, ny = dy / d;
+    if (-((b.vx - s.vx) * nx + (b.vy - s.vy) * ny) <= 60) continue;         // not incoming
+    if (Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) > 1.05) continue;    // not in the front arc (PARRY_ARC)
+    ctx.strokeStyle = `rgba(159, 214, 255, ${0.25 + 0.45 * pulse})`;
+    ctx.lineWidth = 1.5 / z;
+    ctx.setLineDash([4 / z, 4 / z]);
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 5 / z, 0, TAU); ctx.stroke();
+  }
+  ctx.setLineDash([]);
 }
 
 // Life pods: drifting extra-life collectibles (roguelite lives). A real object,
@@ -2898,6 +3000,8 @@ export function render(game) {
   for (const b of game.bodies) if (b.alive && bodyOnScreen(b)) drawBody(game, b);
   drawGlow(game);
   drawApproach(game);
+  drawDeflectable(game);
+  drawParry(game);
 
   // Scrap debris — glinting gold
   for (const d of game.debris) {

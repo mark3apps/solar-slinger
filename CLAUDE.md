@@ -194,8 +194,11 @@ re-arms it for a fresh run.
   distinct). Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
   Freighter, Juggernaut) are the exception — they must stay separately named to coexist as cards, and
   their descs read as "more of the same".
-- **Two kinds of pick.** Good play (catch, smash, skim/skate, kill, collect scrap, survey, slingshot,
-  shield-block) grants XP via `addXp(game, amount)` (`PROG.XP_*`). Crossing `xpForPick(prog)` sets
+- **Two kinds of pick.** Good play (catch, smash, ram-kill, parry, skim/skate, kill, collect scrap,
+  survey, slingshot, shield-block) grants XP via `addXp(game, amount)` (`PROG.XP_*`). Ram kills pay
+  `XP_RAM` in `shatter`'s `'ram'` branch (kills only — chip damage, scrap, and combos stay off, so
+  bulldozing never outearns aimed throws); a completed Deflector parry pays `XP_PARRY` at the
+  LAUNCH, not the catch. Crossing `xpForPick(prog)` sets
   `game.choosingUpgrade` and PAUSES the sim (`frame()` gate) for a card:
   - **TIER-UP milestone** (every `PROG.PICKS_PER_TIER` small picks): `tierChoices(prog, 2)` offers 2
     random **NEW** abilities from your spec's pool that clear their `minTier`. Taking one runs
@@ -218,10 +221,31 @@ re-arms it for a fresh run.
   the 0–25 band, it still feeds enemy scaling (ai.js) and ship mass (physics.js).
 - **Runtime abilities live outside config.** Most abilities are pure `shipStats` numbers, but each spec
   has real mechanics wired into the sim — keep the hook and the catalog row in sync:
-  - BRAWLER — Ram Prow / Juggernaut / Berserker in `physics.collideShipBody` (`st.ramMul`,
-    `st.ramArmor`, `st.berserk`; Berserker also scales `tractor.flingSpeedFor`); Cluster Rounds /
-    Shockwave / Demolition in `physics.brawlerThrowKill`, called ONLY from `shatter`'s
-    `'player-throw'` branch. The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
+  - BRAWLER — the ram is INNATE spec DNA: `st.ramMul`/`st.ramArmor` have a brawler-only base floor
+    (config.shipStats) so it bonks from frame one, and Ram Prow (in the STARTING KIT, not Heavy
+    Winch) / Juggernaut / Berserker deepen it in `physics.collideShipBody` (Berserker also scales
+    `tractor.flingSpeedFor`); Cluster Rounds / Shockwave / Demolition in `physics.brawlerThrowKill`,
+    called ONLY from `shatter`'s `'player-throw'` branch; Wall Splat (`st.wallSplat`,
+    `physics.wallSplat`) rides its OWN flag instead — `collideBodies` sets `body.splatWall` around
+    the one damage call where YOUR live throw dies against a celestial (its shatter credit is only
+    `'player'`, so the credit alone can't distinguish a splat), and the burst is push-only,
+    asteroids-only, with hard shoves carrying billiards credit; **Deflector** (`st.deflect`, also in
+    the starting kit) is the PARRY: `physics.updateParry` scans each substep for rocks closing
+    (>60) on the nose within `PARRY_ARC` (~60° half-angle) and hull + `st.deflectReach`, and
+    FREEZES them where caught. At rank 1 the reach is a hair past the hull — the rock must
+    actually HIT the ship (user design rule: no catching out in space); ranks widen the bubble.
+    Capacity is the RANK (SIX ranks — a maxed deflector freezes a six-rock volley) and late
+    arrivals JOIN the running window. While a session is live the nose is LOCKED (the steering block checks
+    `game.parry`) and the mouse is a FLICK read from RAW SCREEN deltas (`game.mouseSX/SY`, stashed
+    in main.js — world-aim deltas are camera-contaminated); a decisive flick or window end hurls
+    EVERY held rock player-thrown at `st.deflectPower` (flick = volley one way; no flick = each
+    back along its capture bearing), paying `XP_PARRY` per rock. Fixed 2.5s cooldown; ranks buy
+    field width + slots + window + power. Eligibility (`parryEligible`): loose asteroids only,
+    beam-scale mass cap, `!majorComet`, never held/own-throws — `render.drawDeflectable` MIRRORS it
+    for the incoming-rock indicator (pulsing cyan circlet on catchable rocks), keep them in sync;
+    `parryFrozen` is skipped by `collideBodies`/`collideShipBody`/`tryGrab`; `resetRun` clears
+    `game.parry`. Render: `drawParry` — dashed charge ring + per-rock flick arrow (helper UI),
+    additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
     protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
     NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots
     through the wake), and its `orbitCap` is clamped to MOON CLASS (`TIERS.caps[1]`) at every
@@ -229,7 +253,11 @@ re-arms it for a fresh run.
   - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
     (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
     `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render), Rockwall (orbit-held
-    rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`).
+    rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`),
+    Dead Stop (`st.deadStop`: catching an alien-thrown rock in `tryGrab` sets `b.primed` — a
+    multiplier in `flingSpeedFor`, consumed in `releaseHeld`; `flingSpeedFor` takes the BODY as well
+    as the mass precisely so the aim solver's ✕ markers price the prime in — an ember halo in
+    render marks a primed rock).
   - SCOUT — Afterburner is a FUEL TANK, not a free hold: main.js owns `game.burnerFuel`/`game.burnerOn`
     (engage needs >0.25 tank, hysteresis; drains over `st.burnTime`, refills at `st.burnRefill` — the
     HUD BURN bar), and physics reads **`game.burnerOn`, never raw Shift**, for both the thrust boost
@@ -485,7 +513,9 @@ code "works."
   region forever. Aliens are territorial (leashed to `ALIEN_TERRITORY` of their nest).
 - **The shield is an ABILITY, not base — and its SHAPE is spec DNA:** you start with NO shield — the
   whole health pool is hull, which does NOT self-heal (it mends ONLY by collecting glow-pocket motes,
-  below, and otherwise resets to full on respawn). A `shield`-channel ability UNLOCKS the regenerating
+  below, and otherwise resets to full on respawn — with ONE sanctioned exception: any pick that
+  RAISES hullMax heals the gain +20%, `main.healOnHullGain`, so a hull upgrade never just widens an
+  empty bar). A `shield`-channel ability UNLOCKS the regenerating
   shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
   quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
   - **BRAWLER (War Plating)** — STRONG (38%→65% of the pool) but **FRONT ARC ONLY** (`shieldArc` π/2):
@@ -514,8 +544,8 @@ code "works."
     thin across the mid system — a field (`GLOW_SPREAD`) is wide enough that you SWEEP the ship through it,
     scooping several in a pass, and its green region-halo makes it easy to spot. Motes are SLIGHTLY
     MAGNETIC — near the ship (`GLOW_MAGNET`) they home in and POP a hair before the hull touches
-    (`GLOW_*` tuning in config.js) for a little hull + XP. **The ONLY mid-life
-    hull heal** (see the split-health law above). No in-place refill — a drained pocket vanishes and a
+    (`GLOW_*` tuning in config.js) for a little hull + XP. **The only roaming mid-life
+    hull heal** (see the split-health law above — hull-raising picks also heal their gain). No in-place refill — a drained pocket vanishes and a
     fresh full one fades in ELSEWHERE (never within view), so `game.glowPockets` holds a steady
     `PROG.GLOW_POCKETS` and the healing supply constantly relocates. Seeded deterministically off the
     world rng in `world.seedGlowPockets`; collected on dtReal in `glow.updateGlow` (a proximity test like

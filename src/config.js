@@ -308,6 +308,8 @@ export const PROG = {
   XP_SCRAP: 0.5,           // per unit of debris-chunk value collected
   XP_ORBIT: 8,             // stow a rock into the orbit shield
   XP_BLOCK: 14,            // a shield rock intercepts an alien throw
+  XP_PARRY: 14,            // a Deflector parry launches its rock (paid at the flick, not the catch)
+  XP_RAM: 7,               // a ram KILL (shatter credit 'ram') — kills only, chip damage pays nothing
   XP_SURVEY: 40,           // chart a world
   XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
   XP_SLING: 0.6,           // per unit of speed gained in a clean slingshot
@@ -356,9 +358,14 @@ export const PROG = {
 // shipped with a lone rankable track because Retro Jets is a max-1 unlock that
 // arrives already maxed — count max-1 unlocks as flavor, not as a track).
 export const SPECS = [
+  // Kit carries Ram Prow + Deflector, not Heavy Winch: the brawler's frame-one
+  // identity is MECHANICS (the innate prow and the parry, each deepened by its
+  // track) — a kit of three stat sliders played like the base ship with bigger
+  // numbers. Heavy Winch stays a strong early pool card. Kit rule holds:
+  // 6/6/4/6 rankable.
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
-    start: ['kineticSling', 'reinforcedHull', 'heavyRounds'] },
+    start: ['kineticSling', 'reinforcedHull', 'ramProw', 'deflector'] },
   { id: 'hauler', name: 'HAULER', icon: '◎',
     desc: 'Master of the beam — long reach, big hauls, orbit shields.',
     start: ['longArmTractor', 'salvageMagnet', 'heavyWinch'] },
@@ -383,14 +390,16 @@ export const SPECS = [
 // Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter, Juggernaut) are the
 // deliberate exception: they must stay separately named to coexist as distinct
 // cards, so their descs read as "more of the same" instead. BRAWLER's runtime abilities
-// (Ram Prow, Cluster Rounds, Shockwave, Berserker, Demolition, Juggernaut) are
-// live — their hooks live in physics.js (collideShipBody + brawlerThrowKill) and
-// tractor.js (Berserker fling). HAULER's: Recovery Tether + Twin Grip (tractor.js),
-// Aegis Reflector (physics collideBodies), Rockwall (physics damageBody hardening
-// + tractor orbit spin). SCOUT's: Afterburner (fuel tank in main.js, thrust +
-// governor in physics), Dash Jets (A/D — main.onDash), Reflex Jink (the
-// auto-dodge scan in physics.step), Slipstream (main.onWarp), Recon Drone
-// (world.js survey). All three specs' runtime abilities are live.
+// (Ram Prow, Deflector, Cluster Rounds, Shockwave, Wall Splat, Berserker,
+// Demolition, Juggernaut — plus the INNATE ram, spec DNA) are live — their
+// hooks live in physics.js (collideShipBody + brawlerThrowKill + the parry
+// state machine) and tractor.js (Berserker fling). HAULER's: Recovery Tether +
+// Twin Grip + Dead Stop (tractor.js), Aegis Reflector (physics collideBodies),
+// Rockwall (physics damageBody hardening + tractor orbit spin). SCOUT's:
+// Afterburner (fuel tank in main.js, thrust + governor in physics), Dash Jets
+// (A/D — main.onDash), Reflex Jink (the auto-dodge scan in physics.step),
+// Slipstream (main.onWarp), Recon Drone (world.js survey). All three specs'
+// runtime abilities are live.
 export const ABILITIES = [
   // 🥊 BRAWLER
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
@@ -399,9 +408,11 @@ export const ABILITIES = [
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A heavy regenerating shield — FRONT ARC ONLY. Your tail stays bare.' },
-  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Ram bodies for damage and take less from impacts.' },
+  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull — flick the mouse to hurl it that way. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
+  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 3, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
+  { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 3, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
   { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 3, minTier: 3, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
   { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 3, minTier: 3, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
   { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 3, minTier: 3, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
@@ -419,6 +430,7 @@ export const ABILITIES = [
   { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
   { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, weight: 0.9, desc: 'Haul planet-scale masses.' },
   { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 3, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
   { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
   { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 1, minTier: 3, weight: 0.9, desc: 'Hold and throw two rocks at once.' },
 
@@ -576,9 +588,11 @@ export function shipStats(prog) {
     orbitLvl = c('orbit'), volC = c('volley');
   // BRAWLER runtime channels (ram = Ram Prow + Juggernaut; the rest are 1:1).
   const ramC = c('ram'), berserkC = c('berserk'), clusterC = c('cluster'),
-    shockC = c('shockwave'), demoC = c('demolition');
+    shockC = c('shockwave'), demoC = c('demolition'), wallsplatC = c('wallsplat'),
+    deflectC = c('deflect');
   // HAULER runtime channels.
-  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'), rockwallC = c('rockwall');
+  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'),
+    rockwallC = c('rockwall'), deadstopC = c('deadstop');
   // SCOUT runtime channels.
   const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'),
     slipC = c('slipstream'), autoevadeC = c('autoevade');
@@ -671,12 +685,31 @@ export function shipStats(prog) {
     hasVolley: volC > 0,
     volleyLvl: volC,
     // ---- BRAWLER runtime abilities (read by physics/tractor) ----
-    ramMul: 1 + 0.45 * ramC,                      // ram damage DEALT to bodies (Ram Prow/Juggernaut)
-    ramArmor: Math.max(0.45, 1 - 0.11 * ramC),    // impact damage TAKEN (lower = tougher)
+    // INNATE RAM (spec DNA, like the shield shape): a brawler bonks from frame
+    // one — ram deals more and impacts hurt less at rank ZERO, so minute-one
+    // play already inverts (other specs dodge rocks; the brawler plays
+    // chicken). Ram Prow / Juggernaut then deepen the same numbers.
+    ramMul: (prog.spec === 'brawler' ? 1.35 : 1) + 0.45 * ramC,   // ram damage DEALT to bodies
+    ramArmor: Math.max(0.45, (prog.spec === 'brawler' ? 0.85 : 1) - 0.11 * ramC), // impact damage TAKEN (lower = tougher)
     berserk: berserkC,                            // fling/ram scale up as hull drops (runtime hull read)
     cluster: clusterC,                            // shrapnel shards spawned on a throw-kill
     shockwave: shockC,                            // knockback impulse on a throw-kill
     demolition: demoC,                            // AoE damage on a throw-kill
+    wallSplat: wallsplatC,                        // Wall Splat: kills AGAINST a world blast nearby rocks
+    // DEFLECTOR (the parry, brawler kit): rocks closing on the NOSE freeze on
+    // contact for the window; the player's mouse FLICK picks the hurl
+    // direction (physics.updateParry owns the whole flow: scan, pin, flick,
+    // launch). Rank 1 catches at the HULL — the rock must actually hit you
+    // (user design rule: no catching out in space) — and each of the SIX
+    // ranks widens the catch bubble, adds a slot (cap = rank, so a maxed
+    // deflector freezes a six-rock volley), lengthens the freeze, and hardens
+    // the hurl; the cooldown is fixed. Per-rank growth is sized for the long
+    // track — rank 6 tops out near the old 3-rank ceiling. The base window is
+    // long on purpose: enough time to read the freeze and aim the flick.
+    deflect: deflectC,
+    deflectWindow: deflectC > 0 ? 0.5 + 0.09 * (deflectC - 1) : 0,
+    deflectPower: deflectC > 0 ? 520 + 80 * (deflectC - 1) : 0,
+    deflectReach: deflectC > 0 ? 6 + 11 * (deflectC - 1) : 0,   // catch margin beyond the hull (world units)
     // Shield coverage half-angle around the nose (PI = full wrap). Brawler's
     // front-arc plating sets PI/2; physics.damageShip + render both read it.
     shieldArc,
@@ -686,6 +719,7 @@ export function shipStats(prog) {
     twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
     maxHeld: twinC > 0 ? 2 : 1,
     rockwall: rockwallC,                          // Rockwall: hardened, faster-spinning orbit rocks
+    deadStop: deadstopC,                          // Dead Stop: caught alien throws prime for a harder fling
     // ---- SCOUT runtime abilities ----
     afterburner: afterburnerC,                    // hold Shift: fuel-tank overdrive (main.js drains, physics burns)
     burnTime: 3.5 + 1.5 * afterburnerC,           // seconds a FULL tank burns for

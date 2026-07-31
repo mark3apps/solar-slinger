@@ -23,7 +23,7 @@ export function aimSolutions(game) {
   const s = game.ship;
   const st = game.st;
   const held = game.held;
-  const speed = flingSpeedFor(game, held ? held.mass : 600);
+  const speed = flingSpeedFor(game, held ? held.mass : 600, held);
   const heldR = held ? held.radius : 6;
   // CRITICAL FRAME CHOICE: the rock launches from ITS OWN position (the hold
   // point, ~70 out from the ship, plus any spring lag) — not from the ship.
@@ -81,8 +81,10 @@ export function aimSolutions(game) {
 // at beam tier 2+, flinging while under forward thrust whip-cracks the rock
 // with the ship's own momentum (up to +60% at high speed). The multiplier is
 // stashed on game.tetherMul so releaseHeld can announce big cracks, and the
-// same helper feeds the lead-marker solver so the ✕ stays honest.
-function flingSpeedFor(game, mass) {
+// same helper feeds the lead-marker solver so the ✕ stays honest — which is
+// why it takes the BODY too: per-rock multipliers (Dead Stop's prime) must
+// show in the solve, or the markers lie for exactly the shots that matter.
+function flingSpeedFor(game, mass, body = null) {
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (mass * 4), 0.25), 0.3, 1);
   let speed = st.fling * massFactor;
@@ -92,6 +94,9 @@ function flingSpeedFor(game, mass) {
     const hullFrac = clamp(game.ship.hull / Math.max(1, st.maxHull), 0, 1);
     speed *= 1 + st.berserk * 0.3 * (1 - hullFrac);
   }
+  // DEAD STOP (hauler): a rock caught mid-alien-throw is primed — the
+  // counterpunch flies far harder. Consumed on release (releaseHeld).
+  if (body && body.primed && st.deadStop > 0) speed *= 1 + 0.3 * st.deadStop;
   game.tetherMul = 1;
   if (st.tier >= 2 && game.controls.f > 0 && game.ship.alive) {
     const sp = Math.hypot(game.ship.vx, game.ship.vy);
@@ -110,7 +115,7 @@ function flingSpeedFor(game, mass) {
 // ship-nose angle.)
 export function computeFlingVelocity(game, body) {
   const s = game.ship;
-  const speed = flingSpeedFor(game, body.mass);
+  const speed = flingSpeedFor(game, body.mass, body);
   const dx = game.aim.x - body.x, dy = game.aim.y - body.y;
   const ang = Math.hypot(dx, dy) > 25
     ? Math.atan2(dy, dx)
@@ -131,7 +136,8 @@ export function tryGrab(game) {
     // the Tinker Barge is CREWED — the beam won't take a live friendly ship;
     // never re-grab a rock you're already holding.
     if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.tinker ||
-        b.heldBy === 'orbit' || b === game.held || b === game.held2) continue;
+        b.heldBy === 'orbit' || b === game.held || b === game.held2 ||
+        b.parryFrozen) continue;   // mid-parry rock belongs to the flick, not the beam
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
     if (dCursor > b.radius + st.grabSlack) continue;
@@ -149,6 +155,13 @@ export function tryGrab(game) {
     // Steal it from an alien
     const al = best.heldBy;
     if (al.target === best) { al.target = null; al.state = 'cooldown'; al.cool = 2; }
+  }
+  // DEAD STOP (hauler): snatching a rock an alien threw AT you is the
+  // counterpunch — the catch primes it (harder fling, flingSpeedFor). Checked
+  // BEFORE heldBy/thrown state is cleared below, while the throw is still live.
+  if (game.st.deadStop > 0 && best.thrownBy === 'alien' && best.thrownTimer > 0) {
+    best.primed = true;
+    game.deadStopWarn = true;   // main.js announces (first time only)
   }
   best.heldBy = 'player';
   derail(best);
@@ -184,8 +197,9 @@ export function releaseHeld(game, fling) {
   if (!game.held) sfx.setBeam(false);
   if (!b.alive) return;
   if (fling) {
-    const v = computeFlingVelocity(game, b);
+    const v = computeFlingVelocity(game, b);   // reads b.primed — consume only after
     b.vx = v.vx; b.vy = v.vy;
+    b.primed = false;   // Dead Stop prime is one shot — consumed by this fling
     b.thrownBy = 'player';
     b.thrownTimer = 4;
     if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
@@ -193,6 +207,7 @@ export function releaseHeld(game, fling) {
     if (game.tetherMul > 1.15) game.tetherShow = game.tetherMul;   // main.js announces
     sfx.sfxFling();
   } else {
+    b.primed = false;   // a gentle drop wastes the Dead Stop prime — no banking it
     sfx.sfxDrop();
   }
 }
@@ -270,6 +285,7 @@ export function addToOrbit(game) {
   game.held2 = null;
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
+  b.primed = false;   // stowing wastes the Dead Stop prime — the ring can't bank it
   // The tractor capture spins the rock up — captured bodies visibly whirl
   // (ambient spin is a sleepy ±0.3 rad/s)
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
