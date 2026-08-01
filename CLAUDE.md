@@ -196,6 +196,18 @@ re-arms it for a fresh run.
   worlds can be named. Committing a seed (blur/Enter) re-rolls **only from the title screen**, where the
   splash backdrop is a live sim and the new world can be seen before START; mid-run it waits for the
   next run and the note line says so. Typing never re-rolls — that would rebuild the system per keystroke.
+- **MAIN MENU ENDS THE RUN — the seed is rolled on the way TO the title, never on the way out of it**
+  (`main.toMainMenu`). Backing out used to only flip `started`, so the splash sat over a paused,
+  half-played world and START silently RESUMED it: the title screen has no notion of "continue", so
+  that read as the menu having done nothing. It now runs the full `resetRun` — which is what makes the
+  backdrop honest, and is the whole reason the reset lives here rather than in `startGame`: the sky
+  drifting behind the menu IS the brand-new system START drops you into, exactly as on a cold boot.
+  Two things ride along: the spec card is deliberately NOT opened (`resetRun(seed, openCard=false)` —
+  `startGame` opens it on the way in; a pick card floating over the splash is an upgrade modal with no
+  run behind it, and every other `resetRun` caller, `window.freshRun` included, relies on the reset
+  ENDING on that card), and the dead run's last words go with it (`hud.clearMessage` + the pending
+  grab-tip `setTimeout` — the `#msg` lifetime is wall-clock, so a warning raised in a run's final
+  second would otherwise hang over the title panel's header).
 - **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
   keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
   fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`

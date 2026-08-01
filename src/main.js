@@ -470,7 +470,34 @@ function openAchievements() {
 }
 // Settings is the only one that owns persisted state, so it's the only one that saves.
 function closeShellPanel() { if (game.settingsOpen) saveSettings(); closeShell(); sfx.sfxMenuClose(); }
-function toMainMenu() { game.paused = false; closeShell(); game.started = false; }
+// MAIN MENU out of a run ENDS the run. Backing out used to only flip `started`,
+// so the splash sat over a paused, half-played world and START silently resumed
+// it — the title screen has no notion of "continue", so that read as the menu
+// having done nothing. Resetting HERE rather than in startGame is what makes the
+// backdrop honest: the sky drifting behind the menu is the brand-new system
+// (fresh seed via resetRun -> regenWorld -> pickSeed) that START drops you into,
+// exactly as on a cold boot. The spec card is deliberately NOT opened — startGame
+// does that on the way in; a pick card floating over the splash would be an
+// upgrade modal with no run behind it.
+function toMainMenu() {
+  game.paused = false;
+  closeShell();
+  game.started = false;
+  resetRun(undefined, false);
+  // The dead run's last words go with it: the message slot's lifetime is
+  // wall-clock, and the deferred grab tip is a pending setTimeout that would
+  // otherwise pop behind the NEXT run's spec card.
+  clearTimeout(tipTimer);
+  hud.clearMessage();
+  // Restart the establishing shot with the world it is establishing, so every
+  // fresh title screen opens on the same framing (and the same breathing phase
+  // as the boot animation) instead of picking up wherever the last one left off.
+  // Applied HERE, not left to the next driftSplash: that frame may take zero
+  // substeps and would render the dead run's camera first (see frameSplash).
+  game.splashT = 0;
+  splashAcc = 0;
+  frameSplash(0);
+}
 
 // ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
 function toggleMenu() {
@@ -511,8 +538,28 @@ function exitGame() {
 //     charge prog.lives for a run that hasn't started;
 //   - event flags step() raises (heat, storms, auroras…) are cleared each frame
 //     instead of drained, or they'd all fire as messages the moment START ran.
-const SPLASH_ZOOM = 0.205;   // zoomCur for the wide shot (gameplay tier-0 is ~1.15)
+// zoomCur for the wide shot (gameplay tier-0 is ~1.15). Pulled back from 0.205
+// to ~1.5x wider: at the old framing the camera's 4400u orbit was about one view
+// radius, so the sun sat on the frame edge and the shot read as "near a star"
+// rather than as a system. Wider, the inner lanes and the first belt sweep
+// through together — and the dive onto the ship at START has further to travel.
+const SPLASH_ZOOM = 0.14;
 let splashAcc = 0;
+// The establishing shot's framing at splash time t. Lifted OUT of the substep
+// loop because the loop is not guaranteed to run: driftSplash takes zero
+// substeps on any frame shorter than the sim step — a >120 Hz display, or the
+// first frame after a reset zeroed the accumulator — and until this was its own
+// function, such a frame rendered the world at whatever camera and zoom the
+// previous state left behind (the dead run's ship at gameplay zoom on the way
+// out of MAIN MENU, the spawn close-up at boot), then snapped wide. One frame,
+// but a visible pop, and under the splash's blur it read as a glitch. Callers
+// only set zoomCur; frame()'s splash branch runs applyZoom before every render.
+function frameSplash(t) {
+  game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
+  const a = t * 0.06;                                            // slow orbit of the sun
+  game.cam.x = Math.cos(a) * 4400;
+  game.cam.y = Math.sin(a) * 4400;
+}
 function driftSplash(dt) {
   game.time += dt;
   // The re-rail scan measures against the player's view, not the camera's — off
@@ -553,11 +600,7 @@ function driftSplash(dt) {
   while (splashAcc >= sdt && splashSteps < CFG.SUBSTEP_MAX) {
     step(game, sdt);
     game.splashT = (game.splashT || 0) + sdt;
-    const t = game.splashT;
-    game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
-    const a = t * 0.06;                                            // slow orbit of the sun
-    game.cam.x = Math.cos(a) * 4400;
-    game.cam.y = Math.sin(a) * 4400;
+    frameSplash(game.splashT);
     splashAcc -= sdt;
     splashSteps++;
     perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
@@ -574,6 +617,14 @@ function driftSplash(dt) {
   // a burst of rank messages the instant START ran.
   game.rankUps.length = 0;
 }
+// Arm the title framing before the FIRST frame ever renders. The boot world is
+// built at module load, which leaves the camera on the ship at the gameplay
+// zoomCur (1.15) — and the first frame's dt is the gap from module eval to the
+// first rAF, which is routinely under one sim step, so driftSplash takes no
+// substeps and the title opens on a close-up of the spawn. Down HERE rather
+// than beside regenWorld() because SPLASH_ZOOM is a const declared above this
+// line: calling frameSplash any earlier is a TDZ ReferenceError at load.
+frameSplash(0);
 
 // Every menu button is a user gesture — init Web Audio first so the very
 // click that unlocks the context also gets its tick.
@@ -759,7 +810,11 @@ function openUpgrade() {
 // `seed` forces a specific world (window.freshRun / mechTest); undefined lets
 // pickSeed resolve one, so a normal new run lands on a brand-new random system
 // unless the player has pinned a seed in Settings.
-function resetRun(seed) {
+// `openCard` false resets everything but leaves the spec choice unopened — the
+// MAIN MENU path, where the card must wait for START (see toMainMenu). Every
+// other caller relies on the reset ENDING on that card: window.freshRun picks
+// it immediately, and a game-over restart must open on it.
+function resetRun(seed, openCard = true) {
   game.prog = freshProgress();   // ...including a blank achievement ledger + score
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
@@ -799,7 +854,14 @@ function resetRun(seed) {
   hud.setDeathVisible(false);
   hud.setGameOverVisible(false);
   firstStart = true;     // re-arm the flight guidance for the fresh run
-  openSpec();            // fresh run opens on a new specialization choice
+  if (openCard) {
+    openSpec();          // fresh run opens on a new specialization choice
+  } else {
+    // No card: the dead run's own pick state must go with it, or a stale
+    // choosingUpgrade would freeze the title backdrop behind an invisible modal.
+    game.choosingUpgrade = false; game.upgradeChoices = null;
+    hud.setUpgradeVisible(game, null, '', applyPick);
+  }
 }
 
 // One-shot event messages — the "Event-flag messaging" convention (CLAUDE.md):
