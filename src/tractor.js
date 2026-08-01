@@ -166,6 +166,12 @@ export function tryGrab(game) {
     game.deadStopWarn = true;   // main.js announces (first time only)
   }
   best.heldBy = 'player';
+  // A piece of world crust stops being halo rubble the moment you take hold of
+  // it: it is your ammunition now, and the halo assist (physics.updateCrust)
+  // must never get a say in where it goes afterwards. Cleared HERE rather than
+  // left to the assist's own heldBy check, so it is true from the grab itself
+  // even when the throw follows in the same frame.
+  best.crust = null;
   derail(best);
   if (game.held) game.held2 = best; else game.held = best;   // Twin Grip: fill the open slot
 
@@ -215,6 +221,12 @@ export function releaseHeld(game, fling) {
     if (game.held) bump(game, 'twinFling');   // held2 was promoted — a second rock is still in hand
     b.primed = false;   // Dead Stop prime is one shot — consumed by this fling
     b.thrownBy = 'player';
+    // A rock the PLAYER launched gets the long leash (CFG.THROW_LEASH):
+    // `thrownBy` is cleared a second later, so the debris cull needs a mark
+    // that outlives the flight. A throw is a deliberate act, and a rock
+    // vanishing out from under a shot in flight would be the cull making a
+    // decision for the player.
+    b.slung = true;
     b.thrownTimer = 4;
     b.chainN = 0;   // YOUR throw is always link 0 (physics.chainOk) — even for a rock that ended a chain
     if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
@@ -398,6 +410,12 @@ export function flingAllFromOrbit(game, count = Infinity) {
     b.vx = s.vx + Math.cos(a) * speed;
     b.vy = s.vy + Math.sin(a) * speed;
     b.thrownBy = 'player';
+    // A rock the PLAYER launched gets the long leash (CFG.THROW_LEASH):
+    // `thrownBy` is cleared a second later, so the debris cull needs a mark
+    // that outlives the flight. A throw is a deliberate act, and a rock
+    // vanishing out from under a shot in flight would be the cull making a
+    // decision for the player.
+    b.slung = true;
     b.thrownTimer = 4;
     b.chainN = 0;                     // link 0, like releaseHeld
     b.throwX = b.x; b.throwY = b.y;   // volley pellets can snipe too (see releaseHeld)
