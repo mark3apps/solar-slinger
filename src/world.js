@@ -439,6 +439,11 @@ export function generateWorld(game, seed = 20260721) {
   // stale list would keep simulating the dead sky's bodies. step() falls back
   // to the full array until updateFieldLOD rebuilds it (first frame).
   bodies._awake = null;
+  // ...and so do the frame registries, for exactly the same reason: they hold
+  // REFERENCES too, and a stale one would have render drawing the dead sky's
+  // planets and physics answering to a sun that no longer exists.
+  // physics.frameReg rebuilds on demand (see the note above updateFieldLOD).
+  game.reg = null;
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
@@ -1932,7 +1937,14 @@ export function replenishWorld(game, dt) {
 
   // Magma cools into dense dark rock; spent comets fade away off-screen
   // (captured ones are keepers)
-  for (const b of game.bodies) {
+  // Registry, not a walk (physics.updateFieldLOD collects it in the one
+  // full-array pass the frame already pays for): this ticked two fields over
+  // EVERY body in the world every frame — ~15k iterations at shoal scale —
+  // for the handful that ever carry magma or a comet timer. No LOD trade
+  // here: the registry holds dormant members too, so decay keeps running for
+  // rocks the player has flown away from. Falling back to the full array
+  // covers the first frame of a fresh world, before the LOD has run.
+  for (const b of (game.reg ? game.reg.decay : game.bodies)) {
     if (b.magma > 0) { b.magma -= dt; if (b.magma <= 0) b.color = '#6e5a50'; }
     if (b.comet && b.alive) {
       b.cometT -= dt;
@@ -1950,7 +1962,9 @@ export function replenishWorld(game, dt) {
   if (game.localCullT <= 0) {
     game.localCullT = 2.5;
     const cullR = viewR * 1.8 + 2600;
-    for (const b of game.bodies) {
+    // Registry (the `!b.local` reject below still stands, so the full-array
+    // fallback behaves identically on a world's first frame).
+    for (const b of (game.reg ? game.reg.locals : game.bodies)) {
       if (!b.local || !b.alive || b.heldBy || b.thrownTimer > 0) continue;
       if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) > cullR) b.alive = false;
     }
@@ -1961,8 +1975,15 @@ export function replenishWorld(game, dt) {
   game.asteroidTimer = 0.4;
   // The available amount breathes over time so the field never feels static
   const target = Math.round(30 + 22 * (0.5 + 0.5 * Math.sin(game.time * 0.02)));
-  const locals = game.bodies.reduce((n, b) => n + (b.alive && b.local ? 1 : 0), 0);
-  const total = game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
+  // Both counts come off the registry — they were two more full-array reduces,
+  // 2.5x a second over every body in the world. A body that died since the
+  // last LOD pass is still counted here for one frame; the only consequence is
+  // one spawn cycle budgeting slightly low, and it self-corrects immediately.
+  const reg = game.reg;
+  const locals = reg ? reg.locals.length
+    : game.bodies.reduce((n, b) => n + (b.alive && b.local ? 1 : 0), 0);
+  const total = reg ? reg.asteroids
+    : game.bodies.reduce((n, b) => n + (b.alive && b.type === 'asteroid' ? 1 : 0), 0);
   // Global cap leaves room for the permanent trojan/ring/junk populations.
   // Raised 380 -> 9800 across the dense-field work: the four pockets are
   // ~8800 PERMANENT asteroids on their own, and the cap counts every asteroid

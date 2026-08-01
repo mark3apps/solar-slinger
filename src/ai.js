@@ -1,6 +1,6 @@
 import { CFG, fieldFrac } from './config.js';
 import { Alien, derail } from './entities.js';
-import { damageShip, damageBody, addParticles } from './physics.js';
+import { damageShip, damageBody, addParticles, frameReg } from './physics.js';
 import { bump } from './achievements.js';
 import * as sfx from './sfx.js';
 import { TAU, clamp, senseBlind } from './util.js';
@@ -19,7 +19,10 @@ function steer(al, tx, ty, speed) {
 // Stay clear of the sun — survival overrides everything. (Tight margin: with
 // a giant sun, radius*3 would lock aliens out of the whole inner system.)
 function avoidStars(game, al) {
-  for (const b of game.bodies) {
+  // Registry, not a scan. This walked every body in the world to find the ONE
+  // star, once per alien per frame — ~47k iterations a frame with three
+  // lurkers hunting at shoal scale, to look at a single body.
+  for (const b of frameReg(game).stars) {
     if (b.type !== 'star') continue;
     const dx = al.x - b.x, dy = al.y - b.y;
     const d = Math.hypot(dx, dy);
@@ -34,7 +37,10 @@ function avoidStars(game, al) {
 
 function nearestRock(game, al) {
   let best = null, bestD2 = 3200 * 3200;
-  for (const b of game.bodies) {
+  // Awake list: the search radius is 3200u and the wake bubble is wider than
+  // that around the ship, which is where aliens hunt — a dormant rock could
+  // not have won this search anyway.
+  for (const b of (game.bodies._awake || game.bodies)) {
     if (!b.alive || b.type === 'star') continue;
     if (b.type === 'nest' || b.type === 'station') continue;   // never throw home
     if (b.mass > CFG.ALIEN_CAPACITY) continue;
@@ -211,7 +217,9 @@ function pickShoveRock(game, al, s) {
   const sd = Math.hypot(sdx, sdy) || 1;
   const ux = sdx / sd, uy = sdy / sd;
   let best = null, bestScore = 0;
-  for (const b of game.bodies) {
+  // Awake list: a lurker only sets up from inside LURKER_SHOVE_R, which sits
+  // well within the wake bubble it and the ship share.
+  for (const b of (game.bodies._awake || game.bodies)) {
     if (!b.alive || b.type !== 'asteroid' || b.heldBy) continue;
     if (b.mass > CFG.LURKER_SHOVE_MASS || b.majorComet || b.pod) continue;   // muscle, not a beam
     const dx = b.x - al.x, dy = b.y - al.y;
@@ -417,7 +425,8 @@ function updateFields(game, dt) {
     // The ambush: it was one of the rocks — spawn at a field rock near the
     // player (close enough to menace, far enough to see coming).
     let spot = null, bd = Infinity;
-    for (const b of game.bodies) {
+    // Awake list: the spot has to be 280-1000u from the ship to qualify.
+    for (const b of (game.bodies._awake || game.bodies)) {
       if (!b.alive || b.field !== fi || b.heldBy) continue;
       const d = Math.hypot(b.x - s.x, b.y - s.y);
       if (d > 280 && d < 1000 && d < bd) { bd = d; spot = b; }
@@ -437,7 +446,9 @@ function updateFields(game, dt) {
 // BASTION fortresses: shield upkeep, turret fire, and bolt flight/impacts
 function updateForts(game, dt) {
   const s = game.ship;
-  for (const b of game.bodies) {
+  // Registry: forts are a handful of fortified worlds and this walked every
+  // body in the world to find them, every frame.
+  for (const b of frameReg(game).forts) {
     if (!b.alive || !b.fort) continue;
     const f = b.fort;
     if (f.hitT > 0) f.hitT -= dt;
@@ -490,8 +501,9 @@ function updateForts(game, dt) {
         dead = true;
       }
       if (!dead) {
-        // Any rock blocks a bolt — your orbit shield is real cover here
-        for (const b of game.bodies) {
+        // Any rock blocks a bolt — your orbit shield is real cover here.
+        // Awake list: a bolt in flight is between a fort and the ship.
+        for (const b of (game.bodies._awake || game.bodies)) {
           if (!b.alive || b.fort) continue;
           const br = b.radius + 6;
           if (Math.abs(b.x - bo.x) > br) continue;
@@ -524,7 +536,9 @@ export function updateAliens(game, dt) {
     const s = game.ship;
     let inHalo = false, inShroud = false;
     if (s.alive) {
-      for (const b of game.bodies) {
+      // Registry: dust moons and shroud worlds share one list, so this no
+      // longer walks the world to find the few bodies that can hide you.
+      for (const b of frameReg(game).cloakers) {
         if (!b.alive) continue;
         const dust = b.type === 'moon' && b.moonType === 'dust';
         // SHROUD PLANETS conceal the same way — same game.dustCloak flag, so

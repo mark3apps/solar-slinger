@@ -5,7 +5,7 @@ import {
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD } from './physics.js';
+import { step, updateFieldLOD, frameReg } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -1426,10 +1426,14 @@ function updateLifePods(dt) {
 // has to be somewhere a pilot can actually reach under pressure — and render
 // feathers the wedge so the boundary never reads as a drawn line.
 //
-// Type-first so the ~7000 dense-field rocks fall out on one comparison, and
-// only called on the frames a sheath is genuinely washing over the ship.
+// Over reg.nonField (physics.frameReg), not game.bodies: nothing that casts a
+// lee is field rock, so walking the pockets to reject ~15,000 rocks one at a
+// time is the exact cost the frame registries exist to delete. One frame stale
+// is fine here — worlds do not appear or vanish between the LOD pass and this
+// one, and the b.alive check below covers the one that dies mid-frame. Called
+// only on the frames a sheath is genuinely washing over the ship anyway.
 function shelterBody(x, y) {
-  for (const b of game.bodies) {
+  for (const b of frameReg(game).nonField) {
     if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
     if (!b.alive || b.radius < CFG.STORM_SHADOW_MIN_R) continue;
     const br = Math.hypot(b.x, b.y) || 1;

@@ -1,7 +1,11 @@
-import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac } from './config.js';
-import { predictPaths, PARRY_FLICK } from './physics.js';
+import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX } from './config.js';
+import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import { volleyPick } from './tractor.js';
 import { TAU, angDiff, lerp, mulberry32, shellModal, senseBlind, crystalShards } from './util.js';
+import {
+  initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
+  rockGLCount, rockGLResetTextures, rockGLStats, rockGLAvailable,
+} from './rockgl.js';
 
 let canvas, ctx, vw, vh, dpr, rdpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
@@ -43,6 +47,10 @@ export function initRender(cv) {
     // instruments. (This is also why nothing has to invalidate the dot cache
     // below on a scale change: its resolution never moves.)
     radarCanvas.width = radarCanvas.height = RADAR_SIZE * rdpr;
+    // The instanced-rock buffer is composited 1:1 into the world canvas, so it
+    // tracks the SCALED backing store — render scale reaches it exactly as it
+    // reaches everything else drawn in world space.
+    resizeRockGL(canvas.width, canvas.height);
   };
   radarCanvas = document.getElementById('radar');
   rctx = radarCanvas.getContext('2d');   // alpha kept: the world shows through around the disc
@@ -105,16 +113,78 @@ export function setRenderScale(s) {
 const view = { x0: 0, y0: 0, x1: 0, y1: 0, cx: 0, cy: 0, r: 0 };
 const frameStars = [];
 
+// ---------------------------------------------------------------------------
+// GL / 2D MODE. Instanced GL wins hugely in a shoal and LOSES in open space:
+// compositing its canvas is one full-screen drawImage whatever it holds, so
+// below a few hundred rocks the per-rock 2D blits are simply cheaper than the
+// composite alone. The switch therefore runs off the PREVIOUS frame's count —
+// blitRock cannot know the total until the loop it is being called from has
+// finished, and a camera moves smoothly enough that a one-frame-old count is
+// right essentially always. The hysteresis keeps a rock count hovering on the
+// line from flapping between paths (which would flicker, since the two orders
+// differ slightly).
+//
+// MEASURED, not guessed — same scene, paths interleaved, ms per rendered
+// frame (forceRockPath is what makes that measurable):
+//     rocks     2D      GL
+//         3   0.400   0.454      <- 2D, the composite is pure overhead
+//        22   0.437   0.512      <- 2D
+//       111   0.716   0.621      <- GL
+//       247   0.662   0.527      <- GL
+//       474   0.930   0.710      <- GL, 1.31x
+//      1710   2.570   1.440      <- GL, 1.78x
+//      1849   2.880   1.700      <- GL, 1.69x
+// So the composite costs ~0.06-0.08ms flat and break-even sits around 60-90
+// rocks. ENTER is set just past that, with EXIT well below it: in the band
+// between them the two paths are within ~0.1ms of each other, so the
+// hysteresis is buying a stable picture for nothing. (An earlier guess of 260
+// was ~3x too conservative and left the GL path dark through most of a shoal.)
+//
+// Rock counts in play: ~6 on screen at tier 0's tight zoom, ~40 at tier 2,
+// ~270 at tier 5, and ~1800 on a wide zoomed-out shot — so this engages from
+// mid-game onward and for every wide shot, which is exactly where it pays.
+const GL_ENTER = 100;   // rocks needed to turn the GL path ON
+const GL_EXIT = 60;     // ...and to fall back below (hysteresis)
+let glReady = false;    // WebGL2 came up
+let glOn = false;       // ...and this frame is using it
+let frameRockN = 0;     // blit-eligible rocks seen this frame
+let prevRockN = 0;      // last frame's, which decides the mode
+// Pin the path for A/B measurement: 'gl' | '2d' | null (auto). The threshold
+// above is only defensible against numbers, and the two paths have to be
+// measured on the SAME scene to produce any — so this exists for the same
+// reason window.god and window.speed do.
+// `(await import('/src/render.js')).forceRockPath('2d')`
+let glForce = null;
+export function forceRockPath(mode) { glForce = mode === 'gl' || mode === '2d' ? mode : null; }
+
 function beginFrame(game) {
   const { cam } = game;
+  // Pick this frame's rock path from last frame's load (see the note above).
+  if (!glReady) glReady = initRockGL(canvas.width, canvas.height);
+  prevRockN = frameRockN;
+  frameRockN = 0;
+  // rockGLAvailable(), NOT the latched glReady: a lost context sets the module
+  // dead AFTER a successful init, and glReady would still say yes. blitRock
+  // would then push into a no-op and STILL return true (telling drawBody the
+  // rock is handled) while the flush returned nothing to composite — every
+  // atlas-eligible rock would silently vanish, permanently. The fallback is
+  // the whole point of the dead flag; this is what actually honours it.
+  glOn = rockGLAvailable() && (glForce
+    ? glForce === 'gl'
+    : (glOn ? prevRockN >= GL_EXIT : prevRockN >= GL_ENTER));
+  if (glOn) rockGLBegin();
   // pad absorbs screen shake (±15px) and stroke widths
   const halfW = (vw / 2 + 80) / cam.zoom, halfH = (vh / 2 + 80) / cam.zoom;
   view.cx = cam.x; view.cy = cam.y;
   view.x0 = cam.x - halfW; view.x1 = cam.x + halfW;
   view.y0 = cam.y - halfH; view.y1 = cam.y + halfH;
   view.r = Math.hypot(halfW, halfH);
+  // The frame's star list is now just the registry's (physics builds it in the
+  // LOD's single walk) — this used to scan every body in the world once a
+  // frame to find the sun. Copied rather than aliased so a mid-frame rebuild
+  // cannot swap the array out from under nearestStar.
   frameStars.length = 0;
-  for (const b of game.bodies) if (b.alive && b.type === 'star') frameStars.push(b);
+  for (const b of frameReg(game).stars) if (b.alive) frameStars.push(b);
 }
 
 // View culling: true if any drawn element of this body can touch the screen.
@@ -642,6 +712,11 @@ function publishSheet(sh, bake, now) {
   if (sh.cv) c.drawImage(sh.cv, 0, 0);
   if (bake) bake(c);
   sh.cv = cv; sh.used = now;
+  // CONTENT version, for the GL path's texture cache. Only a bake changes what
+  // the sheet DEPICTS — the bake-less republish above is the Canvas2D rot
+  // workaround (a fresh canvas holding identical pixels), and GL neither
+  // suffers that rot nor needs to re-upload for it.
+  if (bake) sh.ver++;
 }
 
 function rockRow(tier, bk, color, now) {
@@ -659,9 +734,15 @@ function rockRow(tier, bk, color, now) {
     // a few row bakes, and the memory is bounded by construction.
     let bytes = 0;
     for (const s of atlasSheets) bytes += s.w * s.h * 4;
-    if (bytes > ATLAS_BUDGET) { atlasSheets = []; openSheet = new Map(); atlasRows = new Map(); }
+    if (bytes > ATLAS_BUDGET) {
+      atlasSheets = []; openSheet = new Map(); atlasRows = new Map();
+      // The GL textures are keyed to these sheet objects; dropping the sheets
+      // without dropping them would strand real GPU memory (a WeakMap frees
+      // the entry, never the texture).
+      rockGLResetTextures();
+    }
     const cell = Math.round(2 * tier * SPRITE_EXT);
-    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0 };
+    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0, ver: 0 };
     atlasSheets.push(sh);
     openSheet.set(tier, sh);
   }
@@ -678,6 +759,17 @@ function rockRow(tier, bk, color, now) {
 // Atlas occupancy, for perf work — the sheet count and what they cost in
 // backing store. Import it from the console
 // (`(await import('/src/render.js')).rockCacheStats()`).
+// Which rock path is live, and what the GL layer drew. Companion to
+// rockCacheStats — `(await import('/src/render.js')).rockPathStats()`.
+export function rockPathStats() {
+  return {
+    path: glOn ? 'webgl2-instanced' : (glReady ? '2d-blit (below GL_ENTER)' : '2d-blit (no webgl2)'),
+    rocksLastFrame: prevRockN,
+    queued: glOn ? rockGLCount() : 0,
+    gl: rockGLStats(),
+  };
+}
+
 export function rockCacheStats() {
   let bytes = 0;
   for (const sh of atlasSheets) bytes += sh.w * sh.h * 4;
@@ -692,6 +784,20 @@ export function rockCacheStats() {
 // PRECONDITION: the caller is already in the world matrix. This restores `wt`,
 // not whatever matrix it was handed, and `wt` is only valid once
 // worldTransform has run for the frame.
+// Does anything get drawn ON TOP of this rock inside drawBody? The GL layer
+// composites AFTER the whole body loop, so a rock carrying an overlay has to
+// stay on the inline 2D blit or the overlay would end up underneath it:
+//   - cored     the vein twinkle (drawCoreGlint), painted over the sprite
+//   - damage    the crack web / scar bites (drawBodyDamage)
+//   - heldBy    the hold and orbit highlight rings, which sit between r and
+//               ~1.15r — inside the sprite's opaque jag, not clear of it
+// All three are a handful of bodies against a shoal's ~1900, so keeping them
+// on the old path costs nothing and removes a whole class of z-order bug.
+function rockNeedsOverlay(b) {
+  return b.cored || !!b.heldBy ||
+    (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length)));
+}
+
 function blitRock(game, b) {
   const bk = rockBucket(b.radius);
   if (bk < 0) return false;                  // big rock keeps its unique silhouette
@@ -708,6 +814,16 @@ function blitRock(game, b) {
   const now = wt.now;
   const r = rockRow(tier, bk, b.color, now);
   const sh = r.sh;
+  frameRockN++;   // drives next frame's GL/2D decision (see beginFrame)
+  // GL PATH: queue the instance and let the whole shoal go out as one draw
+  // call after the body loop. Only rocks with NOTHING drawn on top of them
+  // qualify — see rockNeedsOverlay.
+  if (glOn && !rockNeedsOverlay(b)) {
+    const w2 = b.radius * r.ext;   // half the drawn width, world units
+    rockGLPush(sh, b.x, b.y, b.rot, w2,
+      ((b.id % ROCK_ARCHS) * r.cell) / sh.w, r.sy / sh.h);
+    return true;
+  }
   if (now - sh.used > ATLAS_REFRESH) publishSheet(sh, null, now);
   sh.used = now;
   const k = wt.k;
@@ -2348,7 +2464,9 @@ function drawApproach(game) {
   const s = game.ship;
   if (!s.alive) return;
   const z = game.cam.zoom;
-  for (const b of game.bodies) {
+  // Landmarks only — shoal rock never draws an approach plate, so this reads
+  // the ~380-entry non-field registry instead of rejecting 15,000 rocks.
+  for (const b of frameReg(game).nonField) {
     if (!b.alive) continue;
     const isWorld = b.type === 'planet' || b.type === 'rogue';
     const isPOI = b.type === 'station' || b.type === 'nest' || (b.fort && b.type === 'moon') ||
@@ -2461,7 +2579,8 @@ function drawDeflectable(game) {
   const z = game.cam.zoom;
   const pulse = 0.55 + 0.45 * Math.sin(game.time * 9);
   const RANGE = 520;
-  for (const b of game.bodies) {
+  // Awake list: RANGE is 520u, well inside the wake bubble.
+  for (const b of (game.bodies._awake || game.bodies)) {
     const dx = b.x - s.x, dy = b.y - s.y;
     if (dx * dx + dy * dy > RANGE * RANGE) continue;
     if (!b.alive || b.type !== 'asteroid' || b.majorComet || b.heldBy || b.parryFrozen ||
@@ -3374,6 +3493,107 @@ const MINIMAP_PING_T = 1.1;                          // how long an outer contac
 const RADAR_SIZE = 200;   // CSS px of the #radar canvas (positioned + tilted by style.css)
 // Offscreen cache for the dense-field dot layer (see the bake in drawMinimap)
 let dotCanvas = null, dotCtx = null, dotBakeT = -1, dotBakeFx = 0, dotBakeFy = 0, dotBakeSeen = 0;
+
+// ---------------------------------------------------------------------------
+// THE DOT LAYER'S BAKER: a worker where the platform has one, inline otherwise.
+//
+// The bake was already cached at ~15Hz, but it still ran on the main thread —
+// so one frame in eight paid for ~1900 x (hypot + atan2 + fillRect) all at
+// once, which is a periodic hitch rather than a cost the average hides.
+// minimap-worker.js does that arithmetic on another thread and hands back a
+// finished ImageBitmap; all this side does is fill a reused Float32Array with
+// ship-relative dx/dy and post it.
+//
+// THE FALLBACK IS NOT OPTIONAL. `src/` has to run identically under serve.py
+// and inside Electron, and must never assume a capability — if Worker or
+// OffscreenCanvas is missing, or the worker fails to construct or throws at
+// runtime, dotWorkerDead latches and the original inline bake takes over for
+// the rest of the session. The picture is identical either way; only which
+// thread drew it changes.
+//
+// ONE BAKE IS IN FLIGHT AT A TIME. The buffer is TRANSFERRED (neutering this
+// side's view), so while it is away there is nothing to fill — a bake that
+// lands in that window is simply skipped and the previous bitmap is composited
+// again. At 15Hz against a sub-millisecond bake that window is almost never
+// open, and a dot layer one extra frame stale is imperceptible (it is already
+// deliberately up to 66ms behind).
+// ---------------------------------------------------------------------------
+let dotWorker = null;        // null until first use, and again if it dies
+let dotWorkerDead = false;   // latched: never retry a platform that said no
+let dotBitmap = null;        // the last finished layer, composited every frame
+let dotBuf = null;           // the ping-pong buffer; null exactly while in flight
+// Rock capacity of one post. MINIMAP_FAR (7800) can cover about one whole
+// pocket plus the edge of a neighbour, so ~1900-3800 is the realistic load and
+// this carries 2x headroom over that. Overflow drops the tail of the walk
+// rather than growing the buffer mid-frame — the dropped rocks would be the
+// far-edge ones, and the layer visibly stops at a range the dial can't
+// resolve anyway.
+const DOT_CAP = 8192;
+// Per-field "can this pocket reach the dial at all" flags, reused every bake.
+const _fieldNear = [];
+let dotLastN = 0;   // rocks in the last posted bake (minimapStats)
+
+// Force the inline bake, for exercising the fallback on a platform that has
+// workers. That path is the host-agnostic guarantee and would otherwise never
+// run on any browser this actually ships to — so it needs a way to be tested:
+// `(await import('/src/render.js')).forceMinimapInline(true)`.
+let dotForceInline = false;
+export function forceMinimapInline(on) {
+  dotForceInline = !!on;
+  if (!on) { dotWorkerDead = false; return; }   // allow re-arming on the next frame
+  if (dotWorker) { dotWorker.terminate(); dotWorker = null; }
+  if (dotBitmap) { dotBitmap.close(); dotBitmap = null; }
+  dotBuf = null;
+  dotWorkerDead = true;
+  dotBakeT = -1;   // force a rebake through the inline path
+}
+
+// Dot-layer state, for perf work and for proving which path is live. Import it
+// from the console like rockCacheStats:
+// `(await import('/src/render.js')).minimapStats()`.
+export function minimapStats() {
+  return {
+    path: dotWorker ? 'worker' : (dotWorkerDead ? 'inline (unsupported)' : 'inline (not yet started)'),
+    haveBitmap: !!dotBitmap,
+    inFlight: dotWorker ? dotBuf === null : false,
+    lastPosted: dotLastN,
+  };
+}
+
+function initDotWorker() {
+  if (dotWorker || dotWorkerDead) return;
+  if (dotForceInline || typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+    dotWorkerDead = true;
+    return;
+  }
+  try {
+    // import.meta.url, never a page-relative path: it resolves the same under
+    // serve.py's http origin and Electron's app:// scheme, which is the whole
+    // host-agnostic rule for src/.
+    dotWorker = new Worker(new URL('./minimap-worker.js', import.meta.url), { type: 'module' });
+    dotWorker.onmessage = (e) => {
+      if (dotBitmap) dotBitmap.close();   // an ImageBitmap holds GPU memory until closed
+      dotBitmap = e.data.bitmap;
+      dotBuf = new Float32Array(e.data.buf);
+    };
+    // The stale bitmap MUST go with the worker. The composite below prefers
+    // dotBitmap over the inline canvas, so a worker that dies after delivering
+    // even one bake would pin that frozen layer forever — the inline path
+    // would dutifully rebake into dotCanvas and nothing would ever draw it,
+    // leaving the dots stuck in space while every other blip tracked the ship.
+    dotWorker.onerror = () => {
+      dotWorkerDead = true;
+      dotWorker = null;
+      dotBuf = null;
+      if (dotBitmap) { dotBitmap.close(); dotBitmap = null; }
+      dotBakeT = -1;   // force the inline path to bake immediately
+    };
+    dotBuf = new Float32Array(DOT_CAP * 3);
+  } catch {
+    dotWorkerDead = true;
+    dotWorker = null;
+  }
+}
 function drawMinimap(game) {
   // The radar has its OWN canvas so the DOM can tilt it on the 3D canopy —
   // shadow the module ctx with the radar context for this function's scope.
@@ -3491,7 +3711,9 @@ function drawMinimap(game) {
   // direction where there was no sun.) Sampled through the warp like the rings —
   // straddling the scale break, its disc genuinely is pinched.
   {
-    const sun = game.bodies.find(b => b.type === 'star' && b.alive);
+    // Registry, not a find: cheap only while the sun happens to sit at index 0,
+    // and a full ~15,600-body walk per frame the moment it does not.
+    const sun = frameReg(game).stars.find(b => b.alive);
     if (sun && dSun - sun.radius < MINIMAP_FAR) {
       ctx.fillStyle = 'rgba(255, 200, 105, 0.28)';
       worldCirclePath(sun.x, sun.y, sun.radius); ctx.fill();
@@ -3562,41 +3784,96 @@ function drawMinimap(game) {
     // Sized off rdpr, like the dial it composites into — mismatch it with the
     // world canvas's scaled dpr and a scale change would leave a bitmap baked
     // at one resolution being drawn through a transform built for another.
-    if (!dotCanvas || dotCanvas.width !== RADAR_SIZE * rdpr) {
+    initDotWorker();
+    const worker = dotWorker;
+    // ROUNDED on both sides. canvas.width truncates to an integer, so an
+    // un-rounded comparison against a fractional rdpr (200 * 1.1 is
+    // 220.00000000000003 at 110% display scaling) is true EVERY frame — the
+    // canvas is rebuilt and the whole layer rebaked once per frame, which is
+    // the exact cost this cache exists to avoid. The worker path already
+    // rounds (minimap-worker.js); this is the same expression.
+    const dotPx = Math.max(1, Math.round(RADAR_SIZE * rdpr));
+    if (!worker && (!dotCanvas || dotCanvas.width !== dotPx)) {
       dotCanvas = document.createElement('canvas');
-      dotCanvas.width = dotCanvas.height = RADAR_SIZE * rdpr;
+      dotCanvas.width = dotCanvas.height = dotPx;
       dotCtx = dotCanvas.getContext('2d');
       dotBakeT = -1;
     }
     let seenMask = 0;
     for (let i = 0; i < game.fields.length; i++) if (game.fields[i].seen) seenMask |= 1 << i;
+    // WHOLE-FIELD REJECT, ahead of the per-rock walk. A pocket whose centre is
+    // further than the dial's reach plus its own longest lobe cannot put a
+    // single rock on the dial — and testing that once per FIELD replaces a
+    // hypot per ROCK for every shoal you are nowhere near. With four fields
+    // and one of them in range that is ~5700 hypots a bake that simply stop
+    // happening; it is also what keeps the cost flat as fields are added.
+    const reach = MINIMAP_FAR + CFG.FIELD_LEN * (FIELD_LOBE_MAX * 1.35);
+    const near = _fieldNear;
+    near.length = game.fields.length;
+    for (let i = 0; i < game.fields.length; i++) {
+      const f = game.fields[i];
+      near[i] = f.seen && Math.hypot(f.x - fx, f.y - fy) < reach;
+    }
     if (game.time < dotBakeT || game.time - dotBakeT > 0.066 ||
         seenMask !== dotBakeSeen || Math.hypot(fx - dotBakeFx, fy - dotBakeFy) > 60) {
-      dotBakeT = game.time; dotBakeFx = fx; dotBakeFy = fy; dotBakeSeen = seenMask;
-      const dc = dotCtx;
-      dc.setTransform(rdpr, 0, 0, rdpr, 0, 0);
-      dc.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
-      dc.fillStyle = '#a2937d';   // belt-rock tan: terrain, not the blip palette
-      for (const b of game.bodies) {
-        if (b.field == null || !b.alive) continue;
-        const f = game.fields[b.field];
-        if (!f || !f.seen) continue;   // fog of war: field-level, like the scan
-        const dx = b.x - fx, dy = b.y - fy;
-        const d = Math.hypot(dx, dy) || 1;
-        if (d > MINIMAP_FAR) continue;
-        const aDot = d > MINIMAP_NEAR ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
-        if (aDot <= 0.01) continue;
-        dc.globalAlpha = aDot * (b.giant ? 0.95 : 0.6);
-        const rr = radarR(d);
-        const px = cx + (dx / d) * rr, py = cy + (dy / d) * rr;
-        // giants read bigger — they're the landmarks you navigate the shoal by
-        const sz = b.giant ? 2.6 : 1.2;
-        dc.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+      if (worker) {
+        // Worker path: fill the ping-pong buffer with ship-relative positions
+        // and hand it over. Skipped outright while a bake is in flight (dotBuf
+        // null) — the last bitmap simply composites again.
+        const buf = dotBuf;
+        if (buf) {
+          dotBakeT = game.time; dotBakeFx = fx; dotBakeFy = fy; dotBakeSeen = seenMask;
+          let n = 0;
+          for (const b of game.bodies) {
+            const fi = b.field;
+            if (fi == null || !near[fi] || !b.alive) continue;
+            const dx = b.x - fx, dy = b.y - fy;
+            // Box reject: the worker does the true circle test, so this side
+            // never pays a sqrt.
+            if (dx > MINIMAP_FAR || dx < -MINIMAP_FAR ||
+                dy > MINIMAP_FAR || dy < -MINIMAP_FAR) continue;
+            const o = n * 3;
+            buf[o] = dx; buf[o + 1] = dy; buf[o + 2] = b.giant ? 1 : 0;
+            if (++n >= DOT_CAP) break;
+          }
+          dotLastN = n;
+          dotBuf = null;   // transferred: neutered here until the worker returns it
+          worker.postMessage({
+            buf: buf.buffer, n, size: RADAR_SIZE, rdpr, cx, cy,
+            near: MINIMAP_NEAR, far: MINIMAP_FAR, mid, scale,
+            sweepAng, sweepT: MINIMAP_SWEEP_T, pingT: MINIMAP_PING_T,
+          }, [buf.buffer]);
+        }
+      } else {
+        dotBakeT = game.time; dotBakeFx = fx; dotBakeFy = fy; dotBakeSeen = seenMask;
+        const dc = dotCtx;
+        dc.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+        dc.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
+        dc.fillStyle = '#a2937d';   // belt-rock tan: terrain, not the blip palette
+        for (const b of game.bodies) {
+          const fi = b.field;
+          if (fi == null || !near[fi] || !b.alive) continue;   // fog is field-level, like the scan
+          const dx = b.x - fx, dy = b.y - fy;
+          const d = Math.hypot(dx, dy) || 1;
+          if (d > MINIMAP_FAR) continue;
+          const aDot = d > MINIMAP_NEAR ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
+          if (aDot <= 0.01) continue;
+          dc.globalAlpha = aDot * (b.giant ? 0.95 : 0.6);
+          const rr = radarR(d);
+          const px = cx + (dx / d) * rr, py = cy + (dy / d) * rr;
+          // giants read bigger — they're the landmarks you navigate the shoal by
+          const sz = b.giant ? 2.6 : 1.2;
+          dc.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+        }
+        dc.globalAlpha = 1;
       }
-      dc.globalAlpha = 1;
     }
-    // Composite inside the dial clip; both canvases share the dpr transform.
-    ctx.drawImage(dotCanvas, 0, 0, RADAR_SIZE, RADAR_SIZE);
+    // Composite inside the dial clip; the source (worker bitmap or inline
+    // canvas) is at RADAR_SIZE x rdpr either way, so it lands in the dpr
+    // transform identically. Nothing to draw on the first frames while the
+    // worker's first bake is still in flight.
+    const layer = dotBitmap || (worker ? null : dotCanvas);
+    if (layer) ctx.drawImage(layer, 0, 0, RADAR_SIZE, RADAR_SIZE);
     // Unexplored fields: one anonymous return out in the scan band and
     // nothing on the chart half — the same fog rule every contact obeys.
     // Four iterations — stays live, not worth baking.
@@ -3627,7 +3904,10 @@ function drawMinimap(game) {
 
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
-  for (const b of game.bodies) {
+  // Non-field registry: shoal rock is TERRAIN and has its own cached dot layer
+  // above — it was reaching this loop only to be rejected by the fog test, one
+  // hypot at a time, ~15,000 times a frame.
+  for (const b of frameReg(game).nonField) {
     if (b.type === 'star') continue;               // drawn as a real disc, above
     if (ion > 0 && Math.random() < ion * 0.82) continue;
     const dx = b.x - fx, dy = b.y - fy;
@@ -3781,8 +4061,8 @@ function drawMinimap(game) {
   // one — a bearing only, never a map reveal (the station blip stays fogged).
   if (game.mayday && game.mayday.alive) {
     let dock = null, dd = Infinity, dockSeen = false;
-    for (const b of game.bodies) {
-      if (!b.alive || b.type !== 'station') continue;
+    for (const b of frameReg(game).stations) {
+      if (!b.alive) continue;
       const d = Math.hypot(b.x - fx, b.y - fy);
       const seen = !!b.seen;
       if (dock && dockSeen && !seen) continue;   // never trade a seen dock for an unseen one
@@ -3988,8 +4268,11 @@ function drawStormWave(game) {
   // the body's own test left a pilot sheltering well behind a world safe with
   // plasma drawn right over them — protected, with nothing on screen saying
   // why. Same projection as main.shelterBody, widened by the view radius.
+  // Over reg.nonField, not game.bodies: nothing that casts a lee is field
+  // rock, so walking the pocket to reject ~15,000 rocks one at a time is the
+  // exact cost the registries exist to delete.
   const lees = [];
-  for (const b of game.bodies) {
+  for (const b of frameReg(game).nonField) {
     if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
     if (!b.alive || b.radius < CFG.STORM_SHADOW_MIN_R) continue;
     const br = Math.hypot(b.x, b.y) || 1;
@@ -4228,8 +4511,8 @@ export function render(game) {
   {
     let tint = null, tintT = 0;
     const s = game.ship;
-    for (const b of game.bodies) {
-      if (!b.alive || b.type !== 'planet') continue;
+    for (const b of frameReg(game).planets) {
+      if (!b.alive) continue;
       const zone = b.radius * 5 + 600;
       const d = Math.hypot(b.x - s.x, b.y - s.y);
       if (d > zone) continue;
@@ -4267,7 +4550,26 @@ export function render(game) {
   // ~7000 dormants skip even the bodyOnScreen test. (Teleports — warp, dev
   // goto — could break the invariant for one frame; main.js reclassifies the
   // LOD immediately after a warp for exactly that reason.)
-  for (const b of game.bodies) if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
+  // The awake list, not the array: dormancy is already the culling decision,
+  // so walking 15,000 bodies to `continue` past the dormant ones was work the
+  // LOD had already done. The dormant guard stays for the null-list fallback.
+  for (const b of (game.bodies._awake || game.bodies)) {
+    if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
+  }
+  // THE INSTANCED ROCK LAYER lands here — one composite for what would have
+  // been ~1900 individual blits. It sits above the bodies drawn in the loop,
+  // which is where plain rock already was: the shoals are seeded LAST in
+  // generateWorld, so field rock has always drawn over the worlds it passes.
+  // Restoring wt by hand rather than save/restore, exactly as blitRock does —
+  // every pass after this must see the world matrix it expects.
+  if (glOn) {
+    const glcv = rockGLFlush(wt.k, wt.e, wt.f);
+    if (glcv) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(glcv, 0, 0);
+      ctx.setTransform(wt.k, 0, 0, wt.k, wt.e, wt.f);
+    }
+  }
   drawGlow(game);
   drawApproach(game);
   drawDeflectable(game);
@@ -4430,7 +4732,8 @@ export function render(game) {
   if (game.ship.alive) {
     const st = game.st;
     let hov = null, hovD2 = Infinity;
-    for (const b of game.bodies) {
+    // Awake list: the cursor is on screen, and the screen is inside the bubble.
+    for (const b of (game.bodies._awake || game.bodies)) {
       if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy) continue;
       const gr = b.radius + st.grabSlack;
       const d2 = (b.x - game.aim.x) ** 2 + (b.y - game.aim.y) ** 2;
