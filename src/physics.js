@@ -28,7 +28,11 @@ export function addShake(game, amt) {
 
 // ---------- destruction ----------
 
-function dropScrap(game, x, y, vx, vy, totalValue) {
+// `fromField` marks a chunk as shoal salvage. Its XP was already priced
+// against the pocket's budget by fieldXp at THIS moment (the callers below),
+// so nothing downstream may scale it again — the solar wave's ionization
+// bonus checks this flag and skips field scrap for exactly that reason.
+function dropScrap(game, x, y, vx, vy, totalValue, fromField) {
   let remaining = Math.round(totalValue);
   const chunk = Math.max(3, Math.round(totalValue / 10));
   let guard = 40;
@@ -37,7 +41,9 @@ function dropScrap(game, x, y, vx, vy, totalValue) {
     remaining -= v;
     const th = Math.random() * TAU;
     const s = 30 + Math.random() * 90;
-    game.debris.push(makeScrap(x, y, vx + Math.cos(th) * s, vy + Math.sin(th) * s, v));
+    const d = makeScrap(x, y, vx + Math.cos(th) * s, vy + Math.sin(th) * s, v);
+    if (fromField) d.field = true;
+    game.debris.push(d);
   }
 }
 
@@ -337,7 +343,7 @@ export function shatter(game, body, credit = null) {
   }
   // SALVAGE CACHE: bursts into scrap + ice ammo pellets when you crack it
   if (body.cache && earnsScrap(credit)) {
-    dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 120);
+    dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 120, body.fieldRock);
     for (let i = 0; i < 3; i++) {
       const th = (i / 3) * TAU + Math.random() * 0.8;
       const sp = 45 + Math.random() * 70;
@@ -361,7 +367,7 @@ export function shatter(game, body, credit = null) {
   // (credit === 'player') pays out. A rock the player never touched — belt
   // traffic sandblasting itself, a rogue clipping a moon, a ram, star heat —
   // shatters with no salvage. Keeps the sky from minting free scrap.
-  if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, fieldVal(scrapValue(body)));
+  if (earnsScrap(credit)) dropScrap(game, body.x, body.y, body.vx * 0.4, body.vy * 0.4, fieldVal(scrapValue(body)), body.fieldRock);
   // Wall Splat rides its own flag, not the credit: the dying body here is the
   // player's OWN projectile (credit 'player'), which never reaches the
   // 'player-throw' branch below.
@@ -394,7 +400,7 @@ export function shatter(game, body, credit = null) {
       game.comboShow = game.combo;
       // Gated in a shoal too: a chain through touching rocks is the easiest
       // combo in the game, and the bonus must not out-pay a real one.
-      dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, fieldVal(8 * game.combo));
+      dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, fieldVal(8 * game.combo), body.fieldRock);
     }
   }
 }
@@ -433,7 +439,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
         sfx.sfxBoom(1, sfx.distVol(game, body.x, body.y));
         if (!f.turrets.length) {
           body.fort = null;
-          dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200);
+          dropScrap(game, body.x + body.radius * 0.8, body.y, body.vx * 0.5, body.vy * 0.5, 200, body.fieldRock);
           game.fortLiberatedName = body.name || `the ${body.type}`;
           return;
         }
@@ -556,7 +562,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     if (earnsScrap(credit)) {
       const v = scrapValue(body) * frac * 0.5;
       dropScrap(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5,
-        fieldXp(game, body, v * PROG.XP_SCRAP) / PROG.XP_SCRAP);
+        fieldXp(game, body, v * PROG.XP_SCRAP) / PROG.XP_SCRAP, body.fieldRock);
     }
     body.mass = Math.max(body.baseMass * 0.25, body.mass - body.baseMass * frac * 0.35);
     addParticles(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, 8, body.color, 100, 0.7);
@@ -1887,6 +1893,13 @@ export function step(game, dt) {
     const c = game.controls;
     // Flare EMP: fried engines answer to nobody for a few seconds
     if (s.engineOutT > 0) s.engineOutT -= dt;
+    // SOLAR WAVE: the engines choke on the plasma while you are caught out in
+    // the sheath. main.js owns the exposure test (game.stormExposed) exactly
+    // the way it owns the afterburner tank via game.burnerOn — physics never
+    // re-derives either, or the flag and what it drives quietly disagree.
+    // Keyed to EXPOSURE, not the ion afterglow: reaching a world's lee gives
+    // the engines straight back, which is how the counterplay teaches itself.
+    if (game.stormExposed) th *= CFG.STORM_THRUST;
     // AFTERBURNER (scout): a FUEL-TANK burn, not a free hold — main.js drains
     // game.burnerFuel and sets game.burnerOn (never read raw Shift here, or
     // thrust and the BURN bar disagree). The burn is much harder than the old
@@ -2012,6 +2025,30 @@ export function step(game, dt) {
       }
     }
 
+    // THE SOLAR WAVE cooks whatever it catches in the open (CFG.STORM_*).
+    // Exposure is main.js's call — it is inside the sheath AND has no world
+    // between it and the sun. DIRECTIONLESS damage (no hitAng), like the heat
+    // and the crush below: there is no facing that dodges a wave, so a partial
+    // shield soaks only its coverage share (see damageShip). Sheltering behind
+    // a world stops it dead — that is the entire counterplay.
+    if (game.stormExposed && s.invuln <= 0) {
+      damageShip(game, CFG.STORM_DPS * dt, 'Cooked by a solar wave.');
+      // Hull sparks off the sunward side, like the corona's — the plasma is
+      // stripping the plating and you can see which way it is coming from.
+      if (Math.random() < dt * 26) {
+        const rr = Math.hypot(s.x, s.y) || 1;
+        addParticles(game,
+          s.x + (Math.random() - 0.5) * s.radius * 2.2,
+          s.y + (Math.random() - 0.5) * s.radius * 2.2,
+          (s.x / rr) * 320, (s.y / rr) * 320,
+          1, Math.random() < 0.5 ? '#bfe0ff' : '#ffd9a0', 120, 0.4, 2.2);
+      }
+      // A low rumble, not a jolt: this is a per-SUBSTEP add against update()'s
+      // exp(-7) decay, so it settles around ~1px — the wave buffets, the
+      // impacts are what slam.
+      addShake(game, 0.06);
+    }
+
     // The Oort cloud grinds ships apart
     const rc = Math.hypot(s.x, s.y);
     if (rc > CFG.WORLD_R && s.invuln <= 0) {
@@ -2117,12 +2154,21 @@ export function step(game, dt) {
         }
       }
       if (storm) {
-        // Gentle radiation-pressure shove while the front passes. Scrap
-        // ONLY — pushing bodies or celestials is how invariants die.
+        // Radiation-pressure shove through the whole plasma SHEATH, hardest
+        // at the shock and fading back through the tail. Scrap ONLY —
+        // pushing bodies or celestials is how invariants die.
         const hx = d.x - game.homeStar.x, hy = d.y - game.homeStar.y;
         const hr = Math.hypot(hx, hy) || 1;
-        if (Math.abs(hr - storm.r) < CFG.STORM_BAND) {
-          d.ax += (hx / hr) * 130; d.ay += (hy / hr) * 130;
+        const lead = storm.r - hr;   // >0 once the shock has swept past this chunk
+        if (lead > -CFG.STORM_BAND && lead < CFG.STORM_TAIL) {
+          const k = lead < 0 ? 1 : 1 - lead / CFG.STORM_TAIL;
+          d.ax += (hx / hr) * CFG.STORM_SHOVE * k;
+          d.ay += (hy / hr) * CFG.STORM_SHOVE * k;
+          // …and the wave leaves it IONIZED: it glows, and it pays
+          // ION_SCRAP_MUL more when collected. Never field-sourced scrap —
+          // that chunk's XP was already charged against the pocket's budget
+          // at drop time and must not be re-inflated here (see config).
+          if (!d.field) d.ion = 1;
         }
       }
     }
@@ -2346,7 +2392,11 @@ export function step(game, dt) {
       if (s.alive && (d.x - s.x) ** 2 + (d.y - s.y) ** 2 < pr * pr) {
         // Debris chunks are pure XP pickups now — no scrap currency, and they
         // do NOT heal the hull (hull only resets on respawn; shield recharges).
-        addXp(game, d.value * PROG.XP_SCRAP);
+        // A chunk the solar wave swept comes out IONIZED and pays more (never
+        // field scrap — dropScrap's fromField flag keeps the pocket budget
+        // honest, see config.ION_SCRAP_MUL).
+        addXp(game, d.value * PROG.XP_SCRAP * (d.ion ? PROG.ION_SCRAP_MUL : 1));
+        if (d.ion) bump(game, 'ionScrap');
         bump(game, 'scrap');
         sfx.sfxCollect();
         continue;

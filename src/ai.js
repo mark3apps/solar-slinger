@@ -3,7 +3,7 @@ import { Alien, derail } from './entities.js';
 import { damageShip, damageBody, addParticles } from './physics.js';
 import { bump } from './achievements.js';
 import * as sfx from './sfx.js';
-import { TAU, clamp } from './util.js';
+import { TAU, clamp, senseBlind } from './util.js';
 
 // Steering: accelerate toward a desired velocity (auto-fights gravity)
 function steer(al, tx, ty, speed) {
@@ -103,7 +103,7 @@ function updateLurker(game, al, dt) {
   // deliberately UNDER-hysteresized the other way round: the ship slipping
   // just past the edge doesn't instantly break the hunt, but a lurker can
   // never be dragged more than a fringe past its own rocks before it turns.
-  const engaged = s.alive && !game.dustCloak && fieldFrac(f, s.x, s.y) < 1.15;
+  const engaged = s.alive && !senseBlind(game) && fieldFrac(f, s.x, s.y) < 1.15;
   // Lose the ship (it left the shoal, died, or slipped into a dust shroud) or
   // stray past the fringe yourself, and slink home to prowl the rocks until
   // the player comes back in.
@@ -240,7 +240,7 @@ function updateAlien(game, al, dt) {
     // Relentless: your leftovers hunt you until one of you is gone. DUST
     // SHROUD: a cloaked ship breaks the track — it prowls the last place it
     // saw you, slower, instead of tracking through the dust.
-    if (s.alive && !game.dustCloak) {
+    if (s.alive && !senseBlind(game)) {
       al.lastSeenX = s.x; al.lastSeenY = s.y;
       steer(al, s.x + s.vx * 0.3, s.y + s.vy * 0.3, CFG.ALIEN_SPEED * 0.85);
     } else if (s.alive && al.lastSeenX !== undefined) {
@@ -260,7 +260,7 @@ function updateAlien(game, al, dt) {
   // return-home branch below is the battle-tested lose-lock path (drops the
   // carried rock, resets state), so disengagement reuses it wholesale.
   const playerHome = home
-    ? (s.alive && !game.dustCloak &&
+    ? (s.alive && !senseBlind(game) &&
        Math.hypot(s.x - home.x, s.y - home.y) < CFG.ALIEN_TERRITORY)
     : true;
   if (home && (homeDist > CFG.ALIEN_TERRITORY || !playerHome)) {
@@ -283,7 +283,7 @@ function updateAlien(game, al, dt) {
   // ORPHAN grabbers (nest destroyed) never take the home branch above — route
   // a cloaked player straight to the cooldown strafe, or they'd deadlock
   // chasing a target they can't see.
-  if (game.dustCloak && al.state !== 'cooldown') {
+  if (senseBlind(game) && al.state !== 'cooldown') {
     if (al.target && al.target.heldBy === al) {
       al.target.heldBy = null; al.target.extAx = 0; al.target.extAy = 0;
     }
@@ -338,7 +338,7 @@ function updateAlien(game, al, dt) {
       // Close to throwing range, lead the target, and throw. (No throw while
       // the player is dust-cloaked — you can't lead a target you can't see.)
       steer(al, s.x, s.y, CFG.ALIEN_SPEED);
-      if (distShip < 950 && !game.dustCloak) {
+      if (distShip < 950 && !senseBlind(game)) {
         const t = distShip / CFG.ALIEN_THROW;
         const px = s.x + s.vx * t, py = s.y + s.vy * t;
         const ang = Math.atan2(py - r.y, px - r.x);
@@ -402,7 +402,7 @@ function updateFields(game, dt) {
       }
       continue;
     }
-    if (!s.alive || game.dustCloak || f.wakeT > 0) continue;
+    if (!s.alive || senseBlind(game) || f.wakeT > 0) continue;
     // Ambushes spring only when the ship is actually IN the rocks — the
     // pocket footprint, not a circle around the anchor (config.fieldFrac).
     if (fieldFrac(f, s.x, s.y) > 1.02) continue;
@@ -510,11 +510,16 @@ function updateForts(game, dt) {
 
 export function updateAliens(game, dt) {
   // DUST SHROUD: inside a dust moon's halo (CFG.DUST_HALO x radius) the ship
-  // is invisible to alien senses. Computed ONCE per frame — every gate below
-  // reads game.dustCloak — with a 1.2s release grace so hovering the halo's
-  // edge can't strobe the AI between engage and disengage. Forts are exempt
-  // on purpose: they're artillery emplacements, not hunters (and no dust moon
-  // is ever fortified — world.js keeps them out of the fortify pass).
+  // is invisible to alien senses. Computed ONCE per frame, with a 1.2s release
+  // grace so hovering the halo's edge can't strobe the AI between engage and
+  // disengage. Forts are exempt on purpose: they're artillery emplacements,
+  // not hunters (and no dust moon is ever fortified — world.js keeps them out
+  // of the fortify pass).
+  //
+  // This block OWNS game.dustCloak, and is the only place that writes it. The
+  // gates below all ask util.senseBlind instead, because a live SOLAR WAVE
+  // hides the ship too (game.stormBlind, main.js) and every gate has to answer
+  // to both — see util.js.
   {
     const s = game.ship;
     let inHalo = false, inShroud = false;
@@ -592,7 +597,7 @@ export function updateAliens(game, dt) {
 
   const s = game.ship;
   if (!s.alive) return;
-  if (game.dustCloak) return;   // a nest can't scramble at a ship it can't see
+  if (senseBlind(game)) return;   // a nest can't scramble at a ship it can't see
   // A nest holds a garrison scaling gently with level, and scrambles a whole
   // burst (up to ALIEN_BURST) at once when the player enters its territory.
   const cap = CFG.ALIEN_BURST + Math.min(3, Math.floor(game.st.totalLevel / 5));

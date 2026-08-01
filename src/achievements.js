@@ -451,6 +451,15 @@ export const ACHIEVEMENTS = [
     (g, s) => s.noDmgBest >= 120),
   A('noDmg300', 'peril', PTS.hard, 'Untouchable', 'Fly five minutes without taking a scratch.',
     (g, s) => s.noDmgBest >= 300),
+  // THE SOLAR WAVE — the two ways to answer one. Sheltering is the taught
+  // move; riding it out in the open is the wager. Both counters start at 0 and
+  // are fed only by main.updateStorm, so neither can land on frame one.
+  A('stormLee', 'peril', PTS.normal, 'In the Lee', "Shelter in a world's shadow while a solar wave passes.",
+    (g, s) => s.stormShelterT >= 2),
+  A('stormRide', 'peril', PTS.tricky, 'Storm Rider', 'Ride out eight seconds of a solar wave in the open.',
+    (g, s) => s.stormRideBest >= 8),
+  A('stormRide3', 'peril', PTS.hard, 'Stormchaser', 'Ride out three solar waves in the open.',
+    (g, s) => s.stormRides >= 3),
   A('heat10', 'peril', PTS.normal, 'Warm', 'Spend 10 seconds inside the corona.',
     (g, s) => s.heatT >= 10),
   A('heat30', 'peril', PTS.tricky, 'Sunbather', 'Spend 30 seconds inside the corona.',
@@ -549,9 +558,13 @@ export const ACHIEVEMENTS = [
     (g) => !!g.tut.ghost),
   A('graveyard', 'explore', PTS.normal, 'Graveyard Shift', 'Find the graveyard ring.',
     (g) => !!g.tut.graveyard),
-  A('storm', 'explore', PTS.normal, 'Weather Report', 'Ride out a solar storm.',
+  // These two count waves SEEN — stormWarn fires when the sun looses one,
+  // whatever the player was doing about it. The rows for actually answering a
+  // wave (shelter, or riding it out in the open) live under SURVIVAL, where
+  // the verb belongs.
+  A('storm', 'explore', PTS.normal, 'Weather Report', 'See a solar wave sweep the system.',
     (g) => !!g.tut.storm),
-  A('storm4', 'explore', PTS.tricky, 'Storm Season', 'Ride out four solar storms.',
+  A('storm4', 'explore', PTS.tricky, 'Storm Season', 'See four solar waves.',
     (g, s) => s.storms >= 4),
   A('aurora', 'explore', PTS.normal, 'Northern Lights', 'Watch a storm front light up a world.',
     (g) => !!g.tut.aurora),
@@ -619,6 +632,10 @@ export const ACHIEVEMENTS = [
     (g, s) => s.scrap >= 250),
   A('scrap1200', 'explore', PTS.hard, 'Sanitation Department', 'Collect 1,200 debris chunks.',
     (g, s) => s.scrap >= 1200),
+  A('ionScrap', 'explore', PTS.normal, 'Live Wire', 'Collect salvage a solar wave has charged.',
+    (g, s) => s.ionScrap >= 1),
+  A('ionScrap40', 'explore', PTS.tricky, 'Static Cling', 'Collect forty charged chunks.',
+    (g, s) => s.ionScrap >= 40),
   A('tinkerMet', 'explore', PTS.normal, 'Only Friend Out Here', 'Find the Tinker Barge.',
     (g) => !!g.tut.tinker),
 

@@ -1,7 +1,7 @@
 import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac } from './config.js';
 import { predictPaths, PARRY_FLICK } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, angDiff, lerp, mulberry32, shellModal, crystalShards } from './util.js';
+import { TAU, angDiff, lerp, mulberry32, shellModal, senseBlind, crystalShards } from './util.js';
 
 let canvas, ctx, vw, vh, dpr, rdpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
@@ -3226,13 +3226,15 @@ function drawAlien(game, al) {
   // outline). On the hunt the carapace seams and eye slit light up crimson.
   if (al.kind === 'lurker') {
     // "Hunting" must MIRROR ai.js updateLurker's engaged test (ship distance
-    // to the field anchor + alive + dust shroud) — measuring the LURKER's
-    // own anchor distance lit the crimson eye during the camouflaged prowl
-    // (it orbits the anchor, trivially inside territory), and kept it lit at
-    // a dust-cloaked ship the AI had actually lost.
+    // to the field anchor + alive + can it be sensed at all) — measuring the
+    // LURKER's own anchor distance lit the crimson eye during the camouflaged
+    // prowl (it orbits the anchor, trivially inside territory), and kept it
+    // lit at a cloaked ship the AI had actually lost. senseBlind covers BOTH
+    // blinding causes (dust/shroud halo and a live solar wave), which is
+    // exactly why it's a shared leaf helper — the eye must go dark for both.
     const f = game.fields && game.fields[al.field];
     const s = game.ship;
-    const hunting = !f || (s.alive && !game.dustCloak && fieldFrac(f, s.x, s.y) < 1.15);
+    const hunting = !f || (s.alive && !senseBlind(game) && fieldFrac(f, s.x, s.y) < 1.15);
     const r = al.radius;
     ctx.save();
     ctx.translate(al.x, al.y);
@@ -3289,6 +3291,10 @@ function drawPrediction(game) {
   // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
   if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
+  // ION WASH: a solar wave scrambles the forecast outright (CFG.STORM_ION).
+  // Losing the plotter mid-wave is most of what makes being caught out in one
+  // frightening — you are suddenly flying a gravity field you can't read.
+  if (game.stormIonT > 0) return;
   const { shipPts, heldPts, shipHit, heldHit } = predictPaths(game);
   const z = game.cam.zoom;
 
@@ -3445,15 +3451,26 @@ function drawMinimap(game) {
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.stroke();
   }
 
-  // The sun sits at the world origin: storm front + world edge both circle it,
-  // sampled through the warp (the clip discards whatever falls outside).
+  // The sun sits at the world origin: the wave and the world edge both circle
+  // it, sampled through the warp (the clip discards whatever falls outside).
   const dSun = Math.hypot(fx, fy);
   if (game.storm) {
-    ctx.strokeStyle = 'rgba(255, 200, 90, 0.55)';
-    ctx.lineWidth = 1.5;
-    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
+    // The SHEATH, not just the shock — the dial has to show the thing you can
+    // actually be caught in, and the shock alone is a hairline. Three rings
+    // stepping back through the tail read as depth without a fill (which the
+    // radial warp would distort into a lie about where the tail ends).
+    for (let i = 3; i >= 1; i--) {
+      const rr = game.storm.r - CFG.STORM_TAIL * (i / 3.4);
+      if (rr <= 0) continue;
+      ctx.strokeStyle = `rgba(255, 170, 90, ${0.06 + 0.04 * (3 - i)})`;
+      ctx.lineWidth = 5;
+      worldCirclePath(0, 0, rr); ctx.stroke();
+    }
     ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(255, 180, 80, 0.15)';
+    ctx.strokeStyle = 'rgba(255, 180, 80, 0.16)';
+    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 214, 130, 0.7)';
+    ctx.lineWidth = 1.5;
     worldCirclePath(0, 0, game.storm.r); ctx.stroke();
     ctx.lineWidth = 1;
   }
@@ -3600,10 +3617,19 @@ function drawMinimap(game) {
     ctx.globalAlpha = 1;
   }
 
+  // ION WASH (CFG.STORM_ION): a solar wave doesn't dim the radar, it EATS it.
+  // Returns drop out at random and the survivors smear off their true bearing,
+  // so the dial is actively lying rather than politely fading — losing the
+  // instrument you navigate by is the point of being caught in a wave.
+  // Math.random per blip on purpose: the dropout has to boil, and this is
+  // render, which is downstream of the sim and owes it no determinism.
+  const ion = Math.min(1, (game.stormIonT || 0) / CFG.STORM_ION);
+
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
   for (const b of game.bodies) {
     if (b.type === 'star') continue;               // drawn as a real disc, above
+    if (ion > 0 && Math.random() < ion * 0.82) continue;
     const dx = b.x - fx, dy = b.y - fy;
     const d = Math.hypot(dx, dy) || 1;
     if (d > MINIMAP_FAR) continue;                 // beyond radar range
@@ -3623,7 +3649,11 @@ function drawMinimap(game) {
     const alpha = outer ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
     if (alpha <= 0.01) continue;
     const rr = radarR(d);
-    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    let x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    if (ion > 0) {   // the survivors smear off their true bearing
+      x += (Math.random() - 0.5) * ion * 9;
+      y += (Math.random() - 0.5) * ion * 9;
+    }
     if (!b.seen) {
       // Unidentified return: gray, faint, uniform — never the body's own colour
       // or shape, or the scan would be charting what you haven't explored.
@@ -3807,6 +3837,25 @@ function drawMinimap(game) {
     ctx.shadowBlur = 0;
     ctx.restore();
   }
+
+  // …and the noise the wave floods the dial with, over everything inside the
+  // clip: rolling scan bars plus speckle. Drawn LAST so it sits on top of the
+  // returns it is drowning, and still under the rim (the instrument's chrome
+  // is intact — it's the signal that's gone).
+  if (ion > 0) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255, 190, 120, ${0.05 + 0.07 * ion})`;
+    for (let i = 0; i < 3; i++) {
+      const yy = ((game.time * (70 + i * 43) + i * 91) % (RADAR_SIZE + 40)) - 20;
+      ctx.fillRect(0, yy, RADAR_SIZE, 3 + i);
+    }
+    ctx.fillStyle = `rgba(255, 226, 190, ${0.5 * ion})`;
+    for (let i = 0; i < 34; i++) {
+      if (Math.random() > ion) continue;
+      ctx.fillRect(Math.random() * RADAR_SIZE, Math.random() * RADAR_SIZE, 1.5, 1.5);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
   ctx.restore();
 
   // Rim: bright ring + halo + bearing ticks (cardinals heavier), outside the clip
@@ -3826,6 +3875,345 @@ function drawMinimap(game) {
     ctx.moveTo(cx + Math.cos(a) * (r - len), cy + Math.sin(a) * (r - len));
     ctx.lineTo(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1));
     ctx.stroke();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// THE SOLAR WAVE (CFG.STORM_*) — a shock front dragging a deep plasma sheath,
+// drawn in world space over the bodies (the plasma is in FRONT of the sky).
+//
+// NO HARD EDGES, and this is the rule the old draw broke. The front is a clean
+// circle in the SIM, and has to be — "am I in it?" must have a plain answer —
+// but nothing here is drawn at one exact radius: the shock is displaced by
+// three low harmonics of bearing plus a slow churn, the sheath dissolves over
+// thousands of units, and the filaments are stochastic. What shipped before
+// was literally ctx.arc at storm.r with a 90px stroke, which is the geometric
+// in-world edge the house style forbids — and it read as decoration precisely
+// because a perfect ring reads as UI.
+//
+// Cost is bounded by construction: nothing runs unless the sheath crosses the
+// view, and every pass is clipped to the bearing window the camera can see —
+// at a normal zoom that is a few degrees of a 40,000-unit circle.
+const STORM_MOTES = 40;
+function drawStormWave(game) {
+  const hs = game.homeStar;
+  if (!hs) return;
+  const st = game.storm;
+  const t = game.time;
+
+  // ---- the CHARGE: the sun loading before it fires. This is the telegraph
+  // the whole mechanic is fair because of, so it is deliberately loud — the
+  // corona swells, prominences whip, and the light hardens toward white.
+  if (game.stormChargeT > 0) {
+    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;    // 0 -> 1 as it loads
+    const dCamS = Math.hypot(view.cx - hs.x, view.cy - hs.y);
+    // Kept TIGHT to the limb (~2x radius). A wide corona gradient is a flat
+    // additive wash over the entire view at any normal flying distance — it
+    // whited the game out instead of reading as the sun swelling. The far-field
+    // half of the telegraph is the screen pulse in render(), not this.
+    if (dCamS - view.r < hs.radius * 2.4) {
+      ctx.globalCompositeOperation = 'lighter';
+      const puls = 1 + 0.10 * Math.sin(t * (5 + 16 * k)) + 0.05 * Math.sin(t * 27);
+      const rr = hs.radius * (1.12 + 0.95 * k) * puls;
+      const cg = ctx.createRadialGradient(hs.x, hs.y, hs.radius * 0.92, hs.x, hs.y, rr);
+      cg.addColorStop(0, `rgba(255, 252, 240, ${0.4 * k})`);
+      cg.addColorStop(0.35, `rgba(255, 205, 120, ${0.22 * k})`);
+      cg.addColorStop(0.75, `rgba(255, 120, 70, ${0.09 * k})`);
+      cg.addColorStop(1, 'transparent');
+      ctx.fillStyle = cg;
+      ctx.beginPath(); ctx.arc(hs.x, hs.y, rr, 0, TAU); ctx.fill();
+      // Prominences: loops of plasma standing off the limb, reaching further
+      // and whipping faster the closer it gets to firing.
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * TAU + t * 0.35 + i * 1.7;
+        const reach = hs.radius * (0.18 + 0.75 * k) * (0.6 + 0.6 * Math.abs(Math.sin(t * 2.1 + i)));
+        const x0 = hs.x + Math.cos(a) * hs.radius * 0.98, y0 = hs.y + Math.sin(a) * hs.radius * 0.98;
+        const bow = a + 0.34;
+        ctx.strokeStyle = `rgba(255, 210, 150, ${0.5 * k})`;
+        ctx.lineWidth = hs.radius * 0.05;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.quadraticCurveTo(
+          hs.x + Math.cos(a + 0.17) * (hs.radius + reach * 1.5),
+          hs.y + Math.sin(a + 0.17) * (hs.radius + reach * 1.5),
+          hs.x + Math.cos(bow) * hs.radius * 0.98,
+          hs.y + Math.sin(bow) * hs.radius * 0.98);
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  if (!st) return;
+  const dCam = Math.hypot(view.cx - hs.x, view.cy - hs.y);
+  const vR = view.r;
+  const tail = st.r - CFG.STORM_TAIL, lead = st.r + CFG.STORM_BAND;
+  // Whole view already swept clean, or the front hasn't reached it yet
+  if (dCam + view.r < tail || dCam - view.r > lead) return;
+
+  // The bearing window the camera can actually see, padded a touch so a
+  // filament never pops in at the screen edge. Sun on screen => all of it.
+  const sunClose = dCam <= view.r * 1.05;
+  const midA = Math.atan2(view.cy - hs.y, view.cx - hs.x);
+  const halfA = sunClose ? Math.PI
+    : Math.min(Math.PI, Math.asin(Math.min(1, view.r / dCam)) + 0.14);
+  const sd = st.seed || 0;
+  // Bearing displacement of the shock — three harmonics plus a slow churn, in
+  // ABSOLUTE units so the front stays equally ragged near the sun and out at
+  // the rim (a fraction-of-radius wobble would be invisible early and wild late).
+  const wob = (a) => 250 * Math.sin(a * 3 + sd) + 140 * Math.sin(a * 7 - sd * 1.7)
+    + 80 * Math.sin(a * 13 + sd * 0.6) + 55 * Math.sin(a * 5 + t * 0.7);
+  // Cheap deterministic hash for the filament/mote scatter — seeded off the
+  // wave so no two look alike, and stable frame to frame so nothing strobes.
+  const hash = (n) => {
+    const x = Math.sin(n * 127.1 + sd * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  // ---- SHELTER, drawn. The wave BREAKS around worlds: each sheltering body's
+  // lee is punched out of the plasma with an even-odd clip, so the shadow is
+  // not painted ON the sky — the plasma simply is not there. That is the
+  // counterplay made visible, and it is how the mechanic teaches itself
+  // without a line of UI.
+  //
+  // The drawn lee is deliberately NARROWER and SHORTER than the mechanical
+  // one (main.shelterBody): anywhere that LOOKS sheltered is sheltered, with
+  // forgiving margin beyond the visible dark. Same safe-direction rule the
+  // dust halo uses, and it keeps the boundary from reading as a drawn line.
+  //
+  // Culled on whether the LEE can touch the view, NOT on whether the body can
+  // (bodyOnScreen reaches ~4 radii; a lee reaches STORM_SHADOW_LEN=30). Using
+  // the body's own test left a pilot sheltering well behind a world safe with
+  // plasma drawn right over them — protected, with nothing on screen saying
+  // why. Same projection as main.shelterBody, widened by the view radius.
+  const lees = [];
+  for (const b of game.bodies) {
+    if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
+    if (!b.alive || b.radius < CFG.STORM_SHADOW_MIN_R) continue;
+    const br = Math.hypot(b.x, b.y) || 1;
+    const ux = b.x / br, uy = b.y / br;
+    const along = view.cx * ux + view.cy * uy;
+    const behind = along - br;
+    if (behind < -vR || behind > b.radius * CFG.STORM_SHADOW_LEN + vR) continue;
+    const px = view.cx - ux * along, py = view.cy - uy * along;
+    const reach = b.radius * CFG.STORM_SHADOW * 1.4 + vR;
+    if (px * px + py * py > reach * reach) continue;
+    lees.push({ b, ux, uy });
+  }
+
+  // A teardrop: full width at the limb, bulging a little in the near wake,
+  // then closing as the plasma folds back in behind the world. Shared by the
+  // clip and the edge spill below so the two can never drift apart.
+  const leePath = ({ b, ux, uy }) => {
+    const w = b.radius * CFG.STORM_SHADOW * 0.9;
+    const L = b.radius * CFG.STORM_SHADOW_LEN * 0.8;
+    const px = -uy, py = ux;   // across the sun->body ray
+    ctx.moveTo(b.x + px * w, b.y + py * w);
+    ctx.quadraticCurveTo(
+      b.x + ux * L * 0.45 + px * w * 1.3, b.y + uy * L * 0.45 + py * w * 1.3,
+      b.x + ux * L, b.y + uy * L);
+    ctx.quadraticCurveTo(
+      b.x + ux * L * 0.45 - px * w * 1.3, b.y + uy * L * 0.45 - py * w * 1.3,
+      b.x - px * w, b.y - py * w);
+    ctx.closePath();
+  };
+
+  ctx.save();
+  if (lees.length) {
+    ctx.beginPath();
+    ctx.rect(view.x0 - 40, view.y0 - 40, view.x1 - view.x0 + 80, view.y1 - view.y0 + 80);
+    for (const lee of lees) leePath(lee);
+    ctx.clip('evenodd');
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // TWO SCALES, and getting this wrong is what made the first pass unreadable.
+  // The sheath is 9200 units deep and the shock band 1400 across, but a
+  // gameplay view is ~900 units WIDE — so from inside the wave, every feature
+  // sized in wave units is bigger than the screen and collapses into a flat
+  // wash (the first cut drew 220-unit-wide filaments: screen-filling columns).
+  // So the STRUCTURE (front position, sheath falloff) is in wave units, and
+  // the TEXTURE — filaments, motes — is sized off view.r, which is what makes
+  // it read as weather streaming past you at any zoom. (vR is hoisted above,
+  // beside dCam — the lee cull needs it too.)
+
+  // ---- 1. the SHEATH: everything from the shock back through the tail. One
+  // gradient fill over the view rect (not a 50,000-unit disc — same picture,
+  // a fraction of the raster). Hot and packed at the shock, cooling to a
+  // violet haze as the tail dissolves. Kept LOW: this covers the entire screen
+  // when you are inside it, and the texture passes are what carry the drama.
+  {
+    const shockAt = CFG.STORM_TAIL / (CFG.STORM_TAIL + CFG.STORM_BAND);
+    const g = ctx.createRadialGradient(hs.x, hs.y, Math.max(0, tail), hs.x, hs.y, lead);
+    g.addColorStop(0, 'rgba(110, 50, 200, 0)');
+    g.addColorStop(0.45, 'rgba(120, 55, 210, 0.045)');
+    g.addColorStop(0.78, 'rgba(215, 70, 160, 0.06)');
+    g.addColorStop(shockAt * 0.985, 'rgba(255, 130, 50, 0.10)');
+    g.addColorStop(shockAt, 'rgba(255, 220, 170, 0.14)');
+    g.addColorStop(1, 'rgba(190, 235, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(view.x0 - 40, view.y0 - 40, view.x1 - view.x0 + 80, view.y1 - view.y0 + 80);
+  }
+
+  // ---- 2. FILAMENTS: plasma streaming radially, scattered through the part
+  // of the sheath the camera can actually see and STREAMING OUTWARD past it.
+  // Sized off the view, so they read as driving rain whether you are inside
+  // the wave or watching it cross the system. `flow` walks each streak
+  // outward and wraps it, which is the whole sense of motion — the sheath
+  // itself only creeps at 950 u/s and would otherwise look static up close.
+  {
+    const near = Math.max(tail, dCam - vR * 1.3);
+    const far = Math.min(lead, dCam + vR * 1.3);
+    if (far > near) {
+      const span = far - near;
+      const flow = t * 620;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 72; i++) {
+        const a = midA + (hash(i * 1.7) * 2 - 1) * halfA;
+        const len = vR * (0.12 + 0.5 * hash(i * 3.1 + 5));
+        // wrap through the visible depth, offset per streak
+        const rr = near + ((hash(i * 5.9 + 2) * span + flow) % span);
+        const flick = 0.5 + 0.5 * Math.sin(t * (4 + hash(i + 7) * 7) + i * 2.7);
+        const x0 = hs.x + Math.cos(a) * rr, y0 = hs.y + Math.sin(a) * rr;
+        const x1 = hs.x + Math.cos(a) * (rr - len), y1 = hs.y + Math.sin(a) * (rr - len);
+        if (Math.max(x0, x1) < view.x0 || Math.min(x0, x1) > view.x1 ||
+            Math.max(y0, y1) < view.y0 || Math.min(y0, y1) > view.y1) continue;
+        // Hottest right at the shock, cooling through orange to violet deep in
+        // the tail. CLAMPED: ahead of the shock (rr > st.r, inside the leading
+        // band) the raw term runs past 1 and pushed every channel to white —
+        // the whole wave came out grey, which is what a low-alpha additive
+        // near-white over black looks like. Plasma has to stay SATURATED.
+        const heat = Math.max(0, Math.min(1, 1 - (st.r - rr) / CFG.STORM_TAIL));
+        const fg = ctx.createLinearGradient(x0, y0, x1, y1);
+        // BOTH TIPS FADE TO NOTHING. Starting at full alpha put a hard chop
+        // across the leading end of every streak, and a field of hard-topped
+        // radial bars reads as architecture — the "columns" look — not as
+        // plasma blowing past. The peak sits just behind the tip.
+        fg.addColorStop(0, 'rgba(255, 190, 130, 0)');
+        fg.addColorStop(0.16, `rgba(255, ${(105 + 95 * heat) | 0}, ${(55 + 70 * heat) | 0}, ${(0.10 + 0.34 * heat) * flick})`);
+        fg.addColorStop(0.5, `rgba(220, 90, 170, ${0.09 * heat * flick})`);
+        fg.addColorStop(1, 'rgba(130, 60, 215, 0)');
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = vR * (0.006 + 0.03 * hash(i * 7.3 + 1));
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+    }
+  }
+
+  // ---- 3. the SHOCK itself: a broad hot glow with a thin incandescent core
+  // riding on it, both sampled through wob() so neither is ever a circle. This
+  // is the WALL you see coming — from outside it's the whole event, and from
+  // inside it's already behind you, so it stays cheap either way.
+  {
+    const n = sunClose ? 180 : 72;
+    const trace = (dr) => {
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) {
+        const a = midA + ((i / n) * 2 - 1) * halfA;
+        const rr = st.r + wob(a) + dr;
+        const x = hs.x + Math.cos(a) * rr, y = hs.y + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+    };
+    // (No wider glow pass than this: a STORM_BAND-scale stroke is ~900 screen
+    // px across at gameplay zoom, i.e. a full-screen fill, and the sheath
+    // gradient above already peaks at exactly this radius. Pure fill-rate for
+    // a picture that was already there.)
+    ctx.strokeStyle = 'rgba(255, 185, 105, 0.17)';
+    ctx.lineWidth = CFG.STORM_BAND * 0.34;
+    trace(0); ctx.stroke();
+    // The incandescent leading edge, riding a little ahead of the glow, with
+    // a hot bloom under it. Sized off the view so it stays a bright LINE at
+    // any zoom rather than vanishing zoomed out or becoming a slab zoomed in.
+    const edge = CFG.STORM_BAND * 0.24;
+    ctx.strokeStyle = `rgba(255, 140, 40, ${0.3 + 0.1 * Math.sin(t * 9)})`;
+    ctx.lineWidth = Math.max(30, vR * 0.13);
+    trace(edge); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 205, 130, ${0.45 + 0.12 * Math.sin(t * 9)})`;
+    ctx.lineWidth = Math.max(14, vR * 0.055);
+    trace(edge); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 250, 240, ${0.6 + 0.15 * Math.sin(t * 13)})`;
+    ctx.lineWidth = Math.max(4, vR * 0.014);
+    trace(edge); ctx.stroke();
+  }
+
+  // ---- 4. MOTES: charged grains caught in the wave, twinkling as they ride
+  // it past you. Cheap sparkle that keeps the sheath from reading as a
+  // painted gradient — and they only exist where you can see them.
+  {
+    const near = Math.max(tail, dCam - vR * 1.2);
+    const far = Math.min(lead, dCam + vR * 1.2);
+    if (far > near) {
+      const span = far - near;
+      const flow = t * 780;
+      ctx.fillStyle = 'rgba(255, 240, 210, 0.8)';
+      for (let i = 0; i < STORM_MOTES; i++) {
+        const a = midA + (hash(i * 2.7) * 2 - 1) * halfA;
+        const rr = near + ((hash(i * 5.1 + 1) * span + flow) % span);
+        const tw = Math.sin(t * (7 + 9 * hash(i + 31)) + i * 2.3);
+        if (tw < 0.1) continue;
+        const x = hs.x + Math.cos(a) * rr, y = hs.y + Math.sin(a) * rr;
+        if (x < view.x0 || x > view.x1 || y < view.y0 || y > view.y1) continue;
+        ctx.globalAlpha = tw;
+        ctx.beginPath(); ctx.arc(x, y, vR * (0.004 + 0.006 * hash(i * 3.3)), 0, TAU); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();   // drops the shadow clip
+
+  // ---- 5. the LEE EDGE. A clip cuts with a knife, and a hard geometric
+  // boundary in the world is the one thing the house style will not have — so
+  // the outline is re-stroked wide and soft, additive, scattering light back
+  // across the cut in both directions. The shelter still ends exactly where it
+  // ends; it just no longer announces the fact with a drawn line.
+  if (lees.length) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const lee of lees) {
+      const rel = st.r - Math.hypot(lee.b.x, lee.b.y);
+      if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
+      const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
+      ctx.strokeStyle = `rgba(230, 140, 210, ${0.13 * k})`;
+      ctx.lineWidth = lee.b.radius * 0.85;
+      ctx.beginPath(); leePath(lee); ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 190, 140, ${0.11 * k})`;
+      ctx.lineWidth = lee.b.radius * 0.3;
+      ctx.beginPath(); leePath(lee); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- 6. the BOW SHOCK on each sheltering world: while the sheath is over
+  // it, its sunward limb burns where the plasma piles up and parts. Drawn
+  // AFTER the clip is released — this is light on the world, not plasma in
+  // the lee behind it.
+  for (const { b, ux, uy } of lees) {
+    // …so this one DOES want bodyOnScreen: the bow shock is light on the world
+    // itself, unlike the lee, which is a shadow cast far past it.
+    if (!bodyOnScreen(b)) continue;
+    const br = Math.hypot(b.x, b.y);
+    const rel = st.r - br;
+    if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
+    const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
+    const sunAng = Math.atan2(-uy, -ux);   // bearing from the body back to the sun
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255, 218, 170, ${0.5 * k})`;
+    ctx.lineWidth = b.radius * 0.1;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius * 1.06, sunAng - 1.15, sunAng + 1.15);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 255, 245, ${0.35 * k})`;
+    ctx.lineWidth = b.radius * 0.03;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius * 1.1, sunAng - 0.85, sunAng + 0.85);
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
   }
 }
 
@@ -3885,11 +4273,22 @@ export function render(game) {
   drawDeflectable(game);
   drawParry(game);
 
-  // Scrap debris — glinting gold
+  // Scrap debris — glinting gold, except what a solar wave has IONIZED: that
+  // burns charged blue-white and is worth more (PROG.ION_SCRAP_MUL). The
+  // colour IS the price tag, so it has to be unmistakable at a glance.
   for (const d of game.debris) {
     if (d.x < view.x0 - 20 || d.x > view.x1 + 20 || d.y < view.y0 - 20 || d.y > view.y1 + 20) continue;
     const tw = 0.6 + Math.sin(game.time * 6 + d.phase) * 0.4;
-    ctx.fillStyle = `rgba(255, 210, 90, ${(0.55 + tw * 0.45) * Math.min(1, d.life / 4)})`;
+    const fade = Math.min(1, d.life / 4);
+    if (d.ion) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(150, 220, 255, ${0.3 * tw * fade})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.radius * 3.2, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(226, 246, 255, ${(0.7 + tw * 0.3) * fade})`;
+    } else {
+      ctx.fillStyle = `rgba(255, 210, 90, ${(0.55 + tw * 0.45) * fade})`;
+    }
     ctx.beginPath(); ctx.arc(d.x, d.y, d.radius, 0, TAU); ctx.fill();
   }
 
@@ -3958,27 +4357,7 @@ export function render(game) {
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  // Solar storm front: a soft charged annulus expanding from the sun.
-  // Cheap: skipped entirely unless the front actually crosses the view.
-  if (game.storm && game.homeStar) {
-    const hs = game.homeStar;
-    const dCam = Math.hypot(view.cx - hs.x, view.cy - hs.y);
-    if (Math.abs(dCam - game.storm.r) < view.r + CFG.STORM_BAND * 1.6) {
-      const r = game.storm.r;
-      const band = CFG.STORM_BAND;
-      ctx.globalCompositeOperation = 'lighter';
-      const g = ctx.createRadialGradient(hs.x, hs.y, Math.max(0, r - band), hs.x, hs.y, r + band);
-      g.addColorStop(0, 'transparent');
-      g.addColorStop(0.5, 'rgba(140, 200, 255, 0.09)');
-      g.addColorStop(1, 'transparent');
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(hs.x, hs.y, r + band, 0, TAU); ctx.fill();
-      ctx.strokeStyle = 'rgba(175, 225, 255, 0.14)';
-      ctx.lineWidth = 90;
-      ctx.beginPath(); ctx.arc(hs.x, hs.y, r, 0, TAU); ctx.stroke();
-      ctx.globalCompositeOperation = 'source-over';
-    }
-  }
+  drawStormWave(game);
 
   // The powered relay's bearing beam: a fading solid gradient line from the
   // dish toward the revealed dark star — a ~12s one-shot cue, not standing UI.
@@ -4097,7 +4476,9 @@ export function render(game) {
   // throw always goes straight at the cursor — put the cursor on a ✕ to
   // hit. Markers fade in as the cursor nears them; the "hot" one (current
   // aim already hits) locks bright with brackets on its source target.
-  if ((game.held || game.volleyCharging) && game.lock) {
+  // (…and the lead solver goes with it while a wave is washing over you —
+  // same targeting computer, same blackout as the forecast above.)
+  if ((game.held || game.volleyCharging) && game.lock && !(game.stormIonT > 0)) {
     const z = game.cam.zoom;
     const pulse = 0.65 + 0.35 * Math.sin(game.time * 7);
     const fadeR = 520;
@@ -4201,6 +4582,50 @@ export function render(game) {
       ctx.stroke();
     }
     ctx.lineCap = 'butt';
+  }
+
+  // SOLAR WAVE — the whole sky answers to it, wherever in the system you are.
+  //
+  // 1) THE CHARGE. A rising warm pulse over everything: the telegraph has to
+  //    reach a pilot who is 40,000 units out with the sun behind a gas giant,
+  //    and the message line alone can be missed. It quickens as it loads.
+  if (game.stormChargeT > 0) {
+    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;
+    const beat = 0.5 + 0.5 * Math.sin(game.time * (3 + 12 * k));
+    ctx.fillStyle = `rgba(255, 170, 90, ${0.02 + 0.055 * k * beat})`;
+    ctx.fillRect(0, 0, vw, vh);
+  }
+
+  // 2) THE ION WASH, while a wave is actually on you (stormIonT outlives the
+  //    exposure itself, so the sensors stay rattled for a beat after you make
+  //    the lee — the relief lands a moment late, which is what sells it).
+  //    Bright charged haze, scan-line tearing, and a hard edge vignette;
+  //    everything scales with `wash`, so ducking into shelter visibly calms it
+  //    instead of switching it off.
+  if (game.stormIonT > 0 && game.ship.alive) {
+    const ionK = Math.min(1, game.stormIonT / CFG.STORM_ION);
+    const wash = game.stormExposed ? ionK : ionK * 0.35;
+    const jit = 1 + 0.25 * Math.sin(game.time * 31) + 0.15 * Math.sin(game.time * 67);
+    // A flat full-screen haze is nearly all cost and no signal: laid over the
+    // warm world layer it just desaturates the wave to grey. Kept to a whisper
+    // — the TEARING and the edge burn are what read as an instrument failing.
+    ctx.fillStyle = `rgba(190, 215, 255, ${0.018 * wash * jit})`;
+    ctx.fillRect(0, 0, vw, vh);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 7; i++) {
+      const yy = ((game.time * (150 + i * 90) + i * 137) % (vh + 120)) - 60;
+      const h = 2 + (i % 3) * 4;
+      ctx.fillStyle = `rgba(210, 240, 255, ${0.07 * wash})`;
+      ctx.fillRect(0, yy, vw, h);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    // Edge burn: the plasma is coming past the canopy, not through the middle
+    const ig = ctx.createRadialGradient(vw / 2, vh / 2, vh * 0.3, vw / 2, vh / 2, vh * 0.85);
+    ig.addColorStop(0, 'transparent');
+    ig.addColorStop(0.6, `rgba(255, 170, 110, ${0.09 * wash})`);
+    ig.addColorStop(1, `rgba(255, 215, 175, ${0.28 * wash * jit})`);
+    ctx.fillStyle = ig;
+    ctx.fillRect(0, 0, vw, vh);
   }
 
   // CORONA HEAT vignette: the screen edges catch fire and flicker as the
