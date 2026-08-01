@@ -19,9 +19,14 @@ points at the cause. `git lfs pull` fixes an already-bad clone. Everything else 
 plain text; only `assets/audio/music/*.m4a` is tracked (the SFX pack is small enough to stay inline).
 
 This is the primary dev workflow: edit a `.js`, reload, see it live — no build, no bundler.
-`serve.py` is a **no-cache** wrapper around `http.server` on port 8642. Do **not** replace it
+`serve.py` is a **no-cache, THREADED** wrapper around `http.server` on port 8642. Do **not** replace it
 with plain `python3 -m http.server`: plain http.server sends no cache header, browsers cache
 the ES modules, and every edit runs stale until a hard refresh (this bit us repeatedly).
+It must also stay `ThreadingHTTPServer` — `http.server.test()` builds a SINGLE-threaded server
+that handles one connection at a time, which was survivable while the page was the only client,
+but `src/minimap-worker.js` is a second independent requester and with keep-alive one client
+holding its connection starves every other request: the server simply stopped answering
+mid-session and the page hung on an import that never resolved.
 ES modules do not load over `file://` — you need a server (which is also why the Electron shell
 serves over `app://`, below). The `npm` scripts are only for the desktop build; the game itself
 needs no `npm install` to develop in the browser.
@@ -43,7 +48,9 @@ variable-timestep presentation loop.
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields (seed / update / collect). Rides dtReal, never the fixed step. |
 | [achievements.js](src/achievements.js) | The run's scoreboard: the ~370-row catalog, the stat ledger, and the per-frame predicate sweep. Imports only config — a near-leaf. |
-| [render.js](src/render.js) | All canvas drawing. Owns the 2D context. |
+| [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates the bulk rock draw to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks, so it still draws everything unaided. |
+| [rockgl.js](src/rockgl.js) | The instanced WebGL2 rock layer: a shoal's ~1900 atlas blits become one draw call per sheet, rendered to its own canvas and composited into the 2D context. Engaged only past `GL_ENTER` rocks; falls back to per-rock 2D blits on any platform or failure. |
+| [minimap-worker.js](src/minimap-worker.js) | The radar's dense-field dot layer, baked off the main thread against an OffscreenCanvas and returned as an ImageBitmap. Its sweep math MIRRORS drawMinimap's — retune both together. |
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Audio engine: owns the AudioContext + the sfx/music buses. EVERY sound is a real CC0 recording (`assets/audio/sfx/` — Kenney + OpenGameArt, lazily decoded): one-shots via the `BANK` variant table, continuous state (thrust/beam/heat/scrape/charge) via the `LOOPS` table — loop-authored samples with game-driven gain/pitch. The synth blips at the bottom are decode-window fallbacks ONLY — the user explicitly rejected synth as the primary voice; never promote them back. |
@@ -923,6 +930,21 @@ code "works."
     loop consumed — so dormant pockets never drift off the sim clock. **The chaos you see is always
     the chaos near you — that's the design, not a shortcut** (a thrown rock CAN pass through a
     dormant zone uncollided; it's off-view and the trade is deliberate).
+    **THE FRAME REGISTRIES (`game.reg`) ride the same walk.** The awake list fixed the
+    per-substep loops; a second family of scans survived it — "find every body of kind X",
+    asked against the FULL array over and over (physics' iron-moon and terran shortlists ran
+    per SUBSTEP; ai's `avoidStars` walked every body to find the one star, once per alien per
+    frame; world's local/asteroid census ran two full reduces; render asked half a dozen more).
+    Measured: with the ship parked in open space — an identical 381 awake bodies either way —
+    DOUBLING the world's total body count still cost 1.7x the frame, and that gap was entirely
+    work proportional to bodies already ruled out. So `updateFieldLOD` classifies as it goes
+    (`stars`/`planets`/`terrans`/`ironMoons`/`stations`/`forts`/`cloakers`/`locals`/`decay`/
+    `nonField`, plus asteroid and moon counts) and every scan reads the answer.
+    `nonField` is the renderer's set: ~380 of ~7,900, and the landmark passes (approach plates,
+    planet colour wash, minimap blips) were rejecting every shoal rock one at a time to reach it.
+    Three rules: a registry is a per-frame SNAPSHOT so consumers still check `b.alive`; it holds
+    REFERENCES so `generateWorld` nulls it beside `_awake`; and it may be one frame stale for
+    newcomers (`physics.frameReg` covers the cold start with a one-off walk).
     Three follow-on optimizations ride the same classification:
     - **THE AWAKE LIST** (`game.bodies._awake`, built in the same LOD pass): every per-substep loop
       in `step()` iterates it instead of the full array — walking ~8000 bodies 10-15x per frame just
