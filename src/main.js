@@ -984,7 +984,17 @@ function updatePacing(rawMs) {
   // changes at speed, never the semantics.
   if (game.timeScale !== 1) { pinFineStep(); return; }
   const isCoarse = simDt !== CFG.DT;
-  const wantCoarse = isCoarse
+  // THE COARSE STEP IS DISARMED (CFG.PACE_COARSE_ENABLED — the measured
+  // hit-registration table lives on that constant). The substep CAP is what
+  // halves the sim cost and it changes no physics, so disarming here costs no
+  // frame rate; it only means a frame slower than the cap's budget runs the
+  // world slow instead of running it coarse. Kept as a live branch rather than
+  // deleted machinery so re-arming after the swept narrow-phase fix is one
+  // boolean, with the evidence for the decision sitting next to it.
+  // The `isCoarse` exit path stays reachable on purpose: flipping the flag off
+  // at runtime (or mid-session) must be able to walk an already-coarse loop
+  // back to the fine step rather than stranding it there.
+  const wantCoarse = !CFG.PACE_COARSE_ENABLED ? false : isCoarse
     // Already coarse: stay unless BOTH say the fine step is affordable again.
     // Work — 2x simMs, since halving the step doubles the substeps — is the
     // primary test, because a vsync-bound frame is mostly idle and a frame-time

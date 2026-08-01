@@ -19,6 +19,37 @@ export const CFG = {
   // collision tests, so it is the deal you strike only when the alternative is
   // a 15 fps death spiral.
   DT_COARSE: 1 / 60,
+  // ...and it is DISARMED until the collision narrow phase can survive it.
+  // MEASURED, 220 randomized trials per cell (impact parameter AND sample phase
+  // both randomized — a fixed start distance measures one lucky alignment, not
+  // the expected rate), fraction of impacts that register against the ship:
+  //
+  //   closing   400    800   1300   1800   2500
+  //   1/120     99%    97%    92%    86%    77%
+  //   1/60      79%    90%    70%    52%    38%
+  //
+  // At ALIEN_THROW (430) that is 97% -> 77%: about one alien throw in five
+  // passes straight THROUGH the ship. collideShipBody is a pure overlap test
+  // (`if (d2 > rr*rr) return`) with no swept component, so doubling the step
+  // doubles how far a projectile jumps between the only samples that can ever
+  // detect it. That is a rule change a player feels mid-fight, not a rounding
+  // error — and the baseline row shows 1/120 is already leaving fast grazes on
+  // the table, so this compounds an existing weakness rather than finding a new
+  // one.
+  //
+  // THE POINT: disarming costs NO frame rate. SUBSTEP_MAX is what halves the
+  // sim cost (3 substeps instead of 6) and it changes no physics at all, since
+  // every substep is still 1/120. The coarse step never bought frames — it
+  // bought back the wall-clock SPEED the cap gives up (3 x 1/60 = 50ms of sim
+  // per frame vs 3 x 1/120 = 25ms), i.e. it exists to stop the game running in
+  // slow motion below 40 fps. So the trade is slow-motion vs. missed hits, and
+  // missed hits lose.
+  //
+  // TO RE-ARM: add a swept segment-vs-disc pre-test to collideShipBody and
+  // collideAlienBody (ship + aliens only — a handful of entities, NOT the
+  // ~8000-body sweep, where tunnelling is off-view and cosmetic), re-run the
+  // table above, then flip this to true. It should also lift the 1/120 row.
+  PACE_COARSE_ENABLED: false,
   // HARD CAP on substeps per frame — the guard that actually breaks the spiral,
   // independent of which step is live. Past the cap the backlog is DROPPED
   // (honest time dilation) instead of compounding into the next frame. 3 is
