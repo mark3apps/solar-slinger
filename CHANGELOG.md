@@ -9,6 +9,27 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.4.0] — 2026-08-01
+
+### Changes
+
+- **Give every ability six ranks, and hold the ceilings while doing it** ([#47](https://github.com/mark3apps/solar-slinger/pull/47)) — @mark3apps
+  Every ability is six ranks. The catalog ran 1/3/4/6, which was three different kinds of card wearing one name: a max: 1 row arrived already maxed — its bar was decoration and the…
+- **Make worlds come apart: crust debris, cratered colliders, gas-giant strips** ([#46](https://github.com/mark3apps/solar-slinger/pull/46)) — @mark3apps
+  The root cause first: every fragment system in the game was dead code. Chunk spray, spall, a dying world's debris cloud and the BRAWLER's Cluster Rounds all gated on…
+- **Reset the run and roll a new world when backing out to the main menu** ([#45](https://github.com/mark3apps/solar-slinger/pull/45)) — @mark3apps
+  MAIN MENU now ends the run. It used to only flip game.started to false, so the splash sat over a paused, half-played world and START silently resumed it. The title screen has no…
+- **Build planets up to 3x and moons 2x their authored size** ([#44](https://github.com/mark3apps/solar-slinger/pull/44)) — @mark3apps
+  Planets and moons are now built much bigger than the layout table authors them, so the sky reads as genuinely massive. Two constants in config.js drive it — PLANETRMUL (3) and…
+- **Make the solar wave a real event: plasma sheath, world shelter, sensor blackout** ([#43](https://github.com/mark3apps/solar-slinger/pull/43)) — @mark3apps
+  The solar storm did nothing, and the reason turned out to be geometric rather than a matter of tuning. The front was 2 × STORMBAND = 1400u thick travelling at 950 u/s, so it…
+- **Scale the frame to a doubled world: registries, instanced rocks, worker minimap** ([#42](https://github.com/mark3apps/solar-slinger/pull/42)) — @mark3apps
+  Three cuts at the same problem, plus a dev-server fix found on the way.
+- **Cut frame cost: render scale, substep cap, rock sprite atlas** ([#41](https://github.com/mark3apps/solar-slinger/pull/41)) — @mark3apps
+  Three independent optimizations against a report of ~15fps on an older Mac. Profiling the running game found the frame split across three separate bottlenecks, so this attacks all…
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.3.0...v0.4.0
+
 ## [0.3.0] — 2026-07-31
 
 ### Changes
