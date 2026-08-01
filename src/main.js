@@ -12,7 +12,7 @@ import { updateGlow } from './glow.js';
 import {
   newAchState, updateAchievements, bump, best, noteDeath, ACH_EVENT_STATS,
 } from './achievements.js';
-import { initRender, render } from './render.js';
+import { initRender, render, setRenderScale } from './render.js';
 import * as hud from './hud.js';
 import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
@@ -46,6 +46,12 @@ const game = {
   worldSeed: 0,            // the seed the LIVE world was actually built from
   showFps: false,          // perf overlay toggles (persisted) — FPS line / full metrics block
   showPerf: false,
+  renderScale: 1,          // RENDER SCALE setting (persisted): fraction of native device
+                           //   pixels the world canvas is drawn at. This is a CEILING —
+                           //   auto quality may step BELOW it, never above.
+  autoScale: true,         // let a struggling frame drop below that ceiling (persisted)
+  renderScaleEff: 1,       // the scale actually in force (setting minus auto notches);
+                           //   surfaced in the perf overlay so a drop is never invisible
   version: '',             // build version for the credits panel (fetched from package.json)
   ship: new Ship(),
   bodies: [],
@@ -126,6 +132,10 @@ function loadSettings() {
     if (typeof s.predict === 'boolean') game.predict = s.predict;
     if (typeof s.showFps === 'boolean') game.showFps = s.showFps;
     if (typeof s.showPerf === 'boolean') game.showPerf = s.showPerf;
+    // Snapped to a real step rather than clamped: a stored 0.6 would otherwise
+    // survive as a scale the segmented control can never show as selected.
+    if (typeof s.renderScale === 'number' && RENDER_STEPS.includes(s.renderScale)) game.renderScale = s.renderScale;
+    if (typeof s.autoScale === 'boolean') game.autoScale = s.autoScale;
     if (typeof s.seedText === 'string') setSeedText(s.seedText);
   } catch (e) { /* fall back to defaults */ }
 }
@@ -134,8 +144,72 @@ function saveSettings() {
     localStorage.setItem('ss_settings', JSON.stringify({
       musicVol: game.musicVol, sfxVol: game.sfxVol, predict: game.predict,
       showFps: game.showFps, showPerf: game.showPerf, seedText: game.seedText,
+      renderScale: game.renderScale, autoScale: game.autoScale,
     }));
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
+}
+
+// ---- Adaptive render scale --------------------------------------------------
+// Draw cost is fill-bound (render.js: ~1.4ms fixed + ~0.18ms/megapixel on a
+// FAST gpu; old integrated parts are far worse), and a Retina panel asks for 4x
+// the pixels of a dpr-1 one. So the pixel count is the one quality knob worth
+// having, and a machine that can't hold the frame gets it turned down for it.
+//
+// The steps run HIGH -> LOW; the player's setting is an index into them and
+// `autoDrop` counts notches below it. Only three, deliberately: each is a
+// visible softening, and a menu of eight is a menu nobody reads.
+const RENDER_STEPS = [1, 0.75, 0.5];
+// Thresholds are ASYMMETRIC and the dwell is long, because a resolution change
+// is SEEN — a scale that hunts is worse than one that is simply too low.
+const SCALE_DOWN_MS = 22;    // ~45 fps sustained: the frame is genuinely missing its budget
+const SCALE_UP_MS = 17.5;    // ~57 fps: back inside a 60 fps budget
+const SCALE_DWELL = 5;       // s a verdict must hold CONTINUOUSLY before ONE notch moves
+const SCALE_WARMUP = 6;      // s of boot (world gen, shader/JIT warm-up) that always lie
+let autoDrop = 0;
+let scaleHold = 0;
+let scaleWarm = SCALE_WARMUP;
+
+// Effective scale = the setting, stepped down by however many notches auto
+// quality has taken. Pushing it through render.setRenderScale re-runs the whole
+// sizing path, so the zero-size guard and the radar's own sizing are always
+// re-established from one place.
+function applyRenderScale() {
+  const base = Math.max(0, RENDER_STEPS.indexOf(game.renderScale));
+  const eff = RENDER_STEPS[Math.min(RENDER_STEPS.length - 1, base + autoDrop)];
+  if (eff === game.renderScaleEff) return;
+  game.renderScaleEff = eff;
+  setRenderScale(eff);
+}
+
+// One notch at a time, on a dwell timer. DOWN reads frameMs directly; UP cannot,
+// because rAF is vsync-capped — frameMs can never read below ~16.7ms on a 60Hz
+// panel however much headroom there is, so "16.7" answers "am I keeping up?" and
+// says nothing about "can I afford more pixels?". The climb therefore PROJECTS
+// the next notch's cost from the draw time actually being paid: draw is ~propor-
+// tional to pixel count, so scaling by k multiplies the fill term by k². Treating
+// ALL of drawMs as fill overestimates the step, which is the safe direction — it
+// makes the climb reluctant, and a reluctant climb cannot oscillate.
+function updateAutoScale(dtReal) {
+  // Never while fast-forwarding: updateScaled deliberately burns a ~24ms budget
+  // per frame, and that is a SIM cost — cutting pixels would not touch it.
+  if (!game.autoScale || (game.timeScale || 1) !== 1) { scaleHold = 0; return; }
+  if (scaleWarm > 0) { scaleWarm -= dtReal; return; }
+  const cur = game.renderScaleEff || 1;
+  const base = Math.max(0, RENDER_STEPS.indexOf(game.renderScale));
+  const idx = Math.max(0, RENDER_STEPS.indexOf(cur));
+  let want = 0;   // -1 = drop a notch, +1 = climb back toward the player's ceiling
+  if (game.perf.frameMs > SCALE_DOWN_MS && idx < RENDER_STEPS.length - 1) want = -1;
+  else if (game.perf.frameMs < SCALE_UP_MS && idx > base) {
+    const up = RENDER_STEPS[idx - 1];
+    const proj = game.perf.frameMs + game.perf.drawMs * ((up * up) / (cur * cur) - 1);
+    if (proj < SCALE_DOWN_MS - 2) want = 1;   // and land clear of the down gate, not on it
+  }
+  if (!want) { scaleHold = 0; return; }
+  scaleHold += dtReal;
+  if (scaleHold < SCALE_DWELL) return;
+  scaleHold = 0;   // also enforces >= SCALE_DWELL between two changes
+  autoDrop = Math.max(0, autoDrop - want);
+  applyRenderScale();
 }
 
 // ---- World seed -------------------------------------------------------------
@@ -169,6 +243,7 @@ function regenWorld(seed) {
 }
 
 loadSettings();
+applyRenderScale();   // before initRender: render.js's first resize() picks it up
 game.st = shipStats(game.prog);
 regenWorld();
 
@@ -495,6 +570,25 @@ hud.initMenus({
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
   onToggleFps: ui(() => { game.showFps = !game.showFps; saveSettings(); }),
   onTogglePerf: ui(() => { game.showPerf = !game.showPerf; saveSettings(); }),
+  // RENDER SCALE. Picking one clears any auto-degrade notches: an explicit
+  // choice deserves a fresh trial at that ceiling, and a player who drops to
+  // 75% to fix stutter must not be left silently sitting at 50% from before.
+  // (not wrapped in ui(): that wrapper takes no arguments, and this one needs
+  // the chosen value — so it does the initAudio/click itself, like the sliders)
+  onRenderScale: (v) => {
+    if (!RENDER_STEPS.includes(v)) return;
+    sfx.initAudio(); sfx.sfxUiClick();
+    game.renderScale = v; autoDrop = 0; scaleHold = 0;
+    applyRenderScale(); saveSettings();
+  },
+  // Auto quality is defeatable on purpose: without it, a player who chose 100%
+  // and got 50% would read the setting as broken rather than as a ceiling.
+  // Turning it off restores that ceiling immediately.
+  onToggleAutoScale: ui(() => {
+    game.autoScale = !game.autoScale;
+    if (!game.autoScale) { autoDrop = 0; scaleHold = 0; applyRenderScale(); }
+    saveSettings();
+  }),
   // WORLD SEED. Typing only records the pin (regenerating per keystroke would
   // rebuild the system on every character); the COMMIT — blur or Enter — is what
   // re-rolls, and only from the title screen, where the splash backdrop is a
@@ -1239,6 +1333,9 @@ function frame(now) {
   perf.fps = lerp(perf.fps, raw > 0 ? 1000 / raw : 0, PERF_EMA);
   perf.simMs = lerp(perf.simMs, t1 - t0, PERF_EMA);
   perf.drawMs = lerp(perf.drawMs, t2 - t1, PERF_EMA);
+  // Last, off the numbers this frame just produced. A resize here is safe: it
+  // lands between two renders, never inside one.
+  updateAutoScale(dtReal);
 }
 
 requestAnimationFrame(frame);

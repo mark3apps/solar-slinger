@@ -134,8 +134,8 @@ re-arms it for a fresh run.
   so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
   so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
   sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
-- **Settings** (Music/SFX volume sliders, Trajectory prediction, FPS counter, Performance metrics,
-  World seed) persist to
+- **Settings** (Music/SFX volume sliders, Trajectory prediction, Render scale, Auto quality,
+  FPS counter, Performance metrics, World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
   `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
   first world, and loading after it would make every boot world random regardless of the setting.
@@ -180,7 +180,25 @@ re-arms it for a fresh run.
   `dtReal` is clamped to a 20 fps floor and would flatline at 50ms exactly when the overlay matters.
   Timings are EMA-smoothed and the text refreshes at ~5 Hz (per-frame digits strobe too fast to read);
   both toggles off costs one `classList` check. Amber, like `#speedBadge` — this HUD's helper/debug
-  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments.
+  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments. The metrics
+  block also reports the EFFECTIVE **render scale** + backing-store size — auto quality (below) is
+  deliberately silent in play, so this line is the only place a drop below the chosen ceiling shows.
+- **RENDER SCALE is the one quality knob** (`game.renderScale`, Settings: 50/75/100% of native dpr).
+  `render.js`'s `resize()` sizes the world canvas at `native dpr x scale`; `#game` is CSS-stretched to
+  the window, so a lower scale only SOFTENS the picture — `vw`/`vh` stay CSS pixels, so `cam.zoom`,
+  `viewR`, `mouseWorld` and every `/zoom` UI stroke are untouched and the scale can never reach the
+  sim. **The RADAR deliberately stays at native dpr** (its own `rdpr`): 200x200 CSS px is under 2% of
+  the world canvas's pixels, and its 1px dots would be the first thing to turn to mush — downscale the
+  picture, not the instruments (the minimap dot cache sizes off `rdpr` for the same reason, so a scale
+  change can't leave it baked at a resolution its transform no longer matches). The setting is a
+  **CEILING**: `main.updateAutoScale` may step BELOW it (never above) when `perf.frameMs` blows the
+  budget, one notch at a time on a 5s dwell — a resolution change is SEEN, and a scale that hunts is
+  worse than one that is simply too low. The climb can't read `frameMs` alone (rAF is vsync-capped, so
+  it never drops under ~16.7ms however much headroom exists), so it PROJECTS the next notch's cost
+  from `drawMs`, treating all of it as fill: an overestimate, which is the safe direction. Skipped
+  while `timeScale !== 1` (fast-forward burns a sim budget, not a pixel one) and for the first
+  seconds after boot. Defeatable via **Auto quality**, because a 100% setting silently running at 50%
+  reads as a broken setting rather than as a ceiling.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 

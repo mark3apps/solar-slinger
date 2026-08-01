@@ -3,8 +3,16 @@ import { predictPaths, PARRY_FLICK } from './physics.js';
 import { volleyPick } from './tractor.js';
 import { TAU, angDiff, lerp, mulberry32, shellModal, crystalShards } from './util.js';
 
-let canvas, ctx, vw, vh, dpr;
+let canvas, ctx, vw, vh, dpr, rdpr;
 let radarCanvas, rctx;   // the radar draws into its own canvas so CSS can tilt it in 3D
+// RENDER SCALE: the world canvas's backing store as a fraction of native device
+// pixels. Draw cost is fill-bound — measured ~1.4ms fixed + ~0.18ms per
+// megapixel on a fast GPU, far worse on old integrated parts — and #game is
+// CSS-stretched to the window (style.css), so shrinking the backing store only
+// SOFTENS the image while cutting the fill term quadratically. main.js owns the
+// value (a persisted setting, plus auto-degrade); this is just where it lands.
+let renderScale = 1;
+let resizeCanvas = null;   // initRender's resize(), re-runnable when the scale moves
 let armedSet = null;   // orbiters the shotgun charge has armed this frame
 const starLayers = [];   // parallax background stars
 const oortShards = [];   // tumbling ice shards in banded shells beyond the world edge
@@ -15,17 +23,30 @@ export function initRender(cv) {
   // so an opaque backbuffer is visually identical and skips compositor blending
   ctx = canvas.getContext('2d', { alpha: false });
   const resize = () => {
-    dpr = Math.min(2, window.devicePixelRatio || 1);
+    rdpr = Math.min(2, window.devicePixelRatio || 1);   // native, capped
+    dpr = rdpr * renderScale;                           // what the WORLD is drawn at
     // A zero-sized window (hidden pane, minimized-at-launch shell) must never
     // reach the math: vw=vh=0 makes cam.zoom 0 and mouseWorld 0/0 -> NaN aim,
     // which NaN-poisons the ship and then (via the ship-anchored local
     // spawner) the whole sim. Fall back to a nominal size until a real one.
     vw = window.innerWidth || 1280; vh = window.innerHeight || 720;
-    canvas.width = vw * dpr; canvas.height = vh * dpr;
-    radarCanvas.width = radarCanvas.height = RADAR_SIZE * dpr;
+    // vw/vh stay CSS pixels — cam.zoom, viewR, mouseWorld and every /zoom UI
+    // stroke are derived from them, so render scale can never reach the sim.
+    // Rounded (and floored at 1) because a fractional scale yields fractional
+    // backing sizes and a 0-wide canvas is the NaN trap above wearing a hat.
+    canvas.width = Math.max(1, Math.round(vw * dpr));
+    canvas.height = Math.max(1, Math.round(vh * dpr));
+    // THE RADAR DELIBERATELY STAYS AT NATIVE dpr. It is 200x200 CSS px — under
+    // 2% of the world canvas's pixels even at dpr 2 — so scaling it saves
+    // nothing measurable, while its content is 1px dots and hairline ticks that
+    // are the first thing to turn to mush. Downscale the picture, not the
+    // instruments. (This is also why nothing has to invalidate the dot cache
+    // below on a scale change: its resolution never moves.)
+    radarCanvas.width = radarCanvas.height = RADAR_SIZE * rdpr;
   };
   radarCanvas = document.getElementById('radar');
   rctx = radarCanvas.getContext('2d');   // alpha kept: the world shows through around the disc
+  resizeCanvas = resize;
   resize();
   window.addEventListener('resize', resize);
 
@@ -65,6 +86,17 @@ export function initRender(cv) {
   shardBand(420, CFG.WORLD_R + 250, CFG.WORLD_R + 2400, 24, 90, 'berg');
   shardBand(260, CFG.WORLD_R + 1400, CFG.WORLD_R + 3400, 90, 220, 'ghost');
   return { getView: () => ({ vw, vh }) };
+}
+
+// Set the world canvas's backing-store fraction (1 = native). Re-runs the whole
+// sizing path rather than poking canvas.width directly, so every derived thing
+// (the zero-size guard, the radar's own sizing) is re-established from one
+// place. Safe to call BEFORE initRender — the first resize() picks it up.
+export function setRenderScale(s) {
+  const v = Math.max(0.25, Math.min(1, +s || 1));
+  if (v === renderScale) return;
+  renderScale = v;
+  if (resizeCanvas) resizeCanvas();
 }
 
 // Per-frame view rectangle (world space, padded) + the frame's star list —
@@ -3030,7 +3062,7 @@ function drawMinimap(game) {
   // The radar has its OWN canvas so the DOM can tilt it on the 3D canopy —
   // shadow the module ctx with the radar context for this function's scope.
   const ctx = rctx;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);   // native dpr: the dial never downscales
   ctx.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
   const cx = RADAR_SIZE / 2, cy = RADAR_SIZE / 2;
   const r = 95;
@@ -3200,9 +3232,12 @@ function drawMinimap(game) {
     // so the radar still reads as actively scanning; only the dots' fade
     // steps at bake rate. game.time drives the throttle so a paused sim
     // reuses the bake forever instead of rebaking a frozen picture.
-    if (!dotCanvas || dotCanvas.width !== RADAR_SIZE * dpr) {
+    // Sized off rdpr, like the dial it composites into — mismatch it with the
+    // world canvas's scaled dpr and a scale change would leave a bitmap baked
+    // at one resolution being drawn through a transform built for another.
+    if (!dotCanvas || dotCanvas.width !== RADAR_SIZE * rdpr) {
       dotCanvas = document.createElement('canvas');
-      dotCanvas.width = dotCanvas.height = RADAR_SIZE * dpr;
+      dotCanvas.width = dotCanvas.height = RADAR_SIZE * rdpr;
       dotCtx = dotCanvas.getContext('2d');
       dotBakeT = -1;
     }
@@ -3212,7 +3247,7 @@ function drawMinimap(game) {
         seenMask !== dotBakeSeen || Math.hypot(fx - dotBakeFx, fy - dotBakeFy) > 60) {
       dotBakeT = game.time; dotBakeFx = fx; dotBakeFy = fy; dotBakeSeen = seenMask;
       const dc = dotCtx;
-      dc.setTransform(dpr, 0, 0, dpr, 0, 0);
+      dc.setTransform(rdpr, 0, 0, rdpr, 0, 0);
       dc.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
       dc.fillStyle = '#a2937d';   // belt-rock tan: terrain, not the blip palette
       for (const b of game.bodies) {

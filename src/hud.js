@@ -44,7 +44,7 @@ export function initHud(game) {
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
     'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
-    'menuBtn', 'setPredict', 'setFps', 'setPerf', 'setSeed', 'seedNote',
+    'menuBtn', 'setPredict', 'setFps', 'setPerf', 'setScale', 'setAutoScale', 'setSeed', 'seedNote',
     'setMusicVol', 'setSfxVol', 'ctrlOut', 'credVersion',
     // Achievements: the run scoreboard, its panel, and the toast rail
     'achievementsScreen', 'achList', 'achFilters', 'achOut', 'achScore', 'achCount', 'achPct',
@@ -55,6 +55,7 @@ export function initHud(game) {
     el[id] = document.getElementById(id);
   }
   el.gametitle = document.querySelector('.gametitle');   // the boot scramble's target (no id)
+  el.canvas = document.getElementById('game');           // read ONLY for the perf overlay's backing-store size
   // Tick period on the XP bar = one upgrade pick. The bar spans a whole tier,
   // which is PICKS_PER_TIER picks PLUS the milestone (see the span math in
   // updateHud) — divide by that same total or the ticks drift off the picks.
@@ -98,6 +99,16 @@ export function initMenus(handlers) {
   bind('setPredict', handlers.onTogglePredict);
   bind('setFps', handlers.onToggleFps);
   bind('setPerf', handlers.onTogglePerf);
+  bind('setAutoScale', handlers.onToggleAutoScale);
+  // Render scale is a segmented group, so ONE delegated listener covers every
+  // cell — adding or retuning a step is then an HTML edit plus main's step
+  // table, with nothing here to keep in sync (the CONTROLS schematic's rule).
+  if (el.setScale) {
+    el.setScale.addEventListener('click', (e) => {
+      const btn = e.target.closest('.segbtn');
+      if (btn) handlers.onRenderScale(+btn.dataset.v);
+    });
+  }
   // World seed: `input` records what was typed, `change` (blur / Enter) is the
   // COMMIT that may re-roll the world — regenerating per keystroke would
   // rebuild the whole system on every character. The note line pins the world
@@ -442,6 +453,20 @@ function setInput(node, v) {
   if (node.value !== v) node.value = v;
 }
 
+// Reflect a segmented choice (render scale). Same guarded-write discipline as
+// setToggle — it walks its cells only when the selected value actually moves.
+function setSeg(node, v) {
+  if (!node) return;
+  const key = String(v);
+  if (lastText.get(node) === key) return;
+  lastText.set(node, key);
+  for (const b of node.children) {
+    const on = b.dataset.v === key;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+}
+
 // Reflect a switch's on/off state (only touches the DOM on a real change).
 function setToggle(node, on) {
   if (!node || node.classList.contains('on') === !!on) return;
@@ -515,6 +540,11 @@ function syncMenus(game) {
   setToggle(el.setPredict, game.predict);
   setToggle(el.setFps, game.showFps);
   setToggle(el.setPerf, game.showPerf);
+  // The SETTING, not the effective scale: the control must keep showing the
+  // ceiling the player chose even while auto quality is running below it (the
+  // perf overlay is where the effective one is reported).
+  setSeg(el.setScale, game.renderScale);
+  setToggle(el.setAutoScale, game.autoScale);
   setSlider(el.setMusicVol, game.musicVol);
   setSlider(el.setSfxVol, game.sfxVol);
   setInput(el.setSeed, game.seedText);
@@ -661,6 +691,14 @@ function perfBadge(game) {
     lines.push(`frame ${(p.frameMs || 0).toFixed(1)}  sim ${(p.simMs || 0).toFixed(1)}  draw ${(p.drawMs || 0).toFixed(1)} ms`);
     lines.push(`steps ${p.steps || 0} · bodies ${game.bodies.length} · debris ${game.debris.length}`);
     lines.push(`fx ${game.particles.length} · aliens ${game.aliens.length} · motes ${motes} · orbit ${game.orbit.length}`);
+    // RENDER SCALE, with the real backing-store size beside it. Auto-degrade is
+    // deliberately quiet in play (no toast, no flash — it exists so a struggling
+    // machine stops struggling), so this line is the ONLY place a drop below the
+    // chosen ceiling is visible. Say "auto" when it's running under the setting.
+    const eff = game.renderScaleEff || 1;
+    const auto = eff < (game.renderScale || 1) ? ' auto' : '';
+    const cw = el.canvas ? el.canvas.width : 0, ch = el.canvas ? el.canvas.height : 0;
+    lines.push(`scale ${Math.round(eff * 100)}%${auto} · ${cw}×${ch}`);
   }
   setText(el.perfBadge, lines.join('\n'));
 }
