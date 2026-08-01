@@ -62,6 +62,41 @@ export function seedFrom(text) {
 export function rand(rng, a, b) { return a + rng() * (b - a); }
 export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length) % arr.length]; }
 
+// ---- IMPACT CRATER profile ----
+// How much of its radius a world still HAS at a given surface-local bearing,
+// once the craters its impacts carved are taken out of it.
+//
+// Shared by render (the drawn silhouette, `worldSil`) and physics (the felt
+// one, `surfRadius`) — the same law crystal worlds run on below, and for the
+// same reason: a crater you can see but cannot fly into is a hole in the
+// picture only, and rocks visibly stop in mid-air across its mouth. One
+// function, both consumers.
+//
+// `scars` are `{a, s, t}` in the body's own frame (physics.damageBody stores
+// the angle minus b.rot so a crater rides the spin), so callers working in
+// world bearings subtract b.rot exactly as they do for crystal shards. The
+// profile is a cosine bowl WIDER and DEEPER than the piece that came out of it
+// — rock does not part along a neat hemisphere — roughened by two harmonics
+// seeded off the scar's own timestamp so the wall is fractured rather than
+// machined, and stable frame to frame like every other seeded geometry here.
+export const SCAR_MAX_CUT = 0.38;   // floor on what is left: a bite, never a hole to the core
+export function scarSurfaceAt(scars, radius, th) {
+  let cut = 0;
+  for (let i = 0; i < scars.length; i++) {
+    const sc = scars[i];
+    const br = Math.max(2.2, radius * 0.06 * sc.s);
+    const hw = Math.min(1.2, (br / radius) * 2.2);
+    let d = th - sc.a;
+    d = Math.atan2(Math.sin(d), Math.cos(d));   // wrapped angular distance
+    if (d > hw || d < -hw) continue;
+    const rough = 1 + 0.26 * Math.sin(sc.t * 21.7 + th * 9.3)
+      + 0.16 * Math.sin(sc.t * 13.1 + th * 21.7);
+    const c = (br / radius) * 0.75 * (1 + Math.cos((d / hw) * Math.PI)) * rough;
+    if (c > cut) cut = c;
+  }
+  return cut > 0 ? 1 - Math.min(SCAR_MAX_CUT, cut) : 1;
+}
+
 // ---- CRYSTAL WORLD shard geometry ----
 // Shared by render (the drawn silhouette) and physics (the polygon COLLIDER):
 // both read the SAME table or the drawn surface and the felt surface disagree

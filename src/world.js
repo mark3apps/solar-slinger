@@ -1,5 +1,7 @@
-import { CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, FIELD_LOBE_MAX } from './config.js';
-import { Body, railBody, railEllipse } from './entities.js';
+import {
+  CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass, FIELD_LOBE_MAX,
+} from './config.js';
+import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick } from './util.js';
 import { sfxPing } from './sfx.js';
@@ -941,7 +943,129 @@ export function generateWorld(game, seed = 20260721) {
   // DENSE ASTEROID FIELDS: three packed rock shoals at fixed radii (appended
   // here, after every earlier rng draw, per the expedition-layer rule above).
   seedDenseFields(game, sun, rng);
+  seedDebrisBelts(bodies, planets, rng);
   respawnShip(game);
+}
+
+// PLANETARY DEBRIS BELTS — every world wears a shell of its own rubble.
+//
+// What shipped before was three or four dead probes (SATELLITE JUNK, above) on
+// the solid worlds and fourteen ice chunks on the gas giants, sized when the
+// worlds themselves were a third of their current radius. Against a 705-unit
+// planet four specks is nothing, and the lava and ice worlds carried NOTHING
+// AT ALL. This pass hangs a real belt on every planet: the count scales with
+// the world's own size, and the material comes from config.worldDebris — the
+// same table physics.calveCrust reads when a wounded world calves, so what
+// already orbits a planet and what breaks off it are visibly the same stuff.
+//
+// Appended AFTER seedDenseFields, per the expedition-layer rule: it draws rng,
+// and drawing any earlier would reshuffle every angle in the sky above it.
+// The belts are railed like the junk and ring chunks they join, so they cost
+// the gravity loop nothing; sizes stay under ATTRACT_MIN for the same reason.
+function seedDebrisBelts(bodies, planets, rng) {
+  for (const p of planets) {
+    if (p.dark) continue;   // the hidden dwarf is meant to be a bare silhouette
+    // Crystal worlds measure from the SPIKE reach (1.32r, util.CRYSTAL_REACH),
+    // never the mean disc: at the disc a railed rock and the tallest turning
+    // spike grind each other into a perpetual derail churn.
+    const reach = p.ptype === 'crystal' ? p.radius * 1.32 : p.radius;
+    // Belt pieces are drawn at a fraction of the HOST, like every other piece
+    // of a world (CFG.CRUST_*) — the mass-derived radius drew a 900-mass rock
+    // at 6.5 units, invisible beside a 1148-unit gas giant. Held well under
+    // moon scale on purpose: this is rubble you fly through, not a second moon
+    // system, and mass follows the radius (config.crustMass) so the beam's tier
+    // caps gate a piece by the size the player can actually see.
+    let crMax = Math.min(p.radius * 0.035, 34);
+    // THE BAND MUST CLEAR EVERY LANE ALREADY IN USE. Moons, stations, nests,
+    // the gas rings and the junk probes are all railed around this world at
+    // their own Keplerian rates, and the crossing-orbit rule (see spawnMoon's
+    // exCap rationale) is that any "covers both bodies' radii" clearance has to
+    // ride the SCALED radii. A first cut ignored it and put 45-55 unit rubble
+    // straight through the inner moon lanes: half the belt was absorbed on
+    // frame one and the survivors ground moons out of the sky inside four
+    // idle minutes.
+    // Collect the lanes already spoken for, as forbidden intervals.
+    const blocked = [];
+    for (const b of bodies) {
+      if (!b.rail || b.rail.parent !== p || b.radius < 8) continue;   // specks can't hold a lane
+      // A CIRCULAR RAIL AND AN ELLIPTICAL RAIL ARE DIFFERENT OBJECTS, and
+      // moons ride ellipses: rail.r simply does not exist on one, so reading it
+      // here yielded undefined, NaN'd the band, slipped through a `<=` guard
+      // (every NaN comparison is false) and spawned a few hundred bodies at NaN
+      // coordinates for the tripwire to cull. Take the PERIAPSIS — the closest
+      // the moon ever comes — so the clearance holds all the way round.
+      const lane = b.rail.e > 0 ? b.rail.a * (1 - b.rail.e) : b.rail.r;
+      if (!Number.isFinite(lane)) continue;
+      blocked.push([lane - b.radius - 40, lane + b.radius + 40]);
+    }
+    blocked.sort((u, v) => u[0] - v[0]);
+    // Take the WIDEST CLEAR ANNULUS in the shell, not merely everything under
+    // the innermost moon. Calyx keeps a 59-unit moon 70 units off its cloud
+    // tops, which under the simpler rule left the most-visited world in the
+    // game with no belt at all — while the gap just OUTSIDE that moon was
+    // comfortably wide. Worlds wear their rubble wherever there is room for it.
+    // A GAS GIANT'S RUBBLE GOES IN ITS RING, not down on the cloud tops. It has
+    // no surface: anything that touches the tops is SWALLOWED (CFG.GAS_*), so a
+    // band starting at 1.06 radii put two dozen pieces one nudge away from
+    // being eaten — and the giant duly ate its own belt, ~100 pieces in the
+    // first few seconds. Its rubble joins the ice ring instead, which thickens
+    // the feature it already has rather than inventing a second one underneath.
+    const gas = p.ptype === 'gas';
+    // The inner clearance is proportional PLUS an absolute pad: 6% of a
+    // 180-unit inner world is 11 units, less than the width of a belt piece,
+    // so a small world's rubble sat one nudge from grinding on its own surface.
+    let lo = gas ? reach * 1.5 : reach * 1.06 + 26;
+    let best = null;
+    const hiCap = reach * (gas ? 2.2 : CFG.CRUST_BAND_HI);
+    for (const [s, e] of blocked) {
+      const hi = Math.min(s, hiCap);
+      if (hi - lo > (best ? best[1] - best[0] : 0)) best = [lo, hi];
+      lo = Math.max(lo, e);
+      if (lo >= hiCap) break;
+    }
+    if (hiCap - lo > (best ? best[1] - best[0] : 0)) best = [lo, hiCap];
+    if (!best) continue;
+    // Shrink the pieces to fit a tight gap rather than abandoning it; below a
+    // few units they stop reading as rubble at all, so give up there.
+    crMax = Math.min(crMax, (best[1] - best[0]) * 0.5 - 6);
+    if (!(crMax > 5)) continue;   // written so a NaN falls through to `continue`
+    const inner = best[0] + crMax, outer = best[1] - crMax;
+    if (!(outer > inner)) continue;
+    // A gas giant already carries its ring chunks out past this band; the solid
+    // worlds get the full count. Scaled off radius, so a giant wears a real
+    // shell and a small inner world a thin one rather than the same four specks.
+    const n = Math.round((p.ptype === 'gas' ? 12 : 18) * (0.5 + p.radius / 620));
+    // EVENLY SPACED SLOTS, jittered — not a free scatter. At this piece size a
+    // uniform random draw puts several pairs on top of each other at spawn, and
+    // overlapping bodies are eaten by the gentle-contact absorb rule before the
+    // world has finished loading.
+    for (let i = 0; i < n; i++) {
+      const a = ((i + rand(rng, 0.12, 0.88)) / n) * TAU;
+      // Weighted inward: a shell is densest near the surface it came off.
+      const br = inner + (outer - inner) * Math.pow(rng(), 1.6);
+      const x = p.x + Math.cos(a) * br, y = p.y + Math.sin(a) * br;
+      const cr = crMax * rand(rng, 0.3, 1);
+      // Don't spawn ON something already railed here. The lane search above
+      // only avoids satellites big enough to hold a lane (radius >= 8); the
+      // gas rings are 5-unit ice pellets scattered right through the band this
+      // rubble joins, and a piece born overlapping one is eaten by the
+      // gentle-contact absorb rule before the world has finished loading.
+      let clear = true;
+      for (const q of bodies) {
+        if (!q.rail || q.rail.parent !== p) continue;
+        if (Math.hypot(q.x - x, q.y - y) < q.radius + cr + 14) { clear = false; break; }
+      }
+      if (!clear) continue;
+      const v = orbitVel(p, x, y, 1);
+      const c = spawnAsteroid(bodies, x, y, v.vx, v.vy, crustMass(cr));
+      makeChunk(c, cr, worldDebris(p.ptype, p.color, rng()));
+      railBody(c, p);
+      // RIGID SHELL: one angular rate for the whole thing, shared with the
+      // crust a wounded world calves into the same band (entities.chunkHaloW).
+      // Mixed rates inside one shell means neighbours catch up and grind.
+      c.rail.w = chunkHaloW(p);
+    }
+  }
 }
 
 // DENSE FIELDS — rock shoals packed tight enough that flying one is weaving,
@@ -1780,7 +1904,13 @@ export function replenishWorld(game, dt) {
           if (b.alive && b.sulfurOf === p && !b.heldBy &&
               Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 400) n++;
         }
-        if (n < 6 && game.bodies.length < 400) {
+        // The shared debris budget (CFG.DEBRIS_BUDGET / physics.debrisRoom),
+        // inlined rather than imported — physics imports world, and this is one
+        // registry read. The old `bodies.length < 400` counted shoal rock and
+        // so was false from frame one: sulfur vents have never fired in a world
+        // with dense fields in it.
+        const room = CFG.DEBRIS_BUDGET - (game.reg ? game.reg.nonField.length : game.bodies.length);
+        if (n < 6 && room > 0) {
           const a = rng() * TAU;
           const sp = 160 + rng() * 100;
           const c = spawnAsteroid(game.bodies,
@@ -2075,6 +2205,68 @@ export function replenishWorld(game, dt) {
     for (const b of (game.reg ? game.reg.locals : game.bodies)) {
       if (!b.local || !b.alive || b.heldBy || b.thrownTimer > 0) continue;
       if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) > cullR) b.alive = false;
+    }
+    // THE LEASH (CFG.DEBRIS_LEASH / THROW_LEASH). Loose rubble that has drifted
+    // clear of the player is retired. The crumble layer mints real debris every
+    // time a world is hit, and without this every lane the player ever fought
+    // in stays permanently littered — paying the broad phase and holding debris
+    // budget for rock nobody will look at again. RAILED bodies are exempt:
+    // a world's belt, its junk probes, its ring chunks and the trojans ARE the
+    // system, and they cost nothing once dormant. So is anything the expedition
+    // layer cares about, and so is crust still settling into a halo.
+    // Both radii sit far outside any view, so nothing can be seen to vanish —
+    // that is the constraint the numbers are chosen against.
+    const loose = viewR * CFG.DEBRIS_LEASH + CFG.LEASH_PAD;
+    const slung = viewR * CFG.THROW_LEASH + CFG.LEASH_PAD;
+    for (const b of (game.reg ? game.reg.nonField : game.bodies)) {
+      if (!b.alive || b.onRails || b.heldBy || b.type !== 'asteroid' || b.local) continue;
+      if (b.crust || b.core || b.cache || b.pod || b.carved || b.visitor ||
+          b.wreck || b.junk || b.comet || b.tinker || b.ghost) continue;
+      // Something the PLAYER threw gets a long run before it goes — a throw is
+      // a deliberate act, and a rock vanishing out from under a shot in flight
+      // (or one you are chasing) would be the leash making a decision for them.
+      const r = b.slung ? slung : loose;
+      if (Math.hypot(b.x - game.ship.x, b.y - game.ship.y) > r) b.alive = false;
+    }
+  }
+
+  // AMBIENT WORLD WEAR — see CFG.PLANET_WEAR_*. A world nobody is at slowly
+  // picks up meteor damage, so a lane you return to after a long detour has
+  // visibly weathered instead of being pristine exactly as you left it.
+  // Deliberately NOT routed through physics.damageBody: that derails on any
+  // chip (a weathering planet must never come off its rail), sheds mass, calves
+  // crust and can shatter. This only ever costs hp and leaves small craters,
+  // and it STOPS DEAD at the floor — the sky must never fall apart on its own.
+  game.wearT = (game.wearT ?? 2) - dt;
+  if (game.wearT <= 0) {
+    const step = 2;
+    game.wearT = step;
+    for (const p of (game.reg ? game.reg.planets : [])) {
+      if (!p.alive || p.nearShip || p.fort) continue;   // present player, or a shielded siege
+      const floor = p.maxHp * CFG.PLANET_WEAR_FLOOR;
+      if (p.hp <= floor) continue;
+      // Rate hashed off the id, never drawn from the world rng — a draw here
+      // would reshuffle the whole seeded sky (the expedition-layer rule above).
+      const [lo, hi] = CFG.PLANET_WEAR_DPS;
+      const k = (Math.sin(p.id * 78.233) * 0.5 + 0.5);
+      p.hp = Math.max(floor, p.hp - (lo + (hi - lo) * k) * step);
+      // A crater every so often, so the wear READS and not just the hp bar.
+      // Small: this is pitting, not a moon strike (physics sizes a real impact
+      // crater from the slab it calved, which ambient wear never does).
+      p.wearScar = (p.wearScar ?? 0) + (lo + (hi - lo) * k) * step;
+      if (p.wearScar > p.maxHp * CFG.PLANET_WEAR_SCAR) {
+        p.wearScar = 0;
+        p.scars.push({ a: (p.id * 2.399 + p.scars.length * 1.7) % TAU,
+          s: 0.4 + (Math.sin(p.id * 12.9898 + p.scars.length) * 0.5 + 0.5) * 0.45,
+          t: game.time });
+        // Keep the WORST wounds, exactly as physics.damageBody does — ambient
+        // pitting must never erase the crater a thrown moon left.
+        if (p.scars.length > 10) {
+          let wi = 0;
+          for (let i = 1; i < p.scars.length; i++) if (p.scars[i].s < p.scars[wi].s) wi = i;
+          p.scars.splice(wi, 1);
+        }
+      }
     }
   }
 

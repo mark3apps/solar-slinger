@@ -814,6 +814,17 @@ function resetRun(seed) {
 // danger NOW; sfxWarnLow = hostile contact / bad news; sfxChime = discovery,
 // lore, or opportunity; sfxLife = triumph.
 const EVENT_MSGS = [
+  // A gas giant stripped to its core (physics.shatter). Triumph, not alarm:
+  // it is one of the biggest things the player can do to the sky, and what is
+  // left behind is a new world rather than a hole.
+  // The throes STARTING — an alarm, because a world coming apart around you is
+  // the most dangerous place in the system for the next five seconds.
+  { flag: 'gasCollapseName', tut: 'gasCollapse', snd: sfx.sfxAlarm,
+    first: [(v) => `${v} IS COMING APART — its atmosphere is collapsing. Get clear.`, 5],
+    repeat: [(v) => `${v} IS COMING APART!`, 3.5] },
+  { flag: 'gasStrippedName', tut: 'gasStripped', snd: sfx.sfxLife,
+    first: [(v) => `ATMOSPHERE STRIPPED — ${v} is gone. Its dense core is left on the same orbit.`, 5.5],
+    repeat: [(v) => `${v} STRIPPED — only the core remains.`, 4] },
   { flag: 'alienWarn', tut: 'alienSeen', snd: sfx.sfxWarnLow,
     first: ['WARNING: alien grabbers inbound — they throw rocks. Your orbit shield can block them.', 5] },
   { flag: 'tetherShow', tut: 'tether', snd: sfx.sfxChime,
