@@ -144,13 +144,23 @@ function bodyOnScreen(b) {
   return false;
 }
 
+// The frame's world matrix, kept as three numbers (it is always a uniform
+// scale + translate — no rotation, no skew). blitRock composes a body's
+// rotate/translate straight into a single setTransform off these instead of
+// paying save/translate/rotate/restore per rock, then restores the world
+// matrix from the same numbers. Written ONLY here, so a later change to the
+// projection (dpr, a render-scale factor) can never leave the blit stale.
+// `now` rides along because the atlas needs a wall clock and blitRock runs
+// ~1800 times a frame — sampling performance.now() per rock is real money.
+const wt = { k: 1, e: 0, f: 0, now: 0 };
+
 function worldTransform(game, shakeX, shakeY) {
   const { cam } = game;
-  ctx.setTransform(
-    dpr * cam.zoom, 0, 0, dpr * cam.zoom,
-    dpr * (vw / 2 - cam.x * cam.zoom + shakeX),
-    dpr * (vh / 2 - cam.y * cam.zoom + shakeY),
-  );
+  wt.k = dpr * cam.zoom;
+  wt.e = dpr * (vw / 2 - cam.x * cam.zoom + shakeX);
+  wt.f = dpr * (vh / 2 - cam.y * cam.zoom + shakeY);
+  wt.now = performance.now() / 1000;
+  ctx.setTransform(wt.k, 0, 0, wt.k, wt.e, wt.f);
 }
 
 function drawStarfield(game) {
@@ -418,25 +428,95 @@ function drawOort(game) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ROCK SILHOUETTE ARCHETYPES
+//
+// Rock shapes USED to be unique per body (mulberry32 off b.id), which meant
+// ~8000 distinct polygons and nothing that could ever be cached: in a dense
+// shoal the renderer rebuilt a 7-16 vertex path TWICE per rock (once to fill,
+// once to clip the crater pits inside) — measured at ~31 canvas calls and
+// ~7.5us of pure submission per rock, with clip the most expensive of them.
+//
+// Small rocks now draw from a BOUNDED set of shapes so they can be baked into
+// the sprite atlas below. The quantization is deliberate and it is the only
+// fidelity cost of the whole optimization. It applies to EVERY rock under the
+// last bucket edge AT ANY ZOOM, including the ones the atlas declines and the
+// vector path draws — a silhouette that changed as you flew in would morph,
+// and the crack clip and the scar edge sampler both read b.jag, so there can
+// only be one shape per rock. What carries it is not small drawn size but the
+// per-body rotation, the exact per-body radius, and how shallow the jag is
+// (amplitude 0.06-0.13 of the radius): 24 archetypes read as "all different"
+// even on a boulder. Big rock — giants, monoliths, the bodies you steer a
+// shoal by — is EXEMPT (rockBucket returns -1 past the last bucket edge) and
+// keeps a unique silhouette, because those are few and you get close enough
+// to them to tell.
+//
+// The archetype IS b.jag, not a parallel table: traceAsteroid, the damage
+// crack clip and the scar edge sampler all read b.jag, so a shape that existed
+// only inside the sprite would make cracks and bites sit off the drawn edge.
+// ---------------------------------------------------------------------------
+const ROCK_ARCHS = 24;   // silhouettes per size bucket. MUST stay a multiple of
+                         // 3: the crater COUNT is `2 + (id % 3)` and the bake
+                         // keys it off `arch % 3` instead, so every rock keeps
+                         // exactly the pit count it has today.
+// Upper radius edge / representative radius of each size bucket. The original
+// shape math (vertex count, jag amplitude) is a continuous function of radius;
+// it is evaluated once per bucket at the representative radius instead. So a
+// rock that CHIPS across an edge steps its silhouette instead of easing it
+// (amplitude 0.060/0.077/0.101/0.131, vertices 8/9/10/11) — the steps are
+// under 0.03r and only land on a real damage event, which is already a
+// visible moment. That is the honest cost of bucketing, not a bug.
+const ROCK_BUCKET_MAX = [3.5, 5.5, 8, 11];
+const ROCK_BUCKET_R = [2.6, 4.5, 6.7, 9.4];
+const archJags = [];   // [bucket * ROCK_ARCHS + arch] -> jag array
+
+function rockBucket(r) {
+  for (let i = 0; i < ROCK_BUCKET_MAX.length; i++) if (r <= ROCK_BUCKET_MAX[i]) return i;
+  return -1;
+}
+
+// SHARED, never mutated: the returned array is handed to every body in the
+// bucket as its b.jag. Writing through b.jag would reshape hundreds of rocks.
+function archJag(arch, bk) {
+  const i = bk * ROCK_ARCHS + arch;
+  let j = archJags[i];
+  if (!j) {
+    const R = ROCK_BUCKET_R[bk];
+    const t = Math.min(1, Math.max(0, (R - 3) / 27));   // 0 pebble -> 1 boulder
+    const n = 7 + Math.min(9, Math.round(R * 0.45));
+    const amp = 0.06 + 0.3 * t;
+    const rng = mulberry32(arch * 7919 + 13);
+    j = [];
+    for (let k = 0; k < n; k++) j.push(1 - amp + rng() * amp * 2);
+    archJags[i] = j;
+  }
+  return j;
+}
+
 // Asteroids are jagged polygons, not discs — and the bigger the rock, the
 // craggier the silhouette (pebbles stay nearly round, boulders are gnarled).
-// The vertex offsets are generated once per body, keyed off its id, and
-// regenerated if the radius changes (chip damage shrinks rocks).
+// The vertex offsets are cached on the body and regenerated if the radius
+// changes (chip damage shrinks rocks), which is also what re-buckets a rock
+// that has shed its way down a size class.
 function traceAsteroid(b) {
   if (!b.jag || b.jagR !== b.radius) {
+    let bk;
     if (b.carved) {
       // The carved stone: a perfect hexagon — machined, not tumbled
       b.jag = [1, 1, 1, 1, 1, 1];
-      b.jagR = b.radius;
+    } else if ((bk = rockBucket(b.radius)) >= 0) {
+      b.jag = archJag(b.id % ROCK_ARCHS, bk);
     } else {
-      const t = Math.min(1, Math.max(0, (b.radius - 3) / 27));   // 0 pebble -> 1 boulder
+      // Big rock keeps a one-of-a-kind silhouette (see the header above)
+      const t = Math.min(1, Math.max(0, (b.radius - 3) / 27));
       const n = 7 + Math.min(9, Math.round(b.radius * 0.45));
       const amp = 0.06 + 0.3 * t;
       const rng = mulberry32(b.id * 7919 + 13);
       const pts = [];
       for (let i = 0; i < n; i++) pts.push(1 - amp + rng() * amp * 2);
-      b.jag = pts; b.jagR = b.radius;
+      b.jag = pts;
     }
+    b.jagR = b.radius;
   }
   const n = b.jag.length;
   ctx.beginPath();
@@ -447,6 +527,230 @@ function traceAsteroid(b) {
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.closePath();
+}
+
+// ---------------------------------------------------------------------------
+// ROCK SPRITE ATLAS
+//
+// Small rocks are pre-baked — silhouette WITH ITS CRATER PITS ALREADY IN THE
+// PIXELS — and drawn with one blit: setTransform + drawImage + setTransform,
+// 3 canvas calls instead of ~31, no path build and no clip. In a dense shoal
+// that is 71.6k canvas calls a frame down to 9.3k.
+//
+// IT MUST BE ONE SHEET PER TIER, NOT A CANVAS PER SPRITE, AND THE SHEET MUST
+// BE KEPT YOUNG. Both rules are worth more than the optimization itself, and
+// each was a measured catastrophe first:
+//   - The first cut cached ~240 individual little canvases and it was a 2x
+//     REGRESSION. In the shoal, 1778 blits cost 22ms from separate canvases
+//     against 2.4ms from a single source. One sheet, one texture, one upload.
+//   - A canvas that has sat unused goes rotten AS A DRAW SOURCE. Idle the
+//     sheet for three seconds (fly close in, where the size cap puts rocks
+//     back on vectors) and the next wide shot costs 582ms instead of 42 —
+//     every blit re-uploads the whole sheet. Copying the sheet into a FRESH
+//     canvas restores it completely (7.7ms, against 13.2 for vectors), so a
+//     sheet is re-published the first frame it is used after a GAP.
+//     ImageBitmap does NOT fix it (601ms — measured); a fresh canvas does.
+//   - A published sheet is never written to again, for the same reason: adding
+//     a row to the canvas rocks are already blitting FROM took the frame from
+//     8ms to 375ms. New rows are baked into the incoming copy instead. Rows
+//     hold the SHEET, not its canvas, so a swap reaches every one of them.
+//
+// SIZE CAP. Sprites are used only while a rock draws SMALL — up to
+// SPRITE_TIERS' last tier over the headroom. Above that the vector path is
+// measurably FASTER (a rotated, filtered blit costs more raster than filling a
+// small polygon: at ~25px radius, 25us a rock against 4us), the rock count on
+// screen is low enough not to matter, and a sheet with cells that big would
+// cost tens of MB. So: many tiny rocks blit, few big rocks keep the exact old
+// path — which is also where zoom would expose a sprite. Nothing ever goes
+// mushy: past the cap you are on vectors.
+//
+// The tier is chosen from the DRAWN device size, so cam.zoom and dpr are both
+// baked into which sheet gets asked for. A dpr change (retina, or a runtime
+// render-scale setting) simply asks for a different tier — there is no stale
+// state to invalidate.
+// ---------------------------------------------------------------------------
+const SPRITE_HEAD = 1.2;     // resolution headroom over the drawn size
+// Bake radii in device px; the last one sets the size cap. TWO tiers, not
+// more: a third small tier would cut the minification on 1-2px pebbles (they
+// come off the 8 sheet), but a wide shot spans both tiers at once, so it buys
+// a second live source for a difference that is invisible in a shoal — before
+// and after screenshots of the same 1845-rock frame are indistinguishable.
+const SPRITE_TIERS = [8, 16];
+const SPRITE_EXT = 1.25;     // cell half-width in body radii (the jag peaks at ~1.15)
+// Rows are bucket x colour. Four buckets against the handful of small-rock
+// colours (belt grey, boulder rust, cored, ice, junk) already fills 16, and
+// the whole win rests on one sheet per tier — so this carries real headroom
+// rather than sitting exactly on the count a mixed scene needs.
+const ATLAS_ROWS = 20;
+const ATLAS_REFRESH = 0.25;  // a gap this long in a sheet's use re-publishes it
+const ATLAS_BUDGET = 8 << 20;// hard ceiling on sheet backing store (see rockRow)
+let atlasSheets = [];        // live sheets — 2 tiers x 0.6/2.5 MB in practice
+let openSheet = new Map();   // tier -> the sheet still taking rows
+let atlasRows = new Map();   // 'tier|bucket|colour' -> the row descriptor below
+
+// Bake one row: every archetype of one (bucket, colour) at one tier, laid out
+// left to right so the blit's source x is just arch * cell.
+function bakeRow(c, sh, row, bk, color) {
+  const px = sh.px, cell = sh.cell;
+  for (let arch = 0; arch < ROCK_ARCHS; arch++) {
+    const jag = archJag(arch, bk);
+    const n = jag.length;
+    c.save();
+    c.translate(arch * cell + cell / 2, row * cell + cell / 2);
+    c.scale(px, px);   // cell space == body-radius space: the bake is resolution-agnostic
+    const trace = () => {
+      c.beginPath();
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * TAU;
+        const x = Math.cos(a) * jag[i], y = Math.sin(a) * jag[i];
+        if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.closePath();
+    };
+    c.fillStyle = color;
+    trace(); c.fill();
+    // The pits, clipped to the silhouette — the same geometry the vector path
+    // draws, paid once per sheet instead of once per rock per frame.
+    c.save();
+    trace(); c.clip();
+    c.fillStyle = 'rgba(0,0,0,0.25)';
+    // arch stands in for b.id here. ROCK_ARCHS is a multiple of 3, so
+    // `arch % 3` IS `id % 3` and every rock keeps its own pit count.
+    const cn = 2 + (arch % 3);
+    for (let i = 0; i < cn; i++) {
+      const a = i * 2.4 + arch;
+      c.beginPath();
+      c.arc(Math.cos(a) * 0.45, Math.sin(a) * 0.45, 0.22, 0, TAU);
+      c.fill();
+    }
+    c.restore();
+    c.restore();
+  }
+}
+
+// Publish a new copy of the sheet: a BRAND NEW canvas takes a copy of the
+// outgoing one, `bake` (if any) adds to it, and the sheet swaps. The live
+// canvas is therefore only ever WRITTEN while it is not yet live, and it is
+// always young. The canvas really must be new — recycling a spare that was
+// live a moment ago carries the rot straight back (measured: ping-ponging two
+// canvases left the frame at 812ms, a fresh one at 8ms), so whatever Chromium
+// drops here belongs to the canvas OBJECT, not to its pixels.
+function publishSheet(sh, bake, now) {
+  const cv = document.createElement('canvas');
+  cv.width = sh.w; cv.height = sh.h;
+  const c = cv.getContext('2d');
+  if (sh.cv) c.drawImage(sh.cv, 0, 0);
+  if (bake) bake(c);
+  sh.cv = cv; sh.used = now;
+}
+
+function rockRow(tier, bk, color, now) {
+  const key = tier + '|' + bk + '|' + color;
+  let r = atlasRows.get(key);
+  if (r) return r;
+  // The open sheet is looked up PER TIER: a shared "most recent sheet" spawns a
+  // fresh one every time the zoom crosses a tier boundary and back.
+  let sh = openSheet.get(tier);
+  if (!sh || sh.next >= ATLAS_ROWS) {
+    // Rows are (bucket x colour) and rock colours are a small fixed set, so in
+    // practice one sheet per tier covers a run. A world that keeps minting new
+    // ones would otherwise grow the atlas without limit: past the budget the
+    // whole thing is dropped and rebuilt from what the next frames ask for —
+    // a few row bakes, and the memory is bounded by construction.
+    let bytes = 0;
+    for (const s of atlasSheets) bytes += s.w * s.h * 4;
+    if (bytes > ATLAS_BUDGET) { atlasSheets = []; openSheet = new Map(); atlasRows = new Map(); }
+    const cell = Math.round(2 * tier * SPRITE_EXT);
+    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0 };
+    atlasSheets.push(sh);
+    openSheet.set(tier, sh);
+  }
+  const row = sh.next++;
+  publishSheet(sh, (c) => bakeRow(c, sh, row, bk, color), now);
+  // ext: the cell's half-width measured in body radii. Rounding `cell` to a
+  // whole pixel moves it off SPRITE_EXT, and blitting at the nominal extent
+  // would scale every rock by up to half a texel.
+  r = { sh, cell: sh.cell, sy: row * sh.cell, ext: sh.cell / (2 * sh.px) };
+  atlasRows.set(key, r);
+  return r;
+}
+
+// Atlas occupancy, for perf work — the sheet count and what they cost in
+// backing store. Import it from the console
+// (`(await import('/src/render.js')).rockCacheStats()`).
+export function rockCacheStats() {
+  let bytes = 0;
+  for (const sh of atlasSheets) bytes += sh.w * sh.h * 4;
+  return { sheets: atlasSheets.length, rows: atlasRows.size, bytes };
+}
+
+// Blit a baked rock, or return false to let the caller draw it as vectors.
+// One setTransform composes the world matrix with the body's translate+rotate;
+// the second puts the world matrix back, so every pass after this sees exactly
+// the transform it did before (the save/restore pairing rule, met by restoring
+// the matrix we own rather than pushing a state we would have to pop).
+// PRECONDITION: the caller is already in the world matrix. This restores `wt`,
+// not whatever matrix it was handed, and `wt` is only valid once
+// worldTransform has run for the frame.
+function blitRock(game, b) {
+  const bk = rockBucket(b.radius);
+  if (bk < 0) return false;                  // big rock keeps its unique silhouette
+  const need = b.radius * game.cam.zoom * dpr * SPRITE_HEAD;
+  let tier = 0;
+  for (const t of SPRITE_TIERS) if (t >= need) { tier = t; break; }
+  if (!tier) return false;                   // drawn too big: vectors (see the size cap)
+  // WALL clock (stamped once a frame in worldTransform), not game.time: this
+  // guards a canvas-backing lifetime, which keeps ticking while the sim is
+  // frozen behind a menu. The re-publish is triggered by a GAP in use, not by
+  // a timer — a sheet drawn from every frame stays hot and pays nothing, and
+  // one that went quiet (flew in close, or sat behind a menu) is renewed once
+  // on the frame it comes back.
+  const now = wt.now;
+  const r = rockRow(tier, bk, b.color, now);
+  const sh = r.sh;
+  if (now - sh.used > ATLAS_REFRESH) publishSheet(sh, null, now);
+  sh.used = now;
+  const k = wt.k;
+  const cs = Math.cos(b.rot) * k, sn = Math.sin(b.rot) * k;
+  ctx.setTransform(cs, sn, -sn, cs, k * b.x + wt.e, k * b.y + wt.f);
+  const w = 2 * b.radius * r.ext;
+  ctx.drawImage(r.sh.cv, (b.id % ROCK_ARCHS) * r.cell, r.sy, r.cell, r.cell, -w / 2, -w / 2, w, w);
+  ctx.setTransform(k, 0, 0, k, wt.e, wt.f);
+  return true;
+}
+
+// Draw an asteroid's body. Returns true when the crater pits are already on
+// screen (baked into the sprite, or drawn inline here) so drawBody's pit pass
+// can skip it. The carved stone returns false — it gets facet lines, not pits.
+function drawRock(game, b) {
+  if (b.carved) { traceAsteroid(b); ctx.fill(); return false; }
+  if (blitRock(game, b)) return true;
+  traceAsteroid(b);
+  ctx.fill();
+  // Pits clipped to the silhouette. fill() does not consume the path, so the
+  // polygon just filled is reused for the clip — the old code traced the same
+  // 7-16 vertices a second time to get it.
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  // The pit ANGLES must be the ones the sheet baked, or the same rock crossing
+  // the size cap (a tier-up zoom ramp, or chipping down a size class) visibly
+  // re-shuffles its craters while its outline stays put — the silhouette is
+  // seamless across the crossover, which would make the pit hop the only tell.
+  // bakeRow keys them off the archetype, so a bucketed rock does the same here.
+  // Big rock is never baked and keeps its own id, exactly as it always has.
+  // The pit COUNT already agrees: ROCK_ARCHS is a multiple of 3.
+  const seed = rockBucket(b.radius) >= 0 ? b.id % ROCK_ARCHS : b.id;
+  const n = 2 + (b.id % 3);
+  for (let i = 0; i < n; i++) {
+    const a = b.rot + (i * 2.4) + seed;
+    ctx.beginPath();
+    ctx.arc(b.x + Math.cos(a) * b.radius * 0.45, b.y + Math.sin(a) * b.radius * 0.45,
+      b.radius * 0.22, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();   // also puts fillStyle back to b.color for the passes below
+  return true;
 }
 
 // CRYSTAL WORLDS are jagged, not round: the seeded shard polygon
@@ -480,6 +784,7 @@ function nearestStar(game, x, y) {
 }
 
 function drawBody(game, b) {
+  let pitsDone = false;   // set by drawRock — see the pit pass further down
   // Moons announce themselves: a whisper-faint orbit circle around their
   // planet and a bright icy outline — no more confusing them with asteroids.
   // Only while actually riding the rail: a captured or knocked-loose moon
@@ -788,9 +1093,10 @@ function drawBody(game, b) {
   } else if (b.chunk) {
     drawChunkSprite(b);
   } else if (b.type === 'asteroid') {
-    traceAsteroid(b);
-    ctx.fill();
-    if (b.cored) drawCoreGlint(game, b);
+    // drawRock draws the pits too (baked into the sprite, or clipped inline),
+    // so the pit pass further down is told to stand off.
+    pitsDone = drawRock(game, b);
+    if (b.cored) drawCoreGlint(game, b);   // the vein TWINKLES — never bakeable
   } else if (b.ghost) {
     drawGhostSprite(game, b);
   } else if (b.tinker) {
@@ -827,7 +1133,11 @@ function drawBody(game, b) {
       ctx.lineTo(b.x - Math.cos(a) * b.radius, b.y - Math.sin(a) * b.radius);
     }
     ctx.stroke();
-  } else if (b.type === 'asteroid' && !b.visitor && !b.pod && !b.chunk) {
+  } else if (b.type === 'asteroid' && !b.visitor && !b.pod && !b.chunk && !pitsDone) {
+    // Only the asteroid-typed bodies that drew a DIFFERENT sprite reach here —
+    // salvage caches and freed cores, which have always worn a pit overlay
+    // clipped to an asteroid silhouette they never drew. Plain rock is handled
+    // inside drawRock (pitsDone), where the pits are baked or share its path.
     ctx.save();
     traceAsteroid(b);
     ctx.clip();
