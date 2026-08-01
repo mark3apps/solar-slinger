@@ -130,6 +130,22 @@
       <span class="setname">Trajectory prediction</span>
       <button class="toggle" id="setPredict" role="switch" aria-checked="true"><span class="knob"></span></button>
     </div>
+    <!-- RENDER SCALE: the fraction of native device pixels the WORLD canvas is
+         drawn at. The canvas is CSS-stretched to the window, so a lower scale
+         only softens the picture — the HUD, radar and cockpit chrome are DOM/CSS
+         and never change. It's a ceiling: Auto quality may step below it. -->
+    <div class="setrow">
+      <span class="setname">Render scale</span>
+      <div class="seg" id="setScale" role="radiogroup" aria-label="Render scale">
+        <button class="segbtn" type="button" role="radio" aria-checked="false" data-v="0.5">50%</button>
+        <button class="segbtn" type="button" role="radio" aria-checked="false" data-v="0.75">75%</button>
+        <button class="segbtn on" type="button" role="radio" aria-checked="true" data-v="1">100%</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <span class="setname">Auto quality</span>
+      <button class="toggle on" id="setAutoScale" role="switch" aria-checked="true"><span class="knob"></span></button>
+    </div>
     <div class="setrow">
       <span class="setname">FPS counter</span>
       <button class="toggle" id="setFps" role="switch" aria-checked="false"><span class="knob"></span></button>

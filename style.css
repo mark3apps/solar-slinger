@@ -936,6 +936,31 @@ body.preGame #radar { opacity: 0; }
 }
 .toggle.on .knob { left: 28px; background: var(--green); box-shadow: 0 0 12px rgba(120, 255, 180, .9); }
 .toggle:focus-visible { outline: none; border-color: rgba(216, 180, 255, .95); box-shadow: 0 0 12px rgba(150, 80, 255, .45); }
+/* Segmented choice (render scale). Same 150px block as .vol / .seedin so every
+   control in the list shares one right edge, and the SELECTED cell borrows the
+   toggle's lit-green "on" language so a glance reads the whole panel the same
+   way. Real <button>s, so a keyboard walks them like the rest of the shell. */
+.seg {
+  display: flex; width: 150px; flex: none; overflow: hidden;
+  border: 1px solid rgba(176, 112, 255, .5); border-radius: 6px;
+  background: rgba(10, 5, 22, .9);
+  box-shadow: inset 0 0 6px rgba(0, 0, 0, .65);
+}
+.segbtn {
+  flex: 1; padding: 5px 0; cursor: pointer;
+  background: none; border: 0; border-left: 1px solid rgba(176, 112, 255, .28);
+  font-family: var(--font-ui); font-size: 11px; letter-spacing: 1px;
+  color: #9a8ac0;
+  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.segbtn:first-child { border-left: 0; }
+.segbtn:hover { color: #e8ddff; }
+.segbtn.on {
+  color: var(--green); background: rgba(10, 60, 40, .8);
+  box-shadow: inset 0 0 8px rgba(40, 200, 120, .35);
+  text-shadow: 0 0 10px rgba(120, 255, 180, .7);
+}
+.segbtn:focus-visible { outline: none; color: #d8b4ff; box-shadow: inset 0 0 12px rgba(150, 80, 255, .5); }
 /* World-seed field. 150px matches .vol so the right edge of every control in
    the list lines up; monospace because the value is a number you read off and
    type back in. */

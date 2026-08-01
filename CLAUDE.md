@@ -75,7 +75,27 @@ import path (native browser ESM requires them), `config`/`util` are leaves.
   `game.started && !paused && !settingsOpen && !choosingUpgrade`** → always `render(game)` +
   `hud.updateHud(game)`. Rendering continues while frozen; the sim freezes. The frozen world is the
   living backdrop behind every menu overlay.
-- Physics runs on a **fixed substep** via an accumulator: `while (acc >= CFG.DT) { updateTractor; updateOrbit; step(game, CFG.DT); cam follow; acc -= CFG.DT }` with `CFG.DT = 1/120`.
+- Physics runs on a **fixed substep** via an accumulator: `while (acc >= dt && simSteps < CFG.SUBSTEP_MAX) { updateTractor; updateOrbit; step(game, dt); cam follow; acc -= dt }`, where `dt` is the live step `simDt` — `CFG.DT` (1/120) normally, `CFG.DT_COARSE` (1/60) on a machine that can't keep up.
+- **FRAME PACING breaks the fixed-timestep death spiral** (main.js `updatePacing`, thresholds in config.js).
+  The accumulator's substeps-per-frame count RISES as fps falls (60 fps = 2, 15 fps = 6), so a late frame
+  is handed 3x the sim work for being late — measured in a shoal, sim 2.5ms at 1 substep vs 7.1ms at 6
+  against a 1.7ms draw. Two guards: `CFG.SUBSTEP_MAX` (3) caps substeps per frame and **DROPS** the
+  leftover backlog (`acc %= dt`) — carrying it is what compounds; and `simDt` drops to `CFG.DT_COARSE`
+  after `PACE_DWELL` of persistently slow frames, halving the cost instead of dilating time. The two are
+  sized against each other: 3 x 1/60 = 50ms = exactly the `dtReal` clamp, so **nothing is ever dropped on
+  the coarse step**. Enter is on frame time (vsync can only make it look faster); exit is on projected
+  WORK (`2 x simMs + drawMs`) plus a frame-time clause — a 60 Hz display floors `frameMs` at 16.7ms, so a
+  frame-time-only exit stranded it on the coarse step forever. Nothing changes on a machine that keeps up.
+- **`CFG.DT` is the REFERENCE step, and every headless path is PINNED to it** (`pinFineStep` in
+  `window.tick` and mechTest's `stepSim`; `window.speed` too, so fast-forward semantics stay 1x). Only
+  `frame()` may repace — if measured frame time leaked into a harness, `soak`/`mechTest` would integrate
+  differently per machine and neither would be repeatable. `game.perf.dtHz` reports the live step and
+  `game.perf.dropped` totals the sim seconds lost to the cap (console-readable, not on the HUD overlay).
+  A coarser step is a relief valve, not a free win: it doubles how far a body moves between collision
+  tests, and `damageBody`'s per-CALL wear gates (invariant 7) see 2x the damage per call from the
+  continuous dps sources (corona heat, atmosphere burn).
+- **A variable step means `updateFieldLOD` must advance by `simSteps * dt`, never `simSteps * CFG.DT`** —
+  on the coarse step those differ by 2x, and ~7000 dormant field rocks would silently drift off the sim clock.
 - **Gameplay math goes inside the `CFG.DT` loop.** Cosmetic easing with no quantized target
   (shake decay, the zoom ramp) rides `dtReal`. Frame-rate-independent easing idiom: `lerp(a, b, 1 - Math.exp(-k*dt))`.
 - **The camera follow is the exception: it lives INSIDE the `CFG.DT` loop**, not on `dtReal`. Its target
@@ -134,8 +154,8 @@ re-arms it for a fresh run.
   so **adding a control is an HTML edit** — nothing in JS needs to know it exists. The caps are `<button>`s
   so a keyboard walks the same schematic via focus. A gold pip marks ability-gated controls. The readout is
   sized for its LONGEST note, not the current one, or the centered panel bounces as the cursor crosses it.
-- **Settings** (Music/SFX volume sliders, Trajectory prediction, FPS counter, Performance metrics,
-  World seed) persist to
+- **Settings** (Music/SFX volume sliders, Trajectory prediction, Render scale, Auto quality,
+  FPS counter, Performance metrics, World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
   `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
   first world, and loading after it would make every boot world random regardless of the setting.
@@ -180,7 +200,25 @@ re-arms it for a fresh run.
   `dtReal` is clamped to a 20 fps floor and would flatline at 50ms exactly when the overlay matters.
   Timings are EMA-smoothed and the text refreshes at ~5 Hz (per-frame digits strobe too fast to read);
   both toggles off costs one `classList` check. Amber, like `#speedBadge` — this HUD's helper/debug
-  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments.
+  colour, kept clear of the semantic hull-green / shield-blue / lives-pink instruments. The metrics
+  block also reports the EFFECTIVE **render scale** + backing-store size — auto quality (below) is
+  deliberately silent in play, so this line is the only place a drop below the chosen ceiling shows.
+- **RENDER SCALE is the one quality knob** (`game.renderScale`, Settings: 50/75/100% of native dpr).
+  `render.js`'s `resize()` sizes the world canvas at `native dpr x scale`; `#game` is CSS-stretched to
+  the window, so a lower scale only SOFTENS the picture — `vw`/`vh` stay CSS pixels, so `cam.zoom`,
+  `viewR`, `mouseWorld` and every `/zoom` UI stroke are untouched and the scale can never reach the
+  sim. **The RADAR deliberately stays at native dpr** (its own `rdpr`): 200x200 CSS px is under 2% of
+  the world canvas's pixels, and its 1px dots would be the first thing to turn to mush — downscale the
+  picture, not the instruments (the minimap dot cache sizes off `rdpr` for the same reason, so a scale
+  change can't leave it baked at a resolution its transform no longer matches). The setting is a
+  **CEILING**: `main.updateAutoScale` may step BELOW it (never above) when `perf.frameMs` blows the
+  budget, one notch at a time on a 5s dwell — a resolution change is SEEN, and a scale that hunts is
+  worse than one that is simply too low. The climb can't read `frameMs` alone (rAF is vsync-capped, so
+  it never drops under ~16.7ms however much headroom exists), so it PROJECTS the next notch's cost
+  from `drawMs`, treating all of it as fill: an overestimate, which is the safe direction. Skipped
+  while `timeScale !== 1` (fast-forward burns a sim budget, not a pixel one) and for the first
+  seconds after boot. Defeatable via **Auto quality**, because a 100% setting silently running at 50%
+  reads as a broken setting rather than as a ceiling.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 

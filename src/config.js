@@ -1,7 +1,95 @@
 // All gameplay tuning lives here.
 export const CFG = {
   G: 8,                    // gravitational constant (gameplay-tuned)
+  // FIXED PHYSICS SUBSTEP — the FINE step, and the reference every invariant in
+  // CLAUDE.md was tuned at. Everything headless (window.tick / soak / mechTest)
+  // is PINNED here so the harnesses stay bit-repeatable; see FRAME PACING in
+  // main.js for the live-frame rule that can drop the loop to DT_COARSE.
   DT: 1 / 120,             // physics substep
+  // RELIEF STEP. The accumulator's substeps-per-frame count RISES as the frame
+  // rate falls (60 fps = 2, 15 fps = 6), so a machine that is already late pays
+  // 3x the sim cost for being late — slow frame ⇒ more substeps ⇒ slower frame,
+  // a genuine positive feedback loop (measured in a dense shoal: sim 2.5ms at
+  // 1 substep, 7.1ms at 6, against a 1.7ms draw — the sim overtook the draw 4x
+  // over). Halving the substep rate halves that cost directly. Verified against
+  // the 20-sim-minute idle soak (seed 20260721): 21/21 planets, 48/48 moons,
+  // zero loose planets, zero NaN — the same fingerprint as 1/120, because the
+  // celestials ride precomputed rails and never integrate at all. It is NOT the
+  // default anyway: a coarser step doubles how far a fast body moves between
+  // collision tests, so it is the deal you strike only when the alternative is
+  // a 15 fps death spiral.
+  DT_COARSE: 1 / 60,
+  // ...and it is DISARMED until the collision narrow phase can survive it.
+  // MEASURED, 220 randomized trials per cell (impact parameter AND sample phase
+  // both randomized — a fixed start distance measures one lucky alignment, not
+  // the expected rate), fraction of impacts that register against the ship:
+  //
+  //   closing   400    800   1300   1800   2500
+  //   1/120     99%    97%    92%    86%    77%
+  //   1/60      79%    90%    70%    52%    38%
+  //
+  // At ALIEN_THROW (430) that is 97% -> 77%: about one alien throw in five
+  // passes straight THROUGH the ship. collideShipBody is a pure overlap test
+  // (`if (d2 > rr*rr) return`) with no swept component, so doubling the step
+  // doubles how far a projectile jumps between the only samples that can ever
+  // detect it. That is a rule change a player feels mid-fight, not a rounding
+  // error — and the baseline row shows 1/120 is already leaving fast grazes on
+  // the table, so this compounds an existing weakness rather than finding a new
+  // one.
+  //
+  // THE POINT: disarming costs NO frame rate. SUBSTEP_MAX is what halves the
+  // sim cost (3 substeps instead of 6) and it changes no physics at all, since
+  // every substep is still 1/120. The coarse step never bought frames — it
+  // bought back the wall-clock SPEED the cap gives up (3 x 1/60 = 50ms of sim
+  // per frame vs 3 x 1/120 = 25ms), i.e. it exists to stop the game running in
+  // slow motion below 40 fps. So the trade is slow-motion vs. missed hits, and
+  // missed hits lose.
+  //
+  // TO RE-ARM: add a swept segment-vs-disc pre-test to collideShipBody and
+  // collideAlienBody (ship + aliens only — a handful of entities, NOT the
+  // ~8000-body sweep, where tunnelling is off-view and cosmetic), re-run the
+  // table above, then flip this to true. It should also lift the 1/120 row.
+  PACE_COARSE_ENABLED: false,
+  // HARD CAP on substeps per frame — the guard that actually breaks the spiral,
+  // independent of which step is live. Past the cap the backlog is DROPPED
+  // (honest time dilation) instead of compounding into the next frame. 3 is
+  // exactly the fine step's budget at 40 fps (3 x 1/120 = 25ms) and the coarse
+  // step's at 20 fps (3 x 1/60 = 50ms) — and 50ms is precisely where frame()
+  // clamps dtReal, so on the coarse step nothing is ever dropped at all.
+  SUBSTEP_MAX: 3,
+  // FRAME PACING thresholds (main.js updatePacing), in milliseconds.
+  // ENTER the coarse step on smoothed FRAME TIME: past 25ms (40 fps) a frame
+  // owes more than the fine step's own cap can cover, so it is already being
+  // time-dilated and the coarse step is strictly better. Frame time is the
+  // right signal here because vsync idling can only make it look FASTER, never
+  // slower — nothing but real slowness pushes it past 25ms.
+  PACE_COARSE_MS: 25,
+  // LEAVE it on projected WORK — sim + draw, never frame time. A 60 Hz display
+  // floors frameMs at 16.7ms however fast the machine is, so a frame-time exit
+  // test would strand every 60 Hz machine on the coarse step forever after one
+  // slow patch. Work is refresh-independent. The projection doubles simMs
+  // because halving the step doubles the substeps (conservative: the AI/LOD/
+  // glow part of simMs doesn't double, so it errs toward staying coarse), and
+  // 8ms of projected work leaves the fine step comfortably inside a 60 Hz
+  // frame. Projecting rather than measuring is what stops the switch
+  // oscillating — a machine that looks fast BECAUSE it is on the coarse step
+  // would otherwise flip back, get slow, and flip again forever.
+  PACE_FINE_WORK_MS: 8,
+  // ...and only if the frame is not slow for reasons that have nothing to do
+  // with us. Work alone said "the fine step fits" on a 28ms frame whose cost
+  // was some OTHER process — true, but beside the point: at 28ms the fine cap
+  // is already dilating time, so the coarse step is still the better state.
+  // Measured before this clause existed: 4 flips in 11 seconds at a 28ms
+  // frame, the switch hunting on a 3s period. 20ms leaves 5ms of hysteresis
+  // under PACE_COARSE_MS, and still clears a 60 Hz vsync frame (16.7ms).
+  // A 30 Hz display (33ms) never clears it and stays coarse forever — that is
+  // CORRECT, not the 60 Hz bug repeating one octave down: at 33ms the fine
+  // step owes 4 substeps against a cap of 3, so it would be dilating time even
+  // on a machine with headroom to spare. Don't "fix" it by raising this past
+  // PACE_COARSE_MS; the two numbers describe the same 25ms cap budget from
+  // either side, and crossing them makes the switch hunt.
+  PACE_FINE_MS: 20,
+  PACE_DWELL: 1.5,         // seconds the disagreement must hold before switching
   // Soft boundary radius. MUST exceed the outermost orbit reach (orbit +
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
