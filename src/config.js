@@ -99,6 +99,34 @@ export const CFG = {
   // the outermost lane), the dark star's 39500 lane, and the Farshoal dense
   // field riding the frost fringe at 44300.
   WORLD_R: 46000,
+  // WORLD SCALE — planets and moons are built at these multiples of the radii
+  // authored in world.js (the layout table, and spawnMoon's own 18-34 range).
+  // SIZE ONLY: THE MASSES ARE UNTOUCHED, deliberately. Radius is inert to every
+  // physics invariant — rails are circular and mass-driven, gravity is GM/r²,
+  // hp is massToHp — while mass is load-bearing for all of them, so scaling it
+  // to match is not a tuning question but a demolition: holding density at 3x
+  // radius needs 27x mass, which puts the amber giant at 1.75e7, HEAVIER THAN
+  // THE SUN (1.42e7). The worlds therefore get big, not heavy, and two things
+  // follow that you can feel. Surface gravity falls as 1/mul², and the LONG
+  // ARMS (SHIP_WELL_START, below) are measured in body radii so a giant's well
+  // reaches out proportionally rather than absolutely: a gas giant is now
+  // something you fly ALONG, not something that snatches you. Raise
+  // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
+  PLANET_R_MUL: 3,
+  MOON_R_MUL: 2,
+  // ...but a lane only holds so much world, which is why the multiplier above
+  // is a CEILING ("up to 3x") rather than a flat scale. Two planets on
+  // adjacent rails run at different angular speeds and so ALWAYS reach
+  // conjunction eventually: at a flat 3x the amber giant (520 -> 1560) and the
+  // shroud world inside it (205 -> 615) overlapped by 175 units on every pass,
+  // and the violet giant met the desert world exactly. generateWorld shrinks
+  // any pair that would not leave this much clear space between their
+  // surfaces, splitting the shortfall in PROPORTION to the two desired radii
+  // so the giant is still the giant. Widening the LANES instead was the other
+  // way out and it is the expensive one — lane radii set sky speed, corona
+  // heat margins and the graveyard clearance (see world.js), so moving them
+  // re-tunes the whole game to make one planet bigger.
+  PLANET_LANE_GAP: 400,
   OORT_WARN: 1400,         // warning distance before the cloud edge
   OORT_DPS: 6,             // hull damage/s at the edge, scaling with depth
   ATTRACT_MIN: 2000,       // bodies at/above this mass exert gravity

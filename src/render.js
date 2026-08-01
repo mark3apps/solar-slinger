@@ -783,6 +783,50 @@ function nearestStar(game, x, y) {
   return best;
 }
 
+// A ringed giant's band is a TILTED DISC the world sits inside, so it is drawn
+// in TWO PASSES around the planet: the far half before the disc, the near half
+// after it. One full-ellipse pass ahead of the planet put the WHOLE ring
+// behind — the world occluded the near arc on every frame, which reads as a
+// decal painted on the backdrop rather than a body wearing a ring.
+//
+// The split is taken in the ellipse's OWN parameter space, not screen space, so
+// it follows the band's slow tilt (b.rot * 0.15) for free: the pre-rotation
+// offset is (rx·cos t, ry·sin t), and canvas y grows downward — toward the
+// viewer — so sin t > 0, i.e. t in [0, π], is the near arc. Defining it this
+// way also means the near half rotates WITH the ring instead of snapping over
+// to the other side when the tilt sweeps past an axis.
+//
+// The two arcs share their endpoints at the ellipse's extreme x, well outside
+// the planet's limb, and are stroked identically, so they meet with no seam.
+// They must not overlap: at globalAlpha 0.4 any double-stroked span would
+// blend to 0.64 and print a bright pip at each tip.
+function drawRing(game, b, near) {
+  // ringDecay (shepherd stolen/smashed): the ring blurs outward and fades —
+  // wider, dimmer strokes read as the lanes scattering
+  const decay = b.ringDecay || 0;
+  const a0 = near ? 0 : Math.PI;
+  const a1 = near ? Math.PI : TAU;
+  const tilt = b.rot * 0.15;
+  ctx.globalAlpha = 0.4 * (1 - decay * 0.8);
+  ctx.strokeStyle = b.color;
+  if (b.ringGap) {
+    // Shepherded ring: two crisp bands with a swept gap between them
+    ctx.lineWidth = b.radius * 0.13 * (1 + decay * 2.2);
+    ctx.beginPath();
+    ctx.ellipse(b.x, b.y, b.radius * 1.72, b.radius * 0.53, tilt, a0, a1);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(b.x, b.y, b.radius * 2.14, b.radius * 0.66, tilt, a0, a1);
+    ctx.stroke();
+  } else {
+    ctx.lineWidth = b.radius * 0.34 * (1 + decay * 1.4);
+    ctx.beginPath();
+    ctx.ellipse(b.x, b.y, b.radius * 2.0, b.radius * 0.62, tilt, a0, a1);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawBody(game, b) {
   let pitsDone = false;   // set by drawRock — see the pit pass further down
   // Moons announce themselves: a whisper-faint orbit circle around their
@@ -910,30 +954,8 @@ function drawBody(game, b) {
     return;
   }
 
-  if (b.ring) {
-    // ringDecay (shepherd stolen/smashed): the ring blurs outward and fades —
-    // wider, dimmer strokes read as the lanes scattering
-    const decay = b.ringDecay || 0;
-    ctx.globalAlpha = 0.4 * (1 - decay * 0.8);
-    ctx.strokeStyle = b.color;
-    if (b.ringGap) {
-      // Shepherded ring: two crisp bands with a swept gap between them
-      const lw = b.radius * 0.13 * (1 + decay * 2.2);
-      ctx.lineWidth = lw;
-      ctx.beginPath();
-      ctx.ellipse(b.x, b.y, b.radius * 1.72, b.radius * 0.53, b.rot * 0.15, 0, TAU);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.ellipse(b.x, b.y, b.radius * 2.14, b.radius * 0.66, b.rot * 0.15, 0, TAU);
-      ctx.stroke();
-    } else {
-      ctx.lineWidth = b.radius * 0.34 * (1 + decay * 1.4);
-      ctx.beginPath();
-      ctx.ellipse(b.x, b.y, b.radius * 2.0, b.radius * 0.62, b.rot * 0.15, 0, TAU);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  }
+  if (b.ring) drawRing(game, b, false);   // FAR half — the near half goes on
+                                          // after the disc, see below
 
   // Lava worlds glow — visible even when zoomed way out
   if (b.ptype === 'lava') {
@@ -1249,6 +1271,11 @@ function drawBody(game, b) {
   if (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length))) {
     drawBodyDamage(game, b);
   }
+
+  // NEAR half of the ring — the arc that passes in FRONT of the world, so it
+  // goes over the surface, the terminator, the eclipse and the damage, and
+  // only the helper-UI rings below outrank it.
+  if (b.ring) drawRing(game, b, true);
 
   // Held / orbiting highlights
   if (b.heldBy === 'player') {
