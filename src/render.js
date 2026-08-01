@@ -628,19 +628,34 @@ function bakeRow(c, sh, row, bk, color) {
   }
 }
 
-// Publish a new copy of the sheet: a BRAND NEW canvas takes a copy of the
-// outgoing one, `bake` (if any) adds to it, and the sheet swaps. The live
-// canvas is therefore only ever WRITTEN while it is not yet live, and it is
-// always young. The canvas really must be new — recycling a spare that was
-// live a moment ago carries the rot straight back (measured: ping-ponging two
-// canvases left the frame at 812ms, a fresh one at 8ms), so whatever Chromium
-// drops here belongs to the canvas OBJECT, not to its pixels.
-function publishSheet(sh, bake, now) {
+// Publish a new copy of the sheet onto a BRAND NEW canvas, which then swaps in.
+// The live canvas is therefore only ever WRITTEN while it is not yet live, and
+// it is always young. The canvas really must be new — recycling a spare that
+// was live a moment ago carries the rot straight back (measured: ping-ponging
+// two canvases left the frame at 812ms, a fresh one at 8ms), so whatever
+// Chromium drops here belongs to the canvas OBJECT, not to its pixels.
+//
+// IT REBAKES FROM THE RECIPES; IT MUST NEVER `drawImage` THE OUTGOING CANVAS.
+// The old canvas is the one thing this function cannot trust: a republish is
+// triggered BY that canvas having gone rotten, and a rotten canvas can draw as
+// BLANK rather than merely slow. Copying made the sheet's pixels their own only
+// backing store, so every republish was a link in a lossy chain — new <- old <-
+// older — and ONE bad link silently emptied every row. Nothing could ever
+// recover: atlasRows still held valid-looking coordinates, so blitRock went on
+// blitting transparent pixels and the rocks simply stopped being drawn. That is
+// the "asteroids lose their sprites after you die in a field" bug — respawn
+// parks you away from the pocket, its sheets sit idle long enough to rot, and
+// the copy on your way back read a dead source.
+//
+// Rebaking costs a row loop instead of one blit, but only on a republish, which
+// by construction only happens after a >= ATLAS_REFRESH gap in use. Correctness
+// here is worth far more than the microseconds: the failure mode was invisible,
+// permanent, and looked like the renderer had simply given up.
+function publishSheet(sh, now) {
   const cv = document.createElement('canvas');
   cv.width = sh.w; cv.height = sh.h;
   const c = cv.getContext('2d');
-  if (sh.cv) c.drawImage(sh.cv, 0, 0);
-  if (bake) bake(c);
+  for (const r of sh.rows) bakeRow(c, sh, r.row, r.bk, r.color);
   sh.cv = cv; sh.used = now;
 }
 
@@ -661,12 +676,18 @@ function rockRow(tier, bk, color, now) {
     for (const s of atlasSheets) bytes += s.w * s.h * 4;
     if (bytes > ATLAS_BUDGET) { atlasSheets = []; openSheet = new Map(); atlasRows = new Map(); }
     const cell = Math.round(2 * tier * SPRITE_EXT);
-    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0 };
+    // `rows` is the sheet's RECIPE LIST — what each baked row actually is, not
+    // just where it sits. It is what lets publishSheet rebuild the canvas from
+    // scratch instead of copying a source it cannot trust (see publishSheet).
+    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0, rows: [] };
     atlasSheets.push(sh);
     openSheet.set(tier, sh);
   }
+  // Record the recipe BEFORE publishing: the republish bakes every row in the
+  // list, so the new one has to already be in it.
   const row = sh.next++;
-  publishSheet(sh, (c) => bakeRow(c, sh, row, bk, color), now);
+  sh.rows.push({ row, bk, color });
+  publishSheet(sh, now);
   // ext: the cell's half-width measured in body radii. Rounding `cell` to a
   // whole pixel moves it off SPRITE_EXT, and blitting at the nominal extent
   // would scale every rock by up to half a texel.
@@ -708,7 +729,7 @@ function blitRock(game, b) {
   const now = wt.now;
   const r = rockRow(tier, bk, b.color, now);
   const sh = r.sh;
-  if (now - sh.used > ATLAS_REFRESH) publishSheet(sh, null, now);
+  if (now - sh.used > ATLAS_REFRESH) publishSheet(sh, now);
   sh.used = now;
   const k = wt.k;
   const cs = Math.cos(b.rot) * k, sn = Math.sin(b.rot) * k;
