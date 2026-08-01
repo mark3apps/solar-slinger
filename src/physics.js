@@ -1,8 +1,12 @@
-import { CFG, PROG, addXp, fieldXp, FIELD_LOBE_MAX } from './config.js';
-import { makeScrap, scrapValue, railBody, derail, keplerStep } from './entities.js';
+import { CFG, PROG, addXp, fieldXp, worldDebris, crustMass, FIELD_LOBE_MAX } from './config.js';
+import {
+  makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
+} from './entities.js';
 import { spawnAsteroid, markFieldRock } from './world.js';
 import { computeFlingVelocity } from './tractor.js';
-import { TAU, clamp, angDiff, crystalShards, crystalRadiusAt, CRYSTAL_REACH } from './util.js';
+import {
+  TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
+} from './util.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as sfx from './sfx.js';
 
@@ -71,11 +75,21 @@ function orbitalFlow(game, x, y) {
 //   'alien'/'ram'/null — no player payout
 // earnsScrap gates every scrap drop; only 'player-throw' grows the fling.
 function earnsScrap(credit) { return credit === 'player' || credit === 'player-throw'; }
-// May `src` pass its billiards credit on to `dst`? Only the shoal is capped —
-// belt rock is sparse and self-limiting, so trick shots out in the open are
+// May `src` pass its billiards credit on to `dst`? DENSE ROCK is capped; belt
+// rock is sparse and self-limiting, so trick shots out in the open are
 // unchanged. See CFG.FIELD_CHAIN_MAX for the exploit this closes.
+//
+// A WORLD'S RUBBLE HALO COUNTS AS DENSE ROCK. The cap was written for the
+// shoals, where touching rocks let one throw launder itself into the whole
+// pocket at full lethality and full payout; a planet ringed by two dozen crust
+// slabs and its debris belt is exactly as packed, and it was left uncapped
+// because it did not exist yet. Throwing one slab back through a halo chained
+// the mark from piece to piece, and since every piece over CHUNK_SPLIT_R
+// SHATTERS INTO MORE PIECES, each link both paid throw-kill XP and manufactured
+// more rock to chain into — a fresh run reached tier 5 in seconds and the frame
+// rate went with it. Same depth limit, same reason.
 function chainOk(src, dst) {
-  return !dst.fieldRock || (src.chainN || 0) + 1 <= CFG.FIELD_CHAIN_MAX;
+  return !(dst.fieldRock || dst.chunk) || (src.chainN || 0) + 1 <= CFG.FIELD_CHAIN_MAX;
 }
 function collisionCredit(target, other) {
   if (other.thrownBy === 'player' && other.thrownTimer > 0) return 'player-throw';
@@ -96,7 +110,7 @@ function collisionCredit(target, other) {
 // scrap but does NOT re-enter here), so the chain is bounded, never infinite.
 function brawlerThrowKill(game, body) {
   const st = game.st;
-  if (st.cluster > 0 && game.bodies.length < 460) {   // body-count cap like the spall path
+  if (st.cluster > 0 && debrisRoom(game) > 0) {   // the shared debris budget
     // Shard COUNT is integer, so six ranks can't each add one without doubling
     // the old ceiling: it climbs every other rank instead (2/2/3/3/4/4), and
     // the ranks in between buy the speed spread below. Ceiling unchanged at 4.
@@ -227,6 +241,421 @@ function wallSplat(game, body) {
   if (!game.tut.wallsplat) game.wallSplatWarn = true;   // main.js announces (first time)
 }
 
+// ---------------------------------------------------------------------------
+// THE DEBRIS BUDGET. Every fragment system in the game asks this before it
+// spawns anything: chunk spray, spall, a dying world's cloud, Cluster Rounds.
+// They all used to compare `game.bodies.length` against ~450, a ceiling
+// written when a whole world held ~380 bodies. The dense fields put ~7,900
+// rocks into that same array, so the comparison has been false on frame one
+// ever since the shoals landed and NONE of those systems have fired in a real
+// game — a planet took damage and grew decals, nothing more. Counting
+// NON-FIELD bodies (the reg.nonField registry) is what keeps shoal rock from
+// starving the rest of the sim; the pockets keep their own separate ceilings.
+// One frame stale for bodies born this frame, like every registry read — the
+// per-event caps at each call site are what bound a single burst.
+export function debrisRoom(game) {
+  const reg = game.reg;
+  return Math.max(0, CFG.DEBRIS_BUDGET - (reg ? reg.nonField.length : game.bodies.length));
+}
+
+// Knock one real piece off a world at bearing `ang`. `sev` (0..1) is how hard
+// the hit bit — it drives the piece's SIZE, and the caller sizes the crater it
+// leaves from the radius this returns, so the bite in the rim always matches
+// the slab now floating beside it.
+//
+// SIZE IS DECOUPLED FROM MASS here, exactly like the WORLD SCALE law that made
+// planets 3x their authored radius at unchanged mass (see CFG.CRUST_*). Mass
+// stays under CHUNK_MAX_MASS so a slab still can't wake a rail lane, but the
+// drawn radius is a fraction of the HOST's — a piece of a planet has to look
+// like a piece of that planet, and the mass-derived radius drew a 3200-mass
+// chunk at 10 units beside a 705-unit world.
+function calveCrust(game, host, ang, sev, credit) {
+  const roll = 0.45 + Math.random() * 0.55;
+  const R = host.radius * (CFG.CRUST_R_MIN + (CFG.CRUST_R_MAX - CFG.CRUST_R_MIN) * sev * roll);
+  // Sized FIRST, because whether the halo has room for it depends on how big
+  // it is: a slab always displaces a crumb (see crustRoom).
+  if (!crustRoom(game, host, R)) return null;
+  // Mass follows the DRAWN size through the one curve (config.crustMass), so
+  // every mass gate in the game — the beam's tier cap above all — agrees with
+  // what the player is looking at. A slab needs a real ship to lift.
+  const m = crustMass(R);
+  // Born IN THE MOUTH OF THE CRATER IT LEFT — centred exactly one slab-radius
+  // off the nominal surface, so its inner face sits on the rim while the notch
+  // render just cut is a bowl of the same width behind it. The piece therefore
+  // appears to lift straight out of the hole it made, which is the whole read:
+  // the debris comes off the planet, it does not appear beside it.
+  // Touching, never overlapping — a piece born inside its parent takes
+  // collision damage and sheds again (invariant 7's feedback loop).
+  const d = surfReach(host) + R;
+  const x = host.x + Math.cos(ang) * d, y = host.y + Math.sin(ang) * d;
+  // A pop, not a launch: the old spray fired chunks off at 80-450 and they
+  // were a screen away before you could look at them. This barely clears the
+  // crater, so the piece hangs where it broke off.
+  const pop = 18 + Math.random() * 34 + 44 * sev;
+  const w = chunkHaloW(host);
+  const f = spawnAsteroid(game.bodies, x, y,
+    host.vx + Math.cos(ang) * pop - Math.sin(ang) * w * d,
+    host.vy + Math.sin(ang) * pop + Math.cos(ang) * w * d, m);
+  makeChunk(f, R, worldDebris(host.ptype, host.color, Math.random()));
+  f.crust = host;            // bound to its world (updateCrust)
+  f.crustFree = CFG.CRUST_FREE;
+  f.crustT = game.time;      // age, for the halo's off-view turnover (crustRoom)
+  // GRAVITY BILLIARDS: pieces your throw knocked loose carry your credit for a
+  // beat — same rule as the knocked-rock propagation in collideBodies, and for
+  // the same reason it is limited to a DIRECT throw (shard/Demolition damage
+  // stays credit-neutral so those chains stay bounded).
+  if (credit === 'player-throw') { f.thrownBy = 'player'; f.thrownTimer = 1.4; }
+  return f;
+}
+
+// A FULL halo must not stop the crumble. A planet takes thousands of rock hits
+// to kill, so a hard count cap means the pieces stop coming after the first
+// couple of dozen and every hit after that is a decal again — the exact
+// complaint this whole layer exists to answer. Worse, a plain cap fills with
+// whatever landed FIRST: forty rock chips fill it with crumbs, and then the
+// thrown MOON — the moment the whole feature exists for — has nowhere to put
+// the slab it tore off, so the biggest hit in the game shows the least.
+//
+// So: A WORLD'S HALO HOLDS THE BIGGEST PIECES IT HAS SHED. A newcomer that
+// outsizes the smallest piece up there grinds it to dust and takes its slot,
+// which is what a rubble ring does to itself anyway. A newcomer smaller than
+// everything already there only gets in if something can be retired OFF-SCREEN,
+// so a long bombardment keeps turning the halo over without anything visibly
+// winking out under the player's nose.
+// Reads the frame registry, so a piece calved this frame is not counted until
+// the next one — the cap is a look, not an invariant.
+function crustRoom(game, host, newR) {
+  const list = game.reg && game.reg.crust;
+  if (!list) return true;
+  let n = 0, small = null, oldFar = null;
+  const s = game.ship;
+  const far = (game.viewR || 1200) * 1.2;
+  for (const b of list) {
+    if (b.crust !== host || !b.alive) continue;
+    n++;
+    if (!small || b.radius < small.radius) small = b;
+    if (!s.alive || Math.hypot(b.x - s.x, b.y - s.y) > far) {
+      if (!oldFar || b.crustT < oldFar.crustT) oldFar = b;
+    }
+  }
+  if (n < CFG.CRUST_PER_HOST) return true;
+  const gone = (small && newR > small.radius) ? small : oldFar;
+  if (!gone) return false;
+  gone.alive = false;
+  gone.crust = null;
+  // Ground to dust, not deleted — a piece that simply blinked out would read as
+  // a bug even in the frame something bigger erupts to replace it.
+  addParticles(game, gone.x, gone.y, gone.vx, gone.vy, 7, gone.color, 60, 0.7, 3);
+  return true;
+}
+
+// THE CRUMBLE, per substep. A freshly calved piece is FREE for CRUST_FREE
+// seconds: it tumbles out of the crater under real gravity and bumps its
+// neighbours, which is the part the player actually watches. Then a band
+// assist eases it onto its host's rigid halo — radial velocity damped out,
+// tangential speed eased toward the halo rate, radius eased into the band —
+// and once it is riding that halo to within a hair, it RAILS and is permanent.
+//
+// The general rail scan may never re-rail inside the player's view ("the rock
+// I flung just stopped mid-flight"); this one may, and the difference is real.
+// That law exists because the generic snap DISCARDS whatever radial velocity a
+// flung rock still carries. This snap only fires once the assist has already
+// brought the piece to within a few percent of the state it is snapping to, so
+// there is nothing left to discard — and a halo the player is standing in is
+// exactly where the snap would be seen.
+function updateCrust(game, dt) {
+  const list = game.reg && game.reg.crust;
+  if (!list || !list.length) return;
+  const k = 1 - Math.exp(-CFG.CRUST_SETTLE * dt);
+  for (const b of list) {
+    const h = b.crust;
+    if (!b.alive || !h) continue;
+    // Same near-ship gate as the cratered collider: the settle is a thing you
+    // WATCH, and a halo forms seconds after a hit the player was present for,
+    // so by the time they leave its pieces are already railed and cost nothing.
+    // A piece still loose around a world nobody is at simply waits.
+    if (!h.nearShip) continue;
+    // The world it came off is gone: its rubble is ordinary debris now, free
+    // to fly (the rails pass has already derailed it off the dead parent).
+    if (!h.alive) { b.crust = null; continue; }
+    // Anything holding a piece takes it out of the halo for good — it is
+    // somebody's ammunition now, and a slab that crept back toward its planet
+    // after being let go would be the assist making decisions for the player.
+    // (tractor.tryGrab clears the binding at the grab itself; this covers the
+    // alien carriers, which have no equivalent choke point.) The test is the
+    // GRAB and never the throw: a fresh calve carries `thrownBy = 'player'`
+    // for a beat as gravity-billiards credit without the player ever having
+    // touched it, and unbinding on that emptied the halo as it formed.
+    if (b.heldBy) { b.crust = null; continue; }
+    // NEVER touch a piece in flight — "throws never steer" is a design law,
+    // and an assist that curved a thrown slab back toward its planet would
+    // break it outright. It re-settles from scratch once it lands.
+    if (b.thrownTimer > 0) { b.crustFree = CFG.CRUST_FREE; continue; }
+    if (b.crustFree > 0) { b.crustFree -= dt; continue; }
+    const dx = b.x - h.x, dy = b.y - h.y;
+    const r = Math.hypot(dx, dy) || 1;
+    const lo = surfReach(h) * CFG.CRUST_BAND_LO + b.radius;
+    const hi = surfReach(h) * CFG.CRUST_BAND_HI;
+    // Knocked clean off the world: it escaped, and it stays escaped.
+    if (r > hi * 1.8) { b.crust = null; continue; }
+    if (b.onRails) continue;          // already riding the halo
+    const nx = dx / r, ny = dy / r;
+    const w = chunkHaloW(h);
+    const tr = clamp(r, lo, hi);
+    const want = w * tr;
+    // Ease onto the halo's own velocity at the nearest band radius...
+    b.vx += (h.vx - ny * want - b.vx) * k;
+    b.vy += (h.vy + nx * want - b.vy) * k;
+    // ...and ease the radius itself in, or a piece that came out of the crater
+    // sinking or climbing settles into a circle in the wrong place.
+    if (r < lo || r > hi) { const pull = (tr - r) * k; b.x += nx * pull; b.y += ny * pull; }
+    const rvx = b.vx - h.vx, rvy = b.vy - h.vy;
+    const vT = (dx * rvy - dy * rvx) / r;
+    const vR = (dx * rvx + dy * rvy) / r;
+    const tol = Math.abs(w * r) * 0.05 + 0.5;
+    if (r >= lo && r <= hi && Math.abs(vR) < tol && Math.abs(vT - w * r) < tol) {
+      b.vx = h.vx - ny * w * r; b.vy = h.vy + nx * w * r;
+      railBody(b, h);
+      b.rail.w = w;   // RIGID: one rate for the whole shell, never a per-radius one
+    }
+  }
+}
+
+// THE ERUPTION. What goes into a gas giant comes back out. A body that finishes
+// its sink has reached depth, and the giant answers with a column blasted back
+// up the throat it made — atmosphere, condensate, and pieces of whatever went
+// in. Being swallowed silently was the right physics and the wrong game: the
+// hit is the loudest thing the player can do to one of these, and it deserves
+// to be SEEN coming back out.
+//
+// Scaled by the impactor, so a pebble puffs and a moon fountains. The ejecta
+// come out at a spread of speeds on purpose — surface escape velocity here is
+// only ~80, so the slow half arcs up and rains back in (and is quietly eaten,
+// no second eruption) while the fast half clears the world entirely and becomes
+// ammunition. `gasEjecta` is what stops the fountain feeding itself forever.
+function gasErupt(game, giant, ang, scale) {
+  if (!giant || !giant.alive) return;
+  const R = giant.radius;
+  const n = Math.min(Math.round(3 + scale * 12), debrisRoom(game));
+  // How much of this column the halo can actually keep. A failing giant vents
+  // every few seconds forever, and binding every piece would let ONE dying
+  // world fill the entire debris budget with its own ejecta and starve every
+  // other system of fragments. Past the cap the column still flies — the
+  // spectacle is the point — but the surplus stays ordinary loose debris and
+  // goes home on the leash instead of joining the ring.
+  const list = game.reg && game.reg.crust;
+  let keep = CFG.CRUST_PER_HOST;
+  if (list) for (const q of list) if (q.crust === giant && q.alive) keep--;
+  for (let i = 0; i < n; i++) {
+    const th = ang + (Math.random() - 0.5) * 1.15;
+    // LAUNCHED TO ORBIT, NOT AWAY. Surface escape velocity here is only ~80, so
+    // the first cut's 90-700 threw everything clear of the world in a second —
+    // a firework, and the ejecta were gone before you could reach them. This
+    // band straddles escape: most of it arcs up and is captured, a little of it
+    // gets out. What is captured then SETTLES INTO THE GIANT'S HALO through the
+    // ordinary crust assist, so a gas giant you keep hitting slowly wears a ring
+    // built out of what you fed it and what it threw back.
+    const sp = 52 + Math.random() * 78 + 34 * scale;
+    const cr = R * (0.012 + 0.03 * Math.random() * scale);
+    const f = spawnAsteroid(game.bodies,
+      giant.x + Math.cos(th) * (R + cr + 10), giant.y + Math.sin(th) * (R + cr + 10),
+      giant.vx + Math.cos(th) * sp, giant.vy + Math.sin(th) * sp, crustMass(cr));
+    makeChunk(f, cr, worldDebris('gas', giant.color, Math.random()));
+    f.gasEjecta = true;              // rains back in quietly — never erupts again
+    f.inertT = CFG.CHUNK_INERT;      // clears the column without shattering its siblings
+    if (keep > 0) {                  // ...and what the halo can hold settles into it
+      keep--;
+      f.crust = giant;
+      f.crustFree = CFG.CRUST_FREE;
+      f.crustT = game.time;
+    }
+  }
+  // The column itself: cloud thrown straight back up the entry bearing.
+  addParticles(game, giant.x + Math.cos(ang) * R, giant.y + Math.sin(ang) * R,
+    giant.vx + Math.cos(ang) * 160, giant.vy + Math.sin(ang) * 160,
+    24 + Math.round(scale * 40), giant.color, 260, 1.9, 6);
+  addParticles(game, giant.x + Math.cos(ang) * R, giant.y + Math.sin(ang) * R,
+    giant.vx + Math.cos(ang) * 110, giant.vy + Math.sin(ang) * 110,
+    10 + Math.round(scale * 18), '#ffe6bd', 200, 1.3, 4);
+  // ...and the throat blows open again as it vents (render.drawGasWound).
+  const hits = (giant.gasHits ||= []);
+  hits.push({ a: ang - giant.rot, t: game.time, s: scale });
+  if (hits.length > 7) hits.shift();
+  addShake(game, Math.min(9, 2 + scale * 8));
+  sfx.sfxBoom(1 + scale * 1.8, sfx.distVol(game, giant.x, giant.y));
+}
+
+// INSTABILITY GEYSERS. A gas giant that has been hurt badly enough stops
+// needing the player's help: past CFG.GAS_VENT it starts throwing material out
+// on its own, harder and more often the closer it is to being stripped. It is
+// the same eruption the impacts make, fired on a timer at a random bearing —
+// the world visibly coming apart, and the payoff the venting streamers promise.
+// Near-ship only, like every other world-detail system: an unwatched giant
+// spending debris budget on geysers nobody sees is pure waste.
+function updateGasVents(game, dt) {
+  const reg = game.reg;
+  if (!reg) return;
+  for (const p of reg.planets) {
+    if (!p.alive || p.ptype !== 'gas' || !p.nearShip) continue;
+    const dmg01 = 1 - p.hp / p.maxHp;
+    if (dmg01 <= CFG.GAS_VENT) { p.ventT = 0; continue; }
+    const v = (dmg01 - CFG.GAS_VENT) / (1 - CFG.GAS_VENT);
+    p.ventT = (p.ventT ?? 0) - dt;
+    if (p.ventT > 0) continue;
+    if (!p.ventedOnce) { p.ventedOnce = true; bump(game, 'gasVented'); }
+    p.ventT = CFG.GAS_VENT_EVERY * (1.25 - v * 0.7) * (0.6 + Math.random() * 0.8);
+    gasErupt(game, p, Math.random() * TAU, 0.15 + v * 0.35);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DEATH THROES OF A GAS GIANT (CFG.GAS_STRIP_TIME). Killing the biggest thing
+// in the sky used to be the most abrupt death in the game: hp hit zero and the
+// world was instantly replaced by a core a third its size. Now it comes apart
+// over five seconds you can watch and fly through — venting from everywhere at
+// once, the envelope visibly collapsing inward (the eased radius does the
+// work), the hot core burning brighter through the thinning cloud — and only
+// at the end does the atmosphere blow off in one shell.
+//
+// The body is NEVER killed and replaced: it BECOMES the core in place. That is
+// what keeps its rail, its lane, its chart entry and its whole family of moons
+// attached without a hand-over pass — a satellite never learns its primary
+// changed. Kill credit is banked here, at the moment the player earned it.
+function beginGasStrip(game, body, credit) {
+  if (body.stripT > 0) return;
+  body.stripT = CFG.GAS_STRIP_TIME;
+  body.stripFor = CFG.GAS_STRIP_TIME;
+  body.hp = 1;                       // stays alive through the throes
+  body.radiusT = undefined;          // the throes drive the radius, not the chip easing
+  if (game.deathLog) {
+    game.deathLog.push({ t: Math.round(game.time), how: 'stripped to its core',
+      type: body.type, mass: Math.round(body.mass) });
+  }
+  noteKill(game, body, credit, body.hitBy);
+  if (credit === 'player-throw') {
+    addXp(game, PROG.XP_SMASH + 12);
+    game.prog.smashes++;
+  }
+  game.gasCollapseName = body.name || 'a gas giant';   // main.js announces it
+  addShake(game, 12);
+  sfx.sfxBoom(3, sfx.distVol(game, body.x, body.y));
+}
+
+// Run the throes: violent venting all over the world, rising shake, then the
+// envelope goes and what is left is a rocky core on the giant's own orbit.
+// A freshly exposed core, cooling: molten orange-red settling to rock grey.
+// One lerp, evaluated only while a core is still hot (at most a handful ever).
+function coolColor(m) {
+  const r = Math.round(107 + (214 - 107) * m);
+  const g = Math.round(98 + (74 - 98) * m);
+  const b = Math.round(88 + (44 - 88) * m);
+  return `rgb(${r},${g},${b})`;
+}
+
+function updateGasStrip(game, dt) {
+  const reg = game.reg;
+  if (!reg) return;
+  for (const p of reg.planets) {
+    // COOLING: the core walks from molten to rock over GAS_CORE_COOL. Runs
+    // wherever the player is — a world that only cooled while watched would be
+    // glowing exactly as you left it an hour later.
+    if (p.molten > 0) {
+      p.molten = Math.max(0, p.molten - dt / CFG.GAS_CORE_COOL);
+      p.color = coolColor(p.molten);
+    }
+    if (!p.alive || !(p.stripT > 0)) continue;
+    const was = p.stripT;
+    p.stripT -= dt;
+    const k = 1 - p.stripT / p.stripFor;           // 0 -> 1 through the collapse
+    // THE ENVELOPE FALLS IN ACROSS THE WHOLE SCENE. Handing the radius to the
+    // ordinary chip easing collapsed it inside the first second and a half and
+    // then left the world sitting at core size for the rest of the throes — the
+    // collapse has to BE the five seconds, not precede them. Accelerating, so it
+    // sags and then gives way.
+    p.radius = p.baseRadius * (1 - Math.pow(k, 1.6) * (1 - CFG.GAS_CORE));
+    p._sil = null;
+    // Vents accelerate as it fails — the world tearing itself open.
+    p.ventT = (p.ventT ?? 0) - dt;
+    if (p.ventT <= 0) {
+      p.ventT = 0.55 - 0.3 * k;
+      gasErupt(game, p, Math.random() * TAU, 0.3 + k * 0.5);
+    }
+    // A rumble that builds rather than one bang at the end.
+    if (Math.floor(was * 4) !== Math.floor(p.stripT * 4)) addShake(game, 3 + k * 7);
+    if (p.stripT > 0) continue;
+    completeGasStrip(game, p);
+  }
+}
+
+// The envelope goes. Everything after this is a rocky world.
+function completeGasStrip(game, p) {
+  p.stripT = 0;
+  const R = p.baseRadius * CFG.GAS_CORE;
+  p.mass = p.baseMass = p.baseMass * CFG.GAS_CORE_MASS;
+  p.radius = p.baseRadius = p.radiusT = R;
+  p.ptype = 'rocky';
+  p.gasKind = null;
+  p.ring = false;
+  p.wasGiantCore = true;           // ACHIEVEMENTS: killing this again is its own feat
+  p.molten = 1;                    // exposed red-hot; cools over CFG.GAS_CORE_COOL
+  p.color = coolColor(1);
+  p.gasHits = null;
+  p.scars = [];
+  p.maxHp = CFG.PLANET_HP_BASE + massToHp(p.mass) * CFG.PLANET_HP_MUL;
+  p.hp = p.maxHp;
+  p.name = `${(p.name || 'the giant').replace(/ Core$/, '')} Core`;
+  p.attractor = true;
+  p._sil = null;   // the silhouette cache is keyed on the old radius
+  // THE HALO SURVIVES AS A SECOND, WIDER RING. Everything the giant threw up
+  // and caught is orbiting at ~1.2 of its OLD radius — four times the core it
+  // just became — so it stays exactly where it is and is railed there for good.
+  // Without this the crust assist read the band off the core's radius instead,
+  // decided every piece was far outside it, unbound the lot, and the leash
+  // swept away the ring the player spent the whole fight building. Their rails
+  // keep the halo's shared rate, so it still turns as one piece.
+  if (game.reg) {
+    for (const c of game.reg.crust) {
+      if (!c.alive || c.crust !== p) continue;
+      c.crust = null;                       // the halo band went with the atmosphere
+      if (c.onRails) continue;              // already riding it
+      const dx = c.x - p.x, dy = c.y - p.y;
+      const r = Math.hypot(dx, dy) || 1;
+      const w = chunkHaloW(p);
+      c.vx = p.vx - (dy / r) * w * r;
+      c.vy = p.vy + (dx / r) * w * r;
+      railBody(c, p);
+      c.rail.w = w;
+    }
+  }
+  // Future crust calved off the CORE sizes its halo from the core, not the
+  // giant that used to be here.
+  p.haloW = undefined;
+  // RAIL IT, BY FIAT. damageBody derails on every chip, so a giant arrives at
+  // its own death already free-flying on whatever ellipse the impacts left it,
+  // and the generic re-rail scan will not take a path that far from circular —
+  // measured, a stripped core wandered from its 20,200 lane out past 35,000 and
+  // kept going. The core is permanent sky anchor content and must never wander:
+  // same class of law as the planet-rescue snap in the rail scan, and it also
+  // keeps the moons that are still railed to it over their own lanes.
+  const anchor = (p.rail && p.rail.parent) || p.parent;
+  if (anchor && anchor.alive) {
+    const dx = p.x - anchor.x, dy = p.y - anchor.y;
+    const r = Math.hypot(dx, dy) || 1;
+    const vC = Math.sqrt((CFG.G * anchor.mass * r * r) / Math.pow(r * r + CFG.GRAV_SOFT ** 2, 1.5));
+    const rvx = p.vx - anchor.vx, rvy = p.vy - anchor.vy;
+    const dir = Math.sign((dx * rvy - dy * rvx) / r) || 1;
+    p.vx = anchor.vx - (dy / r) * dir * vC;
+    p.vy = anchor.vy + (dx / r) * dir * vC;
+    railBody(p, anchor);
+  }
+  // The envelope, going out: wide, slow, and in the giant's own colour.
+  addParticles(game, p.x, p.y, p.vx, p.vy, 110, '#cfe6f2', 340, 3.0, 8);
+  addParticles(game, p.x, p.y, p.vx, p.vy, 50, '#ffffff', 220, 2.0, 5);
+  addShake(game, 16);
+  sfx.sfxBoom(3, sfx.distVol(game, p.x, p.y));
+  game.gasStrippedName = p.name;   // main.js announces it
+}
+
 export function shatter(game, body, credit = null) {
   if (!body.alive) return;
   body.alive = false;
@@ -285,28 +714,57 @@ export function shatter(game, body, credit = null) {
   // capped by mass and by the global body budget.
   const isWorld = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
   if (isWorld && body.ptype !== 'gas') {
-    // Ejection speeds are LOW on purpose: the cloud should hang together and
-    // visibly jostle — chunks grinding past each other — before gravity and
-    // the orbital flow shear it into a debris stream. Fast ejecta reads as a
+    // A DYING WORLD COMES APART — the whole thing, not a token spray. Ejection
+    // speeds are LOW on purpose: the cloud should hang together and visibly
+    // jostle — pieces grinding past each other — before gravity and the
+    // orbital flow shear it into a debris stream. Fast ejecta reads as a
     // firework that empties the screen in a second.
-    const n = Math.min(Math.min(30, 10 + Math.floor(body.mass / 8000)),
-      Math.max(0, 460 - game.bodies.length));
+    // Sizes run a real SPECTRUM, and they are sized off the world's RADIUS,
+    // not its mass, for the reason in CFG.CRUST_*: a mass-derived radius draws
+    // a dead 705-unit planet as a puff of ~10-unit specks. The exponent skews
+    // small, so the cloud is mostly rubble with a few genuine slabs of crust
+    // tumbling through it.
+    const [lo, hi] = CFG.CRUST_DEATH;
+    const n = Math.min(lo + Math.floor(Math.random() * (hi - lo + 1)), debrisRoom(game));
     for (let i = 0; i < n; i++) {
-      const th = (i / n) * TAU + (Math.random() - 0.5) * 0.6;
-      const rr = body.radius * (0.2 + Math.random() * 0.85);
-      const s = 25 + Math.random() * 130;
-      const m = clamp(body.mass * (0.01 + Math.random() * 0.022), 120, CFG.CHUNK_MAX_MASS);
+      const th = (i / n) * TAU + (Math.random() - 0.5) * 0.9;
+      const rr = body.radius * (0.15 + Math.random() * 0.9);
+      const s = 20 + Math.random() * 120;
+      const pr = body.radius * (0.045 + 0.2 * Math.pow(Math.random(), 2.4));
       const f = spawnAsteroid(
         game.bodies,
         body.x + Math.cos(th) * rr,
         body.y + Math.sin(th) * rr,
-        body.vx + Math.cos(th) * s + (Math.random() - 0.5) * 70,
-        body.vy + Math.sin(th) * s + (Math.random() - 0.5) * 70,
-        m,
+        body.vx + Math.cos(th) * s + (Math.random() - 0.5) * 60,
+        body.vy + Math.sin(th) * s + (Math.random() - 0.5) * 60,
+        crustMass(pr),
       );
-      f.color = body.color;
-      f.chunk = true;         // crust-shard sprite — visibly a piece of THIS world
+      makeChunk(f, pr, worldDebris(body.ptype, body.color, Math.random()));
+      // The cloud is born INSIDE the volume the world occupied, so every piece
+      // starts overlapping several others. Inert, they drift apart and settle;
+      // solid, they resolved that overlap by eating each other on frame one.
+      f.inertT = CFG.CHUNK_INERT;
     }
+    // The halo it was already wearing joins its own funeral: the rails pass
+    // derails these off the dead parent, updateCrust unbinds them, and this
+    // kick throws them outward with the rest instead of leaving a tidy ring
+    // hanging in the hole where the world used to be.
+    if (game.reg) {
+      for (const c of game.reg.crust) {
+        if (!c.alive || c.crust !== body) continue;
+        derail(c); c.crust = null;
+        const ca = Math.atan2(c.y - body.y, c.x - body.x);
+        const cs = 40 + Math.random() * 90;
+        c.vx += Math.cos(ca) * cs; c.vy += Math.sin(ca) * cs;
+      }
+    }
+  } else if (isWorld && body.ptype === 'gas') {
+    // Unreachable in normal play: damageBody diverts a gas giant at zero hp
+    // into beginGasStrip (the death THROES) instead of here. This stays as the
+    // honest fallback for anything that calls shatter on one directly — a
+    // dev hook, a future instakill — and just completes the strip at once.
+    completeGasStrip(game, body);
+    return;
   } else if (isBig) {
     // Big non-world bodies (giant loose asteroids) break into plain fragments
     const n = 5 + Math.floor(Math.random() * 4);
@@ -322,6 +780,38 @@ export function shatter(game, body, credit = null) {
         m,
       );
       f.color = body.color;   // wreckage reads as pieces of the world it was
+    }
+  } else if (body.chunk && body.radius >= CFG.CHUNK_SPLIT_R) {
+    // A BIG PIECE OF A WORLD BREAKS LIKE THE WORLD DID (CFG.CHUNK_SPLIT_*).
+    // Crust is drawn as a fraction of its parent planet, so the biggest slabs
+    // run 100+ units across, and one of those bursting into a puff of dust
+    // reads wrong beside a planet that comes apart into sixty pieces. Each
+    // child is a third to a half its parent, so a 130-unit slab goes 130 ->
+    // ~50 -> ~20 -> under the threshold: the cascade is two or three levels
+    // deep and terminates on its own, the same shape as the field-giant shard
+    // rule above.
+    const [lo, hi] = CFG.CHUNK_SPLIT;
+    const n = Math.min(lo + Math.floor(Math.random() * (hi - lo + 1)), debrisRoom(game));
+    for (let i = 0; i < n; i++) {
+      const th = (i / n) * TAU + (Math.random() - 0.5) * 0.7;
+      const sp = 30 + Math.random() * 90;
+      const cr = body.radius * (0.3 + Math.random() * 0.22);
+      const f = spawnAsteroid(game.bodies,
+        body.x + Math.cos(th) * body.radius * 0.5, body.y + Math.sin(th) * body.radius * 0.5,
+        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, crustMass(cr));
+      makeChunk(f, cr, { color: body.color, ice: body.ice, cored: false });
+      f.inertT = CFG.CHUNK_INERT;   // passes through other debris while it flies clear
+      // Rubble from a slab that was riding a world's halo rejoins that halo —
+      // smash a slab in orbit and its pieces settle back around the planet
+      // instead of scattering into the lane (updateCrust; the free window lets
+      // them tumble apart first).
+      if (body.crust && body.crust.alive) { f.crust = body.crust; f.crustFree = CFG.CRUST_FREE; f.crustT = game.time; }
+      // NO CREDIT PROPAGATION. A split is the one place the gravity-billiards
+      // stamp must not travel: every child is itself splittable, so a marked
+      // child that kills another chunk pays throw-kill XP AND passes the mark
+      // on again. One thrown slab into a packed halo ran that loop until it hit
+      // the debris budget and took a fresh run to tier 5 in seconds. Same rule
+      // shard and Demolition damage already follow — the chain stays bounded.
     }
   }
 
@@ -493,9 +983,19 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     addParticles(game, shard.x, shard.y, body.vx * 0.3, body.vy * 0.3, 16, '#d8b8ff', 170, 1.1, 3);
     game.shardWarn = true;
   }
+  // A gas giant already coming apart takes no more damage — the throes own it.
+  if (body.stripT > 0) return;
   derail(body);
   body.hp -= dmg;
-  if (body.hp <= 0) { shatter(game, body, credit); return; }
+  if (body.hp <= 0) {
+    // A GAS GIANT DOES NOT SHATTER — it goes into death throes and ends up as a
+    // core (beginGasStrip). Everything else dies here as it always did.
+    if (body.ptype === 'gas' && (body.type === 'planet' || body.type === 'rogue')) {
+      beginGasStrip(game, body, credit);
+      return;
+    }
+    shatter(game, body, credit); return;
+  }
   const frac = clamp(dmg / body.maxHp, 0, 0.5);
 
   // CHUNKS + SCARS: a hard single hit on a big body isn't just an hp tick.
@@ -510,23 +1010,61 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // per-call drip (~0.1% of maxHp) can never clear even the half gates.
   const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas';
   const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS;
+  const isWorldBody = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
   // Small rocks scar too — wear is universal, only the SPRAY needs the mass
   // gate. Their maxHp is tiny so the gate is fractional (a real bite of the
   // rock, not a graze), with a radius floor below which a scar can't read.
-  const scarHit = bigEnough
+  // A WORLD CRUMBLES WHERE IT WAS STRUCK, so wear needs an impact point.
+  // Every impact path passes one (collisions, the ram, a Demolition blast, a
+  // fort turret); the two CONTINUOUS environmental sources — corona heat and
+  // atmosphere burn-up — pass none, and must not crater or calve: they are a
+  // fraction of maxHp per call, which since planets went to the flat
+  // PLANET_HP_BASE (18,000+) is ~21 damage a substep, clearing the absolute
+  // CHUNK_DMG_MIN gate 120 times a second. A world melting in the corona would
+  // have shed its entire crust in about a second. Melting shows as the crack
+  // web (drawBodyDamage reads hp directly); craters are for things that hit it.
+  const scarHit = hx !== undefined && (bigEnough
     ? (dmg >= CFG.CHUNK_DMG_MIN * 0.5 || frac >= CFG.CHUNK_DMG_FRAC * 0.5)
-    : (frac >= 0.15 && body.radius >= 5);
+    : (frac >= 0.15 && body.radius >= 5));
   if (canWear && scarHit) {
     // severity 0..1 blends both gates: frac carries moons, raw damage carries
     // planets (whose maxHp dwarfs any single hit)
     const sev = clamp(frac * 8 + dmg / 60, 0.15, 1);
     const ia = (hx !== undefined) ? Math.atan2(hy - body.y, hx - body.x) : Math.random() * TAU;
-    // scar angle is stored SURFACE-LOCAL (minus rot) so the bite rides the spin
-    body.scars.push({ a: ia - body.rot, s: 0.6 + sev * 1.6, t: game.time });
-    if (body.scars.length > 7) body.scars.shift();
-    if (bigEnough && (dmg >= CFG.CHUNK_DMG_MIN || frac >= CFG.CHUNK_DMG_FRAC) &&
-        game.bodies.length < 450) {   // body-count cap like the spall path
-      const n = 2 + Math.round(sev * 4) + (body.mass >= 2e4 ? 2 : 0);
+    const hard = bigEnough && (dmg >= CFG.CHUNK_DMG_MIN || frac >= CFG.CHUNK_DMG_FRAC);
+    // THE CRUMBLE. A WORLD calves real pieces of itself that STAY — they pop
+    // out of the crater, tumble, and settle into a rubble halo hanging over
+    // the wound (calveCrust / updateCrust). Every wounding hit sheds at both
+    // scales: a light one flakes a crumb, a hard one takes a slab off and
+    // showers crumbs with it. Big LOOSE bodies (a giant asteroid) keep the old
+    // outward spray below — they have no surface to hang a halo on.
+    let bite = 0;   // radius of the biggest piece that left, so the crater matches it
+    // CALVING IS NEAR-SHIP TOO. A world takes ambient hits all run long; off-view
+    // those would spend halo slots and debris budget on rubble nobody watched
+    // break off. The CRATER still lands either way — that is a cheap array push
+    // and it is the world's record of the wound, so a planet you left under
+    // bombardment still shows the wear when you come back.
+    if (isWorldBody && bigEnough && body.nearShip) {
+      const n = Math.min(hard ? 1 + Math.round(sev * 3) : 1, debrisRoom(game));
+      for (let k = 0; k < n; k++) {
+        // The first piece is the SLAB the hit took off, and it comes out of
+        // the crater. The rest are crumbs knocked loose around it.
+        const kSev = k === 0 ? sev : sev * (0.18 + Math.random() * 0.3);
+        const th = ia + (Math.random() - 0.5) * (k === 0 ? 0.5 : 2.2);
+        const f = calveCrust(game, body, th, kSev, credit);
+        if (!f) continue;   // halo full of bigger pieces — this hit only scars
+        bite = Math.max(bite, f.radius);
+      }
+      // The calve deliberately does NOT bill the host for the mass it made.
+      // Crust mass is derived from DRAWN size against the tractor's tier caps
+      // (config.crustMass), not from a share of the parent, so a four-piece
+      // calve mints up to ~90,000 — nearly half a mid planet. Subtracting that
+      // shrank the world visibly with every moon strike (radius tracks
+      // cbrt(mass/baseMass)) and would have hollowed it out long before its hp
+      // ran out. Erosion still happens, through the chip path below, which is
+      // where it was always metered.
+    } else if (hard && !isWorldBody && debrisRoom(game) > 0) {
+      const n = Math.min(2 + Math.round(sev * 4), debrisRoom(game));
       let shed = 0;
       for (let k = 0; k < n; k++) {
         // first chunks burst from the crater; the rest spray ANYWHERE — a big
@@ -540,10 +1078,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
           body.x + Math.cos(th) * (surfReach(body) * 1.03 + 14),
           body.y + Math.sin(th) * (surfReach(body) * 1.03 + 14),
           body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, m);
-        f.color = body.color;   // chunks read as pieces of the world they left
-        // shed pieces of worlds are PLANET CHUNKS (crust-shard sprite); big
-        // loose asteroids just calve ordinary rock
-        if (body.type === 'planet' || body.type === 'moon' || body.type === 'rogue') f.chunk = true;
+        f.color = body.color;   // wreckage reads as pieces of the body it was
         // GRAVITY BILLIARDS: chunks your throw knocked loose carry your credit
         // for a beat — same rule as the knocked-rock propagation in
         // collideBodies. ONLY on a direct 'player-throw' hit: shard/Demolition
@@ -551,11 +1086,41 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
         if (credit === 'player-throw') { f.thrownBy = 'player'; f.thrownTimer = 1.4; }
         shed += m;
       }
-      // The shed mass really leaves the body (floor at 25% of base, like chip)
       body.mass = Math.max(body.baseMass * 0.25, body.mass - shed);
+    }
+    // The crater is sized to the piece that came out of it — render draws the
+    // bite at R x 0.06 x s, so a slab of radius `bite` leaves a hole exactly
+    // that wide. THIS is the read the whole feature turns on: a notch missing
+    // from the rim with the matching slab floating in it. Hits that shed
+    // nothing (a full halo, an exhausted budget) fall back to the old
+    // severity-sized mark, so wear still shows.
+    // The upper clamp is what keeps a wound reading as CRATERS. Render draws a
+    // bite at R x 0.06 x s of pure space colour, so s = 2 is already 12% of the
+    // world punched out per hit; letting it track the biggest slabs (s ~ 3.4)
+    // meant a dozen hits along one arc merged into a single flat black gouge
+    // with no internal edges — which reads as a hole in the renderer, not as a
+    // battered planet.
+    const s = bite > 0 ? clamp(bite / (body.radius * 0.06), 0.5, 2) : 0.6 + sev * 1.6;
+    // scar angle is stored SURFACE-LOCAL (minus rot) so the bite rides the spin
+    body.scars.push({ a: ia - body.rot, s, t: game.time });
+    // A WORLD KEEPS ITS WORST WOUNDS, not its most recent ones. Dropping the
+    // oldest meant a handful of pebble chips after a moon strike quietly
+    // erased the crater the moon left — the limb went back to smooth while the
+    // slabs it knocked off were still hanging over it.
+    if (body.scars.length > 10) {
+      let wi = 0;
+      for (let i = 1; i < body.scars.length; i++) if (body.scars[i].s < body.scars[wi].s) wi = i;
+      body.scars.splice(wi, 1);
+    }
+    if (bite > 0 || hard) {
       addParticles(game,
         body.x + Math.cos(ia) * body.radius, body.y + Math.sin(ia) * body.radius,
         body.vx * 0.5, body.vy * 0.5, 8 + Math.round(sev * 16), body.color, 170, 1, 4);
+    }
+    // Only a HARD bite is an event. A crumb flaking off gets its dust and
+    // nothing else — the chip already carries the collision's own sound, and
+    // a boom per crumb turns a sustained bombardment into a drum roll.
+    if (hard) {
       addShake(game, Math.min(10, 2 + sev * 9));
       sfx.sfxBoom(1 + sev * 1.5, sfx.distVol(game, body.x, body.y));
     }
@@ -574,8 +1139,13 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     body.mass = Math.max(body.baseMass * 0.25, body.mass - body.baseMass * frac * 0.35);
     addParticles(game, body.x, body.y, body.vx * 0.5, body.vy * 0.5, 8, body.color, 100, 0.7);
   }
-  // One radius/attractor rebuild covers both the chip and chunk mass losses
-  body.radius = body.baseRadius * Math.cbrt(body.mass / body.baseMass);
+  // One radius/attractor rebuild covers both the chip and chunk mass losses.
+  // The radius is a TARGET, not an assignment: mass loss used to resize the body
+  // on the frame of the hit, so a world visibly popped a size smaller every time
+  // something big landed. The integrate loop eases the live radius toward this,
+  // and since collisions read the live radius the felt size follows the drawn
+  // one all the way down.
+  body.radiusT = body.baseRadius * Math.cbrt(body.mass / body.baseMass);
   if (body.mass < CFG.ATTRACT_MIN && body.type !== 'star') body.attractor = false;
 }
 
@@ -796,9 +1366,36 @@ function boundaryAccel(x, y) {
 // everything else is the circle it always was. Radial narrow phase: the
 // collision normal stays radial, which is what the resolver assumes anyway.
 function surfRadius(body, ang) {
-  if (body.ptype !== 'crystal') return body.radius;
-  const sh = (body.cjag ||= crystalShards(body.id));
-  return body.radius * crystalRadiusAt(sh, ang - body.rot);
+  if (body.ptype === 'crystal') {
+    const sh = (body.cjag ||= crystalShards(body.id));
+    return body.radius * crystalRadiusAt(sh, ang - body.rot);
+  }
+  // CRATERED WORLDS collide as the shape they are DRAWN as, for exactly the
+  // reason crystal worlds do. Once impacts started cutting real notches out of
+  // a world's outline, the collider was still the full circle behind them, so
+  // a rock crossing the mouth of a crater stopped dead in open space — the
+  // wound was a hole in the picture only. util.scarSurfaceAt is the shared
+  // profile (render.worldSil draws from the same call), and scars are stored
+  // surface-local, so the bearing loses b.rot exactly as the crystal path does.
+  // Rocks are excluded — they collide as circles and draw as their own jag,
+  // and render.traceSurface makes the same exclusion.
+  if (body.type !== 'asteroid' && body.scars.length) {
+    return body.radius * scarSurfaceAt(body.scars, body.radius, ang - body.rot);
+  }
+  return body.radius;
+}
+// Does this body's surface depart from a circle at all? The narrow phase pays
+// for a bearing solve only when one of the pair answers yes.
+//
+// CRATERS ARE GATED ON `nearShip` (set in updateFieldLOD): the notched collider
+// exists so the wound you can see is the wound you can fly into, and off-view
+// there is nothing to see — the world collides as the circle it always was, at
+// no cost. Crystal worlds are NOT gated: their spikes reach OUTSIDE the radius,
+// so dropping to the disc would make the collider smaller than the body, and
+// the railed junk ring floating just past those spikes is tuned against them.
+function shaped(body) {
+  return body.ptype === 'crystal'
+    || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
 // must clear the TALLEST feature, not the mean disc — a chunk born inside a
@@ -812,6 +1409,16 @@ function collideBodies(game, a, b) {
   // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
   // (or gets ground by it) until the flick launches it back into play.
   if (a.parryFrozen || b.parryFrozen) return;
+  // FRESH FRAGMENTS PASS THROUGH OTHER DEBRIS (CFG.CHUNK_INERT). Rock-on-rock
+  // is where the split cascade lived: pieces of a shattered slab landing in a
+  // world's packed halo shattered THOSE, and the wave ran to the debris budget.
+  // Scoped to loose rock on purpose — the ship and the aliens have their own
+  // collision paths and are untouched, and celestials still connect, because a
+  // slab ghosting through a planet and out the far side reads as broken.
+  if ((a.inertT > 0 || b.inertT > 0) && a.type === 'asteroid' && b.type === 'asteroid') return;
+  // A rock going under a gas giant's cloud tops is already gone — it just has
+  // not finished the fall yet (CFG.GAS_SINK). Nothing touches it on the way in.
+  if (a.sinkT > 0 || b.sinkT > 0) return;
   // Orbiting shield rocks don't grind against each other
   if (a.heldBy === 'orbit' && b.heldBy === 'orbit') return;
   // ...and your own throws (or the rock in your beam) pass through your
@@ -824,9 +1431,12 @@ function collideBodies(game, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
   let rr = a.radius + b.radius;
   const d2 = dx * dx + dy * dy;
-  // CRYSTAL planets collide as their shard polygon: bound with the max spike
-  // reach first (cheap), then refine rr along the actual bearing.
-  if (a.ptype === 'crystal' || b.ptype === 'crystal') {
+  // NON-CIRCULAR SURFACES (a crystal world's shard polygon, a cratered world's
+  // notched limb) get a radial narrow phase: bound cheaply first, then refine
+  // rr along the actual bearing. Spikes reach OUTSIDE the radius, so crystal
+  // has to bound on surfReach; craters only cut inward, so the plain sum is
+  // already a valid outer bound and the early-out below does the rejecting.
+  if (shaped(a) || shaped(b)) {
     const bound = surfReach(a) + surfReach(b);
     if (d2 >= bound * bound) return;
     const ang = Math.atan2(dy, dx);
@@ -841,6 +1451,92 @@ function collideBodies(game, a, b) {
     const victim = a.type === 'star' ? b : a;
     if (victim.type !== 'star') vaporize(game, victim);
     return;
+  }
+
+  // A GAS GIANT SWALLOWS (CFG.GAS_* — "it swallows"). There is no surface to
+  // bounce off, so loose rock reaching the cloud tops sinks and is gone. This
+  // replaces the old behaviour, where a thrown rock rebounded off a ball of
+  // hydrogen and, if you kept at it, blew the whole world into stone fragments.
+  // The giant still takes the impact, scaled by the impactor and damped by
+  // GAS_IMPACT_MUL — a pebble is weather, a thrown moon is a real wound — so a
+  // gas giant remains something you CAN fight, just not with gravel.
+  // Anything HELD is exempt — beam cargo and the orbit wall alike (`heldBy`
+  // covers both). The ship dives these on purpose (GAS_CRUSH_DPS), and having
+  // the atmosphere strip your shield rock by rock on the way in would be a
+  // second, unannounced penalty on a mechanic that already charges you hull.
+  {
+    const giant = a.ptype === 'gas' ? a : b.ptype === 'gas' ? b : null;
+    const rock = giant === a ? b : a;
+    // EVERYTHING sinks, not just loose rock. Scoping this to `type ===
+    // 'asteroid'` left a thrown MOON falling through to the ordinary contact
+    // path, where the giant's mass dominance shattered it against the cloud
+    // tops — the single most dramatic thing you can throw at a gas giant
+    // exploded on it instead of going in. A PLANET is the exception: two worlds
+    // meeting is the top of invariant 8's ladder and belongs on the ordinary
+    // path, where the giant takes a real wound and neither body silently
+    // disappears. Stars were handled above.
+    if (giant && rock.type !== 'planet' && !rock.heldBy && !rock.parryFrozen && rock.alive) {
+      const rel = Math.hypot(rock.vx - giant.vx, rock.vy - giant.vy);
+      const wasThrown = rock.thrownTimer > 0;
+      // The ordinary damage terms, so a gas impact stays in ratio with every
+      // other impact in the game...
+      const eff = Math.max(0, rel - (wasThrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
+      const mult = wasThrown ? CFG.DMG_THROWN_MULT : 1;
+      // ...except mass dominance is SOFTENED (CFG.GAS_DOM_EXP). Dominance models
+      // a heavy body shrugging off a light one because it is RIGID, and a gas
+      // giant is not: a moon plunging in deposits its energy deep rather than
+      // chipping a surface. At full dominance a thrown moon did 1.7% of a
+      // giant's hp — sixty moons to strip one.
+      const dom = Math.pow(rock.mass / (rock.mass + giant.mass), CFG.GAS_DOM_EXP);
+      // ...and the whole thing is CAPPED per impact (CFG.GAS_HIT_CAP), because
+      // the speed term is quadratic and a late-game sling would otherwise end a
+      // gas giant in two throws.
+      const dmg = Math.min(giant.maxHp * CFG.GAS_HIT_CAP,
+        CFG.DMG_BODY * eff * eff * rock.mass * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
+      // ENTRY PLUME: the cloud tops boil where it went in, in the giant's own
+      // colour, thrown back OUT along the entry bearing (this runs before the
+      // shared normal is computed, so it takes its own).
+      const ex = (rock.x - giant.x) / d, ey = (rock.y - giant.y) / d;
+      addParticles(game, rock.x, rock.y, giant.vx + ex * 40, giant.vy + ey * 40,
+        Math.min(26, 6 + Math.round(rock.mass / 260)), giant.color,
+        150, 1.2, Math.min(6, 2 + rock.radius * 0.08));
+      if (rock.mass > 900) {
+        addShake(game, Math.min(7, rock.mass / 2600));
+        sfx.sfxBoom(1, sfx.distVol(game, rock.x, rock.y));
+      }
+      if (game.deathLog) {
+        game.deathLog.push({ t: Math.round(game.time), how: 'swallowed by a gas giant',
+          type: rock.type, mass: Math.round(rock.mass) });
+      }
+      // THE ENTRY WOUND — surface-local, so it rides the giant's rotation like
+      // every other feature. render.drawGasWound turns these into the flash,
+      // the shock ring and the punch-hole that swirls shut. Sized off the
+      // impactor, so a pebble dimples the cloud tops and a moon tears them open.
+      const hits = (giant.gasHits ||= []);
+      hits.push({ a: Math.atan2(rock.y - giant.y, rock.x - giant.x) - giant.rot,
+        t: game.time, s: Math.min(1, 0.18 + rock.mass / 9000) });
+      if (hits.length > 7) hits.shift();
+      // It SINKS rather than vanishing: it keeps ploughing in for GAS_SINK
+      // seconds, slowing and fading as the clouds close over it (the integrate
+      // loop runs the timer, render fades it, collisions ignore it meanwhile).
+      // ACHIEVEMENTS: only a body the PLAYER put on that trajectory counts as
+      // feeding — the belt drops rocks into these all day on its own.
+      if (rock.slung || rock.thrownBy === 'player') {
+        bump(game, 'gasFed');
+        if (rock.type === 'moon') bump(game, 'gasFedMoon');
+      }
+      // CREDIT IS READ BEFORE THE THROWN STATE IS CLEARED. collisionCredit keys
+      // off `thrownBy`/`thrownTimer`, so clearing them first made every kill a
+      // gas giant ever took read as ambient — no kill credit, no XP, and the
+      // Giant Slayer row could never land however many moons you fed it.
+      const cred = collisionCredit(giant, rock);
+      giant.hitBy = rock;           // ACHIEVEMENTS: what landed the blow
+      rock.sinkT = CFG.GAS_SINK;
+      rock.sinkIn = giant;          // who eats it, and who erupts when it lands
+      rock.thrownBy = null; rock.thrownTimer = 0;
+      if (dmg > 0.5) damageBody(game, giant, dmg, cred, rock.x, rock.y);
+      return;
+    }
   }
 
   const nx = dx / d, ny = dy / d;
@@ -1075,7 +1771,7 @@ function collideBodies(game, a, b) {
 
     // SPALL: a violent hit that BOTH bodies survive still crunches — small
     // rocks spray sideways out of the impact, chipped off the lighter body.
-    if (eff > 40 && a.alive && b.alive && game.bodies.length < 450) {
+    if (eff > 40 && a.alive && b.alive && debrisRoom(game) > 0) {
       const small = a.mass <= b.mass ? a : b;
       if (small.mass > 120 && small.type !== 'station' && small.type !== 'nest' &&
           Math.random() < 0.75) {
@@ -1103,12 +1799,15 @@ function collideBodies(game, a, b) {
 }
 
 function collideShipBody(game, s, b, dt) {
+  if (b.sinkT > 0) return;   // already under the cloud tops
   const dx = b.x - s.x, dy = b.y - s.y;
   let rr = s.radius + b.radius;
   const d2 = dx * dx + dy * dy;
-  // CRYSTAL planets: the ship lands on (and skims along) the shard polygon,
-  // not the mean disc — same radial narrow phase as collideBodies.
-  if (b.ptype === 'crystal') {
+  // The ship lands on (and skims along) the real surface — a crystal world's
+  // shard polygon, a cratered world's notched limb — not the mean disc. Same
+  // radial narrow phase as collideBodies; you can fly down into a crater you
+  // punched, which is the whole point of cutting it out of the silhouette.
+  if (shaped(b)) {
     const bound = s.radius + surfReach(b);
     if (d2 > bound * bound) return;
     rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
@@ -1183,8 +1882,14 @@ function collideShipBody(game, s, b, dt) {
   // field scan — so a rock reaching this code either isn't deflectable or
   // slipped in during the cooldown, and the impact resolves normally.)
 
-  // Push the ship out (bodies barely notice the ship)
-  const overlap = s.radius + b.radius - d;
+  // Push the ship out (bodies barely notice the ship). Uses the narrow phase's
+  // `rr`, NOT the raw radii: on a shaped surface those differ by the whole
+  // depth of the feature, and recomputing from b.radius here meant flying into
+  // a crater snapped you back out to the world's nominal circle in one step —
+  // a teleport to a border that is not where the surface is. (The same bug sat
+  // in the crystal path from the day shard colliders landed: the ship was
+  // ejected to the mean disc rather than to the facet it actually touched.)
+  const overlap = rr - d;
   s.x -= nx * overlap; s.y -= ny * overlap;
 
   // SURFACE SKIMMING: sliding along a surface in contact grinds the hull.
@@ -1403,6 +2108,7 @@ function updateParry(game, dt) {
       b.vx = s.vx + dx * st.deflectPower;
       b.vy = s.vy + dy * st.deflectPower;
       b.thrownBy = 'player'; b.thrownTimer = 2.5;  // the riposte is YOUR shot — full billiards credit
+      b.slung = true;                              // ...so it gets the long debris leash too
       b.chainN = 0;                                // ...and link 0 of a fresh chain (chainOk)
       b.throwX = b.x; b.throwY = b.y;              // achievements: launch point (see tractor.releaseHeld)
       b.killedByParry = true;                      // ...and the verb that set the kill up
@@ -1425,10 +2131,11 @@ function collideAlienBody(game, al, b) {
   // early-out silently cancelled the entire mechanic (measured: 1 shove a
   // minute, all of them incidental hits on other rocks).
   if (b === al.target && al.kind !== 'lurker') return;
+  if (b.sinkT > 0) return;   // already under the cloud tops
   const dx = b.x - al.x, dy = b.y - al.y;
   let rr = al.radius + b.radius;
   const d2 = dx * dx + dy * dy;
-  if (b.ptype === 'crystal') {   // aliens bounce off the shard polygon too
+  if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
     rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
@@ -1451,7 +2158,7 @@ function collideAlienBody(game, al, b) {
   if (al.kind === 'lurker' && b.type === 'asteroid' && !b.heldBy &&
       !(b.thrownTimer > 0 && b.thrownBy === 'player')) {
     const nx0 = dx / d, ny0 = dy / d;
-    const overlap0 = al.radius + b.radius - d;
+    const overlap0 = rr - d;   // the narrow phase's reach, never the raw radii
     al.x -= nx0 * overlap0; al.y -= ny0 * overlap0;
     const sh = game.ship;
     // ONLY a committed charge throws. At shoal density (~88u between rocks)
@@ -1501,7 +2208,7 @@ function collideAlienBody(game, al, b) {
 
   const nx = dx / d, ny = dy / d;
   const closing = -((b.vx - al.vx) * nx + (b.vy - al.vy) * ny);
-  const overlap = al.radius + b.radius - d;
+  const overlap = rr - d;   // shaped surfaces: eject to the surface, not the disc
   al.x -= nx * overlap; al.y -= ny * overlap;
   if (closing > 0) {
     const mEffA = Math.min(b.mass, 4e5);
@@ -1634,6 +2341,10 @@ function newReg() {
     // them. A registry keeps that exact behaviour (no LOD trade: dormant
     // members are still ticked) at the cost of the walk we already do.
     decay: [],
+    // The rubble a wounded world has calved (physics.calveCrust). Handful of
+    // bodies in a quiet run, a few hundred in a long bombardment — a registry
+    // keeps updateCrust's per-substep pass off the full array either way.
+    crust: [],
     asteroids: 0, moons: 0,
   };
 }
@@ -1660,6 +2371,7 @@ function regPush(reg, b) {
   if (b.fort) reg.forts.push(b);
   if (b.local) reg.locals.push(b);
   if (b.magma > 0 || b.comet) reg.decay.push(b);
+  if (b.crust) reg.crust.push(b);
 }
 
 // The registries, built on demand if the LOD has not run yet this world (the
@@ -1682,7 +2394,7 @@ export function updateFieldLOD(game, dt) {
   reg.stars.length = 0; reg.planets.length = 0; reg.terrans.length = 0;
   reg.ironMoons.length = 0; reg.stations.length = 0; reg.locals.length = 0;
   reg.decay.length = 0; reg.forts.length = 0; reg.cloakers.length = 0;
-  reg.nonField.length = 0;
+  reg.nonField.length = 0; reg.crust.length = 0;
   reg.asteroids = 0; reg.moons = 0;
   const flds = game.fields;
   const s = game.ship;
@@ -1701,14 +2413,41 @@ export function updateFieldLOD(game, dt) {
   for (const b of bodies) {
     if (!b.alive) continue;
     regPush(reg, b);   // the frame registries ride this same walk (see above)
-    if (b.field == null || !flds) {   // non-field bodies are always awake
-      b.dormant = false;
-      awake.push(b);
-      continue;
+    // NEAR-SHIP flag for the WORLD-DETAIL work — the cratered-surface narrow
+    // phase and the crust halo assist. Both are per-contact/per-substep costs
+    // that exist purely so the player can see and feel a wound, and a world
+    // three lanes away has no audience: the same "the chaos you see is always
+    // the chaos near you" trade the field LOD is built on. Measured to the
+    // SURFACE, not the centre, so a 1,148-unit giant counts as near when you
+    // are near its limb rather than only near its core. Off-view a cratered
+    // world simply collides as the circle it used to be — nothing can observe
+    // the difference, and it costs a bearing solve per contact to maintain.
+    if (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue') {
+      b.nearShip = Math.hypot(b.x - cx, b.y - cy) - b.radius < wakeR;
     }
     let dormant;
-    if (b.heldBy || b.thrownTimer > 0 || b.parryFrozen) dormant = false;
-    else {
+    if (b.heldBy || b.thrownTimer > 0 || b.parryFrozen) {
+      dormant = false;
+    } else if (b.field == null || !flds) {
+      // A PLANET SYSTEM FREEZES WHEN THE PLAYER LEAVES IT. Non-field bodies
+      // used to be awake unconditionally, which was fine when there were ~380
+      // of them; the debris belts and the crumble layer put ~800 in the sky,
+      // and every one was paying the full per-substep bill — the collision
+      // sweep, both gravity phases, the rails pass — from the far side of the
+      // system. The rubble that MAKES a planet system (its belt, its junk
+      // probes, its ring chunks, the trojans) is inert railed scenery, so out
+      // past the wake bubble it group-advances once a FRAME on its rail and
+      // sleeps otherwise, exactly as a dormant shoal does. It wakes as you
+      // approach, on the same bubble, with the same seamless hand-off.
+      // Excluded, and each for a reason: ATTRACTORS (gravity has to stay exact
+      // — this is why planets, moons and the star are never dormant),
+      // ELLIPTICAL rails (the group advance below is the circular path only —
+      // a Kepler rail read as a circle is NaN on its first step), and
+      // INSTALLATIONS, which station-keep under thrust and must never wander.
+      dormant = b.onRails && !b.attractor && !(b.rail.e > 0)
+        && b.type !== 'station' && b.type !== 'nest' && !b.fort && !b.tinker && !b.shepherd
+        && (b.x - cx) ** 2 + (b.y - cy) ** 2 > wakeR2;
+    } else {
       const f = flds[b.field];
       if (f && !f.active) dormant = true;
       else {
@@ -2291,11 +3030,47 @@ export function step(game, dt) {
     }
   }
 
+  // THE CRUMBLE: ease freshly calved crust onto its world's halo. Between the
+  // two phases on purpose — it reads the accelerations Phase 1 just wrote as
+  // already applied to nothing, and adjusts VELOCITY, so Phase 2 integrates
+  // the settled value in the same substep.
+  updateCrust(game, dt);
+  updateGasVents(game, dt);
+  updateGasStrip(game, dt);
+
   // Phase 2: integrate live bodies (semi-implicit Euler)
   for (const b of live) {
     if (!b.alive || b.type === 'star' || b.dormant) continue;
     b.rot += b.spin * dt;
     if (b.thrownTimer > 0) b.thrownTimer -= dt; else b.thrownBy = null;
+    if (b.inertT > 0) b.inertT -= dt;       // fresh fragment, flying clear of its siblings
+    // SHRINK, EASED. damageBody sets a radius TARGET; the body walks to it over
+    // about a second and a half instead of snapping. Everything downstream reads
+    // b.radius, so the collider, the silhouette and the crater profile all
+    // shrink together and never disagree mid-animation.
+    if (b.radiusT !== undefined && b.radius !== b.radiusT) {
+      b.radius += (b.radiusT - b.radius) * (1 - Math.exp(-2.2 * dt));
+      if (Math.abs(b.radiusT - b.radius) < 0.05) b.radius = b.radiusT;
+    }
+    // GOING UNDER: a swallowed rock keeps ploughing into the clouds, dragging
+    // to a halt as they close over it, then is gone. Render fades it out across
+    // the same window, so it sinks rather than blinking out of existence.
+    if (b.sinkT > 0) {
+      b.sinkT -= dt;
+      const drag = Math.exp(-3.4 * dt);
+      b.vx *= drag; b.vy *= drag;
+      if (b.sinkT <= 0) {
+        b.alive = false;
+        const gi = b.sinkIn;
+        // Ejecta that rained back in do NOT erupt again — that is what keeps
+        // the fountain from feeding itself forever.
+        if (gi && !b.gasEjecta) {
+          gasErupt(game, gi, Math.atan2(b.y - gi.y, b.x - gi.x),
+            Math.min(1, 0.15 + b.mass / 11000));
+        }
+        continue;
+      }
+    }
     if (b.reentryT > 0) b.reentryT -= dt;   // atmosphere fire streak fades once clear
     if (b.onRails) continue;
     b.liveT += dt;
@@ -2620,6 +3395,11 @@ export function step(game, dt) {
   // parry-frozen rocks, and premium/quest objects (core, cache, pod, carved,
   // visitor, wreck). Heavyweights (> ATMO_MAX_MASS) punch through: attacking
   // a terran world is a feat that takes a real rock. The ship never burns.
+  // CRUST is exempt for the same reason railed junk is — it lives inside the
+  // shell by construction. A world's own halo sits at 1.05-1.5 radii and the
+  // atmosphere reaches 1.5, so without this a terran world burned away every
+  // piece it calved within about a second of calving it, and the crumble
+  // simply did not exist on the archetype most worth bombarding.
   {
     // Both halves were full-array walks per SUBSTEP, and the inner one is the
     // heavier by far: field rock is type 'asteroid', so every rock in every
@@ -2630,7 +3410,7 @@ export function step(game, dt) {
     const terrans = reg.terrans.length ? reg.terrans : null;
     if (terrans) {
       for (const b of live) {
-        if (!b.alive || b.type !== 'asteroid' || b.onRails || b.heldBy ||
+        if (!b.alive || b.type !== 'asteroid' || b.onRails || b.heldBy || b.crust ||
             b.mass > CFG.ATMO_MAX_MASS || b.core || b.cache || b.pod ||
             b.carved || b.visitor || b.wreck || b.junk || b.parryFrozen) continue;
         for (const p of terrans) {
@@ -2726,6 +3506,12 @@ export function predictPaths(game) {
         // rot (spin drift over the horizon is smaller than the marker dot)
         crystal: b.ptype === 'crystal', rot: b.rot,
         cjag: b.ptype === 'crystal' ? (b.cjag ||= crystalShards(b.id)) : null,
+        // CRATERS: the forecast has to agree with the collider about where a
+        // world's surface IS, or the ✕ lands on the rim of a crater the rock
+        // will actually fly into. Carried by reference — scars are read-only
+        // here, and the ghost keeps the same rot the crystal path does (spin
+        // drift over the horizon is smaller than the marker dot).
+        scars: (b.ptype !== 'crystal' && b.type !== 'asteroid' && b.scars.length) ? b.scars : null,
         // Influence cutoffs for the GHOST sums (same constants as gravityAt —
         // the forecast must not disagree with the sim about what matters):
         // cull2 for loose-body sums, cull2Ship (the wide one) for the ship path.
@@ -3014,6 +3800,9 @@ export function predictPaths(game) {
           const bnd = b.radius * CRYSTAL_REACH + ship.r;
           if (hd2 >= bnd * bnd) continue;
           hr = b.radius * crystalRadiusAt(b.cjag, Math.atan2(ship.y - b.y, ship.x - b.x) - b.rot) + ship.r;
+        } else if (b.scars && !b.gas) {
+          hr = b.radius * scarSurfaceAt(b.scars, b.radius,
+            Math.atan2(ship.y - b.y, ship.x - b.x) - b.rot) + ship.r;
         }
         if (hd2 < hr * hr) { shipHit = { x: px, y: py }; break; }
       }
@@ -3046,6 +3835,9 @@ export function predictPaths(game) {
           const bnd = b.radius * CRYSTAL_REACH + held.r;
           if (hd2 >= bnd * bnd) continue;
           hr = b.radius * crystalRadiusAt(b.cjag, Math.atan2(held.y - b.y, held.x - b.x) - b.rot) + held.r;
+        } else if (b.scars) {   // ...and inside a crater, not on the rim of one
+          hr = b.radius * scarSurfaceAt(b.scars, b.radius,
+            Math.atan2(held.y - b.y, held.x - b.x) - b.rot) + held.r;
         }
         if (hd2 < hr * hr) { heldHit = { x: held.x, y: held.y }; break; }
       }

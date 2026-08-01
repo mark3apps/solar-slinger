@@ -1,7 +1,9 @@
 import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX } from './config.js';
 import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import { volleyPick } from './tractor.js';
-import { TAU, angDiff, lerp, mulberry32, shellModal, senseBlind, crystalShards } from './util.js';
+import {
+  TAU, angDiff, lerp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
+} from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
   rockGLCount, rockGLResetTextures, rockGLStats, rockGLAvailable,
@@ -888,6 +890,71 @@ function traceCrystal(b) {
   ctx.closePath();
 }
 
+// THE WORLD'S SILHOUETTE, with the wounds actually carved out of it.
+//
+// A world that has been hit is not a circle any more: every impact that broke a
+// piece off takes a real notch out of the OUTLINE, so the starfield shows
+// through the wound and the surface detail, the terminator and the crack web
+// all simply end at its edge — there is nothing painted over the planet at all.
+// (History: the bite used to be drawn afterwards as an opaque space-coloured
+// blob sitting on the rim, fading in over a beat. It read as a black smear
+// stuck to the planet rather than as missing material, and several overlapping
+// ones merged into one flat void. The user's words: "a bad black thing that
+// shows up".)
+//
+// The profile is a cosine bowl roughened per-vertex off the scar's own seed, so
+// the wall is fractured rock rather than a machined scoop, and it is stable
+// frame to frame like every other seeded geometry in this file. Points are
+// cached in the body's LOCAL frame and rotated in with an incremental rotor —
+// the outline rides b.rot exactly like the scars it is made of, and this path
+// is traced up to five times per world per frame (fill, detail clip,
+// terminator clip, damage clip, eclipse).
+// The body size damage detail is authored against — see drawBodyDamage's dR.
+const DETAIL_R = 260;
+const SIL_N = 144;
+function worldSil(b) {
+  const scars = b.scars;
+  const newest = scars.length ? scars[scars.length - 1].t : -1;
+  let s = b._sil;
+  if (!s || s.n !== scars.length || s.t !== newest || s.r !== b.radius) {
+    s = b._sil = { n: scars.length, t: newest, r: b.radius, rr: new Float32Array(SIL_N) };
+    // util.scarSurfaceAt is the ONE crater profile — physics.surfRadius
+    // queries that same function for the COLLIDER, so the crater you can see
+    // and the crater you can fly into are the same crater by construction.
+    for (let i = 0; i < SIL_N; i++) s.rr[i] = scarSurfaceAt(scars, b.radius, (i / SIL_N) * TAU);
+  }
+  const step = TAU / SIL_N;
+  const dc = Math.cos(step), ds = Math.sin(step);
+  let c = Math.cos(b.rot), sn = Math.sin(b.rot);
+  ctx.beginPath();
+  for (let i = 0; i < SIL_N; i++) {
+    const rr = s.rr[i] * b.radius;
+    const px = b.x + c * rr, py = b.y + sn * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    const nc = c * dc - sn * ds;
+    sn = sn * dc + c * ds;
+    c = nc;
+  }
+  ctx.closePath();
+}
+
+// One entry point for "the shape this body actually is" — a crystal world's
+// jagged facets, a wounded world's notched limb, a plain disc otherwise. Every
+// fill and clip that means the BODY goes through here, so the drawn surface and
+// the wounds in it can never disagree about where the edge is.
+// **KEEP IN SYNC WITH physics.surfRadius** — that function is the collider and
+// this one is the picture, and they must agree body-for-body about which shape
+// each one is. Rocks are excluded from cratering in BOTH (they collide as
+// circles and draw as their own jag silhouette); crystal worlds keep their
+// facets in both, since carving notches into a shape that is already fractured
+// fights the read instead of adding to it.
+function traceSurface(b) {
+  if (b.type === 'asteroid') { traceAsteroid(b); return; }
+  if (b.ptype === 'crystal') { traceCrystal(b); return; }
+  if (b.scars.length) { worldSil(b); return; }
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU);
+}
+
 function nearestStar(game, x, y) {
   // frameStars is rebuilt each frame in beginFrame — looping all bodies here
   // made this O(bodies) per drawn body
@@ -1219,6 +1286,15 @@ function drawBody(game, b) {
     }
   }
 
+  // GOING UNDER (CFG.GAS_SINK): a rock swallowed by a gas giant fades out over
+  // its sink window instead of blinking off the screen — the clouds close over
+  // it. Restored at the end of the sprite block below.
+  const sinking = b.sinkT > 0;
+  if (sinking) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, b.sinkT / CFG.GAS_SINK)) ** 0.7;
+  }
+
   ctx.fillStyle = b.color;
   if (b.visitor) {
     drawVisitorSprite(b);
@@ -1245,14 +1321,17 @@ function drawBody(game, b) {
     drawNestSprite(game, b);
   } else if (b.dark) {
     drawDarkStarSprite(b);
-  } else if (b.type === 'planet' && b.ptype === 'crystal') {
-    traceCrystal(b);   // jagged facet silhouette instead of a disc
-    ctx.fill();
   } else {
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+    // traceSurface: the crystal facet silhouette, a wounded world's notched
+    // limb, or a plain disc. Craters are cut OUT of this path, so the wound is
+    // a real absence of planet rather than something drawn over one.
+    traceSurface(b);
+    ctx.fill();
   }
+  if (sinking) { ctx.restore(); return; }   // nothing else applies to a rock going under
 
   if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
+  if (b.molten > 0) drawMoltenCrust(game, b);
   if (b.landmark === 'geysers') drawGeyserPlumes(game, b);
   if (b.ember > 0.01) drawEmberReef(game, b);
   if (b.fort) drawFort(game, b);
@@ -1297,10 +1376,10 @@ function drawBody(game, b) {
   if (st && b.type !== 'asteroid' && b.type !== 'station' && b.type !== 'nest' && !b.dark) {
     const ang = Math.atan2(b.y - st.y, b.x - st.x);
     ctx.save();
-    // Crystal worlds clip to their jagged silhouette so the night side
-    // shades the spikes too (an unshaded spike tip reads as a stray mark)
-    if (b.ptype === 'crystal') traceCrystal(b);
-    else { ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); }
+    // Clipped to the real silhouette so the night side shades a crystal
+    // world's spikes too (an unshaded spike tip reads as a stray mark) and
+    // never spills across an open crater.
+    traceSurface(b);
     ctx.clip();
     ctx.fillStyle = 'rgba(2, 4, 14, 0.5)';
     ctx.beginPath();
@@ -1383,9 +1462,13 @@ function drawBody(game, b) {
     ctx.lineCap = 'butt';
   }
 
-  // Progressive damage: crack web + impact scars + near-death ember fissures
+  // Progressive damage. A GAS GIANT HAS NO CRUST TO CRACK: it took the same
+  // fissure web every solid world uses, which drew stone fracture lines across
+  // a ball of hydrogen. Its wound is weather instead — cyclones churning up out
+  // of the bands (CFG.GAS_*).
   if (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length))) {
-    drawBodyDamage(game, b);
+    if (b.ptype === 'gas') drawGasWound(game, b);
+    else drawBodyDamage(game, b);
   }
 
   // NEAR half of the ring — the arc that passes in FRONT of the world, so it
@@ -1427,9 +1510,9 @@ function drawBody(game, b) {
 // and every ambient drift rides multiples of b.rot, never wall-clock time.
 function drawPlanetDetail(b) {
   ctx.save();
-  // Crystal worlds clip to the jagged silhouette so facet detail fills the spikes
-  if (b.ptype === 'crystal') traceCrystal(b);
-  else { ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); }
+  // Clipped to the real silhouette: facet detail fills a crystal world's
+  // spikes, and surface detail stops dead at the edge of a crater.
+  traceSurface(b);
   ctx.clip();
   ctx.translate(b.x, b.y);
   // The surface turns under the fixed star-lit terminator (drawn after this in
@@ -1760,13 +1843,266 @@ function drawMoonDetail(game, b) {
 //    inward, fading in over a beat;
 //  - past 55% damage, ember light leaks from the deepest cracks (icy worlds
 //    leak cold blue instead) — the crust is failing.
+// A CORE STILL COOLING. Freshly stripped, it comes out red-hot and boiling and
+// settles into ordinary rock over CFG.GAS_CORE_COOL — the body's own colour is
+// already lerping (physics.coolColor), and this is the heat on top of it: a
+// convection pattern of bright cells churning over the surface, and an outer
+// glow bleeding off the limb. Both fade to nothing as `molten` runs out, so the
+// world quietly becomes the rocky planet it will stay.
+// Cells are seeded off the id and ride b.rot, so they never swim.
+function drawMoltenCrust(game, b) {
+  const m = b.molten;
+  const R = b.radius;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  ctx.globalCompositeOperation = 'lighter';
+  const rng = mulberry32(b.id * 9137 + 5);
+  for (let i = 0; i < 14; i++) {
+    const a = rng() * TAU;
+    const rr = R * Math.sqrt(rng()) * 0.92;
+    const sz = R * (0.1 + rng() * 0.2);
+    // Each cell breathes on its own phase — convection, not a blinking light.
+    const boil = 0.45 + 0.55 * Math.sin(game.time * (0.7 + (i % 4) * 0.25) + i * 1.9 + b.id);
+    const k = m * m * boil;
+    if (k < 0.02) continue;
+    const cx = Math.cos(a) * rr, cy = Math.sin(a) * rr;
+    const g2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, sz);
+    g2.addColorStop(0, `rgba(255, 196, 108, ${0.5 * k})`);
+    g2.addColorStop(0.5, `rgba(255, 96, 34, ${0.26 * k})`);
+    g2.addColorStop(1, 'transparent');
+    ctx.fillStyle = g2;
+    ctx.beginPath(); ctx.arc(cx, cy, sz, 0, TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+  // Heat bleeding off the limb — drawn outside the clip so it reads as glow.
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const hg = ctx.createRadialGradient(b.x, b.y, R * 0.82, b.x, b.y, R * 1.5);
+  hg.addColorStop(0, `rgba(255, 118, 48, ${0.3 * m})`);
+  hg.addColorStop(1, 'transparent');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.5, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+// A WOUNDED GAS GIANT STORMS. There is no crust here to fissure — everything a
+// rock does to this world is done to its weather — so damage reads as cyclones
+// boiling up out of the band pattern: more of them as it fails, each a tight
+// dark spiral with a bright sheared edge where it drags against the band it sits
+// in. Seeded off the body id so they never swim, and drawn in the SURFACE frame
+// so they ride the rotation like every other feature.
+// Clipped to the disc, solid strokes, no dashes — a real object.
+function drawGasWound(game, b) {
+  const dmg01 = 1 - b.hp / b.maxHp;
+  const R = b.radius;
+
+  // ---- ENTRY WOUNDS: what a rock going in actually looks like -------------
+  // Pushed by physics on every swallow (surface-local, so they ride the spin).
+  // Four beats, all off one age: a hot compression FLASH at the entry point, a
+  // PLUME of cloud thrown back out along the bearing, a SHOCK RING running
+  // outward through the bands, and a dark PUNCH-HOLE that swirls shut. This is
+  // the whole answer to "a rock hit it and nothing happened".
+  if (b.gasHits && b.gasHits.length) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.clip();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rot);
+    for (let i = b.gasHits.length - 1; i >= 0; i--) {
+      const h = b.gasHits[i];
+      const age = game.time - h.t;
+      if (age < 0) continue;
+      if (age > CFG.GAS_HIT_FADE) { b.gasHits.splice(i, 1); continue; }
+      const k = 1 - age / CFG.GAS_HIT_FADE;          // 1 -> 0 over the wound's life
+      const hx = Math.cos(h.a) * R, hy = Math.sin(h.a) * R;
+      const w = R * (0.05 + 0.11 * h.s);             // wound width, from the impactor
+      // PUNCH-HOLE: opens fast, closes slowly, and rotates as it closes.
+      const open = Math.min(1, age * 6);
+      const sw = w * open * (0.45 + 0.55 * k);
+      ctx.save();
+      ctx.translate(hx * 0.94, hy * 0.94);
+      ctx.rotate(h.a + age * 1.1);
+      ctx.fillStyle = `rgba(18, 12, 24, ${0.5 * k})`;
+      ctx.beginPath(); ctx.ellipse(0, 0, sw, sw * 0.55, 0, 0, TAU); ctx.fill();
+      // torn cloud dragged around the hole
+      ctx.strokeStyle = `rgba(255, 250, 240, ${0.2 * k})`;
+      ctx.lineWidth = Math.max(0.8, sw * 0.16);
+      ctx.beginPath(); ctx.ellipse(0, 0, sw * 1.5, sw * 0.62, 0, 0.5, 3.1); ctx.stroke();
+      ctx.restore();
+      // SHOCK RING: a band-parallel arc sweeping away from the entry point.
+      const ring = age / CFG.GAS_HIT_FADE;
+      if (ring < 0.75) {
+        const rk = 1 - ring / 0.75;
+        ctx.strokeStyle = `rgba(255, 236, 208, ${0.26 * rk * rk})`;
+        ctx.lineWidth = Math.max(0.9, R * 0.012 * (0.4 + h.s));
+        const spread = 0.25 + ring * 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, R * (0.99 - ring * 0.12), h.a - spread, h.a + spread);
+        ctx.stroke();
+      }
+      // FLASH + PLUME: compression heat at the moment of entry, thrown back out
+      // along the way it came in. Additive — this is light, briefly.
+      if (age < 0.7) {
+        const fk = 1 - age / 0.7;
+        ctx.globalCompositeOperation = 'lighter';
+        const g2 = ctx.createRadialGradient(hx, hy, 0, hx, hy, w * (1.4 + age * 5));
+        g2.addColorStop(0, `rgba(255, 226, 176, ${0.75 * fk * fk})`);
+        g2.addColorStop(0.5, `rgba(255, 150, 70, ${0.3 * fk * fk})`);
+        g2.addColorStop(1, 'transparent');
+        ctx.fillStyle = g2;
+        ctx.beginPath(); ctx.arc(hx, hy, w * (1.4 + age * 5), 0, TAU); ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+    ctx.restore();
+  }
+
+  if (dmg01 < 0.02) return;
+  const n = Math.max(1, Math.round(CFG.GAS_STORMS * dmg01));
+  const rng = mulberry32(b.id * 4271 + 13);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.clip();
+  ctx.translate(b.x, b.y);
+  ctx.rotate(b.rot);
+  ctx.lineCap = 'round';
+  for (let i = 0; i < CFG.GAS_STORMS; i++) {
+    // Every storm's rolls are consumed in the same order every frame regardless
+    // of how many are open, so the existing ones never move as new ones form.
+    const a0 = rng() * TAU;
+    const rr = R * (0.25 + rng() * 0.6);
+    const sz = R * (0.1 + rng() * 0.12);
+    const spin = rng() < 0.5 ? -1 : 1;
+    const drift = 0.15 + rng() * 0.5;
+    if (i >= n) continue;
+    const grow = Math.min(1, n - i);
+    // Cyclones are the one thing on a gas giant that MOVES under its own power
+    // — they rotate against the band, slowly. Phase accumulates off game.time
+    // at a fixed rate, so it cannot jump when the damage level changes.
+    const ph = game.time * drift * spin;
+    const cx = Math.cos(a0) * rr, cy = Math.sin(a0) * rr;
+    const s = sz * grow;
+    // dark eye + two trailing arms sheared out into the band
+    ctx.fillStyle = `rgba(24, 16, 30, ${0.34 + 0.26 * dmg01})`;
+    ctx.beginPath(); ctx.ellipse(cx, cy, s, s * 0.66, ph, 0, TAU); ctx.fill();
+    ctx.strokeStyle = `rgba(12, 8, 18, ${0.3 + 0.3 * dmg01})`;
+    ctx.lineWidth = Math.max(0.9, s * 0.3);
+    for (let k = 0; k < 2; k++) {
+      const st = ph + k * Math.PI;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, s * 1.75, s * 0.72, ph, st, st + 1.5);
+      ctx.stroke();
+    }
+    // the bright shear line where the storm drags on the band beside it
+    ctx.strokeStyle = `rgba(255, 245, 225, ${0.16 * grow})`;
+    ctx.lineWidth = Math.max(0.8, s * 0.16);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, s * 1.28, s * 0.5, ph, 0.4, 2.6);
+    ctx.stroke();
+    // THE EYE GLOWS as the wound deepens. This is the damage READ — a solid
+    // world leaks ember light from its deepest fissures past 55% damage, and
+    // this is the same escalation for a world made of weather: you are seeing
+    // down through a hole in the cloud deck to the hot interior. Without it a
+    // wounded giant just looked like a giant with weather on it, and the player
+    // had no way to tell one was being hurt at all.
+    if (dmg01 > 0.4) {
+      const heat = (dmg01 - 0.4) / 0.6;
+      const breathe = 0.75 + 0.25 * Math.sin(game.time * 2.1 + i * 1.9 + b.id);
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(cx, cy, 0, cx, cy, s * 1.5);
+      eg.addColorStop(0, `rgba(255, 214, 150, ${0.5 * heat * breathe * grow})`);
+      eg.addColorStop(0.45, `rgba(255, 124, 48, ${0.26 * heat * breathe * grow})`);
+      eg.addColorStop(1, 'transparent');
+      ctx.fillStyle = eg;
+      ctx.beginPath(); ctx.arc(cx, cy, s * 1.5, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+  ctx.lineCap = 'butt';
+  ctx.restore();
+
+  // ---- THE COLLAPSE: the core burning through a thinning envelope ---------
+  // While the throes run (physics.updateGasStrip) the world is falling in on
+  // itself, and what the player should see is the reason: the hot core, closer
+  // and brighter every second as the cloud above it goes. This is the scene the
+  // strip is — five seconds of a world coming apart — rather than the instant
+  // swap it replaced.
+  if (b.stripT > 0) {
+    const k = 1 - b.stripT / b.stripFor;             // 0 -> 1 across the collapse
+    const flick = 0.8 + 0.2 * Math.sin(game.time * 13 + b.id);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    const cr = R * (0.32 + 0.5 * k);
+    const cg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, cr);
+    cg.addColorStop(0, `rgba(255, 244, 214, ${(0.28 + 0.6 * k) * flick})`);
+    cg.addColorStop(0.35, `rgba(255, 176, 84, ${(0.2 + 0.45 * k) * flick})`);
+    cg.addColorStop(1, 'transparent');
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(b.x, b.y, cr, 0, TAU); ctx.fill();
+    // Tearing seams opening through the cloud deck as it comes apart.
+    ctx.strokeStyle = `rgba(255, 200, 130, ${0.4 * k * flick})`;
+    ctx.lineWidth = Math.max(1.2, R * 0.02 * (0.4 + k));
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 7; i++) {
+      const sa = b.rot + b.id * 0.7 + i * 0.897;
+      ctx.beginPath();
+      ctx.moveTo(b.x + Math.cos(sa) * R * 0.15, b.y + Math.sin(sa) * R * 0.15);
+      ctx.lineTo(b.x + Math.cos(sa) * R * (0.4 + 0.75 * k), b.y + Math.sin(sa) * R * (0.4 + 0.75 * k));
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+
+  // ---- VENTING: past CFG.GAS_VENT the envelope is visibly bleeding away ----
+  // Drawn OUTSIDE the disc clip — this is atmosphere leaving the world, and it
+  // is the promise the strip-to-core death pays off. Streamers trail anti-spin
+  // and drift outward, seeded off the id so they don't swim.
+  if (dmg01 > CFG.GAS_VENT) {
+    const v = (dmg01 - CFG.GAS_VENT) / (1 - CFG.GAS_VENT);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 7; i++) {
+      const a0 = b.id * 1.7 + i * 0.897 + game.time * 0.09 * (b.spin < 0 ? -1 : 1);
+      const reach = R * (0.12 + 0.5 * v) * (0.6 + ((b.id + i * 7) % 5) / 5);
+      const flick = 0.5 + 0.5 * Math.sin(game.time * 1.3 + i * 2.2 + b.id);
+      ctx.strokeStyle = `rgba(255, 214, 168, ${0.14 * v * flick})`;
+      ctx.lineWidth = Math.max(1.2, R * 0.035 * v);
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, R * 1.02 + reach * 0.5, a0 - 0.34, a0 + 0.34);
+      ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
 // Solid strokes only — this is a real object, not helper UI.
 function drawBodyDamage(game, b) {
   const dmg01 = 1 - b.hp / b.maxHp;
   const R = b.radius;
+  // DETAIL REFERENCE RADIUS. Everything below — crack widths, crack lengths,
+  // ember fissure glow, the fracture rays around a crater — was authored as a
+  // fraction of R back when a body this system draws was at most ~250 units
+  // across. Worlds are now built up to 3x their authored radius
+  // (CFG.PLANET_R_MUL), and a plain fraction scales the DAMAGE with them: a
+  // 686-unit planet drew 12-unit-wide fissures running 450 units across its
+  // face, which read as canyons gouged in the surface rather than as cracking.
+  // A crack does not get wider or longer because the planet is bigger, so the
+  // detail is sized against a FIXED reference instead — bodies at or under it
+  // are bit-identical to before, everything above shares one absolute look.
+  // (Anchoring is still real-R: cracks start at the true rim, craters sit on
+  // the true limb. Only the detail's own scale is clamped.)
+  const dR = Math.min(R, DETAIL_R);
   ctx.save();
   if (b.type === 'asteroid') traceAsteroid(b);
-  else { ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); }
+  else traceSurface(b);   // cracks stop at the edge of an open crater
   ctx.clip();
   ctx.translate(b.x, b.y);
   ctx.rotate(b.rot);
@@ -1776,17 +2112,29 @@ function drawBodyDamage(game, b) {
   // rebuilt each frame from the same seeded rolls — stable, never swims — and
   // shared with the ember pass below via crackPaths.
   const prog = (dmg01 - 0.04) * 14;   // hairlines from ~4% damage — wear shows early
-  const cracks = prog > 0 ? crackPaths(b, R, prog) : null;
+  const cracks = prog > 0 ? crackPaths(b, R, dR, prog) : null;
   if (cracks && cracks.length) {
     ctx.strokeStyle = `rgba(0,0,0,${0.24 + 0.28 * dmg01})`;
-    ctx.lineWidth = Math.max(0.8, R * 0.028) * (0.7 + 0.5 * dmg01);
+    const cw = Math.max(0.8, dR * 0.028) * (0.7 + 0.5 * dmg01);
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.beginPath();
-    for (const pts of cracks) {
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+    // TAPERED, in three passes from the rim inward. A fissure is widest where
+    // the surface failed and runs out to nothing; drawn at one width the whole
+    // length it reads as a stick laid across the planet — a decal — which is
+    // the one part of a wounded world that still looked painted on after the
+    // craters became real geometry. Three strokes, not a per-segment gradient:
+    // the cost is three paths per body and the read is the same.
+    for (let seg = 0; seg < 3; seg++) {
+      ctx.lineWidth = cw * (1 - seg * 0.3);
+      ctx.beginPath();
+      for (const pts of cracks) {
+        // Each pass covers a longer prefix of the crack at a thinner width, so
+        // the strokes stack up near the rim and thin out toward the tip.
+        const end = Math.max(1, Math.round(pts.length * (0.45 + seg * 0.275)));
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k <= end && k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1]);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
   }
 
@@ -1812,32 +2160,34 @@ function drawBodyDamage(game, b) {
     ctx.strokeStyle = icy
       ? `rgba(110, 190, 255, ${0.3 * heat * breathe})`
       : `rgba(255, 110, 40, ${0.34 * heat * breathe})`;
-    ctx.lineWidth = Math.max(1.5, R * 0.055);
+    ctx.lineWidth = Math.max(1.5, dR * 0.055);
     glowPath(); ctx.stroke();
     ctx.strokeStyle = icy
       ? `rgba(200, 240, 255, ${0.7 * heat * breathe})`
       : `rgba(255, 205, 120, ${0.75 * heat * breathe})`;
-    ctx.lineWidth = Math.max(0.8, R * 0.02);
+    ctx.lineWidth = Math.max(0.8, dR * 0.02);
     glowPath(); ctx.stroke();
     ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
     ctx.globalCompositeOperation = 'source-over';
   }
   ctx.restore();
 
-  // Scar bites — drawn UNCLIPPED so each crater visibly punches a chunk out
-  // of the silhouette: an opaque space-toned jagged blob straddling the rim
-  // (the missing material), a pale cliff-face lip on its inner edge, and
-  // fracture rays fanning into the body. Angles are surface-local, so bites
-  // ride the day/night spin like everything else.
+  // Crater surrounds. The crater ITSELF is not drawn here at all — it is cut
+  // out of the body's silhouette (worldSil), so what is missing is missing and
+  // the starfield shows straight through it. What is left to draw is the
+  // ground around the wound: a rim of exposed interior just inside the notch
+  // wall, and fracture rays running back into the surface. Both are clipped to
+  // the silhouette, so they stop at the crater edge instead of hanging over it.
   if (b.scars && b.scars.length) {
     ctx.save();
+    traceSurface(b);
+    ctx.clip();
     ctx.translate(b.x, b.y);
     ctx.rotate(b.rot);
     for (const sc of b.scars) {
-      const k = Math.min(1, (game.time - sc.t) * 3);   // quick fade-in
       const br = Math.max(2.2, R * 0.06 * sc.s);       // floor so pebble bites still read
       // Rocks aren't circles: sample the jag/shard silhouette at the scar's
-      // local angle so the bite sits ON the edge (vertex i lives at local
+      // local angle so the rim sits ON the edge (vertex i lives at local
       // angle i/n·TAU — same mapping as traceAsteroid/drawChunkSprite).
       let edge = 1;
       const poly = b.chunk ? b.shard : b.jag;
@@ -1845,38 +2195,24 @@ function drawBodyDamage(game, b) {
         let ai = sc.a % TAU; if (ai < 0) ai += TAU;
         edge = poly[Math.round((ai / TAU) * poly.length) % poly.length];
       }
-      // centered a hair OUTSIDE the rim so it reads as a notch eaten out of
-      // the edge, never a blob floating on the face
-      const cd = R * edge + br * 0.15;
+      const cd = R * edge;
       const cxp = Math.cos(sc.a) * cd, cyp = Math.sin(sc.a) * cd;
-      // organic bite mouth — two sin harmonics per vertex, stable per scar
-      const NV = 10;
-      ctx.fillStyle = `rgba(4, 6, 13, ${k})`;          // the space behind shows through
+      // Freshly exposed interior around the break — brighter than the weathered
+      // surface, and clipped away wherever the notch actually removed material.
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.13)';
+      ctx.lineWidth = Math.max(0.9, br * 0.3);
       ctx.beginPath();
-      for (let v = 0; v < NV; v++) {
-        const va = (v / NV) * TAU;
-        const h = Math.sin(b.id * 7.7 + sc.t * 13.3 + v * 2.1) * 0.14
-          + Math.sin(sc.t * 5.9 + v * 4.7) * 0.08;
-        const vr = br * (0.92 + h);
-        const px = cxp + Math.cos(va) * vr, py = cyp + Math.sin(va) * vr;
-        if (v === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath(); ctx.fill();
-      // pale exposed cliff face along the bite's inner edge
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.14 * k})`;
-      ctx.lineWidth = Math.max(0.8, br * 0.18);
-      ctx.beginPath();
-      ctx.arc(cxp, cyp, br * 0.95, sc.a + Math.PI - 1.0, sc.a + Math.PI + 1.0);
+      ctx.arc(cxp, cyp, br * 1.02, 0, TAU);
       ctx.stroke();
       // fracture rays fanning inward from the wound
-      ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * k})`;
-      ctx.lineWidth = Math.max(0.8, R * 0.022);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.lineWidth = Math.max(0.8, dR * 0.022);
       ctx.beginPath();
       for (let r2 = 0; r2 < 3; r2++) {
         const ra = sc.a + Math.PI + (r2 - 1) * 0.5 + Math.sin(b.id * 3.3 + sc.t * 7.1 + r2 * 5.7) * 0.22;
         ctx.moveTo(cxp + Math.cos(ra) * br * 0.6, cyp + Math.sin(ra) * br * 0.6);
-        ctx.lineTo(cxp + Math.cos(ra) * R * (0.28 + 0.13 * r2) * sc.s,
-          cyp + Math.sin(ra) * R * (0.28 + 0.13 * r2) * sc.s);
+        ctx.lineTo(cxp + Math.cos(ra) * dR * (0.28 + 0.13 * r2) * sc.s,
+          cyp + Math.sin(ra) * dR * (0.28 + 0.13 * r2) * sc.s);
       }
       ctx.stroke();
     }
@@ -1891,13 +2227,13 @@ function drawBodyDamage(game, b) {
 // SURFACE-LOCAL (caller has translated/rotated into the body frame). Each
 // fissure starts at the rim and stress-walks inward with angular jitter, with
 // a short side-branch once it's fully open.
-function crackPaths(b, R, prog) {
+function crackPaths(b, R, dR, prog) {
   const rng = mulberry32(b.id * 5077 + 7);
   const MAXC = 8;
   const out = [];
   for (let i = 0; i < MAXC; i++) {
     const a0 = rng() * TAU;
-    const len = R * (0.32 + rng() * 0.34);
+    const len = dR * (0.32 + rng() * 0.34);   // reach is absolute; the rim anchor below is real-R
     const drift = (rng() - 0.5) * 1.1;
     const j1 = rng() - 0.5, j2 = rng() - 0.5, j3 = rng() - 0.5;
     const brSide = rng() < 0.5 ? -1 : 1, brAt = 0.35 + rng() * 0.3;
@@ -1933,11 +2269,19 @@ function drawChunkSprite(b) {
   const R = b.radius;
   if (!b.shard || b.shardR !== R) {
     const rng = mulberry32(b.id * 3163 + 41);
-    const n = 6 + Math.floor(rng() * 3);
+    // Vertex count scales with SIZE. Six flat sides were authored for the
+    // ~10-unit spray chunk; a crust slab is drawn as a fraction of the world it
+    // came off (CFG.CRUST_R_*), so it arrives at 40-110 units where six sides
+    // read as a paper cut-out. The array stays a plain list of radial factors
+    // indexed by angle — the scar edge sampler in drawBodyDamage reads it that
+    // way (vertex i lives at local angle i/n·TAU), so the contract can't change.
+    const n = (R > 26 ? 8 : 6) + Math.floor(rng() * 4);
     const pts = [];
     for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);   // sharper than a tumbled rock
     b.shard = pts; b.shardR = R;
     b.crustAt = Math.floor(rng() * n);   // which run of edges keeps the old surface
+    b.facetAt = Math.floor(rng() * n);   // which face catches the light
+    b.faultAt = [Math.floor(rng() * n), Math.floor(rng() * n)];
   }
   const n = b.shard.length;
   const vx = (i) => Math.cos((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
@@ -1967,12 +2311,32 @@ function drawChunkSprite(b) {
   ctx.lineTo(vx(b.crustAt + 1), vy(b.crustAt + 1));
   ctx.lineTo(vx(b.crustAt + 2), vy(b.crustAt + 2));
   ctx.stroke();
-  // one dark split line across the interior — the fracture that freed it
+  // BROKEN VOLUME. At slab scale a shard needs interior structure or it draws
+  // as a flat cut-out: one pale wedge running back from a rim face (the plane
+  // the break left, catching the light) and a couple of dark fault lines
+  // crossing the body. Cheap — three paths, only on pieces big enough to read
+  // them, and they tumble with the rock because everything here is in its own
+  // rotated frame.
+  if (R > 14) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.11)';
+    ctx.beginPath();
+    ctx.moveTo(vx(b.facetAt) * 0.16, vy(b.facetAt) * 0.16);
+    ctx.lineTo(vx(b.facetAt), vy(b.facetAt));
+    ctx.lineTo(vx(b.facetAt + 1), vy(b.facetAt + 1));
+    ctx.lineTo(vx(b.facetAt + 2) * 0.72, vy(b.facetAt + 2) * 0.72);
+    ctx.closePath(); ctx.fill();
+  }
+  // dark split lines across the interior — the fractures that freed it
   ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
   ctx.lineWidth = Math.max(0.8, R * 0.08);
   ctx.beginPath();
   ctx.moveTo(vx(b.crustAt) * 0.55, vy(b.crustAt) * 0.55);
   ctx.lineTo(vx(b.crustAt + Math.floor(n / 2)) * 0.85, vy(b.crustAt + Math.floor(n / 2)) * 0.85);
+  if (R > 14) {
+    const [f0, f1] = b.faultAt;
+    ctx.moveTo(vx(f0) * 0.9, vy(f0) * 0.9);
+    ctx.lineTo(vx(f1) * 0.62, vy(f1) * 0.62);
+  }
   ctx.stroke();
   ctx.restore();
   ctx.restore();

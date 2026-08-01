@@ -32,6 +32,15 @@ import { ABILITIES } from './config.js';
 // Point bands. Deliberately lopsided: the silly ones are cheap, and the
 // insane ones are worth more than a whole category of easy ones, so a big
 // score can only come from doing something genuinely hard.
+// One bit per planet ARCHETYPE, for the "kill one of every kind" rows. A mask
+// plus an incrementally-maintained count keeps those predicates a plain
+// compare — no loop, no allocation, per the sweep's rules.
+const PTYPE_BIT = {
+  lava: 1, rocky: 2, gas: 4, ice: 8, terran: 16,
+  ocean: 32, desert: 64, shroud: 128, crystal: 256,
+};
+export const PTYPE_COUNT = 9;
+
 export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 200 };
 
 // Category order = panel order. `label` heads its block, `blurb` sits under it.
@@ -786,6 +795,40 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kGas >= 1),
   A('moonShot', 'insane', PTS.insane, 'Moon Shot', 'Kill a planet with a moon-class impactor.',
     (g, s) => s.moonShot >= 1),
+
+  // ---- WORLD-BREAKING. The crumble layer made killing a world a thing you
+  // work at over minutes rather than a number hitting zero, and gas giants got
+  // a death of their own; these are the rungs of that ladder. All of them
+  // count from zero, so none can land on frame one (the freebie rule).
+  A('killPlanet5', 'insane', PTS.insane, 'Cosmic Vandalism', 'Destroy five planets in one run.',
+    (g, s) => s.kPlanet >= 5),
+  A('killWorld10', 'insane', PTS.insane, 'And Everything In It',
+    'Destroy ten worlds — planets, moons, any of it.', (g, s) => (s.kWorld || 0) >= 10),
+  A('planetByPlanet', 'insane', PTS.insane, 'Immovable Meets Unstoppable',
+    'Kill a planet by throwing another planet at it.', (g, s) => (s.planetByPlanet || 0) >= 1),
+  A('planetByChunk', 'insane', PTS.brutal, 'Poetic Justice',
+    'Kill a planet with a slab broken off a world.', (g, s) => (s.planetByChunk || 0) >= 1),
+  A('ptypes4', 'combat', PTS.brutal, 'Varied Diet',
+    'Destroy four different kinds of world.', (g, s) => (s.kPtypeCount || 0) >= 4),
+  A('ptypesAll', 'insane', PTS.insane, 'Comparative Anatomy',
+    'Destroy one of every archetype in the system.', (g, s) => (s.kPtypeCount || 0) >= 9),
+
+  // ---- GAS GIANTS. Feeding one is the cheap end; stripping one is the feat.
+  A('gasFed', 'combat', PTS.easy, 'Feeding Time',
+    'Let a gas giant swallow something you threw.', (g, s) => (s.gasFed || 0) >= 1),
+  A('gasFed15', 'combat', PTS.tricky, 'Bottomless',
+    'Feed fifteen rocks into gas giants.', (g, s) => (s.gasFed || 0) >= 15),
+  A('gasFedMoon', 'combat', PTS.brutal, 'Hors D\'oeuvre',
+    'Feed a whole moon to a gas giant.', (g, s) => (s.gasFedMoon || 0) >= 1),
+  A('gasVent', 'combat', PTS.hard, 'Unstable',
+    'Hurt a gas giant badly enough that it starts venting on its own.',
+    (g, s) => (s.gasVented || 0) >= 1),
+  A('killGas2', 'insane', PTS.insane, 'Twice Is a Pattern',
+    'Strip two gas giants down to their cores.', (g, s) => s.kGas >= 2),
+  A('killGasAll', 'insane', PTS.insane, 'Nothing Left to Weigh',
+    'Strip every gas giant in the system.', (g, s) => s.kGas >= 3),
+  A('killCore', 'insane', PTS.insane, 'Finish What You Started',
+    'Strip a gas giant, then destroy the core it left behind.', (g, s) => (s.kCore || 0) >= 1),
   A('combo6', 'insane', PTS.brutal, 'Billiards Master', 'Chain a ×6 gravity-billiards combo.',
     (g) => (g.comboBest || 0) >= 6),
   A('combo8', 'insane', PTS.insane, 'Impossible Geometry', 'Chain a ×8 combo.',
@@ -996,11 +1039,33 @@ export function noteKill(game, b, credit, impactor) {
   else if (b.type === 'planet') {
     if (b.ptype === 'gas') s.kGas = (s.kGas || 0) + 1;
     else s.kPlanet = (s.kPlanet || 0) + 1;
+    // A world that used to be a gas giant, killed a second time (physics
+    // stamps the flag when the strip completes).
+    if (b.wasGiantCore) s.kCore = (s.kCore || 0) + 1;
+    // WHAT killed it. A planet thrown into a planet is the top of the ladder;
+    // a slab knocked off one world used to finish another is its own story.
+    if (impactor && impactor.type === 'planet') s.planetByPlanet = (s.planetByPlanet || 0) + 1;
+    if (impactor && impactor.chunk) s.planetByChunk = (s.planetByChunk || 0) + 1;
+  }
+  // WORLDS destroyed, any class — the running tally an "and everything in it"
+  // row reads. Counted here so the predicate stays a plain compare.
+  if (b.type === 'moon' || b.type === 'planet' || b.type === 'rogue') {
+    s.kWorld = (s.kWorld || 0) + 1;
+    // Distinct ARCHETYPES killed, kept as a bitmask plus a live popcount, so
+    // the "one of every kind" rows never loop inside a predicate.
+    const bit = PTYPE_BIT[b.ptype];
+    if (bit && !(s.kPtypeMask & bit)) {
+      s.kPtypeMask |= bit;
+      s.kPtypeCount = (s.kPtypeCount || 0) + 1;
+    }
+  }
+  if (b.type === 'planet') {
     // The feat inside the feat: a planet killed by something moon-class or
     // bigger. CHUNK_MIN_MASS (3500) is the same "this is a real world, not a
     // rock" line the shedding rules use.
     if (impactor && impactor.mass >= 3500) s.moonShot = (s.moonShot || 0) + 1;
-  } else if (b.type === 'station') s.kStation = (s.kStation || 0) + 1;
+  }
+  if (b.type === 'station') s.kStation = (s.kStation || 0) + 1;
   else if (b.type === 'rogue') s.kRogue = (s.kRogue || 0) + 1;
   else if (b.type === 'nest') s.kNest = (s.kNest || 0) + 1;
   // Field giants: only PLAYER-credited breaks count, so a shoal grinding

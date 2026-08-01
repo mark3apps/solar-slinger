@@ -205,6 +205,64 @@ export const CFG = {
   // GAS_CORE x radius. Rocks and aliens still bounce off the cloud tops.
   GAS_CRUSH_DPS: 110,
   GAS_CORE: 0.30,
+  // A GAS GIANT IS NOT MADE OF ROCK, and until now it took damage as though it
+  // were: a thrown rock BOUNCED off the cloud tops, the hit drew the crack web
+  // every solid world uses (fissures across a ball of hydrogen), and killing
+  // one sprayed stone fragments and left a hole in the sky. All three are the
+  // same mistake — treating an atmosphere as a crust.
+  //   IT SWALLOWS.  Loose rock that reaches the cloud tops sinks and is gone,
+  //     with a plume where it went in. No bounce, because there is nothing to
+  //     bounce off; no threshold, because "punching through" a gas giant just
+  //     means sinking deeper. The giant still takes the impact — scaled by what
+  //     hit it, so pebbles are weather and a thrown moon is a wound.
+  //   IT STORMS.  Damage shows as cyclones churning up out of the bands
+  //     (render.drawGasWound), not as cracks. The atmosphere is the wound.
+  //   IT IS STRIPPED, NOT SHATTERED.  At zero hp the envelope blows off as an
+  //     expanding cloud and leaves the CORE behind — a real dense world on the
+  //     giant's own rail, which its moons are handed to so a system survives
+  //     losing its primary. Killing a gas giant transforms it rather than
+  //     deleting it, which is also why the planet count holds.
+  GAS_IMPACT_MUL: 0.5,     // an impact spent sinking into atmosphere, not cratering
+  // NO SINGLE IMPACT STRIPS A GIANT. Collision damage is QUADRATIC in closing
+  // speed, and a late-game fling throws a moon three times faster than a mid
+  // one — measured, a heavy moon at full tier-5 sling computed 2.7x the giant's
+  // ENTIRE hp in one hit, so two moons ended the biggest thing in the sky. Same
+  // idiom as invariant 3's comparable-mass cap and LURKER_HIT_CAP: bound what
+  // one blow can take, and the number of blows stops depending on how hard the
+  // player happens to be able to throw. Six to ten moons, either way.
+  GAS_HIT_CAP: 0.18,       // most of maxHp one impact may take
+  GAS_DOM_EXP: 0.65,       // mass-dominance softening — a gas giant is not rigid
+  GAS_CORE_MASS: 0.28,     // the core's share of the giant's mass — cores are dense
+  GAS_STORMS: 6,           // cyclones on a fully-wounded giant
+  // THE IMPACT HAS TO BE AN EVENT YOU CAN SEE. A rock blinking out of existence
+  // against a wall of cloud is the least interesting thing that could happen,
+  // and it left the player no way to tell a giant was being hurt at all. So a
+  // swallowed rock takes GAS_SINK seconds to go under — it keeps ploughing in,
+  // fading and slowing as the clouds close over it — and the entry itself
+  // leaves a mark on the world: a hot flash, a plume, a shock ring running out
+  // through the bands, and a dark punch-hole that swirls shut over
+  // GAS_HIT_FADE. Sustained damage then reads as storms whose eyes GLOW hotter
+  // the deeper the wound goes, and past GAS_VENT the limb starts streaming
+  // atmosphere away — the visual promise of the strip-to-core death.
+  GAS_SINK: 0.55,          // seconds a swallowed rock spends going under
+  GAS_HIT_FADE: 3.2,       // seconds an entry wound takes to swirl closed
+  GAS_VENT: 0.62,          // damage fraction past which the atmosphere visibly bleeds off
+  GAS_VENT_EVERY: 5.5,     // base seconds between instability geysers (faster as it fails)
+  // THE STRIP IS A SCENE, NOT A SWAP. At zero hp the giant does not pop into
+  // a core: it enters death throes for GAS_STRIP_TIME seconds — venting from
+  // everywhere at once, its envelope visibly collapsing inward, the hot core
+  // burning brighter through the thinning cloud — and only then blows the
+  // atmosphere off in one shell. Killing the biggest thing in the sky should
+  // take longer to watch than killing a rock.
+  GAS_STRIP_TIME: 5,
+  // A CORE COMES OUT MOLTEN. It has just had a planet's worth of atmosphere
+  // ripped off it and spent the whole life of the system under that pressure —
+  // so it is exposed red-hot and boiling, and it takes GAS_CORE_COOL to settle
+  // into the ordinary rocky world it will be from then on. Purely a look:
+  // `b.molten` drives a colour lerp and a render overlay, and deliberately does
+  // NOT make it ptype 'lava', which would hand a freshly killed giant the lava
+  // archetype's heat aura and magma artillery as a parting gift.
+  GAS_CORE_COOL: 75,
 
   // Celestial bodies feel full gravity from stars and their parent planet, but
   // only this fraction from other planets/moons/rogues. The ship, aliens,
@@ -264,6 +322,26 @@ export const CFG = {
   PLANET_HP_BASE: 18000,
   PLANET_HP_MUL: 1.2,
 
+  // MOONS ARE THEIR OWN DURABILITY CLASS TOO — the rung between belt rock and a
+  // planet. They shipped on the plain `massToHp` curve every pebble uses, which
+  // put a 8,000-mass moon at 96 hp: less than a single solid throw, so a MOON —
+  // a named, charted, permanent piece of the sky — died to about the same
+  // effort as a boulder. That is the wrong end of the ladder in invariant 8,
+  // which reads "rock chips a PLANET, moon wounds it": for that to mean
+  // anything a moon has to be a thing you work at, not a thing you clip.
+  // Same shape as the planet class and for the same reason (mass dominance
+  // already throttles what a small impactor does to a heavy body, so a
+  // mass-proportional curve punishes big moons twice): a flat base, well under
+  // PLANET_HP_BASE so the ladder still reads, plus a gentle slope.
+  //   thrown ROCK -> chips it, tens of hits
+  //   thrown BOULDER / another MOON -> a real wound, a handful of hits
+  // Raising this does NOT quiet the crumble: craters, calving and mass loss all
+  // gate on ABSOLUTE damage as well as hp fraction (invariant 7's dual gate).
+  // It does NOT stop the ambient "absorbed" losses either — that rule is a mass
+  // ratio and never reads hp — those are a rail/derail question, not toughness.
+  MOON_HP_BASE: 2600,
+  MOON_HP_MUL: 1.0,
+
   // CHUNK SHEDDING: big bodies don't fail all-or-nothing — a single hit that
   // bites hard enough (≥ CHUNK_DMG_MIN absolute damage, or ≥ CHUNK_DMG_FRAC of
   // maxHp for smaller "big" bodies like moons) knocks real chunk asteroids off
@@ -278,6 +356,114 @@ export const CFG = {
   CHUNK_DMG_MIN: 4,        // absolute damage floor — lets ordinary throws crater planets
   CHUNK_DMG_FRAC: 0.045,   // or: single hit bites this fraction of maxHp
   CHUNK_MAX_MASS: 3200,    // per-chunk mass cap (grabbable boulder, never a disturber)
+
+  // THE DEBRIS BUDGET — the one ceiling every fragment system answers to.
+  // EVERY one of them used to gate on `game.bodies.length < 450`, written when
+  // the world held ~380 bodies. The dense fields put ~7,900 rocks in that same
+  // array, so from the day the shoals landed the comparison was false on frame
+  // one and chunk spray, spall, a dying world's debris cloud and the BRAWLER's
+  // Cluster Rounds ALL silently stopped happening — a planet took damage and
+  // only ever grew decals. Shoal rock must not be able to starve the rest of
+  // the sim of fragments, so the budget counts NON-FIELD bodies only (the
+  // reg.nonField registry, ~380 in a fresh world) and the fields keep their own
+  // separate ceilings (FIELD_ROCKS, the 10600/11200 caps in world/physics).
+  // Read through physics.debrisRoom, which is one frame stale for bodies born
+  // this frame — the per-event caps below are what actually bound a single
+  // burst, the budget bounds the accumulation.
+  DEBRIS_BUDGET: 1500,
+
+  // ---- CRUST DEBRIS: the crumble layer -----------------------------------
+  // A world under fire CALVES. Every wounding hit knocks real pieces of the
+  // planet loose at the impact point, and — unlike the old chunk spray, which
+  // fired them off at 80-450 u/s to become ordinary belt gravel a screen away
+  // — they STAY: a rubble halo hanging over the wound that the player can fly
+  // through, grab, and throw back. Two rules make that work:
+  //   SIZE IS DECOUPLED FROM MASS, exactly like the WORLD SCALE law that made
+  //     planets 3x their authored radius at unchanged mass. A 3200-mass chunk
+  //     draws at radius 10 — a speck beside a 705-radius world, which is why
+  //     the old spray read as dust even when it fired. A crust slab's radius
+  //     is a FRACTION OF ITS HOST instead, so a piece of a planet looks like a
+  //     piece of that planet. Mass stays under CHUNK_MAX_MASS, so nothing here
+  //     can wake a rail lane (the 5e4 disturber threshold) or change what a
+  //     chunk does to anything it hits.
+  //   THE HALO IS RIGID — one shared angular speed per host, the same law the
+  //     dense-field pockets run on (see FIELD_* / the shared rail.w). Mixed
+  //     angular speeds around one world means neighbouring slabs catch up and
+  //     grind, and railed bodies shoved apart by contact resolution snap back
+  //     on the next rail advance — a visible vibration. Rigid means the rubble
+  //     keeps the shape the impacts gave it, which IS the design ask: the
+  //     debris stays localised to where the damage happened.
+  // Fresh pieces fly FREE for a beat (they tumble, bump, and spread — the
+  // crumble), settle under a band assist, then rail onto the halo for good.
+  CRUST_BAND_LO: 1.05,     // halo inner edge (x the host's surface reach)
+  CRUST_BAND_HI: 1.5,      // halo outer edge — a hugging halo, not a ring system
+  CRUST_SETTLE: 1.9,       // 1/s — how hard the band eases a loose piece onto the halo
+  CRUST_FREE: 1.1,         // seconds a fresh piece tumbles before the band takes it
+  CRUST_R_MIN: 0.02,       // crumb radius, as a fraction of the host's radius
+  CRUST_R_MAX: 0.15,       // slab radius at a full-severity wound
+  CRUST_HP_MUL: 3,         // a slab is a real target — hp follows the DRAWN size
+  // A BIG PIECE OF A WORLD BREAKS LIKE THE WORLD DID. Crust slabs are drawn as
+  // a fraction of their parent planet, so the biggest run 100+ units across —
+  // and a rock that size popping into a puff of dust reads wrong beside a
+  // planet that comes apart into sixty pieces. Above CHUNK_SPLIT_R a chunk
+  // shatters into smaller chunks of its own material instead. Each child is
+  // roughly a third to a half its parent, so the cascade runs two or three
+  // levels and then stops on its own — bounded by construction, the same shape
+  // as the dense fields' giant-shard rule.
+  CHUNK_SPLIT_R: 15,       // drawn radius above which a chunk shatters instead of puffing
+  CHUNK_SPLIT: [3, 7],     // pieces one splitting chunk yields
+  // FRESH FRAGMENTS ARE INERT TO OTHER DEBRIS for this long. Without it,
+  // throwing one big slab into a world's halo detonated the entire system: the
+  // slab split, its pieces smashed the 26 halo slabs and 24 belt pieces packed
+  // around them, each of those split, and the wave ran until it hit the debris
+  // budget — hundreds of large bodies colliding at once, the frame rate gone,
+  // and (because the billiards credit stamp rode along) every one of those
+  // deaths paying throw-kill XP, which took a fresh run to tier 5 in a couple
+  // of seconds. Two independent fixes: a split no longer propagates player
+  // credit at all (shatter, the same rule shard/Demolition damage follows), and
+  // fresh pieces pass through OTHER DEBRIS while this window runs. The ship and
+  // the aliens still collide with them throughout — they are the things a
+  // player is aiming at, and a slab that ghosted through an enemy would be a
+  // worse bug than the one this fixes. Celestials still collide too: passing
+  // through a planet for four seconds and popping out the far side reads as
+  // broken, and rock-on-rock is where the cascade actually lived.
+  CHUNK_INERT: 4,
+
+  // ---- THE LEASH: loose debris is scenery, and scenery has a range ---------
+  // A PLANET SYSTEM IS ALIVE WHILE YOU ARE IN IT. Everything the crumble mints
+  // is rubble around a world, and once you have flown to the next lane it is
+  // rubble nobody will ever look at again — but it still pairs in the collision
+  // broad phase, still holds a slot in the debris budget, and still keeps its
+  // pocket of the sky busy forever. So loose debris that drifts clear of the
+  // player is retired. Railed bodies are exempt (a world's belt, its junk
+  // probes, the ring chunks, the trojans — those ARE the system, and they cost
+  // nothing once dormant), and so is everything the expedition layer cares
+  // about: cores, caches, mayday pods, the carved stone, the visitor, wrecks,
+  // comets.
+  // Both leashes sit far outside any view (the screen edge is at 1.0x viewR),
+  // so nothing can ever be seen to vanish — that is the whole constraint.
+  DEBRIS_LEASH: 3.2,       // x viewR, plus the pad below: ordinary loose rubble
+  THROW_LEASH: 7,          // x viewR: something the PLAYER threw gets a long run
+  LEASH_PAD: 2200,         // absolute floor added to both, so a tight zoom still reaches far
+
+  // ---- AMBIENT WORLD WEAR --------------------------------------------------
+  // A world you are not at still lives in a shooting gallery. Left alone it
+  // slowly picks up meteor damage, so a lane you come back to after twenty
+  // minutes has visibly weathered rather than being pristine exactly as you
+  // left it. Deliberately SLOW and hard-FLOORED: this must never be a way for
+  // the sky to fall apart on its own — invariant 8's whole point is that
+  // killing a world is a feat the PLAYER performs — so it can only ever take a
+  // planet down to PLANET_WEAR_FLOOR of its maxHp and then stops dead. It also
+  // never derails, never sheds mass and never calves (see world.wearWorlds):
+  // this is weathering, not impacts.
+  // The per-world rate is hashed off the body id, NOT drawn from the world rng
+  // — a draw there would reshuffle the entire seeded sky (see the
+  // expedition-layer rule in world.js).
+  PLANET_WEAR_FLOOR: 0.5,      // hp floor as a fraction of maxHp — a hard stop
+  PLANET_WEAR_DPS: [1.1, 4.2], // per-world rate band, hp/sec (≈40-160 min to the floor)
+  PLANET_WEAR_SCAR: 0.055,     // one small crater per this fraction of maxHp worn away
+  CRUST_PER_HOST: 26,      // rubble pieces one world carries (past this it recycles off-view)
+  CRUST_DEATH: [44, 92],   // pieces a dying world comes apart into
 
   // Speed governor: each engine level raises the ceiling; excess speed
   // (slingshots, knockbacks) bleeds off at SPEED_BLEED x the overage per
@@ -632,6 +818,62 @@ export function fieldFrac(f, x, y) {
   const q = Math.hypot(nx, ny);
   if (q < 1e-6) return 0;
   return q / fieldLobe(f, Math.atan2(ny, nx));
+}
+
+// WHAT A PIECE OF A WORLD WEIGHS, from how big it is drawn.
+//
+// Crust is sized off its parent world, not off its mass (CFG.CRUST_*) — that is
+// what makes a slab look like a slab. But MASS is what the game gates on: the
+// tractor's tier caps (TIERS.caps), the orbit stow, the fling solver and the
+// hover hint ring are all mass tests. Leave the two unrelated and a 130-unit
+// slab of planet weighs the same as a pebble, so every gravity tool picks it up
+// like one — which is exactly what it looked like, and wrong.
+//
+// So drawn radius maps to mass through one curve, tuned against the TIER CAPS
+// rather than against rock density (belt rock's own radius curve would put a
+// 130-unit body at 9 million, heavier than the sun — the same reason worlds are
+// big-not-heavy under the WORLD SCALE law). The ladder it produces:
+//   ~12u crumb  ->    ~300  grabbable from tier 0 — this is the ammunition
+//   ~40u piece  ->   ~3,900 needs tier 1
+//   ~90u slab   ->  ~21,000 needs tier 2
+//  ~130u slab   ->  ~45,000 needs tier 3, and that is the ceiling
+// The ceiling is the point: it stays under the 5e4 rail-disturber threshold, so
+// even a thrown slab of planet can never wake whole rail lanes.
+export function crustMass(R) {
+  return Math.max(90, Math.min(45000, 1.8 * Math.pow(R, 2.1)));
+}
+
+// ---------------------------------------------------------------------------
+// WORLD DEBRIS MATERIAL — what a piece of a given world is made of. The ONE
+// table behind both halves of the crumble layer: the rubble belts worldgen
+// hangs on every planet (world.seedDebrisBelts) and the crust a wounded world
+// calves under fire (physics.calveCrust). They must agree, or a planet's own
+// broken-off slabs would read as a different substance from the rubble already
+// orbiting it.
+// The base tone is the HOST'S OWN COLOUR on purpose — render's chunk sprite
+// paints fracture faces by knocking that colour down and keeps one bright edge
+// run as surviving crust, so a piece drawn in its parent's colour reads as
+// split rock FROM that parent rather than as a rock painted to match. Only the
+// archetypes with a genuinely different substance override it.
+// `mix` is a 0..1 roll from the caller's rng — seeded at worldgen, Math.random
+// for runtime calving, same as every other spawn in the game.
+export function worldDebris(ptype, hostColor, mix = 0.5) {
+  switch (ptype) {
+    // Ring and shell ice: the existing gas-giant ring material, extended to the
+    // ice worlds — which shipped with NO orbiting rock at all.
+    case 'gas':  return { color: mix < 0.72 ? '#cfe6f2' : '#a9c6d8', ice: true };
+    case 'ice':  return { color: mix < 0.6 ? '#bfe3f2' : '#8fb6cc', ice: true };
+    // Chilled ejecta over a lava world — basalt, with the hottest fraction
+    // still glowing. Colour only: a real `magma` timer would enrol every piece
+    // in the decay registry and cool them all to one brown within seconds.
+    case 'lava': return { color: mix < 0.3 ? '#8a4a30' : mix < 0.7 ? '#5c453e' : '#42352f' };
+    // Facet shards. A slice of them hide a mineral core, so a crystal world's
+    // halo prospects like the cored belt rock does — the same battle-tested
+    // loop, not a new economy.
+    case 'crystal': return { color: mix < 0.5 ? '#9d86c9' : '#7a6ba3', cored: mix < 0.22 };
+    // Everything solid keeps its parent's face.
+    default: return { color: hostColor };
+  }
 }
 
 // Tractor size tiers. Your ORBIT can hold objects one tier below what your

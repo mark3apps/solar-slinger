@@ -54,7 +54,9 @@ export class Body {
     this.maxHp = this.type === 'star' ? Infinity
       : (o.hp || (this.type === 'planet'
         ? CFG.PLANET_HP_BASE + massToHp(o.mass) * CFG.PLANET_HP_MUL
-        : massToHp(o.mass)));
+        : this.type === 'moon'
+          ? CFG.MOON_HP_BASE + massToHp(o.mass) * CFG.MOON_HP_MUL
+          : massToHp(o.mass)));
     this.hp = this.maxHp;
     this.alive = true;
     this.scars = [];         // impact craters {a: surface-local angle, s: size, t: time} — render draws them
@@ -67,6 +69,48 @@ export class Body {
     this.liveT = 0;          // seconds since derailed (for re-railing)
     this.local = false;      // spawned by the view-local field (cullable)
   }
+}
+
+// Dress a freshly spawned asteroid as A PIECE OF A WORLD. One function behind
+// all four sources of crust — the debris belts worldgen hangs on every planet
+// (world.seedDebrisBelts), the pieces a wounded world calves under fire
+// (physics.calveCrust), the cloud a dying world comes apart into, and the
+// cascade when a big piece is itself broken up — so those four can never drift
+// apart in look or in physics. Callers set MASS from config.crustMass(R).
+export function makeChunk(b, R, mat) {
+  b.chunk = true;                    // render's crust-shard sprite
+  b.radius = b.baseRadius = R;       // SIZE comes from the parent world, not from mass
+  b.color = mat.color;
+  if (mat.ice) b.ice = true;
+  if (mat.cored) { b.cored = true; b.color = '#7d7566'; }
+  // A slab is a real target, not a pebble that pops on the first bump: hp
+  // follows the drawn size, because that is what the player is aiming at.
+  b.maxHp = b.hp = massToHp(b.mass) * CFG.CRUST_HP_MUL;
+  // DEBRIS IS NEVER AN ATTRACTOR, at any mass — the rule dense-field rock runs
+  // on, for both of its reasons. A rubble halo must not tug on the rails around
+  // its own world, and 26 pieces per world across every world the player works
+  // over would join the O(bodies x attractors) hot loop for nothing.
+  b.attractor = false;
+  return b;
+}
+
+// The RIGID angular rate of a world's rubble shell — one rate for everything
+// orbiting inside CFG.CRUST_BAND_*, shared by the debris belts worldgen hangs
+// on a planet and the crust it calves under fire. Same law as a dense-field
+// pocket's shared rail.w, and for the same reason: with per-radius Keplerian
+// rates neighbouring pieces catch up with each other and grind, and a railed
+// body shoved apart by contact resolution snaps back on the next rail advance,
+// which reads as a shell that vibrates. Rigid, the rubble keeps the shape the
+// impacts gave it. Signed with the host's spin, so it turns the way the surface
+// it came off does. Cached on the host.
+export function chunkHaloW(host) {
+  if (host.haloW === undefined) {
+    const reach = host.ptype === 'crystal' ? host.radius * 1.32 : host.radius;
+    const r = reach * (CFG.CRUST_BAND_LO + CFG.CRUST_BAND_HI) * 0.5;
+    const vC = Math.sqrt((CFG.G * host.mass * r * r) / Math.pow(r * r + CFG.GRAV_SOFT ** 2, 1.5));
+    host.haloW = (vC / r) * (host.spin < 0 ? -1 : 1);
+  }
+  return host.haloW;
 }
 
 // Put a body on a precomputed circular orbit around parent, derived from its
