@@ -470,7 +470,31 @@ function openAchievements() {
 }
 // Settings is the only one that owns persisted state, so it's the only one that saves.
 function closeShellPanel() { if (game.settingsOpen) saveSettings(); closeShell(); sfx.sfxMenuClose(); }
-function toMainMenu() { game.paused = false; closeShell(); game.started = false; }
+// MAIN MENU out of a run ENDS the run. Backing out used to only flip `started`,
+// so the splash sat over a paused, half-played world and START silently resumed
+// it — the title screen has no notion of "continue", so that read as the menu
+// having done nothing. Resetting HERE rather than in startGame is what makes the
+// backdrop honest: the sky drifting behind the menu is the brand-new system
+// (fresh seed via resetRun -> regenWorld -> pickSeed) that START drops you into,
+// exactly as on a cold boot. The spec card is deliberately NOT opened — startGame
+// does that on the way in; a pick card floating over the splash would be an
+// upgrade modal with no run behind it.
+function toMainMenu() {
+  game.paused = false;
+  closeShell();
+  game.started = false;
+  resetRun(undefined, false);
+  // The dead run's last words go with it: the message slot's lifetime is
+  // wall-clock, and the deferred grab tip is a pending setTimeout that would
+  // otherwise pop behind the NEXT run's spec card.
+  clearTimeout(tipTimer);
+  hud.clearMessage();
+  // Restart the establishing shot with the world it is establishing, so every
+  // fresh title screen opens on the same framing (and the same breathing phase
+  // as the boot animation) instead of picking up wherever the last one left off.
+  game.splashT = 0;
+  splashAcc = 0;
+}
 
 // ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
 function toggleMenu() {
@@ -511,7 +535,12 @@ function exitGame() {
 //     charge prog.lives for a run that hasn't started;
 //   - event flags step() raises (heat, storms, auroras…) are cleared each frame
 //     instead of drained, or they'd all fire as messages the moment START ran.
-const SPLASH_ZOOM = 0.205;   // zoomCur for the wide shot (gameplay tier-0 is ~1.15)
+// zoomCur for the wide shot (gameplay tier-0 is ~1.15). Pulled back from 0.205
+// to ~1.5x wider: at the old framing the camera's 4400u orbit was about one view
+// radius, so the sun sat on the frame edge and the shot read as "near a star"
+// rather than as a system. Wider, the inner lanes and the first belt sweep
+// through together — and the dive onto the ship at START has further to travel.
+const SPLASH_ZOOM = 0.14;
 let splashAcc = 0;
 function driftSplash(dt) {
   game.time += dt;
@@ -759,7 +788,11 @@ function openUpgrade() {
 // `seed` forces a specific world (window.freshRun / mechTest); undefined lets
 // pickSeed resolve one, so a normal new run lands on a brand-new random system
 // unless the player has pinned a seed in Settings.
-function resetRun(seed) {
+// `openCard` false resets everything but leaves the spec choice unopened — the
+// MAIN MENU path, where the card must wait for START (see toMainMenu). Every
+// other caller relies on the reset ENDING on that card: window.freshRun picks
+// it immediately, and a game-over restart must open on it.
+function resetRun(seed, openCard = true) {
   game.prog = freshProgress();   // ...including a blank achievement ledger + score
   game.st = shipStats(game.prog);
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
@@ -799,7 +832,14 @@ function resetRun(seed) {
   hud.setDeathVisible(false);
   hud.setGameOverVisible(false);
   firstStart = true;     // re-arm the flight guidance for the fresh run
-  openSpec();            // fresh run opens on a new specialization choice
+  if (openCard) {
+    openSpec();          // fresh run opens on a new specialization choice
+  } else {
+    // No card: the dead run's own pick state must go with it, or a stale
+    // choosingUpgrade would freeze the title backdrop behind an invisible modal.
+    game.choosingUpgrade = false; game.upgradeChoices = null;
+    hud.setUpgradeVisible(game, null, '', applyPick);
+  }
 }
 
 // One-shot event messages — the "Event-flag messaging" convention (CLAUDE.md):

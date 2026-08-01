@@ -74,6 +74,17 @@ export function message(text, dur = 3.5) {
   msgTimer = setTimeout(() => el.msg.classList.add('hidden'), dur * 1000);
 }
 
+// Drop the slot NOW rather than letting its timer run out. The lifetime is
+// wall-clock, so a warning raised in the last second of a run would otherwise
+// hang over the title screen it has nothing to do with — and the slot sits at
+// 17% from the top, exactly where the splash panel's header is (the same
+// collision syncMenus hides it for under a shell modal).
+export function clearMessage() {
+  clearTimeout(msgTimer);
+  el.msg.classList.add('hidden');
+  el.msg.textContent = '';
+}
+
 // Wire the front-end shell once. main.js owns the transitions (it holds the
 // game state); hud only routes the clicks — mirroring the upgrade-modal split.
 export function initMenus(handlers) {
