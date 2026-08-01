@@ -492,8 +492,11 @@ function toMainMenu() {
   // Restart the establishing shot with the world it is establishing, so every
   // fresh title screen opens on the same framing (and the same breathing phase
   // as the boot animation) instead of picking up wherever the last one left off.
+  // Applied HERE, not left to the next driftSplash: that frame may take zero
+  // substeps and would render the dead run's camera first (see frameSplash).
   game.splashT = 0;
   splashAcc = 0;
+  frameSplash(0);
 }
 
 // ESC / P: context-sensitive. Never dismiss an upgrade card (you must pick one).
@@ -542,6 +545,21 @@ function exitGame() {
 // through together — and the dive onto the ship at START has further to travel.
 const SPLASH_ZOOM = 0.14;
 let splashAcc = 0;
+// The establishing shot's framing at splash time t. Lifted OUT of the substep
+// loop because the loop is not guaranteed to run: driftSplash takes zero
+// substeps on any frame shorter than the sim step — a >120 Hz display, or the
+// first frame after a reset zeroed the accumulator — and until this was its own
+// function, such a frame rendered the world at whatever camera and zoom the
+// previous state left behind (the dead run's ship at gameplay zoom on the way
+// out of MAIN MENU, the spawn close-up at boot), then snapped wide. One frame,
+// but a visible pop, and under the splash's blur it read as a glitch. Callers
+// only set zoomCur; frame()'s splash branch runs applyZoom before every render.
+function frameSplash(t) {
+  game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
+  const a = t * 0.06;                                            // slow orbit of the sun
+  game.cam.x = Math.cos(a) * 4400;
+  game.cam.y = Math.sin(a) * 4400;
+}
 function driftSplash(dt) {
   game.time += dt;
   // The re-rail scan measures against the player's view, not the camera's — off
@@ -582,11 +600,7 @@ function driftSplash(dt) {
   while (splashAcc >= sdt && splashSteps < CFG.SUBSTEP_MAX) {
     step(game, sdt);
     game.splashT = (game.splashT || 0) + sdt;
-    const t = game.splashT;
-    game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
-    const a = t * 0.06;                                            // slow orbit of the sun
-    game.cam.x = Math.cos(a) * 4400;
-    game.cam.y = Math.sin(a) * 4400;
+    frameSplash(game.splashT);
     splashAcc -= sdt;
     splashSteps++;
     perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
@@ -603,6 +617,14 @@ function driftSplash(dt) {
   // a burst of rank messages the instant START ran.
   game.rankUps.length = 0;
 }
+// Arm the title framing before the FIRST frame ever renders. The boot world is
+// built at module load, which leaves the camera on the ship at the gameplay
+// zoomCur (1.15) — and the first frame's dt is the gap from module eval to the
+// first rAF, which is routinely under one sim step, so driftSplash takes no
+// substeps and the title opens on a close-up of the spawn. Down HERE rather
+// than beside regenWorld() because SPLASH_ZOOM is a const declared above this
+// line: calling frameSplash any earlier is a TDZ ReferenceError at load.
+frameSplash(0);
 
 // Every menu button is a user gesture — init Web Audio first so the very
 // click that unlocks the context also gets its tick.
