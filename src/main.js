@@ -527,25 +527,31 @@ function driftSplash(dt) {
   // (2, 2, 3, 2, …); a camera eased on dtReal beats against that quantization.
   // One clock for both keeps the drift glass-smooth. (Before the world was
   // live this couldn't show — nothing moved for the camera to beat against.)
+  // Same pacing law as the in-game loop (FRAME PACING): the live step, and the
+  // same hard substep cap. The backdrop runs the FULL physics behind a menu —
+  // ~8000 bodies — so it is exactly as capable of spiralling, and the old
+  // 0.25s backlog ceiling here was worth up to 30 substeps in a single frame.
   splashAcc = Math.min(splashAcc + dt, 0.25);   // a backgrounded tab must not spiral
+  const sdt = simDt;
   let splashSteps = 0;
-  while (splashAcc >= CFG.DT) {
-    step(game, CFG.DT);
-    game.splashT = (game.splashT || 0) + CFG.DT;
+  while (splashAcc >= sdt && splashSteps < CFG.SUBSTEP_MAX) {
+    step(game, sdt);
+    game.splashT = (game.splashT || 0) + sdt;
     const t = game.splashT;
     game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
     const a = t * 0.06;                                            // slow orbit of the sun
     game.cam.x = Math.cos(a) * 4400;
     game.cam.y = Math.sin(a) * 4400;
-    splashAcc -= CFG.DT;
+    splashAcc -= sdt;
     splashSteps++;
     perf.steps++;   // the title backdrop is a real sim — the overlay shouldn't read zero here
   }
+  if (splashAcc >= sdt) { perf.dropped += splashAcc - (splashAcc % sdt); splashAcc %= sdt; }
   // The title backdrop pays the field LOD too (the dead ship routes the wake
   // bubble to the CAMERA): without this the splash simulated all ~8000 field
   // rocks at full price behind a menu — and dormant pockets would freeze
   // solid instead of orbiting, since update() never runs here.
-  if (splashSteps) updateFieldLOD(game, splashSteps * CFG.DT);
+  if (splashSteps) updateFieldLOD(game, splashSteps * sdt);
   for (const m of EVENT_MSGS) game[m.flag] = null;
   // ...and the automatic-rank queue with them: update() is what drains it, and
   // the title screen never runs update(), so anything banked here would fire as
@@ -934,9 +940,76 @@ let acc = 0;
 // EMA-smoothed — unsmoothed digits strobe too fast to read — while the counts
 // stay instantaneous, since they don't jitter. Costs nothing when the overlay
 // is off: it's four multiply-adds and hud.js early-outs before formatting.
-const perf = { fps: 60, frameMs: 16.7, simMs: 0, drawMs: 0, steps: 0 };
+const perf = { fps: 60, frameMs: 16.7, simMs: 0, drawMs: 0, steps: 0, dtHz: Math.round(1 / CFG.DT), dropped: 0 };
 game.perf = perf;
 const PERF_EMA = 0.1;
+
+// ---- FRAME PACING (the substep budget) --------------------------------------
+// The fixed-timestep accumulator has a nasty property: the number of substeps
+// it runs RISES as the frame rate falls. At 60 fps a frame owes 2 substeps; at
+// 15 fps it owes 6. So the machine that is already too slow is handed 3x the
+// sim work for being slow — slow frame ⇒ more substeps ⇒ slower frame, and it
+// compounds. Measured in a dense shoal on this laptop: sim 2.5ms at 1 substep
+// vs 7.1ms at 6, against a draw that stays at ~1.7ms either way. The sim
+// overtakes the draw exactly when you can least afford it.
+//
+// Two guards, deliberately both:
+//   1. CFG.SUBSTEP_MAX caps substeps per frame. Past the cap the leftover
+//      backlog is DROPPED, never carried — carrying it is what makes the loop
+//      positive-feedback. The sim then runs slow (honest time dilation) rather
+//      than expensive, which is the trade a frame that is already late wants.
+//   2. simDt drops from CFG.DT to CFG.DT_COARSE when frames are persistently
+//      slower than the cap can cover, which halves the sim cost instead of
+//      dilating time. The cap alone would leave a 15 fps machine running the
+//      world at ~40% speed; the coarse step buys the real time back.
+// The cap alone is the safe half (it changes no physics); the coarse step is
+// the half that costs integration accuracy, so it is strictly a relief valve —
+// nothing changes on a machine that keeps up.
+//
+// simDt is the step the accumulator is USING; CFG.DT stays the reference the
+// physics was tuned at. frame() is the ONLY place that may change it — every
+// headless entry point (window.tick, mechTest's stepSim) re-pins the fine step
+// first, so measured frame time can never leak into a harness that is supposed
+// to be bit-repeatable.
+let simDt = CFG.DT;
+let paceT = 0;               // seconds the pacing verdict has disagreed with the live step
+function pinFineStep() { simDt = CFG.DT; paceT = 0; perf.dtHz = Math.round(1 / CFG.DT); }
+
+function updatePacing(rawMs) {
+  // FAST-FORWARD PINS THE STEP. window.speed's own per-frame wall-clock budget
+  // guarantees slow frames, so a sustained speed(10) would pace itself onto the
+  // coarse step within the dwell — and speed() is the documented way to WATCH a
+  // physics failure happen. A viewer that quietly changes the physics it is
+  // showing you is a trap; the tool's contract is that only the step COUNT
+  // changes at speed, never the semantics.
+  if (game.timeScale !== 1) { pinFineStep(); return; }
+  const isCoarse = simDt !== CFG.DT;
+  const wantCoarse = isCoarse
+    // Already coarse: stay unless BOTH say the fine step is affordable again.
+    // Work — 2x simMs, since halving the step doubles the substeps — is the
+    // primary test, because a vsync-bound frame is mostly idle and a frame-time
+    // test alone would strand a 60 Hz machine on the coarse step permanently.
+    // Frame time is the second: an externally slow frame is one the fine cap
+    // would dilate whatever our own cost is, and without this clause the switch
+    // hunts (see PACE_FINE_MS). Each clause covers the other's blind spot.
+    ? 2 * perf.simMs + perf.drawMs > CFG.PACE_FINE_WORK_MS || perf.frameMs > CFG.PACE_FINE_MS
+    // Fine now: frames slower than the fine step's cap budget are ALREADY
+    // being time-dilated by the cap, so the coarse step is a pure win there.
+    : perf.frameMs > CFG.PACE_COARSE_MS;
+  if (wantCoarse === isCoarse) { paceT = 0; return; }   // verdict agrees — nothing to do
+  // A hitch is not a slow machine. The verdict has to hold CONTINUOUSLY for
+  // PACE_DWELL (one alt-tab stall spikes the frame EMA for ~0.5s, well inside
+  // this window) before the step actually moves. Counted in RAW wall seconds,
+  // never dtReal: dtReal is clamped to 50ms, so on the 15 fps machine this
+  // exists for, a dtReal dwell would take 2s of wall clock to open — the relief
+  // valve would be slowest exactly where it is needed most.
+  paceT += rawMs / 1000;
+  if (paceT >= CFG.PACE_DWELL) {
+    simDt = wantCoarse ? CFG.DT_COARSE : CFG.DT;
+    perf.dtHz = Math.round(1 / simDt);
+    paceT = 0;
+  }
+}
 
 function update(dtReal) {
     game.time += dtReal;
@@ -1007,24 +1080,53 @@ function update(dtReal) {
     // share one clock and the gap stays rock-steady. Cosmetic-only easing
     // (shake decay, the zoom ramp) still rides dtReal above — those have no
     // quantized target to beat against.
+    //
+    // The step itself is simDt, NOT CFG.DT — see FRAME PACING above. It is read
+    // ONCE into a local here so the whole loop, the camera constant and the LOD
+    // advance below all agree about how long a substep was, even if frame()
+    // repaces between calls.
     acc += dtReal;
-    const camK = 1 - Math.exp(-6 * CFG.DT);
+    const dt = simDt;
+    const camK = 1 - Math.exp(-6 * dt);
     let simSteps = 0;   // substeps taken THIS call — the field LOD advances by the same clock
-    while (acc >= CFG.DT) {
-      updateTractor(game, CFG.DT);
-      updateOrbit(game, CFG.DT);
-      updateTethers(game, CFG.DT);   // Recovery Tether: thrown rocks curve home (hauler)
-      step(game, CFG.DT);
+    while (acc >= dt && simSteps < CFG.SUBSTEP_MAX) {
+      updateTractor(game, dt);
+      updateOrbit(game, dt);
+      updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
+      step(game, dt);
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);
-      acc -= CFG.DT;
+      acc -= dt;
       simSteps++;
       perf.steps++;   // frame() zeroes this; updateScaled calls update() several times, so it sums
     }
+    // SUBSTEP CAP: whatever the frame still owed is DROPPED, never banked. A
+    // carried backlog is the death spiral itself — the next frame would owe
+    // even more substeps, cost even more, and fall further behind. Dropping it
+    // makes the sim run slow instead of expensive, which is recoverable. Only
+    // the WHOLE steps go; the sub-step remainder is kept (acc %= dt) so the
+    // substep phase stays continuous and the motion doesn't judder on top of
+    // the dilation. perf.dropped totals the sim seconds lost this way, and
+    // perf.dtHz reports the live step — the dilation is a real cost, so it is
+    // recorded on game.perf and readable from the console rather than being
+    // something you can only infer. (Neither is on the HUD overlay: the metrics
+    // line belongs to the numbers you watch every frame.)
+    //
+    // Dropping does mean the physics briefly lags the systems that ride dtReal
+    // (game.time, the AI, the run's timers) instead of dilating WITH them, so
+    // it is deliberately kept to a moment: the drop can only happen while the
+    // step is fine AND frames are slower than 25ms — which is the very same
+    // threshold that paces the loop onto the coarse step, where the cap covers
+    // 3 x 1/60 = 50ms = the dtReal clamp exactly and nothing is ever dropped
+    // again. The two guards are sized against each other on purpose; move one
+    // and the other stops meeting it.
+    if (acc >= dt) { perf.dropped += acc - (acc % dt); acc %= dt; }
     // Dense-field LOD: classify awake/dormant field rocks and group-advance
     // the dormant rails — ONCE per frame, by exactly the sim time the substep
     // loop just consumed, so dormant pockets never drift off the sim clock.
-    if (simSteps) updateFieldLOD(game, simSteps * CFG.DT);
+    // simSteps * dt, never simSteps * CFG.DT: on the coarse step those differ
+    // by 2x, and ~7000 dormant rocks would silently drift off the sim clock.
+    if (simSteps) updateFieldLOD(game, simSteps * dt);
 
     const s = game.ship;
 
@@ -1277,6 +1379,12 @@ function updateLifePods(dt) {
 // when the machine can't keep up (a 20x ask on a heavy scene degrades to
 // "as fast as this machine goes" instead of freezing the tab); speedActual
 // records the achieved multiple so the HUD badge never lies about it.
+// Each chunk is a normal update() call, so it gets its own CFG.SUBSTEP_MAX
+// budget — the cap can never bite here (1/60 of sim is 2 fine substeps), and
+// the wall-clock budget below stays the only ceiling. A long watch at a high
+// multiple WILL drag the frame rate down far enough to pace the sim onto the
+// coarse step, which is the intended behaviour: fast-forward is a viewing tool,
+// and the harnesses that must not move (tick / soak / mechTest) pin the step.
 function updateScaled(dtReal) {
   const scale = game.timeScale > 0 ? game.timeScale : 1;
   if (scale === 1) { update(dtReal); game.speedActual = 1; return; }
@@ -1295,6 +1403,13 @@ function updateScaled(dtReal) {
 function frame(now) {
   requestAnimationFrame(frame);
   const raw = now - last;   // honest frame time — sampled BEFORE the 20 fps clamp below
+  // 50ms floor = a 20 fps clamp, so a tab-switch stall can't dump seconds of
+  // backlog into one frame. It is also, deliberately, exactly what
+  // CFG.SUBSTEP_MAX covers on the coarse step (3 x 1/60), so the two guards
+  // meet with nothing left over: below 20 fps the sim runs slow rather than
+  // trying to catch up. That dilation is real — a 15 fps frame advances 50ms
+  // of sim per 66ms of wall clock, i.e. ~75% speed — and perf.dropped exists so
+  // it can be seen instead of merely suspected.
   const dtReal = Math.min(0.05, raw / 1000);
   last = now;
   perf.steps = 0;
@@ -1333,6 +1448,19 @@ function frame(now) {
   perf.fps = lerp(perf.fps, raw > 0 ? 1000 / raw : 0, PERF_EMA);
   perf.simMs = lerp(perf.simMs, t1 - t0, PERF_EMA);
   perf.drawMs = lerp(perf.drawMs, t2 - t1, PERF_EMA);
+  // Repace LAST, off the freshly-smoothed timings, and only from here: frame()
+  // is the one place that knows what the machine is actually managing, and the
+  // one place a harness never runs through.
+  //
+  // PACING BEFORE RENDER SCALE, deliberately. Both relief valves read the same
+  // frameMs, and pacing is the one that costs the player nothing to look at —
+  // it changes no pixels, only how the sim is stepped. Its gate is higher
+  // (25ms vs 22ms) but its dwell is far shorter (1.5s vs 5s), so on a frame
+  // that blows both budgets the invisible correction lands first and the
+  // visible one only follows if that wasn't enough. Running them the other way
+  // round would soften the picture for a machine a cheaper step would have
+  // rescued outright.
+  updatePacing(raw);
   // Last, off the numbers this frame just produced. A resize here is safe: it
   // lands between two renders, never inside one.
   updateAutoScale(dtReal);
@@ -1348,6 +1476,15 @@ window.tick = (seconds) => {
   // ...and bypass the spec modal: default to the first spec if none chosen, so
   // the ability tree + picks work headlessly (override game.prog.spec first to test others).
   if (!game.prog.spec) { applySpec(game.prog, SPECS[0].id); game.st = shipStats(game.prog); }
+  // PIN THE FINE STEP. tick is the balance harness (window.soak rides it) and
+  // it has to mean the same thing on every machine — if the live adaptive step
+  // leaked in here, a soak on a slow laptop would integrate at 1/60 and one on
+  // a fast one at 1/120, and the two results would not be comparable. Re-pinned
+  // per call rather than once, because frame() keeps repacing between console
+  // evals whenever the pane is visible. dt = 1/60 x DT 1/120 = exactly 2
+  // substeps per call, comfortably under CFG.SUBSTEP_MAX, so the cap never
+  // bites headlessly either.
+  pinFineStep();
   const dt = 1 / 60;
   // Music mood advances with the sim so soaks can assert on it (the rAF loop
   // is suspended in hidden tabs, where tick is the only clock).
@@ -1431,8 +1568,11 @@ window.mechTest = async (opts = {}) => {
   return runMechTest(game, {
     freshRun: window.freshRun,
     // The whole-game step (the tick idiom) so suite steps exercise the real
-    // update path — picks, timers, glow, AI — not just raw physics.
-    stepSim: (seconds) => { const dt = 1 / 60; for (let t = 0; t < seconds; t += dt) update(dt); },
+    // update path — picks, timers, glow, AI — not just raw physics. Pinned to
+    // the fine step for the same reason window.tick is: the suite is
+    // bit-repeatable by contract, and the live adaptive step is measured off
+    // the machine's frame rate.
+    stepSim: (seconds) => { pinFineStep(); const dt = 1 / 60; for (let t = 0; t < seconds; t += dt) update(dt); },
   }, opts);
 };
 
