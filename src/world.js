@@ -1476,14 +1476,29 @@ export function replenishWorld(game, dt) {
     }
   }
 
-  // ---- solar storms: system-wide discovery weather (CFG.STORM_*). The
-  // expanding front is tracked here; render draws it, physics gives loose
-  // scrap a nudge, and every world the front washes over gets an aurora.
-  game.stormTimer = (game.stormTimer ?? 300) - dt;
-  if (game.stormTimer <= 0 && !game.storm) {
+  // ---- THE SOLAR WAVE: system-wide weather with teeth (CFG.STORM_*). Only
+  // the wave's own geometry lives here — the sun's CHARGE, then a shock front
+  // trailing a plasma sheath. render.js draws it, physics.js burns the ship
+  // and shoves scrap, and main.js owns exposure/shelter and the payout.
+  //
+  // The CHARGE is the telegraph, and it is the reason the wave is fair: the
+  // sun visibly loads for CFG.STORM_CHARGE seconds before anything is in
+  // flight, which is the window to put a world between you and it.
+  game.stormTimer = (game.stormTimer ?? 240) - dt;
+  if (game.stormTimer <= 0 && !game.storm && !(game.stormChargeT > 0)) {
     game.stormTimer = CFG.STORM_EVERY * (0.6 + rng() * 1.0);
-    game.storm = { r: game.homeStar.radius, prevR: game.homeStar.radius };
-    game.stormWarn = true;
+    game.stormChargeT = CFG.STORM_CHARGE;
+    game.stormChargeWarn = true;
+  }
+  if (game.stormChargeT > 0) {
+    game.stormChargeT -= dt;
+    if (game.stormChargeT <= 0) {
+      game.stormChargeT = 0;
+      // `seed` varies the front's lobing and filaments per wave so no two look
+      // alike (render-only — the mechanic is a clean radius either way).
+      game.storm = { r: game.homeStar.radius, prevR: game.homeStar.radius, seed: rng() * 1000 };
+      game.stormWarn = true;
+    }
   }
   if (game.storm) {
     const wave = game.storm;
@@ -1498,7 +1513,10 @@ export function replenishWorld(game, dt) {
         p.auroraT = 7;
       }
     }
-    if (wave.r > CFG.WORLD_R + CFG.STORM_BAND) game.storm = null;
+    // The wave is not over when the SHOCK leaves the system — the sheath is
+    // still washing over everything behind it. Expiring on the front alone
+    // would cut the last ten seconds off every single wave.
+    if (wave.r - CFG.STORM_TAIL > CFG.WORLD_R + CFG.STORM_BAND) game.storm = null;
   }
 
   // Emberkin creep: infestations deepen over time, and at full bloom seed

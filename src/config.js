@@ -464,13 +464,60 @@ export const CFG = {
   LURKER_GUIDE_T: 1.3,     // seconds of guidance after the body-check
   LURKER_GUIDE_A: 700,     // steering accel during that window
 
-  // Solar storms: periodic charged waves sweeping the WHOLE system —
-  // discovery weather, not a weapon. The front lights auroras on the worlds
-  // it washes over, brightens comet tails, and gives loose scrap a gentle
-  // outward push. It deals no damage and never touches celestials or rails.
-  STORM_EVERY: 420,        // average seconds between storms — rare weather, not a metronome
-  STORM_SPEED: 950,        // wave-front expansion speed (u/s)
-  STORM_BAND: 700,         // half-thickness of the active front
+  // THE SOLAR WAVE — the sun's coronal mass ejections, and the one piece of
+  // weather the whole system feels at once. The sun CHARGES visibly for
+  // STORM_CHARGE seconds (a telegraph you can act on), then fires a shock
+  // front that sweeps outward at STORM_SPEED trailing a STORM_TAIL-deep
+  // SHEATH of charged plasma.
+  //
+  // THE SHEATH IS THE WHOLE MECHANIC. The front alone is a 2 x STORM_BAND
+  // ring, which crosses any given radius in ~1.5s — far too brief to be
+  // anything but scenery, which is exactly what the storm used to be. The
+  // sheath trailing behind it takes ~10s to pass, so being caught out in one
+  // is a situation you have to answer rather than a flicker you never noticed.
+  //
+  // IT STILL NEVER TOUCHES BODIES, CELESTIALS OR RAILS (the storm-shove law —
+  // a force on any of those is an invariant-3 regression waiting to happen).
+  // Everything it does lands on the SHIP, on loose SCRAP, and on SENSORS:
+  //   - caught exposed: hull dps, engines derated, sensors scrambled
+  //   - SHELTER is the counterplay — a world's lee blocks it (STORM_SHADOW_*)
+  //   - it blinds ALIEN senses system-wide for the whole passage (the window)
+  //   - it ionizes the scrap it sweeps (PROG.ION_SCRAP_MUL — the payday)
+  STORM_EVERY: 300,        // average seconds between waves — weather, not a metronome
+  STORM_CHARGE: 7,         // seconds the sun visibly loads before the front fires
+  STORM_SPEED: 950,        // shock-front expansion speed (u/s)
+  STORM_BAND: 700,         // half-thickness of the bright leading shock
+  STORM_TAIL: 9200,        // depth of the plasma sheath trailing the shock (~10s to pass)
+  // Hull damage/sec while caught EXPOSED in the sheath. Directionless (no
+  // hitAng) like heat and gas crush, so a partial shield soaks only its
+  // coverage share — see damageShip. And because the damage is CONTINUOUS the
+  // regen delay never elapses mid-wave: whatever shield you had is spent, and
+  // it does not come back until the wave is off you.
+  // MEASURED against the thing that matters — a full pass is TAIL/SPEED ≈ 9.7s
+  // of exposure, so this number times ten is the real cost. At 16 that was 160
+  // against a tier-0 hull of 205: 78% of a fresh ship, for weather that fires
+  // every ~5 minutes and that a player far from any world cannot dodge. Hull
+  // does not self-heal, so that is very close to run-ending on a first
+  // encounter. 7 costs ~55-64 (measured, tier 0: BRAWLER 27% of its hull,
+  // HAULER/SCOUT 53% of their thinner ones) — a price you feel and weigh,
+  // which is what makes sheltering a decision rather than a formality. Kept
+  // FLAT rather than scaled to hull, like every other environmental hazard
+  // here (Oort grind, corona heat, gas crush at 9), and deliberately under the
+  // gas cloud tops: a wave is 10 seconds you were handed, not a dive you chose.
+  STORM_DPS: 7,
+  STORM_THRUST: 0.6,       // engine derate while exposed: you are flying into the wind.
+                           // Keyed to EXPOSURE, not the ion afterglow — ducking behind a
+                           // world gives the engines back at once, which is the lesson.
+  STORM_ION: 5,            // seconds of sensor scramble after the last exposed moment
+  STORM_SHOVE: 150,        // radiation pressure on loose SCRAP DEBRIS. Debris only. Always.
+  // SHELTER: the sun sits at the origin, so a world's shadow is just the
+  // cylinder running anti-sunward from it. Forgiving on purpose — the lee has
+  // to be somewhere a pilot can fly to under pressure, not a razor edge (and a
+  // hard geometric boundary is against the house style anyway; render feathers
+  // the wedge). Moons and up only: a pebble shelters nobody.
+  STORM_SHADOW: 1.15,      // shadow cylinder radius, x the sheltering body's radius
+  STORM_SHADOW_LEN: 30,    // how far that lee reaches behind it, x radius
+  STORM_SHADOW_MIN_R: 60,  // smallest body that casts one
 
   PREDICT_STEPS: 200,      // trajectory forecast resolution (ship path)
   PREDICT_DT: 1 / 30,
@@ -494,7 +541,7 @@ export const CFG = {
   // a force that touched bodies, celestials, or rails is an invariant
   // regression waiting to happen (see CFG.STORM_* above).
   IRON_MAGNET_R: 900,
-  IRON_MAGNET_A: 60,       // capped accel — gentler than the storm shove (130)
+  IRON_MAGNET_A: 60,       // capped accel — gentler than the storm shove (STORM_SHOVE)
   // DUST MOONS trail a concealing halo: inside DUST_HALO x radius the ship is
   // invisible to alien senses (ai.js gates on game.dustCloak). The render
   // gradient reaches wider than the mechanic so the boundary never reads as a
@@ -746,6 +793,21 @@ export const PROG = {
   XP_RESCUE: 180,          // docking a mayday pod at a station before its air runs out
   XP_SKIM_BANDED: 3,       // banded-moon skim XP multiplier (the skate park)
   XP_SKIM_DUNE: 2,         // desert-world dune skim multiplier (a planet is an easier skate than a moon — pays less)
+  // ---- the solar wave (CFG.STORM_*): riding one out in the open ----
+  // Staying exposed in the sheath costs hull the whole time it passes, so it
+  // is a real wager and it pays like one. CAPPED PER WAVE (STORM_RIDE_MAX):
+  // the front outruns any ship, but you can still ride it outward and stretch
+  // your time in it, and an uncapped per-second payout would reward exactly
+  // that — the same rate-independence argument as the dense fields' xpLeft.
+  // ~10s of sheath at 5/s is ~50 XP a wave against a 303-XP tier 0: worth
+  // taking the hits for, nowhere near worth farming.
+  XP_STORM_RIDE: 5,
+  STORM_RIDE_MAX: 14,      // seconds of exposure paid per wave
+  // Scrap the wave sweeps comes out IONIZED and pays more. Never field-sourced
+  // scrap: that chunk's XP was already charged against the pocket's budget at
+  // drop time (fieldXp), and re-inflating it at pickup would launder the field
+  // farm straight back through the weather.
+  ION_SCRAP_MUL: 1.7,
   // FIELD ROCK PAYS A FRACTION (fieldXp below). A dense field is ~1900 rocks
   // in one pocket and there are four of them: at full rates parking inside one
   // and grinding the nearest gravel out-earned every aimed, risky thing in the

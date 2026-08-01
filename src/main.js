@@ -5,7 +5,7 @@ import {
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD } from './physics.js';
+import { step, updateFieldLOD, frameReg } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -83,6 +83,15 @@ const game = {
   controls: { f: 0, b: 0, boost: 0 },   // boost = Afterburner (hold Shift)
   burnerFuel: 1,                        // Afterburner tank 0..1 (the BURN bar; refills slowly)
   burnerOn: false,                      // actually burning right now (physics reads this, not raw Shift)
+  // ---- THE SOLAR WAVE (CFG.STORM_*). world.js owns the wave's geometry;
+  // these are the SHIP's relationship to it, resolved once per frame in
+  // updateStorm and read by physics/render/ai — never re-derived there.
+  stormChargeT: 0,         // sun loading before the front fires (the telegraph)
+  stormExposed: false,     // in the sheath with no world between us and the sun
+  stormShelter: null,      // the world whose lee we're in, when we are in one
+  stormIonT: 0,            // seconds of sensor scramble left (outlives exposure)
+  stormBlind: false,       // alien senses are down system-wide (util.senseBlind)
+  stormRode: 0,            // seconds ridden exposed this wave (capped payout)
   evadeT: 0,                            // Dash Jets cooldown (scout, A/D)
   dashT: 0,                             // brief side-jet flash after a dash (render)
   dashDir: 0,                           // which way the last dash went (-1 left / +1 right)
@@ -111,7 +120,7 @@ const game = {
   lockTarget: null,
   timeScale: 1,            // dev sim speed (window.speed / ?dev hotkeys); 1 = normal play
   speedActual: 1,          // achieved multiple when fast-forwarding (HUD badge honesty)
-  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false },
+  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false, stormLee: false },
 };
 
 // Dev mode (?dev=1) unlocks the sim-speed hotkeys. A plain query param works
@@ -511,6 +520,13 @@ function driftSplash(dt) {
   const { vw, vh } = view.getView();
   game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
   game.ship.invuln = Math.max(game.ship.invuln || 0, 1);
+  // The solar wave can't reach the title screen. Backing out to the menu
+  // mid-wave leaves game.storm live (replenishWorld doesn't run here, so it
+  // never advances or expires), and updateStorm — the only thing that clears
+  // these — is update()'s. Left standing they'd cook the parked ship and hold
+  // the aliens deaf for as long as the menu stayed open.
+  game.stormExposed = false; game.stormShelter = null;
+  game.stormBlind = false; game.stormIonT = 0;
 
   // NO SCREEN SHAKE on the title screen. step() pumps game.shake on every
   // impact (physics.addShake, capped at 30) but its decay lives in update(),
@@ -753,13 +769,18 @@ function resetRun(seed) {
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
   game.burnerFuel = 1; game.burnerOn = false;
   game.dashT = 0; game.autoEvadeT = 0; game.jinkT = 0;   // (evadeT/warpT reset below)
-  game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false };
+  game.tut = { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false, stormLee: false };
   // Run-scoped world state must reset with the world, or it leaks between
   // runs: time drives the alien first-wave peace window and the once-per-run
   // visitor gate; lastDamage must move with time or the shield-regen delta
   // goes negative; the event timers re-seed via their `?? default` idiom.
   game.time = 0; game.lastDamage = -99;
-  game.storm = null; game.stormTimer = undefined;
+  // The whole solar wave, geometry AND the ship's relationship to it — an
+  // exposure flag surviving into a fresh world would cook a ship with no wave
+  // anywhere near it, and a stale stormBlind would leave the aliens deaf.
+  game.storm = null; game.stormTimer = undefined; game.stormChargeT = 0;
+  game.stormExposed = false; game.stormShelter = null; game.stormIonT = 0;
+  game.stormBlind = false; game.stormRode = 0;
   game.visitor = null; game.visitorDone = false;
   game.vesperRespawnT = null; game.shepherdRespawnT = null; game.shepherdPlayerKilled = false;
   game.moonTimer = undefined;
@@ -863,9 +884,21 @@ const EVENT_MSGS = [
     first: ['DEEP-SPACE CONTACT: an interstellar object is crossing the system. It will not come back.', 6] },
   { flag: 'visitorGone',
     first: ['The interstellar visitor has left the system — forever.', 5.5] },
+  // ---- the solar wave: charge (telegraph) -> launch -> caught out -> receipt.
+  // Alarm on the two that mean "act now", chime on the two that mean "you did".
+  { flag: 'stormChargeWarn', tut: 'stormCharge', snd: sfx.sfxAlarm,
+    first: ['CORONAL MASS EJECTION — the sun is charging. Put a world between you and it, or ride it out in the open.', 7],
+    repeat: ['CME CHARGING — the sun is loading another wave.', 3.5] },
   { flag: 'stormWarn', tut: 'storm', snd: sfx.sfxAlarm,
-    first: ['SOLAR STORM — the sun has loosed a charged wave across the whole system. Watch the skies of nearby worlds.', 6],
-    repeat: ['SOLAR STORM — a charged wave is sweeping the system.', 3.5] },
+    first: ['WAVE AWAY — a plasma front is sweeping outward. Nothing alien can see you while it passes.', 6],
+    repeat: ['SOLAR WAVE inbound — the front is climbing out through the system.', 3.5] },
+  { flag: 'stormHitWarn', tut: 'stormHit', snd: sfx.sfxAlarm,
+    first: ['ION WASH — sensors blind, engines choking, hull cooking. Break for a world\'s lee, or hold and take the charge!', 6.5],
+    repeat: ['ION WASH — you are caught in the open.', 3] },
+  { flag: 'stormLeeName', tut: 'stormLee', snd: sfx.sfxChime,
+    first: [(v) => `IN THE LEE OF ${v} — the wave breaks around the world. Nothing reaches you here.`, 5.5] },
+  { flag: 'stormRideWarn', snd: sfx.sfxLife,
+    first: [(v) => `WAVE RIDDEN — ${v}s in the open, and the banks are charged.`, 4] },
   { flag: 'auroraName', tut: 'aurora', snd: sfx.sfxChime,
     first: [(v) => `AURORA — the storm wave is lighting up ${v}'s sky.`, 5],
     repeat: [(v) => `AURORA over ${v}.`, 3] },
@@ -1078,6 +1111,9 @@ function update(dtReal) {
     // World-space radius of the current view — the local asteroid spawner
     // keeps rocks in a ring just beyond this
     game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
+    // SOLAR WAVE exposure/shelter, resolved before BOTH consumers: updateAliens
+    // reads game.stormBlind and the substeps below read game.stormExposed.
+    updateStorm(dtReal);
     updateAliens(game, dtReal);
 
     // Fixed-step physics. The camera follows the ship INSIDE this loop, on
@@ -1381,6 +1417,90 @@ function updateLifePods(dt) {
   }
 }
 
+// ---- THE SOLAR WAVE: the ship's half of it (CFG.STORM_*) -------------------
+// Which world, if any, is casting its lee over this point. The sun is pinned
+// at the origin, so a shadow is just the cylinder running anti-sunward from a
+// body: project onto the sun->body ray and you are sheltered if you are PAST
+// the body, within STORM_SHADOW x its radius of that ray, and not so far
+// behind that the lee has thinned out. Deliberately forgiving — the shelter
+// has to be somewhere a pilot can actually reach under pressure — and render
+// feathers the wedge so the boundary never reads as a drawn line.
+//
+// Over reg.nonField (physics.frameReg), not game.bodies: nothing that casts a
+// lee is field rock, so walking the pockets to reject ~15,000 rocks one at a
+// time is the exact cost the frame registries exist to delete. One frame stale
+// is fine here — worlds do not appear or vanish between the LOD pass and this
+// one, and the b.alive check below covers the one that dies mid-frame. Called
+// only on the frames a sheath is genuinely washing over the ship anyway.
+function shelterBody(x, y) {
+  for (const b of frameReg(game).nonField) {
+    if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
+    if (!b.alive || b.radius < CFG.STORM_SHADOW_MIN_R) continue;
+    const br = Math.hypot(b.x, b.y) || 1;
+    const ux = b.x / br, uy = b.y / br;
+    const along = x * ux + y * uy;          // distance out along the sun->body ray
+    const behind = along - br;
+    if (behind < 0 || behind > b.radius * CFG.STORM_SHADOW_LEN) continue;
+    const px = x - ux * along, py = y - uy * along;   // offset across the ray
+    const rr = b.radius * CFG.STORM_SHADOW;
+    if (px * px + py * py < rr * rr) return b;
+  }
+  return null;
+}
+
+// Resolved ONCE per frame, before the substeps, so physics and ai read a fresh
+// flag rather than re-deriving one each (the same owner-split as the
+// afterburner tank). Everything the wave does to the player hangs off here.
+function updateStorm(dtReal) {
+  const s = game.ship;
+  // A live wave floods the whole system with noise — nothing can pick the ship
+  // out of it. That blackout IS the wave's reward: for its ~60-second passage
+  // every nest and lurker is deaf, so a storm is the window to move.
+  game.stormBlind = !!game.storm;
+
+  const wasExposed = game.stormExposed;
+  game.stormExposed = false;
+  game.stormShelter = null;
+  if (game.storm && s.alive) {
+    const hr = Math.hypot(s.x, s.y);
+    const lead = game.storm.r - hr;   // >0 once the shock has swept past us
+    if (lead > -CFG.STORM_BAND && lead < CFG.STORM_TAIL) {
+      game.stormShelter = shelterBody(s.x, s.y);
+      game.stormExposed = !game.stormShelter;
+      if (game.stormShelter && !game.tut.stormLee) game.stormLeeName = game.stormShelter.name;
+    }
+  }
+
+  if (game.stormExposed) {
+    game.stormIonT = CFG.STORM_ION;
+    if (!wasExposed) game.stormHitWarn = true;
+    // Riding it out in the open is a wager that pays: XP per second exposed,
+    // CAPPED per wave (see PROG.STORM_RIDE_MAX) so chasing the front outward
+    // to stretch the timer can't turn weather into a farm.
+    const pay = Math.min(dtReal, Math.max(0, PROG.STORM_RIDE_MAX - game.stormRode));
+    if (pay > 0) {
+      game.stormRode += pay;
+      addXp(game, pay * PROG.XP_STORM_RIDE);
+    }
+    bump(game, 'stormExposedT', dtReal);
+  } else if (game.stormIonT > 0) {
+    game.stormIonT = Math.max(0, game.stormIonT - dtReal);
+  }
+  if (game.stormShelter) bump(game, 'stormShelterT', dtReal);
+
+  // Settle up when the WAVE ends, not when exposure does: ducking into a lee
+  // and back out again is one ride, not two, and one wave owes one message.
+  // (The XP itself was already paid per second above — this is the receipt.)
+  if (!game.storm && game.stormRode > 0) {
+    if (game.stormRode >= 3) {
+      bump(game, 'stormRides');
+      best(game, 'stormRideBest', game.stormRode);
+      if (s.alive) game.stormRideWarn = Math.round(game.stormRode);
+    }
+    game.stormRode = 0;
+  }
+}
+
 // Dev time-scale (window.speed / the ?dev hotkeys): run the sim at
 // game.timeScale × real time by calling update() several times per frame in
 // 1x-sized chunks — the window.tick idiom — so everything riding dtReal
@@ -1555,6 +1675,31 @@ window.goto = (target, y) => {
 // physics.js). For poking at dangerous places — corona, forts, gas cores —
 // without respawn loops resetting the scene under you.
 window.god = (on = true) => { game.godMode = !!on; return game.godMode; };
+
+// window.storm(where): fire a SOLAR WAVE on demand instead of waiting out
+// CFG.STORM_EVERY. 'charge' (default) starts at the telegraph, so you see the
+// whole event; 'here' skips straight to a front already climbing toward the
+// ship, which is how you check exposure/shelter without a 40-second wait;
+// 'off' clears the wave outright. Returns the live wave state.
+window.storm = (where = 'charge') => {
+  if (where === 'off') {
+    game.storm = null; game.stormChargeT = 0;
+    game.stormExposed = false; game.stormBlind = false; game.stormIonT = 0;
+    return null;
+  }
+  game.stormChargeT = 0;
+  if (where === 'charge') {
+    game.storm = null;
+    game.stormChargeT = CFG.STORM_CHARGE;
+    game.stormChargeWarn = true;
+    return { charging: CFG.STORM_CHARGE };
+  }
+  // Park the shock just inside the ship so the sheath is about to arrive.
+  const r0 = Math.max(game.homeStar.radius, Math.hypot(game.ship.x, game.ship.y) - 1200);
+  game.storm = { r: r0, prevR: r0, seed: Math.random() * 1000 };
+  game.stormWarn = true;
+  return { r: Math.round(r0), shipR: Math.round(Math.hypot(game.ship.x, game.ship.y)) };
+};
 
 // window.freshRun(specIdx, seed): repeatable fresh run for dev/testing — a
 // full resetRun on the given world seed (undefined = the default world) with

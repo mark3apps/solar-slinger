@@ -627,9 +627,47 @@ give directions by). Rules that keep it from breaking the invariants above:
   from the world-edge force (`physics.js`), because that force would capture its hyperbolic pass. It's
   cleared the moment the player catches it. Don't put `noBoundary` on anything else without a reason
   this strong.
-- **Solar storms** (`CFG.STORM_*`) push SCRAP DEBRIS ONLY — never bodies, celestials, or the ship.
-  Auroras, tail-brightening, and the front visual are render-side. A storm touching rails or celestial
-  velocities is an invariant-3-style regression waiting to happen.
+- **THE SOLAR WAVE** (`CFG.STORM_*`) — system-wide weather with a telegraph, a bite, a counterplay
+  and a payday. The sun CHARGES visibly for `STORM_CHARGE` seconds, then fires a shock front sweeping
+  out at `STORM_SPEED` trailing a `STORM_TAIL`-deep **plasma sheath**. **The sheath is the whole
+  mechanic**: the front alone is a 1400u ring that crosses any radius in ~1.5s — too brief to notice,
+  which is exactly what the storm used to be (decorative). The sheath takes ~10s to pass, so being
+  caught out in one is a situation you answer. Force-wise NOTHING CHANGED: it still pushes SCRAP
+  DEBRIS ONLY, never bodies, celestials, or rails — a wave touching those is an invariant-3-style
+  regression. What it does instead lands on the ship, on scrap, and on sensors:
+  - **Caught EXPOSED** (in the sheath, no world between you and the sun): `STORM_DPS` directionless
+    hull damage (no `hitAng` — no facing dodges a wave, so a partial shield soaks only its coverage
+    share, and the continuous damage means the regen delay never elapses mid-wave), engines derated
+    to `STORM_THRUST`, and **sensors scrambled** for `STORM_ION` seconds past the last exposure —
+    the trajectory forecast and lead markers go dark and the radar drops/smears its returns.
+    Measured at tier 0: ~55 hull on a BRAWLER (27%), ~63 on HAULER/SCOUT (53%). Kept FLAT, not
+    hull-scaled, like every other environmental hazard, and under the gas cloud tops (9 dps).
+  - **SHELTER is the counterplay** (`main.shelterBody`, `STORM_SHADOW_*`): the sun is pinned at the
+    origin, so a world's lee is just the cylinder running anti-sunward from it. Render CUTS that lee
+    out of the plasma with an even-odd clip — the shadow isn't painted on, the plasma simply isn't
+    there — and the drawn lee is deliberately NARROWER/SHORTER than the mechanical one, so anywhere
+    that LOOKS sheltered is sheltered (the dust-halo safe-direction rule). Its outline is re-stroked
+    soft afterwards: a clip cuts with a knife, and a hard in-world edge is against the house style.
+  - **The payoff**: a live wave BLINDS ALIEN SENSES system-wide for its whole ~56s passage (the
+    window to move), it IONIZES the scrap it sweeps (`PROG.ION_SCRAP_MUL`, drawn charged blue), and
+    riding it out exposed pays `PROG.XP_STORM_RIDE`/sec, **capped per wave** at `STORM_RIDE_MAX` —
+    the front outruns any ship but you can still ride it outward, and an uncapped per-second payout
+    would reward exactly that (the same rate-independence argument as the fields' `xpLeft`).
+  - **Ionization must never touch FIELD scrap.** A shoal chunk's XP was already priced against the
+    pocket budget by `fieldXp` at DROP time, so `dropScrap` stamps `d.field` and the pickup multiplier
+    skips it — otherwise the field farm launders itself back through the weather.
+  - **main.js owns `stormExposed`/`stormBlind`/`stormIonT`/`stormShelter`**, resolved once per frame
+    in `updateStorm` before both consumers (`updateAliens` and the substeps); physics/render/ai only
+    READ them — the same owner-split as the afterburner tank and `game.burnerOn`. `driftSplash` clears
+    them (a wave left standing when you back out to the menu would cook the parked ship forever), and
+    `resetRun` clears the geometry with them.
+  - **Render sizes STRUCTURE in wave units and TEXTURE off `view.r`.** A gameplay view is ~900u wide
+    against a 9200u sheath, so anything sized in wave units is bigger than the screen and collapses to
+    a flat wash — the first cut's 220u filaments drew as screen-filling columns. Streaks/motes scale
+    with the view, fade at BOTH tips (a hard leading tip reads as architecture, not plasma), and
+    stay saturated (low-alpha additive near-white over black is just grey). ~0.4ms while it crosses
+    the view, nothing at all otherwise.
+  - `window.storm('charge'|'here'|'off')` fires one on demand instead of waiting out `STORM_EVERY`.
 - **Survey/CHART**: flying into a world's nameplate zone charts it (`replenishWorld` scan) and pays
   `PROG.XP_SURVEY`. That zone is widened by the SCOUT **Recon Drone** ability (`st.recon`), which charts
   worlds from far outside it. Forecast horizon (`st.predictBoost`) and sensor/minimap reach
@@ -687,6 +725,10 @@ give directions by). Rules that keep it from breaking the invariants above:
     `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
     battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
     never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
+    **`updateAliens` OWNS `game.dustCloak` and is the only writer; every GATE asks
+    `util.senseBlind(game)` instead**, because a live solar wave hides the ship too
+    (`game.stormBlind`). render.js's hunting-eye mirror uses the same leaf helper — the two must
+    never disagree about whether the ship is visible, and render must not import ai.
 - The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
   null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
   pass must keep skipping volcanic/shepherd moons.
@@ -1169,6 +1211,10 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   `window.locate('name'|'type')` returns the body itself.
 - `window.god(on)` — ship ignores all damage (`damageShip` early-out) for poking at the corona,
   forts, or gas cores without respawn loops.
+- `window.storm('charge' | 'here' | 'off')` — fire a SOLAR WAVE now instead of waiting out
+  `CFG.STORM_EVERY`. `'charge'` starts at the telegraph so you see the whole event; `'here'` parks a
+  front just inside the ship so the sheath is about to arrive (checking exposure/shelter without a
+  40-second wait); `'off'` clears it.
 - `window.game` — the live state handle. `game.prog.ach` is the achievement ledger: `.score`,
   `.order` (ids, in the order earned), `.got` (id → seconds), `.stats` (every raw counter). Reading
   `.stats` after a soak is the fastest way to check a new achievement's predicate is fed by anything.

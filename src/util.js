@@ -8,6 +8,15 @@ export const TAU = Math.PI * 2;
 export const shellModal = (g) =>
   !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen);
 
+// Can anything alien find the ship right now? Two unrelated causes, one
+// answer: the dust/shroud cloak (a LOCAL hiding place, computed with release
+// hysteresis in ai.js) and a live solar wave (a SYSTEM-WIDE blackout for its
+// whole passage — main.js sets stormBlind, and the deafness is what makes a
+// wave worth wanting). Kept here, a leaf, for the same reason as shellModal:
+// ai.js's gates and render.js's hunting-eye mirror must never disagree about
+// whether the ship is visible, and render must not import ai.
+export const senseBlind = (g) => !!(g.dustCloak || g.stormBlind);
+
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
