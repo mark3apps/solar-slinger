@@ -1305,7 +1305,7 @@ function drawBody(game, b) {
   } else if (b.pod) {
     drawPodSprite(game, b);
   } else if (b.chunk) {
-    drawChunkSprite(game, b);
+    drawChunkSprite(b);
   } else if (b.type === 'asteroid') {
     // drawRock draws the pits too (baked into the sprite, or clipped inline),
     // so the pit pass further down is told to stand off.
@@ -2265,7 +2265,7 @@ function crackPaths(b, R, dR, prog) {
 // surface — freshly split interior), with a bright strip of the old crust
 // surviving along one edge in the world's own color. Shape is seeded off b.id
 // and cached like the asteroid jag.
-function drawChunkSprite(game, b) {
+function drawChunkSprite(b) {
   const R = b.radius;
   if (!b.shard || b.shardR !== R) {
     const rng = mulberry32(b.id * 3163 + 41);

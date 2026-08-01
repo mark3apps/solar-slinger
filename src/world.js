@@ -3,7 +3,7 @@ import {
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
-import { TAU, mulberry32, rand, pick } from './util.js';
+import { TAU, mulberry32, rand, pick, CRYSTAL_REACH } from './util.js';
 import { sfxPing } from './sfx.js';
 
 // Recovered echo logs — one-line lore fragments carried by derelicts and
@@ -965,10 +965,13 @@ export function generateWorld(game, seed = 20260721) {
 function seedDebrisBelts(bodies, planets, rng) {
   for (const p of planets) {
     if (p.dark) continue;   // the hidden dwarf is meant to be a bare silhouette
-    // Crystal worlds measure from the SPIKE reach (1.32r, util.CRYSTAL_REACH),
-    // never the mean disc: at the disc a railed rock and the tallest turning
-    // spike grind each other into a perpetual derail churn.
-    const reach = p.ptype === 'crystal' ? p.radius * 1.32 : p.radius;
+    // Crystal worlds measure from the SPIKE reach (util.CRYSTAL_REACH), never
+    // the mean disc: at the disc a railed rock and the tallest turning spike
+    // grind each other into a perpetual derail churn. Read from the shared
+    // constant, not copied — CLAUDE.md's guard on CRYSTAL_REACH requires this
+    // clearance to move WITH it, and a hard-coded 1.32 breaks that silently the
+    // first time the spikes are retuned.
+    const reach = p.ptype === 'crystal' ? p.radius * CRYSTAL_REACH : p.radius;
     // Belt pieces are drawn at a fraction of the HOST, like every other piece
     // of a world (CFG.CRUST_*) — the mass-derived radius drew a 900-mass rock
     // at 6.5 units, invisible beside a 1148-unit gas giant. Held well under
