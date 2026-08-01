@@ -608,6 +608,17 @@ again — **but never within the player's view**
 stopped mid-flight." Installations (stations, nests, forts) instead use active station-keeping — they
 thrust back to `homeR` and re-rail even on-screen, because they must never wander.
 
+**A circular rail and an elliptical rail are DIFFERENT OBJECTS, and `rail.e > 0` is what tells them
+apart.** A circular rail carries `r`/`w`/`ang` (plus physics's incremental rotor cache); an ellipse
+carries `a`/`e`/`n`/`M`/`smin`. The physics rail advance and both `predictPaths` mirrors branch on
+`rail.e > 0`, so a **degenerate `e === 0` ellipse is advanced as a circle**, reads the `r`/`w`/`ang`
+it doesn't have, and is NaN on its very first substep — after which the tripwire culls it and a moon
+has quietly vanished seconds into the run. `spawnMoon` legitimately clamps `e` to 0 whenever a
+sibling slot is too tight to allow any radial excursion, so **`railEllipse` itself builds an honest
+CIRCULAR rail when `e` isn't positive** (entities.js) rather than every consumer having to know. Keep
+the guard at that one choke point; don't relax the branch tests to `!== undefined` instead — an
+ellipse of zero eccentricity is a circle, and the sim should only ever hold one representation of it.
+
 ### The discovery layer
 
 Combat-free exploration content, deliberately sparse and all seeded to fixed spots (landmarks you can
@@ -793,6 +804,36 @@ code "works."
   than by rescaling the orbit layout — moving every lane would re-tune sky speed, heat margins, and
   the graveyard clearance for nothing. The band holds three planet lanes (38300 / 40800 /
   42600), the dark star's 39500 lane, and The Farshoal dense field on the frost fringe at 44300. Planet lanes stop at 42600, leaving the fringe to the Farshoal.
+- **WORLD SCALE: worlds are built BIGGER THAN THEY ARE AUTHORED** — `CFG.PLANET_R_MUL` (3) and
+  `CFG.MOON_R_MUL` (2) multiply the radii in world.js's layout table and `spawnMoon`'s own range,
+  so planets and moons read as genuinely massive (user call: "we just want these things to be able
+  to be massive"). Three rules hold it together:
+  - **SIZE ONLY — THE MASSES ARE UNTOUCHED, and that is not an oversight.** Radius is inert to every
+    invariant above (rails are circular and mass-driven, gravity is `GM/r²`, hp is `massToHp` and
+    `PLANET_HP_*`), while mass is load-bearing for all of them: holding DENSITY at 3x radius needs
+    27x mass, which puts the amber giant at 1.75e7 — heavier than the sun (1.42e7). So the worlds got
+    big, not heavy, and two consequences are real and intended. Surface gravity falls as `1/mul²`,
+    and the LONG ARMS (`SHIP_WELL_START`) are measured in BODY RADII, so a giant's well reaches out
+    proportionally rather than absolutely — a gas giant is now something you fly ALONG, not something
+    that snatches you. `PLANET_GRAV_SHIP` is the knob if the big worlds should grab as hard as they look.
+  - **`PLANET_R_MUL` is a CEILING, not a scale — hence "up to 3x".** Adjacent rails run at different
+    angular speeds and therefore ALWAYS reach conjunction, so `generateWorld` caps each grown disc by
+    what its NEIGHBOUR LANES leave free (`CFG.PLANET_LANE_GAP`, 400 of clear space between surfaces)
+    and splits a contested boundary in PROPORTION to the two desired radii, so the giant stays the
+    giant. Worlds land at 2.21x–3x; at a flat 3x the amber giant (520 → 1560) overlapped the shroud
+    world inside it by 175 on every pass and the violet giant met the desert world exactly. Widening
+    the LANES instead is the expensive fix — lane radii set sky speed, heat margins and the graveyard
+    clearance, so moving them re-tunes the game to make one planet bigger. The pass is pure arithmetic
+    over the layout, NO rng draw, so the seeded stream and every angle in the sky are untouched.
+  - **Every "covers both bodies' radii" clearance rides `MOON_R_MUL`**, or the crossing-orbit bug
+    (see `spawnMoon`'s exCap rationale) walks straight back in: the sibling-slot margin, `moonZone`'s
+    inner floor, AND the separate copy in `replenishWorld`'s moon re-accretion — two 84-radius moons
+    need 168 of separation where the authored constants guarantee 90. Stations and nests orbit at
+    `2.6r`/`3.4r`, which grows faster than the moon band's floor, so an **installation-lane sweep** in
+    `generateWorld` nudges them outward clear of every sibling moon (they always shared that band; the
+    scale-up just ended the luck). The binary pair's separation and the companion's station orbit are
+    likewise derived from the radii, floored at their authored values so an unscaled world is
+    bit-identical. Adding a new railed satellite means checking it against this set.
 - **The world edge has no drawn boundary — the Oort cloud is weather, not UI.** No stroke at `WORLD_R`,
   and no shared edge of ANY kind at one exact radius: even a soft constant glow starting at a single
   radius reads as a hard line (the user rejected both). The grind radius is legible from natural cues
@@ -802,6 +843,17 @@ code "works."
 - **The ship shield is a calm, steady volumetric rim glow — no dashes, no idle motion.** Motion is reserved
   for *events* (recharge sweep, absorb ripple). **Shield down draws nothing at all** — a naked hull is the
   indicator; the blinking `SHLD` HUD label carries the alarm. (`render.js:609`, `:619`)
+- **A ringed giant's band is drawn in TWO PASSES, half behind the world and half in front**
+  (`render.js drawRing`, called once from each side of the planet's disc in `drawBody`). One
+  full-ellipse pass ahead of the planet put the WHOLE ring behind it — the disc occluded the near arc
+  every frame, so the ring read as a decal on the backdrop instead of a body wearing a ring. The split
+  is taken in the ellipse's OWN parameter space (`t` in `[0, π]` = the near arc, since the
+  pre-rotation offset is `(rx·cos t, ry·sin t)` and canvas y grows toward the viewer), so it follows
+  the band's slow tilt for free and the near half rotates WITH the ring rather than snapping sides as
+  the tilt sweeps past an axis. The two arcs share their endpoints out past the limb and are stroked
+  identically, so they meet seamlessly — and they must never overlap: at `globalAlpha` 0.4 a
+  double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
+  terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
 - **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
 - **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
   vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and

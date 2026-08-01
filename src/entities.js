@@ -104,6 +104,27 @@ export function derail(b) {
 // starting mean anomaly (phase), dir = +1 prograde / -1 retrograde. Re-railing
 // only ever produces CIRCULAR rails, so a knocked-loose ellipse re-rails round.
 export function railEllipse(b, parent, a, e, arg, M0, dir = 1) {
+  // A ZERO-ECCENTRICITY ELLIPSE IS A CIRCLE, and the two rails are different
+  // OBJECTS: an ellipse carries a/e/n/M/smin, a circular rail carries r/w/ang.
+  // The physics rail advance picks its branch on `rail.e > 0`, so a degenerate
+  // e === 0 ellipse is advanced as a circle, reads the r/w/ang it does not
+  // have, and is NaN on its first substep — the tripwire then culls the body
+  // (a moon quietly vanishing seconds into the run). spawnMoon legitimately
+  // clamps e to 0 whenever a sibling slot is too tight to allow ANY radial
+  // excursion, so build the honest circle rather than the degenerate ellipse.
+  // At e = 0 the eccentric anomaly equals the mean anomaly, so arg + dir*M0 is
+  // exactly where the elliptical path would have put it — same seeded world.
+  if (!(e > 0)) {
+    const th = arg + M0 * dir;
+    b.x = parent.x + Math.cos(th) * a;
+    b.y = parent.y + Math.sin(th) * a;
+    const soft2 = CFG.GRAV_SOFT * CFG.GRAV_SOFT;
+    const sp = Math.sqrt(((CFG.G * parent.mass * a) / Math.pow(a * a + soft2, 1.5)) * a) * dir;
+    b.vx = parent.vx - Math.sin(th) * sp;
+    b.vy = parent.vy + Math.cos(th) * sp;
+    railBody(b, parent);   // sets onRails / rail / homeR / liveT
+    return;
+  }
   const mu = CFG.G * parent.mass;
   const rail = {
     parent, e, a, arg,

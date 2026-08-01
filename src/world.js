@@ -101,7 +101,17 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // spans ice, rock, iron, dust, sulfur, banded instead of pale clones.
   const mt = pickMoonType(rng);
   const t = rng();
-  const radius = (18 + t * 16) * mt.rMul + rand(rng, -2, 2);
+  // x CFG.MOON_R_MUL, applied to the finished expression so the ±2 jitter
+  // scales with the moon (±4 at 2x) instead of shrinking into an invisible
+  // wobble on a body twice the size. WORLD SCALE adds NO rng draw here — the
+  // two this radius already costs (`t` above and the `rand` below) are the
+  // same two the unscaled world spent, in the same order — so the seeded
+  // stream, and with it every position in the sky, is bit-identical however
+  // the multiplier is set. Never buy a scaled value with an extra draw: the
+  // rest of the sky is generated from whatever the stream returns next.
+  // Mass is untouched; see the WORLD SCALE note on CFG.MOON_R_MUL for why
+  // size and mass part ways.
+  const radius = ((18 + t * 16) * mt.rMul + rand(rng, -2, 2)) * CFG.MOON_R_MUL;
   // Moons run the gamut now — some are proper little worlds, and at these
   // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
   // rule predates rails: it only ever mattered for LIVE moons, and rails
@@ -152,7 +162,10 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
 // off and re-rail around the sun; that's fine and rare.)
 function moonZone(star, planet, orbitR) {
   const hill = orbitR * Math.cbrt(planet.mass / (3 * star.mass));
-  return { minR: planet.radius + 90, maxR: hill * 1.5 };
+  // The inner clearance rides MOON_R_MUL because that is what it is FOR: 90
+  // comfortably cleared a 42-radius moon, and a doubled moon parked on the old
+  // floor would hang 84 units into a planet that also grew underneath it.
+  return { minR: planet.radius + 90 * CFG.MOON_R_MUL, maxR: hill * 1.5 };
 }
 
 function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
@@ -179,7 +192,11 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   // radial excursion is confined to its own spawn slot (minus a 45u margin
   // per side — covers both bodies' radii), so sibling orbits can never
   // overlap radially, which is exactly the no-crossing condition (see the
-  // exCap rationale in spawnMoon). Only edges SHARED with a sibling are
+  // exCap rationale in spawnMoon). That margin rides MOON_R_MUL: it is sized
+  // to cover BOTH moons' radii, and at 2x two 84-radius siblings need 168 of
+  // separation where the authored 45-per-side only guarantees 90 — which is
+  // the crossing-orbits bug again, arriving through the back door.
+  // Only edges SHARED with a sibling are
   // capped: the innermost moon's sunward reach is already guarded by the
   // planet-clearance term in spawnMoon, and the outermost may spill past
   // maxR like it always did (rails don't care). Keeping non-shared edges
@@ -197,7 +214,7 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
         const lo = minR + slotW * i;
         const dLo = i > 0 ? mr - lo : Infinity;
         const dHi = i < count - 1 ? lo + slotW - mr : Infinity;
-        spawnMoon(bodies, rng, p, mr, Math.min(dLo, dHi) - 45);
+        spawnMoon(bodies, rng, p, mr, Math.min(dLo, dHi) - 45 * CFG.MOON_R_MUL);
       }
     }
   }
@@ -206,8 +223,11 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
 
 // A derelict station in orbit: light enough to steal, tough enough that the
 // jackpot takes a real hit. Shattering one drops salvage modules (physics.js).
-function addStation(bodies, rng, planet) {
-  const r = planet.radius * 2.6 + 60;
+// maxR caps the orbit where the host has a close NEIGHBOUR rather than open
+// space around it — the binary companion is the only such host, and at 3x
+// radii its 2.6r station orbit reached back inside the primary.
+function addStation(bodies, rng, planet, maxR = Infinity) {
+  const r = Math.min(planet.radius * 2.6 + 60, maxR);
   const th = rng() * TAU;
   const x = planet.x + Math.cos(th) * r, y = planet.y + Math.sin(th) * r;
   const v = orbitVel(planet, x, y, 1);
@@ -246,7 +266,10 @@ function spawnShepherd(game, host, th) {
   const v = orbitVel(host, x, y, 1);
   const sh = new Body({
     type: 'moon', x, y, vx: v.vx, vy: v.vy,
-    mass: 900, radius: 9, color: '#e8ddc0', name: 'Shepherd', parent: host,
+    // Scaled like any other moon (WORLD SCALE) — it is a moonlet, and next to
+    // a giant that grew 2.6x it would otherwise be a mote holding open a gap
+    // you can no longer see it in.
+    mass: 900, radius: 9 * CFG.MOON_R_MUL, color: '#e8ddc0', name: 'Shepherd', parent: host,
     // Override hp (default massToHp(900) ≈ 11): ambient ring-chunk bumps
     // killed it within ~20 idle minutes in soak testing. The ring-scatter
     // consequence should follow a PLAYER choice, not background noise —
@@ -514,6 +537,32 @@ export function generateWorld(game, seed = 20260721) {
     { r: 40800, mass: 5.5e4, radius: 105, ptype: 'rocky', moons: 1, station: true },
     { r: 42600, mass: 3.5e4, radius: 85,  ptype: 'ice' },   // a lone frozen sentinel — no moons, under the moon-accretion mass floor
   ];
+  // ---- WORLD SCALE. The radii authored above are the SHAPE of the sky; the
+  // worlds are built up to CFG.PLANET_R_MUL times that size (see the note on
+  // the constant for why the MASSES stay put). "Up to", because a lane only
+  // holds so much world: adjacent rails run at different angular speeds and
+  // therefore always reach conjunction, so each grown disc is capped by what
+  // its NEIGHBOUR LANES leave free. A contested boundary is split in
+  // PROPORTION to the two desired radii — the giant keeps being the giant, and
+  // both sides give up the same fraction rather than one of them absorbing the
+  // whole shortfall. Belt lanes are skipped: they're rock, they overlap the
+  // outer moon families already, and nothing here is fighting them for room.
+  //
+  // This is pure arithmetic over the layout — NO rng draw — so the seeded
+  // stream, and with it every angle and position in the sky, is untouched.
+  {
+    const lanes = layout.filter((it) => !it.belt);
+    const want = lanes.map((it) => it.radius * CFG.PLANET_R_MUL);
+    const got = want.slice();
+    for (let i = 0; i < lanes.length - 1; i++) {
+      const free = (lanes[i + 1].r - lanes[i].r) - CFG.PLANET_LANE_GAP;
+      const sum = want[i] + want[i + 1];
+      if (sum <= free) continue;
+      got[i] = Math.min(got[i], free * (want[i] / sum));
+      got[i + 1] = Math.min(got[i + 1], free * (want[i + 1] / sum));
+    }
+    lanes.forEach((it, i) => { it.radius = got[i]; });
+  }
   const planets = [];
   let nameIdx = 0;
   for (const item of layout) {
@@ -526,19 +575,28 @@ export function generateWorld(game, seed = 20260721) {
     // BINARY PAIR: a near-equal companion circling the primary — the chaotic
     // double-well between them is a playground, and it guards good salvage.
     if (item.binary) {
+      // The pair's separation has to grow with the pair, or WORLD SCALE closes
+      // the gap the "playground" is made of: at 3x the two discs plus the
+      // companion's own junk ring and station all wanted the 1500 the authored
+      // sky had room for. Derived from the radii and floored at the authored
+      // value, so an unscaled world (mul 1) is bit-identical.
+      const compR = item.radius * 0.85;
+      const sep = Math.max(1500, (item.radius + compR) * 1.9);
       const th2 = rng() * TAU;
-      const cx = p.x + Math.cos(th2) * 1500, cy = p.y + Math.sin(th2) * 1500;
+      const cx = p.x + Math.cos(th2) * sep, cy = p.y + Math.sin(th2) * sep;
       const cv = orbitVel(p, cx, cy, 1);
       const comp = new Body({
         type: 'planet', x: cx, y: cy, vx: cv.vx, vy: cv.vy,
-        mass: item.mass * 0.75, radius: item.radius * 0.85,
+        mass: item.mass * 0.75, radius: compR,
         color: pick(rng, PTYPE_COLORS[item.ptype]),
         name: p.name + ' B', ptype: item.ptype, parent: p,
       });
       bodies.push(comp);
       railBody(comp, p);
       planets.push(comp);
-      addStation(bodies, rng, comp);
+      // Keep the companion's station between the two worlds, not through the
+      // primary: a 2.6r orbit off a scaled companion swings back inside it.
+      addStation(bodies, rng, comp, sep - p.radius - 200);
     }
   }
 
@@ -735,7 +793,9 @@ export function generateWorld(game, seed = 20260721) {
   fortify(planetAtR(13000), 260, 3);
   // (volcanic/shepherd moons are discovery content — never fortified — and a
   // fort on a DUST moon would contradict its stealth-haven job)
-  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 &&
+  // (the size floor rides MOON_R_MUL — unscaled it would pass EVERY moon and
+  // the "big moon" fort would land on whichever one happens to be first)
+  const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 * CFG.MOON_R_MUL &&
     !b.volcanic && !b.shepherd && b.moonType !== 'dust').slice(0, 1);
   for (const m of bigMoons) fortify(m, 150, 2);
 
@@ -823,7 +883,12 @@ export function generateWorld(game, seed = 20260721) {
     const dv = orbitVel(sun, dx, dy, 1);
     const dk = new Body({
       type: 'planet', x: dx, y: dy, vx: dv.vx, vy: dv.vy,
-      mass: 4.5e4, radius: 70, color: '#241f2e',
+      // Scaled like a layout world (WORLD SCALE), but it is spawned outside
+      // the layout so it takes the multiplier raw rather than the neighbour
+      // clamp. It can afford to: its 39500 lane sits 1200/1300 from the 38300
+      // and 40800 worlds, and the three grown discs together leave ~600 clear
+      // on the tighter side.
+      mass: 4.5e4, radius: 70 * CFG.PLANET_R_MUL, color: '#241f2e',
       name: "The Wanderer's Star", parent: sun,
     });
     dk.dark = true; dk.hidden = true; dk.chartKey = 'wanderer';
@@ -831,6 +896,45 @@ export function generateWorld(game, seed = 20260721) {
     railBody(dk, sun);
     game.darkStar = dk;
   }
+  // ---- INSTALLATION LANES. Stations and nests ride circular orbits scaled off
+  // their host's surface (2.6r / 3.4r), which has always put them INSIDE the
+  // moon band — the two allocators simply never talked to each other, and on
+  // the authored sky they happened never to collide. WORLD SCALE ended that
+  // luck: a station orbit grows with PLANET_R_MUL while the moon band's floor
+  // only grows by the planet radius plus a fixed clearance, so the station
+  // slides deeper into the family (two hosts shipped a station sharing a
+  // radius with a moon on the very first seed). Two railed bodies whose radial
+  // RANGES overlap always meet — the same no-crossing condition spawnMoon's
+  // exCap enforces between siblings — and an installation knocked off its rail
+  // is precisely what station-keeping exists to prevent.
+  //
+  // So each installation is nudged OUTWARD to the first radius clear of every
+  // sibling moon. Outward only: inward is the surface, and the band above is
+  // open (rails don't care how far out they sit). Runs after the whole
+  // discovery layer so the shepherd and the Forge Moon are already placed, and
+  // it draws NO rng — the orbital angle each body already has is kept.
+  for (const b of bodies) {
+    if (b.type !== 'station' && b.type !== 'nest') continue;
+    const p = b.parent;
+    if (!p || p.type !== 'planet' || !b.rail) continue;
+    const pad = b.radius + 60;
+    const bands = bodies
+      .filter((m) => m.type === 'moon' && m.parent === p && m.rail)
+      .map((m) => {
+        const a = m.rail.a !== undefined ? m.rail.a : m.rail.r, e = m.rail.e || 0;
+        return { lo: a * (1 - e) - m.radius - pad, hi: a * (1 + e) + m.radius + pad };
+      })
+      .sort((u, v) => u.lo - v.lo);
+    let r = b.rail.r;
+    for (const bd of bands) if (r > bd.lo && r < bd.hi) r = bd.hi;
+    if (r === b.rail.r) continue;
+    const th = b.rail.ang;
+    b.x = p.x + Math.cos(th) * r; b.y = p.y + Math.sin(th) * r;
+    const v = orbitVel(p, b.x, b.y, 1);
+    b.vx = v.vx; b.vy = v.vy;
+    railBody(b, p);   // resets homeR too — station-keeping flies back to the NEW lane
+  }
+
   game.relayPowered = false;
   game.relayBeamT = 0;
   game.wandererEchoT = 0;
@@ -1217,9 +1321,13 @@ export function replenishWorld(game, dt) {
           // Don't drop the newcomer onto (or across) a surviving sibling's
           // orbit — overlapping confocal orbits always cross and a crossing
           // pair eventually collides (see spawnMoon's exCap rationale). Gap
-          // is measured to each railed sibling's radial range; 90u covers
-          // both bodies' radii. A blocked draw just retries; a fully missed
-          // cycle only delays the refill by 60s.
+          // is measured to each railed sibling's radial range, and the
+          // clearance rides MOON_R_MUL because it is sized to cover BOTH
+          // bodies' radii — 90 covered two 42-radius moons, and a replacement
+          // dropped 90 from a sibling at 2x overlaps it by the whole
+          // difference. A blocked draw just retries; a fully missed cycle only
+          // delays the refill by 60s.
+          const clear = 90 * CFG.MOON_R_MUL;
           for (let tries = 0; tries < 4; tries++) {
             const mr = minR + (maxR - minR) * rng();
             let gap = Infinity;
@@ -1230,7 +1338,7 @@ export function replenishWorld(game, dt) {
               const ex = ell ? m.rail.e * a : 0;
               gap = Math.min(gap, Math.abs(mr - a) - ex);
             }
-            if (gap > 90) { spawnMoon(game.bodies, rng, p, mr, gap - 90); break; }
+            if (gap > clear) { spawnMoon(game.bodies, rng, p, mr, gap - clear); break; }
           }
         }
       }
