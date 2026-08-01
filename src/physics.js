@@ -97,10 +97,13 @@ function collisionCredit(target, other) {
 function brawlerThrowKill(game, body) {
   const st = game.st;
   if (st.cluster > 0 && game.bodies.length < 460) {   // body-count cap like the spall path
-    const n = st.cluster + 1;
+    // Shard COUNT is integer, so six ranks can't each add one without doubling
+    // the old ceiling: it climbs every other rank instead (2/2/3/3/4/4), and
+    // the ranks in between buy the speed spread below. Ceiling unchanged at 4.
+    const n = 1 + Math.ceil(st.cluster / 2);
     for (let i = 0; i < n; i++) {
       const th = (i / n) * TAU + Math.random() * 0.7;
-      const sp = 260 + Math.random() * 200;
+      const sp = (260 + Math.random() * 200) * (1 + 0.03 * (st.cluster - 1));   // ranks throw them wider
       const shard = spawnAsteroid(game.bodies,
         body.x + Math.cos(th) * (body.radius + 4), body.y + Math.sin(th) * (body.radius + 4),
         body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp, 140 + Math.random() * 220);
@@ -120,15 +123,17 @@ function brawlerThrowKill(game, body) {
     //     world nothing, and a wide wave of rock scattering off the impact is
     //     what the ability is FOR.
     //   DAMAGE is tight. Erasing a body is the part that has to be earned, so
-    //     it now needs the target genuinely close to the detonation (rank 3:
+    //     it now needs the target genuinely close to the detonation (maxed:
     //     204 vs the original 510 — 16% of the area).
     // A rock between the two radii gets thrown, not deleted, which is the more
     // interesting outcome anyway: it becomes YOUR next projectile.
-    const pushR = 170 + 60 * st.shockwave;
-    const dmgR = 90 + 38 * st.demolition;
+    // (Both tracks went 3 -> 6 ranks, so every coefficient here is HALVED and
+    // the maxed reaches are exactly what they were: push 350, damage 204.)
+    const pushR = 170 + 30 * st.shockwave;
+    const dmgR = 90 + 19 * st.demolition;
     const R = Math.max(pushR, dmgR);          // one sweep, widest of the two
-    const push = 130 * st.shockwave;
-    const dmg = 16 * st.demolition * (1 + st.tier * 0.4);
+    const push = 65 * st.shockwave;
+    const dmg = 8 * st.demolition * (1 + st.tier * 0.4);
     // FRIENDLY FIRE: detonating on top of yourself hurts. Without it the blast
     // was the one brawler tool with no downside — pure area denial — and in a
     // dense field, where the next rock is always within arm's reach, that is
@@ -179,7 +184,7 @@ function brawlerThrowKill(game, body) {
       if (++hits >= 20) break;
     }
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
-    addShake(game, 5 + 3 * Math.max(st.shockwave, st.demolition));
+    addShake(game, 5 + 1.5 * Math.max(st.shockwave, st.demolition));
   }
 }
 
@@ -192,8 +197,10 @@ function brawlerThrowKill(game, body) {
 // must never derail a railed celestial or touch an installation.
 function wallSplat(game, body) {
   const st = game.st;
-  addXp(game, 8 + 7 * st.wallSplat);
-  const R = 170 + 55 * st.wallSplat;
+  // Wall Splat went 3 -> 6 ranks: every coefficient here is halved, so a
+  // maxed splat pays the same 29 XP over the same 335 radius as before.
+  addXp(game, 8 + 3.5 * st.wallSplat);
+  const R = 170 + 27.5 * st.wallSplat;
   let hits = 0;
   for (const nb of game.bodies.slice()) {
     // Same loose-rock filter as the Shockwave blast above — including the
@@ -204,7 +211,7 @@ function wallSplat(game, body) {
     const ddx = nb.x - body.x, ddy = nb.y - body.y;
     const dd = Math.hypot(ddx, ddy);
     if (dd > R || dd < 1) continue;
-    const imp = (110 + 45 * st.wallSplat) * (1 - dd / R) * Math.min(1, 2500 / nb.mass);
+    const imp = (110 + 22.5 * st.wallSplat) * (1 - dd / R) * Math.min(1, 2500 / nb.mass);
     nb.vx += (ddx / dd) * imp; nb.vy += (ddy / dd) * imp;
     if (imp > 70) {
       derail(nb);
@@ -215,7 +222,7 @@ function wallSplat(game, body) {
   }
   addParticles(game, body.x, body.y, body.vx * 0.2, body.vy * 0.2,
     18, '#ffcaa0', 200, 0.9, 4);
-  addShake(game, 4 + 2 * st.wallSplat);
+  addShake(game, 4 + 1 * st.wallSplat);
   bump(game, 'kSplat');
   if (!game.tut.wallsplat) game.wallSplatWarn = true;   // main.js announces (first time)
 }
@@ -455,7 +462,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   }
   // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
   // wall survives the intercepts it exists to make. Loose rocks are untouched.
-  if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.2 * game.st.rockwall;
+  if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.1 * game.st.rockwall;
   // SULFUR MOONS: a hard PLAYER smash (earnsScrap credit — ambient traffic
   // can't trigger it) vents the crust: a queued chain of surface pops that
   // fountain loose sling rock (the world.js hazard loop pops them). Not on
@@ -873,7 +880,7 @@ function collideBodies(game, a, b) {
       const rock = a.thrownBy === 'alien' ? a : b;
       const sh = game.ship;
       const rdx = rock.x - sh.x, rdy = rock.y - sh.y, rd = Math.hypot(rdx, rdy) || 1;
-      const spd = 320 + 130 * game.st.aegis;
+      const spd = 320 + 65 * game.st.aegis;
       rock.vx = sh.vx + (rdx / rd) * spd; rock.vy = sh.vy + (rdy / rd) * spd;
       rock.thrownBy = 'player'; rock.thrownTimer = 3;
       rock.throwX = rock.x; rock.throwY = rock.y;
@@ -1240,7 +1247,7 @@ function collideShipBody(game, s, b, dt) {
     // INNATE spec-DNA floor (config.shipStats), so it bonks from frame one even
     // before Ram Prow ranks (other specs stay at exactly 1 / 1).
     const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
-    const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.3 * (1 - ramHullFrac) : 1);
+    const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.15 * (1 - ramHullFrac) : 1);
     const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
     // Ramming is "running into things", not a throw — it damages the body but
     // pays out NO scrap and no fling growth (credit 'ram', not 'player').
@@ -2011,10 +2018,11 @@ export function step(game, dt) {
     // thrust and the BURN bar disagree). The burn is much harder than the old
     // hold-Shift overdrive because the tank makes it scarce.
     const boosting = game.burnerOn && s.engineOutT <= 0;
-    if (boosting) th *= 1.75 + 0.35 * game.st.afterburner;
-    // Reverse thrust is an UPGRADE (Retro Thrusters) — until unlocked, S does
-    // nothing and only forward thrust drives the ship.
-    const back = game.st.hasReverse ? c.b : 0;
+    if (boosting) th *= 1.75 + 0.175 * game.st.afterburner;
+    // Reverse thrust is an UPGRADE (Retro Jets) — reversePower is 0 until it's
+    // unlocked, so S does nothing and only forward thrust drives the ship. Its
+    // ranks then scale the braking authority (1.0x at rank 1, 1.5x at rank 6).
+    const back = c.b * game.st.reversePower;
     let throttle = s.engineOutT > 0 ? 0 : c.f - back;
     if (boosting) throttle = Math.max(throttle, 1);   // Shift alone dashes forward
     s.thrusting = throttle > 0;
@@ -2065,10 +2073,10 @@ export function step(game, dt) {
         const vm = Math.sqrt(v2);
         const ux = mm > 4 ? -mx / mm : -rvy / vm;
         const uy = mm > 4 ? -my / mm : rvx / vm;
-        const burst = 430 + 70 * game.st.autoEvade;
+        const burst = 430 + 35 * game.st.autoEvade;
         s.vx += ux * burst; s.vy += uy * burst;
         s.invuln = Math.max(s.invuln, 0.3);
-        game.autoEvadeT = 15 - 3.5 * game.st.autoEvade;   // 11.5 / 8 / 4.5s recharge
+        game.autoEvadeT = 15 - 1.75 * game.st.autoEvade;  // 13.25s at rank 1 down to 4.5s at rank 6
         game.jinkT = 0.3;                                 // render: flash ring
         game.jinkWarn = true;                             // main.js: first-time message
         addParticles(game, s.x, s.y, s.vx * 0.4, s.vy * 0.4, 14, '#9fffe8', 180, 0.6, 3);
@@ -2363,7 +2371,7 @@ export function step(game, dt) {
     let cap = game.st.maxSpeed;
     // AFTERBURNER raises the ceiling too, so the burn actually reaches speed
     // (gated on the fuel tank via game.burnerOn, same as the thrust boost).
-    if (game.burnerOn && s.engineOutT <= 0) cap *= 1.35 + 0.25 * game.st.afterburner;
+    if (game.burnerOn && s.engineOutT <= 0) cap *= 1.35 + 0.125 * game.st.afterburner;
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
@@ -2847,7 +2855,7 @@ export function predictPaths(game) {
   // in tight (SHIP_ZOOM 2.46): at a smaller fraction the forecast collapsed
   // to a ~1s stub that read as broken. Chart levels widen it further.
   const maxPathLen = (game.viewR || 1200) *
-    Math.min(0.95, 0.85 + 0.03 * ((game.st.levels && game.st.levels.chart) || 0));
+    Math.min(0.95, 0.85 + 0.015 * ((game.st.levels && game.st.levels.chart) || 0));
   let pathLen = 0, lastPx = null, lastPy = null, shipEnd = false;
   // Prefilter (perf): the drawn ship path is length-capped at maxPathLen from
   // its start, so only attractors that can come within reach of that circle

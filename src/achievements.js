@@ -663,14 +663,21 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 12),
   A('abil14', 'build', PTS.brutal, 'Everything on the Rack', 'Own fourteen abilities at once.',
     (g, s, c) => c.owned >= 14),
-  A('ranks10', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 10 ability ranks.',
-    (g, s, c) => c.ranks >= 10),
-  A('ranks25', 'build', PTS.normal, 'Practised', 'Earn 25 ability ranks.',
-    (g, s, c) => c.ranks >= 25),
-  A('ranks45', 'build', PTS.tricky, 'Seasoned', 'Earn 45 ability ranks.',
-    (g, s, c) => c.ranks >= 45),
-  A('ranks65', 'build', PTS.hard, 'Master of the Craft', 'Earn 65 ability ranks.',
-    (g, s, c) => c.ranks >= 65),
+  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95).
+  // Every ability is six ranks now, so the same run banks ~1.6x the ranks it
+  // used to (measured over the full climb: ~44 before, ~69 after) — at the old
+  // thresholds 'Master of the Craft' went from the hardest rank row in the game
+  // to something every spec passes without trying, which is the freebie failure
+  // mode wearing a different hat. Scaled by the measured ratio, so each row
+  // still asks for what it used to ask for.
+  A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
+    (g, s, c) => c.ranks >= 15),
+  A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
+    (g, s, c) => c.ranks >= 40),
+  A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
+    (g, s, c) => c.ranks >= 70),
+  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 95 ability ranks.',
+    (g, s, c) => c.ranks >= 95),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',
@@ -1185,10 +1192,11 @@ export function updateAchievements(game, dt) {
     const rk = game.prog.upgrades[a.id] || 0;
     if (!rk) continue;
     c.owned++; c.ranks += rk;
-    // Only RANKABLE tracks count as maxed. A max-1 unlock arrives already at
-    // its ceiling, so counting those handed SCOUT "Maxed Out" for free on the
-    // first frame (Retro Jets is in its kit) — the same trap the kit rule in
-    // config.js exists to avoid.
+    // Only RANKABLE tracks count as maxed. Every ability is six ranks now so
+    // the guard is always true, but it STAYS: a max-1 row arrives already at
+    // its ceiling, and counting one handed SCOUT "Maxed Out" free on frame one
+    // (Retro Jets was in its kit). Re-introduce a max-1 ability and this is the
+    // line that keeps the trap shut.
     if (a.max > 1 && rk >= a.max) c.maxed++;
   }
 

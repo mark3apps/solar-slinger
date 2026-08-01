@@ -631,7 +631,7 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
       // Cards only ever offer abilities you don't own, so the sub-line sells the
       // TRACK it opens: how deep it goes, and that it deepens on its own from
       // here (there is no rank-up card to come back for).
-      sub = `<div class="uplevel">New ability · ${c.max > 1 ? `${c.max} ranks, earned automatically` : 'single unlock'}</div>`;
+      sub = `<div class="uplevel">New ability · ${c.max} ranks, earned automatically</div>`;
     }
     row.innerHTML =
       `<div class="upnum">${i + 1}</div>` +
@@ -863,12 +863,12 @@ export function updateHud(game) {
     const rows = owned.map((u) => {
       const rk = prog.upgrades[u.id];
       const maxed = rk >= u.max;
-      const rankEl = u.max > 1
-        ? `<span class="ui-rk">${Array.from({ length: u.max }, (_, i) =>
-            `<span class="rp${i < rk ? ' on' : ''}"></span>`).join('')}</span>`
-        : `<span class="ui-on">ON</span>`;
-      // A max-1 unlock and a maxed track have nothing left to earn — their bar
-      // reads solid rather than sitting at a fraction that will never move.
+      // Every ability is six ranks (config's catalog law), so every row draws
+      // pips — there is no longer a single-unlock row wearing an ON badge.
+      const rankEl = `<span class="ui-rk">${Array.from({ length: u.max }, (_, i) =>
+        `<span class="rp${i < rk ? ' on' : ''}"></span>`).join('')}</span>`;
+      // A maxed track has nothing left to earn — its bar reads solid rather
+      // than sitting at a fraction that will never move.
       return `<div class="ab2" data-ab="${u.id}">` +
         `<div class="uprow2"><span class="ui-ic">${u.icon}</span>` +
         `<span class="ui-nm">${u.name}</span>${rankEl}</div>` +

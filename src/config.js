@@ -789,17 +789,23 @@ export const PROG = {
   //     is 1.243 (ranks 4->5 of a 6-rank track), so a wobble beyond ~0.108
   //     could make a later rank cost LESS than an earlier one and break the
   //     "thresholds always rise" rule. Keep it under 0.10.
-  // These two values are SEARCHED, not guessed: they maximize the smallest gap
-  // between any two rank-ups within a spec's STARTING KIT (the only abilities
-  // learned at the same instant, so the only ones whose pools stay equal — and
-  // therefore the only real lockstep risk). At 0.23/0.08 the tightest kit gap
-  // is 49 XP; the first pass at 0.15/0.08 left ramProw and kineticSling landing
-  // 6 XP apart, i.e. the same second. A per-ability scale alone can't fix that
-  // — ladders of different LENGTH cross no matter how they're scaled — which is
-  // why the pair is tuned together against the real catalog. devtest T5c
-  // asserts both properties, so adding an ability that collides fails the suite.
+  // The KIT rows don't take SPREAD from the hash — see the kit-spacing note on
+  // abilityRankCost. A hash is luck, and once every ability became six ranks a
+  // kit fired 15-20 rank-ups in one run instead of 9-13: searching this pair
+  // could no longer separate them (the best tightest-gap anywhere on the whole
+  // (spread, wobble) grid was 18 XP, against 52 in the old mixed-length
+  // catalog). Kit ladders are spaced evenly across the SPREAD band by kit
+  // position instead, which separates them by construction; SPREAD is still
+  // what sets the WIDTH of that band, and the hash still applies to every
+  // ability learned from a card.
+  // WOBBLE was halved (0.08 -> 0.04) as part of that: the kit spacing hands
+  // rank 1 a 75 XP separation at this spread, and a +-8% per-rank nudge on a
+  // ~490 XP first threshold is +-39 XP, i.e. enough to eat most of it. At 0.04
+  // the tightest kit gap is 47 XP; the ladder still isn't a clean multiple of
+  // itself, which is all the nudge was ever for. devtest T5c asserts both laws
+  // against the real catalog, so an ability that collides fails the suite.
   ABIL_XP_SPREAD: 0.23,
-  ABIL_XP_WOBBLE: 0.08,
+  ABIL_XP_WOBBLE: 0.04,
   // XP awards per action (tuned in the balance-test soak — see CLAUDE.md)
   XP_CATCH: 6,             // + up to 20 scaled by mass vs capacity
   XP_SMASH: 10,            // + 12 for a big kill
@@ -904,8 +910,9 @@ export const SPECS = [
   // Kit carries Ram Prow + Deflector, not Heavy Winch: the brawler's frame-one
   // identity is MECHANICS (the innate prow and the parry, each deepened by its
   // track) — a kit of three stat sliders played like the base ship with bigger
-  // numbers. Heavy Winch stays a strong early pool card. Kit rule holds:
-  // 6/6/4/6 rankable.
+  // numbers. Heavy Winch stays a strong early pool card. (The old kit rule —
+  // at least three rankable rows — is satisfied by construction now that every
+  // ability is six ranks; a kit is four climbing bars from frame one.)
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
     start: ['kineticSling', 'reinforcedHull', 'ramProw', 'deflector'] },
@@ -920,6 +927,21 @@ export const SPECS = [
 // The named-ability catalog. Each ability has an OWNER spec, `max` ranks (which
 // it climbs AUTOMATICALLY off its own XP pool — see abilityRankCost), and a
 // `minTier` soft-floor (it can't be OFFERED until you've reached that tier).
+// EVERY ABILITY IS SIX RANKS (user design rule). The catalog used to run 1/3/4/6
+// and that was three different kinds of card wearing one name: a max-1 row
+// arrived already maxed (its bar was decoration and the pick was a switch, not
+// a track), and a 3-rank row finished half a run before a 6-rank one. One
+// length means one promise — every card you take is a track that climbs all
+// run, and the HUD bar under it always means the same thing. The rule has a
+// price, and it is paid in shipStats: a row that used to reach its ceiling in
+// 3 ranks now takes 6, so its PER-RANK step was halved (4-rank rows x2/3) and
+// the ceilings are unchanged. Ranks got finer, not stronger — the one thing
+// this must never be is a stealth power pass. The five former unlocks (Retro
+// Jets, Gravity Compass, Impact Warning, Twin Grip, Slipstream) were the real
+// work: rank 1 does exactly what the unlock always did, and ranks 2-6 deepen
+// it, because a rank that changes nothing is the failure mode this whole
+// system is built to avoid (see the Nav Plotter note — a flat has-plotter
+// boost made its own ranks 2-3 dead).
 // An optional `xpMul` scales that ability's whole rank ladder: rows floored at
 // a late tier discount it (0.5 at minTier 3, 0.7 at 2) because they're learned
 // with only a fraction of the run's XP left to earn — at 1.0 a capstone would
@@ -968,57 +990,64 @@ export const ABILITIES = [
   // 🥊 BRAWLER
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
   { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
-  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 3, minTier: 0, needs: 'orbit', weight: 1.1, desc: 'Right-click to blast your orbit rocks outward.' },
+  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 6, minTier: 0, needs: 'orbit', weight: 1.1, desc: 'Right-click to blast your orbit rocks outward. Ranks fire harder and tighter.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
-  { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
+  { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
   { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull — flick the mouse to hurl it that way. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
-  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 4, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
-  { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 3, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
-  { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 3, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
-  { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 3, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
-  { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
-  { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
-  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
+  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 6, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
+  { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
+  { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
+  { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 6, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
+  { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
+  { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
+  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
 
   // 📡 HAULER
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
   { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
-  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
+  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
   { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   // HAULER has NO energy shield ON PURPOSE (design law): the orbit rock wall IS
   // its protection — Rockwall/Reinforced Hull harden that identity instead.
-  { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 4, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
+  // chMul 2/3: the HAULER's hull track was deliberately SHORTER than the
+  // brawler's (max 4 vs 6) — the brawler is the tank, and length was the lever
+  // that said so. Six ranks everywhere took that lever away, so the row keeps
+  // its ceiling by contributing 2/3 of a rank to the shared `hull` channel
+  // instead: 6 x 2/3 = the 4 it always summed to. Scaling the channel's
+  // coefficient in shipStats would have nerfed the brawler's own track, which
+  // never changed length.
+  { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 6, chMul: 2 / 3, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
   { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
-  { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 4, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
-  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 3, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
+  { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
+  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
   { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Haul planet-scale masses.' },
-  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 3, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
-  { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 3, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
-  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 3, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
-  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 1, minTier: 3, weight: 0.9, desc: 'Hold and throw two rocks at once.' },
+  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 6, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
+  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 6, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
+  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once. Ranks steady the rig — the second rock rides tighter and drags you around less.' },
 
   // 🔭 SCOUT
   { id: 'tunedThrusters', spec: 'scout', name: 'Tuned Thrusters', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Faster thrust and a higher speed ceiling.' },
   // The sensor/QoL chain is SHARED (`also`): Scout-native at tier 0, offered to
-  // the other specs later — max-1 flight unlocks at tier 1, rankable sensor
+  // the other specs later — the two flight-feel rows at tier 1, the sensor
   // tracks at tier 2 (below the tier-3 capstone band so they don't crowd it).
-  { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'Unlock reverse thrust (S).' },
-  { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 1, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'World-pull chevrons at your ship.' },
-  { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
-  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 1, minTier: 0, also: { brawler: 2, hauler: 2 }, needs: 'plotter', weight: 1.0, desc: 'Mark where your path will hit (needs the plotter).' },
-  { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 3, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
+  { id: 'retroJets',      spec: 'scout', name: 'Retro Jets',      icon: '◂', channel: 'reverse',   max: 6, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'Unlock reverse thrust (S). Ranks add braking authority.' },
+  { id: 'gravityCompass', spec: 'scout', name: 'Gravity Compass', icon: '✧', channel: 'compass',   max: 6, minTier: 0, also: { brawler: 1, hauler: 1 }, weight: 1.0, desc: 'World-pull chevrons at your ship. Ranks pick up fainter pulls.' },
+  { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
+  { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, needs: 'plotter', weight: 1.0, desc: 'Mark where your path will hit (needs the plotter). Ranks forecast farther ahead.' },
+  { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
   { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
-  { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
-  { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 3, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
+  { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
+  { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 6, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
   // Afterburner is shared to BRAWLER only, and LATE (tier 4 — above even the
   // capstone band): a burning brawler is an endgame reward, and HAULER never
   // gets it (the freighter fantasy is mass, not speed).
-  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 3, minTier: 0, also: { brawler: 4 }, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
-  { id: 'evasionRoll',    spec: 'scout', name: 'Dash Jets',      icon: '↯', channel: 'evasion',     max: 3, minTier: 0, weight: 1.0, desc: 'Tap A / D to dart sideways (brief i-frames).' },
-  { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 3, minTier: 2, xpMul: 0.7, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
-  { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 3, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
-  { id: 'slipstream',     spec: 'scout', name: 'Slipstream',     icon: '➸', channel: 'slipstream',  max: 1, minTier: 3, weight: 0.9, desc: 'Tap F to warp forward toward the cursor.' },
+  { id: 'afterburner',    spec: 'scout', name: 'Afterburner',    icon: '»', channel: 'afterburner', max: 6, minTier: 0, also: { brawler: 4 }, weight: 1.0, desc: 'Hold SHIFT for a long, hard burn. The tank refills slowly.' },
+  { id: 'evasionRoll',    spec: 'scout', name: 'Dash Jets',      icon: '↯', channel: 'evasion',     max: 6, minTier: 0, weight: 1.0, desc: 'Tap A / D to dart sideways (brief i-frames).' },
+  { id: 'autoEvade',      spec: 'scout', name: 'Reflex Jink',    icon: '↺', channel: 'autoevade',   max: 6, minTier: 2, xpMul: 0.7, weight: 0.9, desc: 'Auto-dodges an incoming rock at the last instant. Recharges.' },
+  { id: 'reconDrone',     spec: 'scout', name: 'Recon Drone',    icon: '✜', channel: 'recon',       max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Auto-charts worlds from much farther out.' },
+  { id: 'slipstream',     spec: 'scout', name: 'Slipstream',     icon: '➸', channel: 'slipstream',  max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Tap F to warp forward toward the cursor. Ranks warp farther and recharge sooner.' },
 ];
 
 export function abilityById(id) { return ABILITIES.find((a) => a.id === id); }
@@ -1110,6 +1139,32 @@ function hash01(key) {
 }
 const signed = (key) => hash01(key) * 2 - 1;   // -1..1
 
+// KIT SPACING — the ladder scale for one ability, in 1 +- ABIL_XP_SPREAD.
+// A hash is luck, and luck stopped being good enough when every ability became
+// six ranks: a starting kit now fires 15-20 rank-ups in a run instead of 9-13,
+// and the three or four bars that start TOGETHER crowd hardest at rank 1, where
+// every 6-rank track costs about the same. No (spread, wobble) pair could open
+// that up — searched over the whole grid, the best tightest kit gap was 18 XP
+// against the old catalog's 52. So kit rows are SPACED EVENLY across the spread
+// band by their position in the kit: separation by construction rather than by
+// luck, and proportional, so it holds at every rank rather than just the first.
+// A kit's authored ORDER is therefore its rank cadence — first listed ranks
+// soonest, last listed slowest — and reordering a kit re-times it.
+// Everything learned from a CARD keeps the hash: those pools are never equal in
+// the first place, since no two cards are taken at the same instant.
+let kitSpread = null;
+function ladderScale(a) {
+  if (!kitSpread) {
+    kitSpread = new Map();
+    for (const s of SPECS) {
+      const n = s.start.length;
+      s.start.forEach((id, i) => kitSpread.set(id, n > 1 ? (2 * i) / (n - 1) - 1 : 0));
+    }
+  }
+  const slot = kitSpread.get(a.id);
+  return 1 + PROG.ABIL_XP_SPREAD * (slot !== undefined ? slot : signed(a.id));
+}
+
 const rankCostCache = new Map();
 let longestTrack = 0;
 export function abilityRankCost(a, rank) {
@@ -1124,9 +1179,11 @@ export function abilityRankCost(a, rank) {
     const lenF = PROG.ABIL_XP_SHORT
       + (1 - PROG.ABIL_XP_SHORT) * (steps / Math.max(1, longestTrack - 1));
     const w = 1 + PROG.ABIL_XP_GROWTH * (rank - 1);
-    // Stagger (ABIL_XP_SPREAD / _WOBBLE): a per-ability ladder scale plus a
-    // per-rank nudge, so no two tracks ever cross a threshold together.
-    const spread = 1 + PROG.ABIL_XP_SPREAD * signed(a.id);
+    // Stagger (ABIL_XP_SPREAD / _WOBBLE): a per-ability ladder scale (spaced by
+    // kit position for a starting kit, hashed for everything else — see
+    // ladderScale) plus a per-rank nudge, so no two tracks cross a threshold
+    // together.
+    const spread = ladderScale(a);
     const wobble = 1 + PROG.ABIL_XP_WOBBLE * signed(key);
     cost = Math.round(PROG.ABIL_XP_TOTAL * (a.xpMul || 1) * lenF * w / sum * spread * wobble);
     rankCostCache.set(key, cost);
@@ -1254,9 +1311,17 @@ export function tierChoices(prog, n = 2) {
 export function shipStats(prog) {
   const tier = prog.tier;
   const u = prog.upgrades || {};
-  // Sum owned ability ranks into their channels.
+  // Sum owned ability ranks into their channels. An optional `chMul` lets one
+  // ROW count for less than a whole rank — how a track holds its old ceiling
+  // when its LENGTH is fixed at six but its channel is shared with a longer
+  // track in another spec (cargoPlating; see its catalog note). Channel totals
+  // are therefore not necessarily integers — anything downstream that needs a
+  // count of things (maxOrbiters) rounds for itself.
   const ch = {};
-  for (const a of ABILITIES) { const rk = u[a.id] || 0; if (rk > 0) ch[a.channel] = (ch[a.channel] || 0) + rk; }
+  for (const a of ABILITIES) {
+    const rk = u[a.id] || 0;
+    if (rk > 0) ch[a.channel] = (ch[a.channel] || 0) + rk * (a.chMul || 1);
+  }
   const c = (k) => ch[k] || 0;
 
   const catchC = c('catch'), reachC = c('reach'), engineC = c('engine'), flingC = c('fling'),
@@ -1279,8 +1344,19 @@ export function shipStats(prog) {
   const hasCompass = compassC > 0, hasPredict = plotterC > 0, hasTargeting = targetingC > 0,
     hasDeepSensors = deepC > 0, hasCrashWarn = collisionC > 0 && hasPredict;
 
+  // SIX-RANK RESCALE (read this before tuning any coefficient below). Every
+  // ability is six ranks now; the tracks that used to be 3 or 4 kept their old
+  // CEILING and had their per-rank step divided by the same factor their length
+  // was multiplied by (3 -> 6 halves the step, 4 -> 6 takes two thirds). So a
+  // maxed build is exactly as strong as it was and the ladder to it is just
+  // finer. Channels stacked by two abilities (ram = Ram Prow + Juggernaut,
+  // orbit = Sling + Bay) are scaled against the SUMMED old ceiling, not one
+  // row's. Anything that reads a channel and was already six ranks (catch,
+  // reach, engine, fling, magnet, hull, deflect, brawler shield) is untouched.
   const capacity = TIERS.caps[tier] * (1 + 0.22 * catchC);
-  const maxHull = 120 + 40 * tier + 55 * hullC + 30 * ramC;   // ram armor beefs the hull too
+  // ram armor beefs the hull too — 30/rank over the old 4+3 ceiling, so 17.5
+  // over the new 6+6 (same +210 at the top).
+  const maxHull = 120 + 40 * tier + 55 * hullC + 17.5 * ramC;
   // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
   // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
   // bar. It trades max hull for a recharging layer; only the shield regens.
@@ -1311,7 +1387,9 @@ export function shipStats(prog) {
       // Render clips the shield visual to this same wedge.
       shieldArc = Math.PI * 0.35;
     } else {
-      shieldFrac = Math.min(0.28, 0.16 + 0.05 * (shieldC - 1));
+      // Phase Screen went 3 -> 6 ranks, so its step halved: still 0.16 at rank
+      // 1 and 0.26 at the top, reached over five smaller steps.
+      shieldFrac = Math.min(0.28, 0.16 + 0.02 * (shieldC - 1));
     }
   }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
@@ -1331,9 +1409,18 @@ export function shipStats(prog) {
 
   // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it in
   // the old ~0..25 band so combat/physics balance is preserved: it's just the sum
-  // of every owned ability rank (each channel total), weighted like before.
+  // of every owned ability rank (each channel total), weighted.
+  // THE WEIGHT MOVED WITH THE SIX-RANK PASS (0.6 -> 0.48), and it had to. This
+  // is a POWER PROXY, and the pass deliberately left power alone — it cut every
+  // shortened track's per-rank step in half — while the rank COUNT it reads
+  // inflated by ~1.4x (a 3-rank track that used to sit maxed and idle now keeps
+  // climbing). At the old weight the proxy read a ship that hadn't got stronger
+  // as several levels stronger, and pointed tougher enemies and a heavier hull
+  // at it: measured mid-run, a tier-2 scout went from level 16 to 23. 0.48 is
+  // fitted against the OLD trajectory at matched XP across all three specs
+  // (within a level at every tier boundary). Re-fit it if track lengths move again.
   const rankSum = Object.values(ch).reduce((s, v) => s + v, 0);
-  const totalLevel = Math.min(25, tier * 2 + Math.round(rankSum * 0.6));
+  const totalLevel = Math.min(25, tier * 2 + Math.round(rankSum * 0.48));
 
   return {
     capacity,
@@ -1342,7 +1429,7 @@ export function shipStats(prog) {
     shipName: SHIP_NAMES[tier],
     // Beam-reach base is sized against SHIP_ZOOM so the ring stays on-screen at
     // every tier; reach abilities + the orbit ring extend it.
-    range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 30 * orbitLvl,
+    range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 20 * orbitLvl,
     grabSlack: 70 + 22 * reachC,
     force: capacity * 55 * (0.6 + 0.12 * tier),
     maxSpeed: 280 + 40 * tier + 80 * engineC,
@@ -1357,32 +1444,52 @@ export function shipStats(prog) {
     orbitCap,
     orbitLabel,
     trailStow,
-    // 1/3/5/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital Sling +
-    // Expanded Bay), so uncapped it could hit 15; higher ranks still grow orbitCap/range.
-    maxOrbiters: orbitLvl > 0 ? Math.min(7, 2 * orbitLvl - 1) : 0,
+    // 1/2/3/5/6/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital
+    // Sling + Expanded Bay), so uncapped it could hit 23; higher ranks still
+    // grow orbitCap/range. The old ladder was 2*lvl-1 over a 4-rank track
+    // (1/3/5/7); stretched across six ranks it climbs at 1.2 slots per rank so
+    // a single maxed orbit ability still lands exactly on the 7-slot cap.
+    maxOrbiters: orbitLvl > 0 ? Math.min(7, 1 + Math.round((orbitLvl - 1) * 1.2)) : 0,
     orbitLvl,
     // Kept for render (engine-flare size, chart-length) — indexed like the old levels
     levels: { beam: tier, orbit: orbitLvl, fling: flingC, hull: hullC, thrust: engineC, chart: deepC },
     // ---- ability gates (Scout sensor chain + shared unlocks) ----
+    // RETRO JETS was a max-1 unlock; at six ranks rank 1 is still exactly the
+    // old unlock (full reverse) and the ranks buy braking AUTHORITY on top —
+    // growing the ability can only ever help, so nobody's flight feel is worse
+    // than it was for having the same ability.
     hasReverse: c('reverse') > 0,
+    reversePower: c('reverse') > 0 ? 1 + 0.1 * (c('reverse') - 1) : 0,   // x reverse thrust
     hasTargeting,
     targetLvl: targetingC,
-    targetReach: 0.6 + 0.25 * targetingC,   // x LOCK_T, when targeting is on
-    targetMarkers: 2 + 2 * targetingC,      // how many ✕ markers show
+    targetReach: 0.6 + 0.125 * targetingC,  // x LOCK_T, when targeting is on
+    targetMarkers: 2 + targetingC,          // how many ✕ markers show (2 -> 8)
     hasPredict,
     predictLvl: plotterC,
     hasCrashWarn,
     hasCompass,
     compassLvl: compassC,
+    // GRAVITY COMPASS was a max-1 unlock too. Rank 1 keeps the old 1.2 floor
+    // (below it the pull is too faint to point at anything useful); ranks lower
+    // it toward 0.6, so a ranked compass keeps reading out in the quiet places
+    // between lanes where an unranked one just goes blank.
+    compassFloor: compassC > 0 ? 1.2 / (1 + 0.2 * (compassC - 1)) : Infinity,
     hasVolley: volC > 0,
     volleyLvl: volC,
+    // SCATTERGUN's ranks used to be dead weight — hasVolley was the only thing
+    // anything read, so rank 2 and 3 bought nothing at all. Six ranks made that
+    // untenable: the pellets now leave harder and in a tighter cone.
+    volleySpeed: volC > 0 ? 1 + 0.05 * (volC - 1) : 1,
+    volleySpread: 0.07 * (volC > 0 ? 1 - 0.06 * (volC - 1) : 1),
     // ---- BRAWLER runtime abilities (read by physics/tractor) ----
     // INNATE RAM (spec DNA, like the shield shape): a brawler bonks from frame
     // one — ram deals more and impacts hurt less at rank ZERO, so minute-one
     // play already inverts (other specs dodge rocks; the brawler plays
     // chicken). Ram Prow / Juggernaut then deepen the same numbers.
-    ramMul: (prog.spec === 'brawler' ? 1.35 : 1) + 0.45 * ramC,   // ram damage DEALT to bodies
-    ramArmor: Math.max(0.45, (prog.spec === 'brawler' ? 0.85 : 1) - 0.11 * ramC), // impact damage TAKEN (lower = tougher)
+    // (Ram Prow 4 + Juggernaut 3 = a 7-rank channel before; 6 + 6 = 12 now, so
+    // both coefficients are scaled by 7/12 and the ceiling is where it was.)
+    ramMul: (prog.spec === 'brawler' ? 1.35 : 1) + 0.26 * ramC,   // ram damage DEALT to bodies
+    ramArmor: Math.max(0.45, (prog.spec === 'brawler' ? 0.85 : 1) - 0.064 * ramC), // impact damage TAKEN (lower = tougher)
     berserk: berserkC,                            // fling/ram scale up as hull drops (runtime hull read)
     cluster: clusterC,                            // shrapnel shards spawned on a throw-kill
     shockwave: shockC,                            // knockback impulse on a throw-kill
@@ -1410,22 +1517,38 @@ export function shipStats(prog) {
     aegis: aegisC,                                // Aegis Reflector: orbit rocks reflect intercepted fire
     twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
     maxHeld: twinC > 0 ? 2 : 1,
+    twinLvl: twinC,
+    // TWIN GRIP was a max-1 unlock; its ranks steady the RIG rather than adding
+    // a third hand (held/held2 is the whole plumbing, and a third rock would be
+    // a mechanic, not a rank). The flanking rock is sprung with more force, and
+    // the per-rock tug on the ship falls. Note the tug only ever goes DOWN: the
+    // no-recoil design law caps the COMBINED tug at 150, which is why the twin
+    // hold halves it to 75 in the first place — ranks may not claw that back.
+    twinHold: twinC > 0 ? 1 + 0.14 * (twinC - 1) : 1,   // x hold force on the second rock
+    twinTug: twinC > 0 ? 1 - 0.06 * (twinC - 1) : 1,    // x the halved per-rock tug cap
     rockwall: rockwallC,                          // Rockwall: hardened, faster-spinning orbit rocks
     deadStop: deadstopC,                          // Dead Stop: caught alien throws prime for a harder fling
     // ---- SCOUT runtime abilities ----
     afterburner: afterburnerC,                    // hold Shift: fuel-tank overdrive (main.js drains, physics burns)
-    burnTime: 3.5 + 1.5 * afterburnerC,           // seconds a FULL tank burns for
-    burnRefill: 1 / (55 - 10 * afterburnerC),     // tank/s while idle — a slow 45/35/25s refill
+    burnTime: 3.5 + 0.75 * afterburnerC,          // seconds a FULL tank burns for (4.25 -> 8)
+    burnRefill: 1 / (55 - 5 * afterburnerC),      // tank/s while idle — a slow 50s -> 25s refill
     evasion: evasionC,                            // tap A/D: sideways dash burst + i-frames (main.onDash)
     autoEvade: autoevadeC,                        // Reflex Jink: auto-dodge scan (physics.step)
     recon: reconC,                                // Recon Drone: auto-survey reach (world.js)
+    // SLIPSTREAM was a max-1 unlock. Rank 1 is the old warp exactly (950u, 3.5s
+    // cooldown, 0.5s of invulnerability at the exit); ranks push it out to
+    // 1300u on a 2.5s cycle. main.onWarp reads these instead of literals.
     slipstream: slipC > 0,                        // tap F: short warp (main.onWarp)
+    slipLvl: slipC,
+    warpDist: slipC > 0 ? 950 + 70 * (slipC - 1) : 0,
+    warpCool: slipC > 0 ? 3.5 - 0.2 * (slipC - 1) : 0,
+    warpInvuln: slipC > 0 ? 0.5 + 0.05 * (slipC - 1) : 0,
     // ---- scaled passives ----
     magnet: CFG.PICKUP_MAGNET * (1 + 0.4 * magnetC),
     // Deep Array widens the map reveal; MASTER CHART (knowing the whole sky)
     // sharpens it further — the completionist reward reads through the same
     // stat every consumer already uses.
-    sensorMul: (1 + 0.3 * deepC) * (prog.masterChart ? 1.25 : 1),
+    sensorMul: (1 + 0.15 * deepC) * (prog.masterChart ? 1.25 : 1),
     // RECHARGE IS SPEC DNA, like the shield's shape above. Both shields are thin
     // now, so the CYCLE is what separates them: BRAWLER's plate is the quickest
     // to re-form of anything in the game (a ~1.75s lull and the nose is covered
@@ -1438,7 +1561,14 @@ export function shipStats(prog) {
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
     // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.
-    predictBoost: 1 + 0.18 * plotterC + 0.15 * deepC + (prog.masterChart ? 0.2 : 0),
+    // IMPACT WARNING joins them here, and this is what its own ranks buy: it was
+    // a max-1 unlock whose only job was drawing the ✕ where the path already
+    // ended, so at six ranks it had nothing to deepen. Now each rank pushes the
+    // forecast a little farther out, which is the same thing as seeing the
+    // crash sooner — the warning IS the horizon. Small (0.05/rank vs the
+    // plotter's 0.09) because the plotter is the ability that owns the path.
+    predictBoost: 1 + 0.09 * plotterC + 0.075 * deepC + 0.05 * collisionC
+      + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],
