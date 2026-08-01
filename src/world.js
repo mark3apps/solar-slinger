@@ -101,10 +101,16 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // spans ice, rock, iron, dust, sulfur, banded instead of pale clones.
   const mt = pickMoonType(rng);
   const t = rng();
-  // x CFG.MOON_R_MUL — the whole expression, jitter included, so this stays a
-  // SINGLE rng draw: the seeded stream (and therefore every position in the
-  // sky) has to be bit-identical to the unscaled world. Mass is untouched;
-  // see the WORLD SCALE note on CFG.MOON_R_MUL for why size and mass part ways.
+  // x CFG.MOON_R_MUL, applied to the finished expression so the ±2 jitter
+  // scales with the moon (±4 at 2x) instead of shrinking into an invisible
+  // wobble on a body twice the size. WORLD SCALE adds NO rng draw here — the
+  // two this radius already costs (`t` above and the `rand` below) are the
+  // same two the unscaled world spent, in the same order — so the seeded
+  // stream, and with it every position in the sky, is bit-identical however
+  // the multiplier is set. Never buy a scaled value with an extra draw: the
+  // rest of the sky is generated from whatever the stream returns next.
+  // Mass is untouched; see the WORLD SCALE note on CFG.MOON_R_MUL for why
+  // size and mass part ways.
   const radius = ((18 + t * 16) * mt.rMul + rand(rng, -2, 2)) * CFG.MOON_R_MUL;
   // Moons run the gamut now — some are proper little worlds, and at these
   // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
