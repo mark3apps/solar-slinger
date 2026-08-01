@@ -1986,7 +1986,7 @@ export function replenishWorld(game, dt) {
           : b.shepherd || b.volcanic || b.carved ? 900
             : b.type === 'station' || b.majorComet ? 1400
               : b.type === 'moon' ? b.radius * 5 + 300 : 900)
-          + recon * (b.type === 'planet' ? 2600 : 1300);
+          + recon * (b.type === 'planet' ? 1300 : 650);
         if (d < zone) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
         else uncharted++;
       }

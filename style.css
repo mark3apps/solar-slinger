@@ -343,7 +343,6 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
   border-color: rgba(120, 255, 180, .9);
   box-shadow: 0 0 6px rgba(120, 255, 180, .8);
 }
-.uprow2 .ui-on { font-size: 9px; color: var(--green); letter-spacing: 1px; text-shadow: 0 0 7px rgba(120, 255, 180, .7); }
 
 /* Per-ability XP track. Ranks are earned automatically (config.growAbilities),
    so every learned ability gets its own hairline bar filling toward its next
