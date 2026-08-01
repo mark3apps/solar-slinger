@@ -22,4 +22,14 @@ if __name__ == '__main__':
     # PORT env override lets a second checkout (e.g. a git worktree) serve
     # alongside the default instance; everything else keeps using 8642.
     port = int(os.environ.get('PORT', 8642))
-    http.server.test(HandlerClass=NoCacheHandler, port=port, bind='127.0.0.1')
+    # THREADED, and it must stay that way. http.server.test() builds a
+    # single-threaded HTTPServer that handles exactly one connection at a time,
+    # which was survivable while the page was the only client — but a Web
+    # Worker (src/minimap-worker.js) is a SECOND independent requester, and
+    # with HTTP keep-alive one client holding its connection open starves
+    # every other request. In practice the server simply stopped answering
+    # mid-session and the page hung on an import that never resolved.
+    # ThreadingHTTPServer is the same handler with a thread per connection.
+    with http.server.ThreadingHTTPServer(('127.0.0.1', port), NoCacheHandler) as httpd:
+        print(f'Serving on http://127.0.0.1:{port}/  (Ctrl-C to stop)')
+        httpd.serve_forever()
