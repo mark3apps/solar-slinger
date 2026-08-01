@@ -1565,10 +1565,112 @@ let nanWarned = false;   // the NaN tripwire below warns once per session
 // simulated until the next frame's rebuild — one frame of stasis for a
 // fresh fragment, invisible; spawnAsteroid registers its spawns eagerly
 // anyway, covering nearly every runtime creation site.
+// ---------------------------------------------------------------------------
+// THE FRAME REGISTRIES (game.reg)
+//
+// The awake list fixed the per-SUBSTEP loops, but a second family of scans
+// survived it: "find the bodies of kind X", asked over and over against the
+// full array. Each was written when the world held a few hundred bodies and
+// each is now a walk of ~8000 (physics' iron-moon and terran shortlists run
+// PER SUBSTEP; ai's avoidStars walked every body to find the one star, once
+// per alien per frame; world's local/asteroid census ran two full reduces;
+// render asked half a dozen more). Measured: with the ship parked in open
+// space — an identical 381 awake bodies either way — doubling the world's
+// total body count still cost 1.7x the frame. That gap was this: work
+// proportional to bodies we had already decided not to simulate.
+//
+// So the ONE full-array walk the frame already pays for (the LOD pass below)
+// now also classifies as it goes, and every scan reads the answer instead.
+//
+// THREE RULES, and each is load-bearing:
+//   1. A registry is a per-frame SNAPSHOT, so every consumer must still check
+//      b.alive — entries can die mid-frame (a shatter, a cull) and the list
+//      will not know until the next rebuild.
+//   2. It holds REFERENCES, so world.generateWorld must drop it in the same
+//      breath as the awake list (`game.reg = null`) — a stale registry holding
+//      the DEAD world's planets would have render drawing ghost worlds and
+//      gravity answering to suns that no longer exist.
+//   3. It may be one frame STALE for newcomers. A body spawned after the walk
+//      is simply not in it until the next rebuild — the same soft failure the
+//      awake list already has, and for the same reason: one frame of a fresh
+//      fragment being uncounted is invisible, while a hard guarantee would
+//      mean touching every creation site in the codebase.
+// frameReg() covers the cold start (first frame after a regen, before the LOD
+// has run) with a one-off walk, so no consumer needs its own fallback path.
+// ---------------------------------------------------------------------------
+function newReg() {
+  return {
+    stars: [], planets: [], terrans: [], ironMoons: [], stations: [], locals: [],
+    forts: [],
+    // EVERY body that is not shoal rock (~380 of ~15,600 at doubled scale).
+    // The renderer's landmark passes — approach plates, the planet colour
+    // wash, the minimap blip layer — all want exactly this set: field rock is
+    // terrain, drawn by the cached dot layer, and every one of those passes
+    // was rejecting all ~15,000 rocks one at a time to reach the 380 it
+    // wanted. Not the same thing as the awake list, which is bounded by the
+    // wake bubble: radar reach is far wider than that, and a landmark must
+    // blip whether or not it is near enough to simulate.
+    nonField: [],
+    // Bodies that hide the ship from alien senses: dust moons and shroud
+    // worlds both feed the one game.dustCloak flag (ai.js), so they share one
+    // list — the gate does not care which kind concealed you.
+    cloakers: [],
+    // Bodies with something DECAYING on them (cooling magma, an expiring
+    // ambient comet) — world.replenishWorld ticked those two fields over
+    // every body in the world, every frame, for the handful that ever carry
+    // them. A registry keeps that exact behaviour (no LOD trade: dormant
+    // members are still ticked) at the cost of the walk we already do.
+    decay: [],
+    asteroids: 0, moons: 0,
+  };
+}
+
+// Classify one live body into the registries. Kept as a plain switch on type
+// so the LOD's hot walk pays one jump per body, not a chain of predicates.
+function regPush(reg, b) {
+  switch (b.type) {
+    case 'star': reg.stars.push(b); break;
+    case 'planet':
+      reg.planets.push(b);
+      if (b.ptype === 'terran') reg.terrans.push(b);
+      else if (b.ptype === 'shroud') reg.cloakers.push(b);
+      break;
+    case 'moon':
+      reg.moons++;
+      if (b.moonType === 'iron') reg.ironMoons.push(b);
+      else if (b.moonType === 'dust') reg.cloakers.push(b);
+      break;
+    case 'station': reg.stations.push(b); break;
+    case 'asteroid': reg.asteroids++; break;
+  }
+  if (b.field == null) reg.nonField.push(b);
+  if (b.fort) reg.forts.push(b);
+  if (b.local) reg.locals.push(b);
+  if (b.magma > 0 || b.comet) reg.decay.push(b);
+}
+
+// The registries, built on demand if the LOD has not run yet this world (the
+// first frame after generateWorld, where render and replenishWorld can both
+// reach the game before the substep loop has). Costs one walk, once.
+export function frameReg(game) {
+  let reg = game.reg;
+  if (!reg) {
+    reg = game.reg = newReg();
+    for (const b of game.bodies) if (b.alive) regPush(reg, b);
+  }
+  return reg;
+}
+
 export function updateFieldLOD(game, dt) {
   const bodies = game.bodies;
   const awake = bodies._awake || (bodies._awake = []);
   awake.length = 0;
+  const reg = game.reg || (game.reg = newReg());
+  reg.stars.length = 0; reg.planets.length = 0; reg.terrans.length = 0;
+  reg.ironMoons.length = 0; reg.stations.length = 0; reg.locals.length = 0;
+  reg.decay.length = 0; reg.forts.length = 0; reg.cloakers.length = 0;
+  reg.nonField.length = 0;
+  reg.asteroids = 0; reg.moons = 0;
   const flds = game.fields;
   const s = game.ship;
   const cx = s.alive ? s.x : game.cam.x;
@@ -1585,6 +1687,7 @@ export function updateFieldLOD(game, dt) {
   }
   for (const b of bodies) {
     if (!b.alive) continue;
+    regPush(reg, b);   // the frame registries ride this same walk (see above)
     if (b.field == null || !flds) {   // non-field bodies are always awake
       b.dormant = false;
       awake.push(b);
@@ -1627,6 +1730,9 @@ export function step(game, dt) {
   // depends on the list existing, only speed does. Loops keep their alive/
   // dormant guards: entries can die mid-frame, and the fallback path needs them.
   const live = bodies._awake || bodies;
+  // Frame registries (see updateFieldLOD): the "find every body of kind X"
+  // shortlists this function used to rebuild from scratch on every substep.
+  const reg = frameReg(game);
   const attractors = _attractors;
   attractors.length = 0;
   let aliveCount = 0;   // AWAKE count — the sweep-list staleness check below compares
@@ -1924,7 +2030,10 @@ export function step(game, dt) {
     // just proximity: only things genuinely on a collision course trigger it,
     // and only fast ones — slow drift bounces harmlessly anyway (DMG thresh).
     if (game.st.autoEvade > 0 && game.autoEvadeT <= 0 && s.invuln <= 0) {
-      for (const b of bodies) {
+      // Awake list: anything close enough and fast enough to be worth dodging
+      // is inside the wake bubble by construction, so the dormants this used
+      // to walk could never have passed the 1100u box test anyway.
+      for (const b of live) {
         if (!b.alive || b.heldBy || b.type === 'star') continue;
         if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;  // passes through us anyway
         if (b.mass < 200) continue;                                  // too light to matter
@@ -2077,10 +2186,10 @@ export function step(game, dt) {
   // substep; the debris loop springs loose chunks toward a pooling halo just
   // off the surface. DEBRIS ONLY, exactly the storm-shove law: a force that
   // touched bodies, celestials, or rails is an invariant regression.
-  let ironMoons = null;
-  for (const b of bodies) {
-    if (b.alive && b.type === 'moon' && b.moonType === 'iron') (ironMoons ??= []).push(b);
-  }
+  // Registry, not a scan: this shortlist used to walk every body in the world
+  // once per SUBSTEP (2-3x a frame) to find a handful of moons that change
+  // only when one dies. See the frame-registry note above updateFieldLOD.
+  const ironMoons = reg.ironMoons.length ? reg.ironMoons : null;
   for (const d of game.debris) {
     const dx = s.x - d.x, dy = s.y - d.y;
     const dd = Math.sqrt(dx * dx + dy * dy) || 0.001;   // guard: ship exactly on the chunk → NaN poison
@@ -2454,12 +2563,15 @@ export function step(game, dt) {
   // visitor, wreck). Heavyweights (> ATMO_MAX_MASS) punch through: attacking
   // a terran world is a feat that takes a real rock. The ship never burns.
   {
-    let terrans = null;
-    for (const b of bodies) {
-      if (b.alive && b.type === 'planet' && b.ptype === 'terran') (terrans ??= []).push(b);
-    }
+    // Both halves were full-array walks per SUBSTEP, and the inner one is the
+    // heavier by far: field rock is type 'asteroid', so every rock in every
+    // shoal was tested for atmospheric entry 2-3 times a frame. The terran
+    // list comes from the registry; the candidates come from the awake list,
+    // which is the LOD's documented trade — a dormant rock is off-view by
+    // construction, and burn-up is a thing you watch happen.
+    const terrans = reg.terrans.length ? reg.terrans : null;
     if (terrans) {
-      for (const b of bodies) {
+      for (const b of live) {
         if (!b.alive || b.type !== 'asteroid' || b.onRails || b.heldBy ||
             b.mass > CFG.ATMO_MAX_MASS || b.core || b.cache || b.pod ||
             b.carved || b.visitor || b.wreck || b.junk || b.parryFrozen) continue;
