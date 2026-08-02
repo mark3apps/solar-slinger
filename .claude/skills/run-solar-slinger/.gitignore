@@ -1,0 +1,7 @@
+# Driver output — screenshots are artifacts of a run, not source.
+shots/
+
+# Baselines are taken PER CHANGE, immediately before editing (see CLAUDE.md).
+# Committing them would ship a stale reference that quietly diffs against
+# someone else's machine — and perf timings are machine-specific anyway.
+baseline/
