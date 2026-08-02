@@ -8,7 +8,7 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
 - `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
   `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "21/21", moons: "48/48", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{ planets: "17/17", moons: "59/59", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
   **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
@@ -71,5 +71,5 @@ Run these from `javascript_tool` against the preview (the pane suspends rAF when
 /`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
 actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
 runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
-21-planet/48-moon baseline — the 21 includes The Wanderer's Star, the expedition layer's
-hidden dark dwarf).
+17-planet/59-moon baseline — the 17 is the layout's 15 worlds plus the crystal binary's
+companion and The Wanderer's Star, the expedition layer's hidden dark dwarf).

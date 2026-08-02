@@ -144,8 +144,11 @@ give directions by). Rules that keep it from breaking the invariants above:
   - **Ice-moon geysers** (world.js): ice-type moons vent catchable ammo like the far ice planets, but
     close-in and faster — an early harvesting loop.
   - **Dense asteroid fields** (`world.seedDenseFields`, `CFG.FIELD_*`): four VAST rock shoals at
-    fixed radii — three in the planet-lane gaps (10400 / 23000 / 33500 — The Shoal, The Grindstones,
-    The Hushfield) and one on the outer band's frost fringe (44300, The Farshoal). Each is ~1900 rocks
+    fixed radii — three in the planet-lane gaps (AUTHORED 10400 / 23000 / 33500 — The Shoal, The
+    Grindstones, The Hushfield) and one on the outer band's frost fringe (authored 44300, The
+    Farshoal). Every one of those is an authored radius spread by `CFG.SYS_R_MUL` at seed time
+    (world.js's module-local `SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
+    sits — the gaps are the point, not the numbers. Each is ~1900 rocks
     across a roughly 5900 x 4400 pocket (mean nearest-neighbour spacing ~58u — the density the
     user signed off on; SIZE and COUNT are separate knobs and must move together, or you are
     re-tuning the feel rather than the size). **The pocket is close to ROUND on purpose** (`FIELD_LEN` /
@@ -361,7 +364,8 @@ give directions by). Rules that keep it from breaking the invariants above:
     - **AN ERUPTION THROWS BOULDERS, NOT DUST** (`CFG.GAS_EJECTA` / `GAS_EJECTA_R` /
       `GAS_STRIP_EJECTA`, user design law). The column shipped as 3-15 pieces sized 1.2-4.2% of the
       giant's radius, which MEASURED as: one solid impact = 15 pieces at a median 17.6 units against
-      a **1,148-unit** world; the geyser drip = 87 pieces per 30s flung out to 3.6x the radius; a
+      a **1,148-unit** world (the amber giant is 1,560 since SYSTEM SCALE un-clamped it, which only
+      sharpens the point); the geyser drip = 87 pieces per 30s flung out to 3.6x the radius; a
       full collapse = 96 pieces peaking at 102 live. A 17-unit crumb beside a world that size is
       sub-visible — it is *under* `CRUST_R_MIN`, the crumb floor of the crumble system that mints
       every other piece of a broken world — so the loudest thing in the game read as a puff of grit,
