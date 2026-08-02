@@ -147,7 +147,7 @@ give directions by). Rules that keep it from breaking the invariants above:
     fixed radii — three in the planet-lane gaps (AUTHORED 10400 / 23000 / 33500 — The Shoal, The
     Grindstones, The Hushfield) and one on the outer band's frost fringe (authored 44300, The
     Farshoal). Every one of those is an authored radius spread by `CFG.SYS_R_MUL` at seed time
-    (`world.SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
+    (world.js's module-local `SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
     sits — the gaps are the point, not the numbers. Each is ~1900 rocks
     across a roughly 5900 x 4400 pocket (mean nearest-neighbour spacing ~58u — the density the
     user signed off on; SIZE and COUNT are separate knobs and must move together, or you are

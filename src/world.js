@@ -60,6 +60,20 @@ const ECHOES = {
 // WORLD SCALE family): this spreads the sky out, those grow the worlds in it.
 const SR = (r) => r * CFG.SYS_R_MUL;
 
+// ...and A LANE THAT IS NAMED TWICE GETS A CONSTANT, not a second SR() call.
+// The respawnable landmarks are each described in two places — the spawn
+// function that places the body, and replenishWorld's off-view check that
+// picks an arrival angle by testing where the body WOULD land. Those two must
+// agree exactly, and when they were both bare literals the first scaling pass
+// updated the spawn and missed the check: the test then measured a point
+// thousands of units off the real orbit, so "never pop into existence in view"
+// silently stopped being true. One binding read by both sites is what makes
+// that unrepresentable, which a second SR() at the call site would not.
+const GRAVEYARD_R = SR(3250);         // the wreck ring, just above the corona
+const VESPER_PERI = SR(3900);         // ...and Vesper's perihelion, deliberately above it
+const VESPER_SEMI = SR(12000);
+const TINKER_R = SR(12000);           // the barge's trade lane
+
 const PTYPE_COLORS = {
   lava:    ['#e0603a', '#d4502c', '#e8784a'],
   rocky:   ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
@@ -406,7 +420,7 @@ function pickTinkerWant(game, not) {
 // puts it in the physics `install` set for free, so it station-keeps and can
 // never wander off its lane.
 function spawnTinker(game, sun, th) {
-  const r = SR(12000);
+  const r = TINKER_R;
   const x = sun.x + Math.cos(th) * r, y = sun.y + Math.sin(th) * r;
   const v = orbitVel(sun, x, y, 1);
   const tk = new Body({
@@ -438,7 +452,7 @@ function spawnVesper(game, sun, th) {
   // rather than its size — and the perihelion has to keep clearing the
   // graveyard ring, which moved with it. vp is computed from the sun's mass
   // below, so the speeds follow the geometry on their own.
-  const peri = SR(3900), semi = SR(12000);
+  const peri = VESPER_PERI, semi = VESPER_SEMI;
   const vp = Math.sqrt(CFG.G * sun.mass * (2 / peri - 1 / semi));
   const c = spawnAsteroid(game.bodies,
     sun.x + Math.cos(th) * peri, sun.y + Math.sin(th) * peri,
@@ -793,7 +807,7 @@ export function generateWorld(game, seed = 20260721) {
     const g0 = rng() * TAU;
     for (let i = 0; i < 9; i++) {
       const a = g0 + (i / 9) * TAU + rand(rng, -0.15, 0.15);
-      const gr = SR(3250) + rand(rng, -90, 90);
+      const gr = GRAVEYARD_R + rand(rng, -90, 90);
       const wx = Math.cos(a) * gr, wy = Math.sin(a) * gr;
       const wv = orbitVel(sun, wx, wy, 1);
       const w = spawnAsteroid(bodies, wx, wy, wv.vx, wv.vy, i === 0 ? 2800 : rand(rng, 200, 700));
@@ -1887,9 +1901,11 @@ export function replenishWorld(game, dt) {
     game.vesperRespawnT = (game.vesperRespawnT ?? 240) - dt;
     if (game.vesperRespawnT <= 0) {
       game.vesperRespawnT = null;
-      // Never pop into existence in view — flip to the far side if needed
+      // Never pop into existence in view — flip to the far side if needed.
+      // Test the point spawnVesper will ACTUALLY use (VESPER_PERI), not the
+      // authored radius: a check aimed at a different orbit is no check.
       let th = rng() * TAU;
-      const px = Math.cos(th) * 3900, py = Math.sin(th) * 3900;
+      const px = Math.cos(th) * VESPER_PERI, py = Math.sin(th) * VESPER_PERI;
       if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
       spawnVesper(game, game.homeStar, th);
     }
@@ -1903,7 +1919,9 @@ export function replenishWorld(game, dt) {
     if (game.tinkerRespawnT <= 0) {
       game.tinkerRespawnT = null;
       let th = Math.random() * TAU;
-      const px = Math.cos(th) * 12000, py = Math.sin(th) * 12000;
+      // Same rule as Vesper above: the off-view test has to be taken on the
+      // lane spawnTinker actually uses.
+      const px = Math.cos(th) * TINKER_R, py = Math.sin(th) * TINKER_R;
       if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
       spawnTinker(game, game.homeStar, th);
     }
@@ -2312,10 +2330,15 @@ export function replenishWorld(game, dt) {
         }
       }
     }
-    // Graveyard orbit: announce the wreck ring on first close pass
+    // Graveyard orbit: announce the wreck ring on first close pass. The band
+    // is a SUN-DISTANCE window straddling GRAVEYARD_R, so it rides SYSTEM
+    // SCALE with the ring it is announcing — left unscaled it would sit in
+    // empty space inside the innermost lane and the ring would never announce
+    // at all. Reaching up to VESPER_PERI is deliberate: the comet's perihelion
+    // is the top of the same neighbourhood.
     if (s.alive && !game.tut.graveyard) {
       const rc = Math.hypot(s.x - hs.x, s.y - hs.y);
-      if (rc > 2750 && rc < 3900) game.graveyardWarn = true;
+      if (rc > SR(2750) && rc < VESPER_PERI) game.graveyardWarn = true;
     }
     // Comet Vesper: announce the first time it crosses the player's view
     if (s.alive && game.vesper && game.vesper.alive && !game.tut.vesper &&
