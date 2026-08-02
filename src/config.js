@@ -1488,6 +1488,17 @@ export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
 // SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
 export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
 
+// What each planet ARCHETYPE (b.ptype — one mechanic each, see world.js) calls
+// itself to the player. A catalog, so it lives here in the leaf rather than in
+// whichever file happened to print it first: the in-world approach plate
+// (render.drawApproach) and the system chart's readout (starmap.contactClass)
+// both name the same world, and two copies of this table would drift.
+export const PTYPE_LABELS = {
+  lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD',
+  terran: 'TERRAN WORLD', ocean: 'OCEAN WORLD', desert: 'DESERT WORLD',
+  shroud: 'SHROUDED WORLD', crystal: 'CRYSTAL WORLD',
+};
+
 // ROGUELITE PROGRESSION (spec-based). The RUN OPENS on a SPECIALIZATION choice
 // (SPECS — main.startGame -> the 'spec' modal); it sets your starting kit and gates
 // which named ABILITIES you can be offered. The core grab/throw/fly loop is base

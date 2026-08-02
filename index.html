@@ -64,6 +64,11 @@
        box is the dial's, clipped to an arc, so the glyph needs its own node to
        be placed on the band rather than in the box's dead centre. -->
   <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu"><span class="mbg">&#9776;</span></button>
+  <!-- ...and its neighbour, one sector further round the same bezel band: the
+       system chart. Same construction, same clip-path idiom — the top-right
+       stays ONE instrument, so a second control there is another tab machined
+       into the dial's rim, never a square parked beside it. -->
+  <button id="mapBtn" class="hidden" title="System chart (M)" aria-label="Open system chart"><span class="mbg">&#9678;</span></button>
   <div id="speedBadge" class="hidden"></div>
   <div id="perfBadge" class="hidden"></div>
   <div id="msg" class="hidden"></div>
@@ -230,6 +235,8 @@
       data-note="Toggle the dashed trajectory prediction on and off.">T</button>
     <button class="kcap" data-fn="ACHIEVEMENTS"
       data-note="Open the run's achievement log — what you've earned this flight, and what it scored.">V</button>
+    <button class="kcap" data-fn="SYSTEM CHART"
+      data-note="Open the sun-centred chart of the whole system, and plot a journey of up to eight stops to follow.">M</button>
     <button class="kcap" data-fn="RESPAWN"
       data-note="Respawn after a death — or start a whole new run once the lives are gone.">R</button>
   </div>
@@ -269,6 +276,72 @@
   </div>
   <div class="menucol">
     <button class="menubtn primary" id="btnAchBack">BACK</button>
+  </div>
+</div>
+
+<!-- THE SYSTEM CHART. Deliberately NOT a centered .panel: the other shell
+     screens are readouts you open over the game, and this one IS the screen
+     while it is up — the sky it draws needs every pixel it can get, and a
+     440px octagon would make picking one moon out of a family impossible.
+     #starmap is its own canvas at native dpr (render.drawStarMap paints it,
+     for the same reason the radar has one: never soften an instrument). The
+     four chrome blocks sit in the corners so the middle of the chart is clear;
+     hud.js fills the stats, the journey rail and the readout strip, and
+     starmap.js owns the model behind all of it. -->
+<div id="mapScreen" class="hidden">
+  <canvas id="starmap"></canvas>
+  <!-- CLOSE is an X in the corner, not a button in the tray. Every other shell
+       panel is a centred slab whose BACK button sits inside it, at the bottom,
+       where the panel ends; this one has no edge to put a button against, so it
+       takes the convention a full-screen overlay actually has. -->
+  <button id="btnMapBack" class="mapx" title="Close chart (Esc)" aria-label="Close chart">&#10005;</button>
+  <div class="maphdr">
+    <h2>SYSTEM CHART</h2>
+    <div class="mapstats">
+      <div class="mapstat"><span class="msnum" id="mapCharted">0/0</span><span class="mslab">CHARTED</span></div>
+      <div class="mapstat"><span class="msnum" id="mapContacts">0</span><span class="mslab">CONTACTS</span></div>
+      <div class="mapstat"><span class="msnum" id="mapZoom">1.0&times;</span><span class="mslab">ZOOM</span></div>
+    </div>
+    <p class="maphint">DRAG to pan &middot; SCROLL to zoom &middot; CLICK a contact to add a stop</p>
+  </div>
+  <!-- The journey rail only exists once there IS a journey: an empty panel
+       explaining a feature is chrome you have to read past every time you open
+       the chart, and the header's hint line already says how to start one. -->
+  <div class="maproute hidden" id="mapRoutePanel">
+    <div class="mrhd"><span>JOURNEY</span><span class="mrcount" id="mapRouteN"></span></div>
+    <ol class="mrlist" id="mapRouteList"></ol>
+    <div class="mrbtns">
+      <button class="menubtn mapmini" id="btnMapClear">CLEAR JOURNEY</button>
+    </div>
+  </div>
+  <!-- RECENTRE sits with the SCALE BAR (canvas-drawn just to its right): both
+       are readings of the view rather than of the system, so they share a row.
+       Icon-only — the tooltip carries the sentence. -->
+  <button class="mapreset" id="btnMapCentre" title="Recentre on the sun"
+    aria-label="Recentre on the sun">&#8857;</button>
+  <!-- A KEY, not a paragraph: swatch and word. The explanations that used to
+       ride each row were read once and then in the way of the chart forever. -->
+  <ul class="maplegend">
+    <li><i class="lgm lg-charted"></i>CHARTED</li>
+    <li><i class="lgm lg-unknown"></i>UNEXPLORED</li>
+    <li><i class="lgm lg-stop"></i>STOP</li>
+  </ul>
+  <!-- Readout strip: what the cursor is on, mirrored in by hud.js. Same
+       query-the-console idiom as the CONTROLS schematic and the achievement
+       list, and sized for its longest line so the strip never resizes as the
+       cursor crosses the chart. -->
+  <!-- ...with a live PORTRAIT of whatever the cursor is on. render.js paints
+       #mapPortrait every frame off the chart's own clock (the sim behind this
+       panel is frozen), so a charted world turns under its own weather with its
+       moons going round, and an unexplored one shows sensor static instead —
+       "we have imagery of this place" is a thing you feel rather than read. -->
+  <div class="mapout" id="mapOut">
+    <canvas id="mapPortrait" width="76" height="76"></canvas>
+    <div class="motext">
+      <span class="mofn">SYSTEM CHART</span>
+      <span class="monote">Point at a contact to read it. Click to add it to your journey.</span>
+      <span class="mometa" id="mapMeta"></span>
+    </div>
   </div>
 </div>
 

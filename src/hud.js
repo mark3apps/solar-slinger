@@ -1,5 +1,9 @@
 import { PROG, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS } from './config.js';
 import { ACHIEVEMENTS, CATEGORIES, ACH_TOTAL, ACH_MAX_POINTS, isSecret } from './achievements.js';
+import {
+  chart, contactLabel, contactClass, contactLevel, waypointLabel, waypointPos,
+  pointLabel, MAX_WAYPOINTS,
+} from './starmap.js';
 
 const el = {};
 let msgTimer = null;
@@ -57,6 +61,10 @@ export function initHud(game) {
     // Achievements: the run scoreboard, its panel, and the toast rail
     'achievementsScreen', 'achList', 'achFilters', 'achOut', 'achScore', 'achCount', 'achPct',
     'achRail', 'scoreChip', 'gameoverScore',
+    // The system chart: its bezel tab, the panel, and the chrome hud.js fills
+    'mapBtn', 'mapScreen', 'starmap', 'mapCharted', 'mapContacts', 'mapZoom',
+    'mapRoutePanel', 'mapRouteN', 'mapRouteList', 'mapOut', 'mapMeta',
+    'btnMapClear', 'btnMapCentre', 'btnMapBack',
     'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
     'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnPauseAch', 'btnMainMenu', 'btnPauseExit',
     'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack', 'btnAchBack', 'btnGameOverAch']) {
@@ -101,6 +109,20 @@ export function initMenus(handlers) {
   bind('btnStart', handlers.onStart);
   bind('btnResume', handlers.onResume);
   bind('menuBtn', handlers.onPause);
+  bind('mapBtn', handlers.onOpenMap);
+  bind('btnMapBack', handlers.onCloseShell);
+  bind('btnMapClear', handlers.onClearRoute);
+  bind('btnMapCentre', handlers.onCentreChart);
+  // The journey rail is DELEGATED: rows come and go as stops are added, popped
+  // on arrival, and cleared, so the listener has to outlive them. Clicking a
+  // stop REMOVES it — the same click that put it on the chart takes it off,
+  // which is why the row carries no separate button to hunt for.
+  if (el.mapRouteList) {
+    el.mapRouteList.addEventListener('click', (e) => {
+      const row = e.target.closest('.mrstop');
+      if (row) handlers.onRemoveWaypoint(+row.dataset.i);
+    });
+  }
   bind('btnMainMenu', handlers.onMainMenu);
   bind('btnSplashExit', handlers.onExit);
   bind('btnPauseExit', handlers.onExit);
@@ -148,6 +170,40 @@ export function initMenus(handlers) {
     el.setSfxVol.addEventListener('input', (e) => handlers.onSfxVol(+e.target.value / 100));
     el.setSfxVol.addEventListener('change', () => handlers.onSfxPreview && handlers.onSfxPreview());
   }
+}
+
+// The chart canvas's own pointer wiring. Kept OUT of input.js on purpose: that
+// file owns the raw flight controls, and everything it listens for is gated
+// behind `menuBlocking()` precisely so nothing reaches the sim through a menu —
+// the chart is a menu, and its clicks must never be flight input. Same split as
+// every other panel: hud routes, main.js decides (it owns the game state and
+// the viewport size the projection needs).
+//
+// POINTER events, not mouse: a drag that leaves the canvas (over the journey
+// rail, off the window) has to keep panning until the button comes back up,
+// which is exactly what setPointerCapture buys and mouse events do not.
+export function initChartInput(h) {
+  const cv = el.starmap;
+  if (!cv) return;
+  cv.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    cv.setPointerCapture(e.pointerId);
+    h.onDown(e.clientX, e.clientY);
+  });
+  cv.addEventListener('pointermove', (e) => h.onMove(e.clientX, e.clientY));
+  cv.addEventListener('pointerup', (e) => {
+    if (e.button !== 0) return;
+    if (cv.hasPointerCapture(e.pointerId)) cv.releasePointerCapture(e.pointerId);
+    h.onUp(e.clientX, e.clientY);
+  });
+  cv.addEventListener('pointerleave', () => h.onLeave());
+  // preventDefault + passive:false, or the page scrolls the whole document
+  // under the chart while you zoom.
+  cv.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    h.onWheel(e.clientX, e.clientY, e.deltaY);
+  }, { passive: false });
+  cv.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 // ---- Title-screen boot sequence -------------------------------------------
@@ -602,7 +658,8 @@ function syncMenus(game) {
   const controls = !!game.controlsOpen;
   const credits = !!game.creditsOpen;
   const achieve = !!game.achievementsOpen;
-  const modal = settings || controls || credits || achieve;
+  const mapOpen = !!game.mapOpen;
+  const modal = settings || controls || credits || achieve || mapOpen;
   const splash = !game.started && !modal;
   const pause = game.started && game.paused && !modal;
   const menuBtn = game.started && !game.paused && !modal &&
@@ -613,7 +670,7 @@ function syncMenus(game) {
   // pick card or a shell modal.
   hudLive = menuBtn;
   if (!hudLive) abilHide();
-  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+menuBtn}${+game.started}`;
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+mapOpen}${+menuBtn}${+game.started}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
@@ -622,6 +679,16 @@ function syncMenus(game) {
     el.controlsScreen.classList.toggle('hidden', !controls);
     el.creditsScreen.classList.toggle('hidden', !credits);
     el.achievementsScreen.classList.toggle('hidden', !achieve);
+    el.mapScreen.classList.toggle('hidden', !mapOpen);
+    // THE COCKPIT GOES AWAY UNDER THE CHART. The other shell panels are centred
+    // boxes with the flight HUD showing around them, which is right — you are
+    // still in the cockpit reading a screen. The chart is FULL-BLEED, so the
+    // hull bar, the pilot card and above all the RADAR sat on top of it: two
+    // instruments claiming the same top-right corner, one of them a dial
+    // showing a slice of the very system the other is showing whole. Same
+    // replacement law as every other panel, just applied to the whole HUD.
+    el.hud.classList.toggle('hidden', mapOpen);
+    if (mapOpen) routeSig = null;   // force the journey rail to rebuild on open
     // Rebuilt ON OPEN and only then (see the buildAchList comment). The sig
     // guard means this runs on the transition, not every frame the panel is up.
     if (achieve) refreshAchievements(game);
@@ -644,6 +711,9 @@ function syncMenus(game) {
       if (game.gameOver) gameOverScore(game.prog);   // the log itself scores points
     }
     el.menuBtn.classList.toggle('hidden', !menuBtn);
+    // The chart's tab lives on the same bezel and answers to the same gate:
+    // both are "the cockpit is live and yours to point at".
+    el.mapBtn.classList.toggle('hidden', !menuBtn);
     // The gameplay HUD is meaningless on the title screen — hide it until START.
     el.topleft.classList.toggle('hidden', !game.started);
     // The XP rail and the tier line live INSIDE the pilot card now, so hiding
@@ -680,6 +750,125 @@ function syncMenus(game) {
   // Version lands asynchronously (a package.json fetch) — setText is diffed, so
   // this costs exactly one DOM write whenever it finally resolves.
   if (el.credVersion) setText(el.credVersion, game.version ? `Solar Slinger v${game.version}` : 'Solar Slinger');
+}
+
+// ---- The system chart's chrome ---------------------------------------------
+// The canvas is render.drawStarMap's; this is the four corner blocks around it.
+// Split the way every other panel in this file is: starmap.js owns the model,
+// main.js owns the open/close flag, and hud only mirrors state into the DOM.
+//
+// Two different refresh rates, on purpose. The header stats and the readout
+// strip are diffed setText writes and run every frame (the readout has to
+// follow the cursor). The JOURNEY RAIL is rebuilt only when the route actually
+// changes — it is innerHTML, and re-authoring it 60 times a second to redraw
+// the same eight rows would also blow away the row you are hovering.
+//
+// The idle value is NULL, not '': an empty route's signature IS the empty
+// string, so a '' sentinel matched it and the panel opened with the rail
+// blank — no rows and no "nothing plotted yet" line either.
+let routeSig = null;
+
+const CHART_IDLE = ['SYSTEM CHART',
+  'Point at a contact to read it. Click to add it to your journey.'];
+
+function refreshChart(game) {
+  const prog = game.prog;
+  setText(el.mapCharted, `${prog.surveyed || 0}/${game.surveyTotal || 0}`);
+  setText(el.mapContacts, String(chart.marks || 0));
+  setText(el.mapZoom, `${chart.zoom.toFixed(chart.zoom < 10 ? 1 : 0)}×`);
+
+  // ---- the readout strip: portrait (render.js paints it), name, prose, data.
+  // The DATA line is split out from the prose because they are read
+  // differently — the sentence tells you what a place IS, the numbers tell you
+  // what it would cost to go, and mixing them made one long run-on that the
+  // eye had to parse to find the range.
+  const hov = chart.hover;
+  const fn = el.mapOut.querySelector('.mofn');
+  const note = el.mapOut.querySelector('.monote');
+  let lvl = '';
+  let meta = '';
+  if (chart.flash) {
+    // A refusal outranks the hover: it answers the click you just made, and
+    // the contact under the cursor has not changed anyway.
+    setText(fn, 'CHART');
+    setText(note, chart.flash);
+  } else if (hov && hov.kind === 'body') {
+    lvl = contactLevel(game, hov.b);
+    setText(fn, contactLabel(game, hov.b));
+    setText(note, contactClass(game, hov.b));
+    meta = bodyMeta(game, hov);
+  } else if (hov && hov.kind === 'field') {
+    setText(fn, hov.field.seen ? hov.field.name.toUpperCase() : 'UNEXPLORED SHOAL');
+    lvl = hov.field.seen ? '' : 'unknown';
+    setText(note, hov.field.seen
+      ? 'A dense rock shoal — packed salvage, and things live in the thick of it.'
+      : 'A rock shoal nobody has been to. Its position here is a rough estimate.');
+    meta = `RANGE ${fmtRange(dist(game, hov))}  ·  ORBIT ${fmtRange(Math.hypot(hov.x, hov.y))}  ·  CLICK TO ADD A STOP`;
+  } else if (hov && hov.kind === 'waypoint') {
+    setText(fn, `STOP ${hov.i + 1} — ${waypointLabel(game, game.route[hov.i])}`);
+    setText(note, 'A stop on your journey.');
+    meta = `RANGE ${fmtRange(dist(game, hov))}  ·  CLICK TO REMOVE THIS STOP`;
+  } else if (hov && hov.kind === 'point') {
+    setText(fn, pointLabel(hov.x, hov.y));
+    setText(note, 'Open space — a heading to fly, with nothing in particular at the end of it.');
+    meta = `RANGE ${fmtRange(dist(game, hov))}  ·  CLICK TO ADD A STOP HERE`;
+  } else {
+    setText(fn, CHART_IDLE[0]);
+    setText(note, CHART_IDLE[1]);
+  }
+  setText(el.mapMeta, meta);
+  el.mapOut.classList.toggle('unknown', lvl === 'unknown');
+  el.mapScreen.classList.toggle('panning', !!chart.drag && chart.dragged);
+
+  // ---- the journey rail. It only exists once there IS a journey — an empty
+  // panel explaining the feature is chrome you read past every time you open
+  // the chart, and the header's hint line already says how to start one.
+  const route = game.route || [];
+  el.mapRoutePanel.classList.toggle('hidden', route.length === 0);
+  if (!route.length) { routeSig = null; return; }
+  setText(el.mapRouteN, `${route.length}/${MAX_WAYPOINTS}`);
+  // The signature carries what a row DRAWS, not just how many there are: a
+  // stop whose contact resolved from a guess to a name, or whose body was
+  // destroyed, has to redraw even though the list is the same length.
+  const sig = route.map((wp) => `${waypointLabel(game, wp)}|${+wp.lost}`).join('~');
+  if (sig === routeSig) return;
+  routeSig = sig;
+  let html = '';
+  const s = game.ship;
+  let px = s.x, py = s.y;   // leg lengths run ship → stop 1 → stop 2 …
+  for (let i = 0; i < route.length; i++) {
+    const p = waypointPos(game, route[i]);
+    const leg = Math.hypot(p.x - px, p.y - py);
+    px = p.x; py = p.y;
+    html += `<li><button class="mrstop${i === 0 ? ' next' : ''}${route[i].lost ? ' lost' : ''}" data-i="${i}">`
+      + `<span class="mrn">${i + 1}</span>`
+      + `<span class="mrname">${esc(waypointLabel(game, route[i]))}</span>`
+      + `<span class="mrrng">${fmtRange(leg)}</span>`
+      + '<span class="mrx">✕</span></button></li>';
+  }
+  el.mapRouteList.innerHTML = html;
+}
+
+const fmtRange = (d) => (d >= 1000 ? `${(d / 1000).toFixed(1)}k` : `${Math.round(d)}`);
+const dist = (game, p) => Math.hypot(p.x - game.ship.x, p.y - game.ship.y);
+
+// The data line for a body: how far to go, how far out it sits, and — for a
+// charted world — how many moons it keeps, which is the one fact the portrait
+// shows but cannot count for you.
+function bodyMeta(game, hov) {
+  const b = hov.b;
+  const parts = [`RANGE ${fmtRange(dist(game, hov))}`];
+  const host = b.parent && b.parent.type === 'planet' ? b.parent : null;
+  parts.push(host
+    ? `ORBIT ${fmtRange(Math.hypot(b.x - host.x, b.y - host.y))} OF ${host.name ? host.name.toUpperCase() : 'ITS WORLD'}`
+    : `ORBIT ${fmtRange(Math.hypot(b.x, b.y))}`);
+  if (contactLevel(game, b) === 'charted' && (b.type === 'planet' || b.type === 'rogue')) {
+    let n = 0;
+    for (const m of game.bodies) if (m.alive && m.type === 'moon' && m.parent === b) n++;
+    if (n) parts.push(`${n} MOON${n === 1 ? '' : 'S'}`);
+  }
+  parts.push('CLICK TO ADD A STOP');
+  return parts.join('  ·  ');
 }
 
 export function setDeathVisible(v, cause = '', lives = 0) {
@@ -844,6 +1033,9 @@ function perfBadge(game) {
 
 export function updateHud(game) {
   syncMenus(game);
+  // Only while the chart is up — it is a shell modal, so nothing behind it is
+  // moving and nothing it reports can change while it is closed.
+  if (game.mapOpen) refreshChart(game);
   zoneChrome(game);
   // Dev sim-speed badge (window.speed / ?dev hotkeys): hidden at 1x so normal
   // play never shows it; while fast-forwarding it also owns up to the achieved
