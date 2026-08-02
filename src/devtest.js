@@ -105,7 +105,9 @@ export function runMechTest(game, hooks, opts = {}) {
       rock.onRails = true; rock.rail = {};   // fake a rail: tryGrab must clear it
       game.aim.x = rock.x; game.aim.y = rock.y;
       const xp0 = game.prog.xp;
-      expect(tryGrab(game), 'tryGrab refused an in-range rock');
+      // tryGrab returns 'held' | 'winching' | 'refused' | null — compare, never
+      // test truthiness: 'refused' is truthy and would pass a bare expect().
+      expect(tryGrab(game) === 'held', 'tryGrab refused an in-range rock');
       expect(game.held === rock, 'held is not the grabbed rock');
       expect(!rock.onRails, 'grab did not derail the rock');
       expect(game.prog.xp > xp0, 'catch paid no XP');
@@ -135,7 +137,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const s = game.ship;
       const r2 = spawnAsteroid(game.bodies, s.x + 100, s.y - 40, 0, 0, 60);
       game.aim.x = r2.x; game.aim.y = r2.y;
-      expect(tryGrab(game), 'setup: second grab failed');
+      expect(tryGrab(game) === 'held', 'setup: second grab failed');
       expect(!addToOrbit(game), 'orbit accepted a rock with NO orbit ability (gate broken)');
       game.prog.upgrades.bulwarkRing = 1;        // BRAWLER's orbit-channel ability
       game.st = shipStats(game.prog);

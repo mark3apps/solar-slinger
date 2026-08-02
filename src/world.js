@@ -117,8 +117,10 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // Moons run the gamut now — some are proper little worlds, and at these
   // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
   // rule predates rails: it only ever mattered for LIVE moons, and rails
-  // hold their orbits exact regardless.) Heavier moons also gate the beam:
-  // most need tier 2+ capacity to grab, so mooncatching is earned.
+  // hold their orbits exact regardless.) A MOON IS ITS OWN BEAM CLASS
+  // (config.liftClass) whatever it weighs — tier 3 for the small ones, tier 4
+  // past TIERS.ceil[3] — so mooncatching is earned no matter how light the
+  // roll came out, and a light moon is never sold at the boulder tier.
   const mass = (3000 + t * 8000) * mt.mMul;
   const dir = rng() < 0.85 ? 1 : -1;
   const m = new Body({

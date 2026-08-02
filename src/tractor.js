@@ -1,4 +1,6 @@
-import { CFG, PROG, addXp, fieldXp } from './config.js';
+import {
+  CFG, PROG, TIERS, LIFT_NEVER, addXp, fieldXp, canLift, canStow, liftClass, latchTime,
+} from './config.js';
 import { derail } from './entities.js';
 import { clamp, angDiff } from './util.js';
 import { bump, best, noteCatch } from './achievements.js';
@@ -85,10 +87,41 @@ export function aimSolutions(game) {
 // same helper feeds the lead-marker solver so the ✕ stays honest — which is
 // why it takes the BODY too: per-rock multipliers (Dead Stop's prime) must
 // show in the solve, or the markers lie for exactly the shots that matter.
+// THE BEAM'S GRIP ON A LOAD. One helper, because the HOLD and the THROW must
+// never disagree about it. `heft` is the load as a fraction of your allowance
+// (CFG.TRACTOR_HEFT); `spool` is how far the emitters have closed on it since
+// the grab (CFG.TRACTOR_SPOOL / _MIN), on a squared ramp over a window that
+// scales with heft — about a second on a pebble, the full window on a moon.
+// `b.holdT` is NULL for anything not in the beam (the orbit ring, the trail
+// rack, a rock in flight), and those are exempt by design.
+function beamGrip(st, b) {
+  const heft = clamp(b.mass / Math.max(1, st.capacity), 0, 1);
+  // `f` is the RAW ramp fraction — the honest "how far through the wind-up am
+  // I" number, and the one render draws as the charge ring. `spool` is that
+  // eased into authority. f === 1 is exactly full throw power.
+  const f = clamp((b.holdT || 0) / (CFG.TRACTOR_SPOOL * (0.3 + 0.7 * heft)), 0, 1);
+  return { heft, f, spool: CFG.TRACTOR_SPOOL_MIN + (1 - CFG.TRACTOR_SPOOL_MIN) * f * f };
+}
+
 function flingSpeedFor(game, mass, body = null) {
   const st = game.st;
   const massFactor = clamp(Math.pow(st.capacity / (mass * 4), 0.25), 0.3, 1);
   let speed = st.fling * massFactor;
+  // WIND-UP: the same grip the HOLD spends, spent on the THROW. Without it the
+  // spool-up only governed how fast a rock swung into position and the hardest
+  // throw in the game was grab-and-release on the same frame — worse, letting
+  // go and re-grabbing handed you a fresh full-power throw every time, so
+  // spamming the beam beat holding it.
+  // Scaled by HEFT, so it bites only where the law is about: an ordinary rock
+  // is at full power the instant you have it (heft ~0.05 -> ~0.97x on a
+  // same-frame throw) and the belt loop is untouched, while a moon at the top
+  // of your class leaves at ~40% until you have held it a beat and 100% once
+  // the beam is fully closed. The lead-marker solver runs this same call every
+  // frame, so the ✕ walks out as the throw charges instead of lying about it.
+  if (body && body.holdT != null) {
+    const g = beamGrip(st, body);
+    speed *= 1 - g.heft * (1 - g.spool);
+  }
   // BERSERKER (brawler): the lower your hull, the harder you throw — read the
   // ship's CURRENT hull fraction at release time, so it's a live risk/reward.
   if (st.berserk > 0 && game.ship.alive) {
@@ -124,34 +157,229 @@ export function computeFlingVelocity(game, body) {
   return { vx: s.vx + Math.cos(ang) * speed, vy: s.vy + Math.sin(ang) * speed };
 }
 
-export function tryGrab(game) {
-  if (!game.ship.alive) return false;
-  // Twin Grip lets a SECOND rock go into game.held2; without it (or both full) no grab.
-  const canSecond = game.st.twinGrip && game.held && !game.held2;
-  if (game.held && !canSecond) return false;
+// PICKING UP A WORLD UNSTICKS ITS SKY.
+//
+// A world's family — moons, ring chunks, probe junk, its rubble shell — rides
+// RAILS anchored to it, and the rails pass reads the parent's LIVE position
+// every substep (physics.js). So a grabbed planet used to carry its entire
+// system with it, welded: fifty bodies teleporting along at whatever speed the
+// beam was swinging the planet, passing through anything in the way, and
+// snapping back into perfect formation the instant you let go. A moon family is
+// held by gravity, and the moment something else is holding the planet the
+// gravity is no longer what is moving it.
+//
+// So the grab cuts every rail anchored to it. Each child keeps the velocity it
+// already had (the rails pass writes a truthful one every substep), which is
+// its real orbital velocity around the world it belonged to — left alone it
+// simply keeps orbiting, and it re-rails on the ordinary scan once you have
+// dropped the world and flown off. Haul the world away and its moons stay
+// where their momentum left them, which is the point.
+//
+// Cheap enough to run on every grab: it is one pass over the body array per
+// grab (not per frame), and the type guard means a pebble never pays for it.
+// The crust halo is the one binding NOT cut here — physics.updateCrust stands
+// its assist down while the host is held, and the pieces resettle after.
+function unglue(game, host) {
+  if (host.type !== 'planet' && host.type !== 'moon' && host.type !== 'rogue') return;
+  for (const b of game.bodies) {
+    if (b.alive && b.onRails && b.rail.parent === host) derail(b);
+  }
+}
+
+// TWO STAGES OF "that one is already busy", and render.js's hover hint MIRRORS
+// both; keep the trio in sync or the ring promises a grab the click won't make.
+//   throwLocked — you launched it from the beam less than CFG.THROW_LOCKOUT ago
+//                 and it is not a target AT ALL
+//   isOwnShot   — it is still flying on your credit; grabbable, but it loses to
+//                 literally everything else
+// THE MUZZLE FLASH for a launch. Pure data — tractor decides that a throw
+// happened and how big it was; render.drawLaunchFx owns every pixel of it, and
+// main.js ages the records. (tractor cannot call physics.addParticles/addShake:
+// physics imports THIS module, and the cycle would be real.)
+// `charged` is passed in, never read from game here: releaseHeld clears the
+// charge state near the top (it belongs to the rock that just left) and reading
+// it at push time would make the flash silently order-dependent.
+export function pushLaunchFx(game, b, vx, vy, charged) {
+  if (!game.launchFx) return;
+  game.launchFx.push({
+    x: b.x, y: b.y,
+    ang: Math.atan2(vy - game.ship.vy, vx - game.ship.vx),
+    t: 0,
+    r: b.radius,
+    // How much of the beam this load was using — the flash scales with it, so
+    // the spectacle tracks the effort rather than firing flat on every pebble.
+    heft: clamp(b.mass / Math.max(1, game.st.capacity), 0.12, 1),
+    charged: !!charged,
+  });
+  if (game.launchFx.length > CFG.LAUNCH_FX_MAX) game.launchFx.shift();
+}
+
+// EVERY PATH THAT TAKES A ROCK OUT OF THE BEAM CLEARS WHAT THE BEAM WROTE ON
+// IT. That law already covered `extAx/extAy` (a hold accel left behind is a
+// permanent phantom thrust — physics adds it every substep until somebody
+// zeroes it); the wind-up added two more pieces of per-hold state to it:
+//   b.holdT   — flingSpeedFor keys the throw wind-up off `holdT != null`, so a
+//               rock that kept it would come back to the beam already charged
+//   b.ropeL   — the taut tether's live length; a stale one would have the next
+//               hold engage its rope at the last one's reach
+//   the CHARGE readout — a stale READY paints a near-white beam on a rock that
+//               is not charged, or on nothing at all
+// Physics owns three of those paths (shatter, vaporize, the ship-death block)
+// and none of them can go through releaseHeld, so they call this instead.
+// It matters MORE since the tether became unbreakable at full power: springHeld's
+// own auto-drop no longer fires on distance, so it cannot mop up a stranded rock.
+export function clearHoldState(game, b) {
+  if (b) { b.holdT = null; b.ropeL = null; b.extAx = 0; b.extAy = 0; }
+  // The readout describes the rock that just left. springHeld rebuilds it on
+  // the next substep for whatever is still in hand.
+  game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false;
+}
+
+export const throwLocked = (b) => b.throwLock > 0;
+export const isOwnShot = (b) => b.thrownBy === 'player' && b.thrownTimer > 0;
+
+// What the cursor is over, if the beam could reach it. Shared by tryGrab and
+// the winch (updateLatch), which has to re-run the SAME test every substep to
+// know the target is still in reach.
+//
+// YOUR OWN SHOT IS THE LOWEST-PRECEDENCE TARGET IN THE GAME (user design rule).
+// The rapid-fire loop is click-to-retrieve, release-to-fling, click again — and
+// the rock you just let go is still a beam-length away, dead centre under the
+// crosshair, so the second click kept catching the first shot instead of
+// launching the next one. Two stages:
+//   - For CFG.THROW_LOCKOUT seconds after the launch it is skipped OUTRIGHT.
+//     Demotion alone was not enough: out in open space your last shot is the
+//     only thing under the cursor, so it still won the click.
+//   - After that it is merely DEMOTED, never excluded — it wins again once
+//     nothing else is in reach, so chasing down your own throw stays possible.
+// Returns { best, ownThrow } — `ownThrow` means the only thing found was one of
+// your own shots, which is what lets tryGrab hand the click to the stow ring.
+function pickTarget(game) {
   const s = game.ship;
   const st = game.st;
-  let best = null, bestD = Infinity;
+  let best = null, bestD = Infinity;     // anything that is not your own shot
+  let mine = null, mineD = Infinity;     // your own shots, ranked separately
   for (const b of game.bodies) {
     // Nests are a siege target, not cargo, and Bastion forts repel the beam;
     // the Tinker Barge is CREWED — the beam won't take a live friendly ship;
     // never re-grab a rock you're already holding.
     if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.tinker ||
         b.heldBy === 'orbit' || b === game.held || b === game.held2 ||
-        b.parryFrozen) continue;   // mid-parry rock belongs to the flick, not the beam
+        b.parryFrozen ||           // mid-parry rock belongs to the flick, not the beam
+        throwLocked(b)) continue;  // just launched it — not a target at all yet
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
     if (dCursor > b.radius + st.grabSlack) continue;
     if (dShip > st.range + b.radius) continue;
+    if (isOwnShot(b)) { if (dCursor < mineD) { mine = b; mineD = dCursor; } continue; }
     if (dCursor < bestD) { best = b; bestD = dCursor; }
   }
-  if (!best) return false;
-  if (best.mass > st.capacity) {
+  return { best: best || mine, ownThrow: !best && !!mine };
+}
+
+// THE WINCH. A moon or a world does not snap into the beam — you hold the
+// button on it and the emitters bite in over config.latchTime seconds (nothing
+// below the moon rungs winches at all, so the belt loop is exactly as it was).
+//
+// ONCE THE BEAM HAS PICKED ITS TARGET, THE CURSOR IS FREE (user design rule).
+// The winch holds as long as the button is down and the body is still in beam
+// RANGE — it does NOT re-test the cursor. It used to, and that was wrong twice
+// over: a moon is a moving target on a rail and the ship is moving too, so
+// simply holding still lost the winch through no decision of the player's; and
+// the cursor is also the AIM, so requiring it to stay parked on the load meant
+// you could not line up the throw you were winching up for. Releasing the
+// button is the only way to abandon it (main.onFling -> cancelLatch), and
+// nothing is banked for next time.
+export function updateLatch(game, dt) {
+  const L = game.latch;
+  if (!L) return;
+  const b = L.body, s = game.ship, st = game.st;
+  const canSecond = st.twinGrip && game.held && !game.held2;
+  if (!b.alive || !s.alive || b.heldBy === 'orbit' || b.parryFrozen ||
+      (game.held && !canSecond) || !canLift(st, b) ||
+      Math.hypot(b.x - s.x, b.y - s.y) > st.range + b.radius) {
+    cancelLatch(game);
+    return;
+  }
+  L.t += dt;
+  if (L.t < L.need) return;
+  game.latch = null;
+  // THE WINCH SECONDS CARRY INTO THE WIND-UP, they are not charged twice: from
+  // the player's side this was one continuous press, and billing the full
+  // beamGrip ramp again on top of the winch would put a hard throw on a moon
+  // five seconds out from the click.
+  grabBody(game, b, L.t);
+}
+
+export function cancelLatch(game) {
+  if (!game.latch) return;
+  game.latch = null;
+  sfx.setCharge(0);
+}
+
+// WHAT THE CLICK DID, and it is NOT a boolean — the caller has to be able to
+// tell "the cursor was over empty space" from "the beam answered you", because
+// main.onGrab falls through to retrieveFromOrbit and that fallback must only
+// ever fire on an EMPTY click.
+//   'held'     — the rock is in the beam now
+//   'winching' — a moon/world winch has started (updateLatch owns it from here)
+//   'refused'  — something was there and the beam said no (too heavy / wrong
+//                class / no grip); the denial sound and red ring already fired
+//   null       — nothing under the cursor, or the beam is not free to take one
+// Returning plain `false` for the middle two is what made clicking a moon yank
+// a moon back OUT of the orbit ring instead: `tryGrab` reported "nothing
+// happened" for a winch it had just started. Do NOT collapse this back to a
+// boolean, and do not test it for truthiness — 'refused' is truthy too.
+export function tryGrab(game) {
+  if (!game.ship.alive) return null;
+  // Twin Grip lets a SECOND rock go into game.held2; without it (or both full) no grab.
+  const canSecond = game.st.twinGrip && game.held && !game.held2;
+  if (game.held && !canSecond) return null;
+  const st = game.st;
+  const { best, ownThrow } = pickTarget(game);
+  if (!best) return null;
+  // AND WHEN THE STOW HAS ANYTHING IN IT, THE RING OUTRANKS YOUR OWN SHOT
+  // OUTRIGHT. Demoting it inside pickTarget only helps when a DIFFERENT body is
+  // also under the cursor; out in open space your last shot is alone out there
+  // and would still win. Reporting `null` hands the click to main.onGrab's
+  // retrieve fallback, which is exactly the next rock the player was reaching
+  // for. With an empty ring there is nothing better to do, so the grab stands.
+  if (ownThrow && game.orbit.length && !game.held) return null;
+  // TWO GATES, one test (config.canLift): the CLASS rung your tier reaches, and
+  // the mass allowance inside it. The class is why a planet is unliftable below
+  // the top tier no matter how many catch ranks you stack, and why a moon is
+  // unliftable below the moon rungs even when a boulder outweighs it. The hover
+  // hint ring runs the same call, so the ring never promises a grab this
+  // refuses.
+  if (!canLift(st, best)) {
     game.tooHeavy = best;          // HUD shows "too heavy" feedback
     game.tooHeavyT = 1.2;
+    // SAY WHY when it is the CLASS that refused, not the weight. A 5,800-mass
+    // moon under a 6,000 allowance reads as a broken beam unless the game
+    // admits it is the wrong KIND of thing. The over-weight case needs no
+    // words — it is visibly the heaviest thing in sight and the red ring says
+    // so — and main.js's event table shows these once, then tersely.
+    const need = liftClass(best);
+    if (need >= LIFT_NEVER) game.beamNoGripWarn = best.name || 'that';
+    else if (need > st.tier) game.beamClassWarn = TIERS.labels[need];
     sfx.sfxDenied();
-    return false;
+    return 'refused';
   }
+  // Moons and worlds have to be winched (config.latchTime); everything else
+  // takes hold on the click, exactly as it always did.
+  const need = latchTime(best);
+  if (need > 0) {
+    game.latch = { body: best, t: 0, need };
+    sfx.sfxGrab();
+    return 'winching';
+  }
+  grabBody(game, best, 0);
+  return 'held';
+}
+
+// Commit the grab. `carry` seeds the wind-up timer (see updateLatch). Its
+// return value is unused — tryGrab and updateLatch report for it.
+function grabBody(game, best, carry = 0) {
   const stolen = !!(best.heldBy && best.heldBy !== 'player');
   if (stolen) {
     // Steal it from an alien
@@ -173,6 +401,15 @@ export function tryGrab(game) {
   // even when the throw follows in the same frame.
   best.crust = null;
   derail(best);
+  unglue(game, best);
+  // THE WINCH CREDITS THE WIND-UP BUT NEVER FINISHES IT (CFG.WINDUP_AFTER_LATCH).
+  // Carried in full, a 4.0s winch covered the entire ramp and a world hit full
+  // power the instant it latched — two mechanics collapsed into one number, and
+  // the READY signal with nothing left to announce. Credit as much of the winch
+  // as still leaves WINDUP_AFTER_LATCH to run.
+  const heft = clamp(best.mass / Math.max(1, game.st.capacity), 0, 1);
+  const windupWindow = CFG.TRACTOR_SPOOL * (0.3 + 0.7 * heft);
+  best.holdT = Math.min(carry, Math.max(0, windupWindow - CFG.WINDUP_AFTER_LATCH));
   if (game.held) game.held2 = best; else game.held = best;   // Twin Grip: fill the open slot
 
   // XP: every catch pays. Heavy catches (relative to current capacity) pay
@@ -207,11 +444,19 @@ export function releaseHeld(game, fling) {
   game.held2 = null;
   b.heldBy = null;
   b.extAx = 0; b.extAy = 0;
+  // Remembered BEFORE anything is cleared — the launch flash is sized on it.
+  const wasCharged = game.heldCharged;
   if (!game.held) sfx.setBeam(false);
-  if (!b.alive) return;
+  if (!b.alive) { clearHoldState(game, b); return; }
   if (fling) {
-    const v = computeFlingVelocity(game, b);   // reads b.primed — consume only after
+    // ORDER IS LOAD-BEARING: computeFlingVelocity reads b.primed AND b.holdT —
+    // holdT IS the wind-up, and flingSpeedFor treats a null one as "not in the
+    // beam", i.e. full power. Clearing before this line hands every throw the
+    // full-power multiplier and quietly undoes the whole wind-up.
+    const v = computeFlingVelocity(game, b);
     b.vx = v.vx; b.vy = v.vy;
+    pushLaunchFx(game, b, v.vx, v.vy, wasCharged);   // muzzle flash
+    clearHoldState(game, b);   // …only now
     // ACHIEVEMENTS: the release point is the sniper measuring stick (shatter
     // reads it back), and the prime flag is carried onto the throw so the kill
     // can credit the counterpunch that set it up.
@@ -228,6 +473,7 @@ export function releaseHeld(game, fling) {
     // decision for the player.
     b.slung = true;
     b.thrownTimer = 4;
+    b.throwLock = CFG.THROW_LOCKOUT;   // not a grab target at all until this runs out
     b.chainN = 0;   // YOUR throw is always link 0 (physics.chainOk) — even for a rock that ended a chain
     if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
     game.flingDelayT = 2;   // hold any owed upgrade pick back ~2s so it can't freeze the throw
@@ -235,6 +481,7 @@ export function releaseHeld(game, fling) {
     sfx.sfxFling();
   } else {
     b.primed = false;   // a gentle drop wastes the Dead Stop prime — no banking it
+    clearHoldState(game, b);   // …and the wind-up with it: a drop is no place to park a charge
     bump(game, 'drops');
     sfx.sfxDrop();
   }
@@ -251,8 +498,21 @@ function springHeld(game, b, dt, slot) {
   if (!b) return;
   const s = game.ship;
   const st = game.st;
-  // A dead / too-far rock auto-drops from ITS slot.
-  if (!b.alive || !s.alive || Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius) {
+  // HEFT + SPOOL (beamGrip — the same numbers the THROW reads, so the hold and
+  // the throw can never disagree). The timer advances only while the rock is
+  // actually in the beam, and is reset at the grab: letting go and re-grabbing
+  // to dodge the ramp costs you the ramp again. Computed BEFORE the drop test,
+  // because whether the beam is fully closed decides whether a drop is even
+  // possible.
+  b.holdT = (b.holdT || 0) + dt;
+  const { heft, f, spool } = beamGrip(st, b);
+  // ONCE THE BEAM IS AT FULL POWER THE TETHER CANNOT BE BROKEN (user design
+  // law). A hold that has fully closed does not let go because you flew away —
+  // it goes TAUT (the rope below) and the ship and the rock fight over the
+  // momentum from there. Death still drops it; distance no longer can.
+  const atFull = f >= 1;
+  if (!b.alive || !s.alive ||
+      (!atFull && Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius)) {
     dropSlot(game, slot);
     return;
   }
@@ -260,12 +520,36 @@ function springHeld(game, b, dt, slot) {
   const relX = hp.x - b.x, relY = hp.y - b.y;
   const desVx = relX * 7 + s.vx, desVy = relY * 7 + s.vy;
   let ax = (desVx - b.vx) * 5, ay = (desVy - b.vy) * 5;
+  // Authority falls off with the SQUARE of heft, so belt rock handles exactly
+  // as it always did and only a load near the top of your class fights you.
+  const heftMul = 1 / (1 + CFG.TRACTOR_HEFT * heft * heft);
   // Twin Grip ranks spring the FLANKING rock harder (slot 1); the primary
   // hold is untouched, so ranking the ability never changes single-rock feel.
-  const cap = st.force * (slot ? st.twinHold : 1) / b.mass;
+  const cap = st.force * heftMul * spool * (slot ? st.twinHold : 1) / b.mass;
   const am = Math.hypot(ax, ay);
   if (am > cap) { ax *= cap / am; ay *= cap / am; }
   b.extAx = ax; b.extAy = ay;
+  // Render reads this for the beam's own grip cue (drawBeam) — the ramp is
+  // invisible otherwise, and a mechanic the player cannot see reads as the beam
+  // being broken.
+  if (slot) game.heldGrip2 = heftMul * spool; else game.heldGrip = heftMul * spool;
+  // THE CHARGE READOUT — a gradient is not a signal. The beam brightening as it
+  // spools tells you SOMETHING is happening; it does not tell you the moment
+  // your throw is actually at full power, which is the only instant that
+  // matters when you are lining up a shot. So the wind-up gets an explicit
+  // filling ring and a hard READY state (render.drawCharge).
+  // ONLY FOR LOADS WHERE THE WIND-UP COSTS SOMETHING: below CHARGE_SHOW_HEFT a
+  // rock is at full power almost immediately and the multiplier is within a few
+  // percent of 1, so a ring and a flash on every belt pebble would be pure
+  // noise on the loop the player spends most of the game in.
+  if (!slot) {
+    const wasCharged = game.heldCharged;
+    game.heldChargeShow = heft >= CFG.CHARGE_SHOW_HEFT;
+    game.heldCharge = f;
+    game.heldCharged = game.heldChargeShow && f >= 1;
+    // One-shot bloom on the CROSSING, not on the state — the flash is the event.
+    if (game.heldCharged && !wasCharged) game.chargeFlashT = CFG.CHARGE_FLASH;
+  }
 
   // Equal-and-opposite tug on the ship (capped so it stays flyable). With Twin
   // Grip both rocks tug, so halve the per-rock cap — combined stays at the 150
@@ -278,6 +562,77 @@ function springHeld(game, b, dt, slot) {
   const sm = Math.hypot(sax, say);
   if (sm > tugCap) { sax *= tugCap / sm; say *= tugCap / sm; }
   s.vx += sax * dt; s.vy += say * dt;
+
+  // THE ROPE — what an unbreakable tether does instead of snapping.
+  //
+  // Past CFG.TETHER_MAX_MUL x the beam ring (the ring the player can already
+  // SEE, drawShipRings) the hold stops being a spring and becomes a CONSTRAINT:
+  // the separating velocity is cancelled and the overshoot is divided between
+  // the two by MASS. That is the "fight for momentum" — and against a moon the
+  // ship loses it, decisively, because the ship masses 10 and the moon 9,000.
+  // What the player then has is their ENGINES against the load's inertia: you
+  // tow a boulder slowly and you do not tow a world at all, you swing around it.
+  //
+  // It can only ever REMOVE separating motion, never add any, so it cannot
+  // become a slingshot and cannot inject energy into the sim. The positional
+  // correction is bounded by one substep of travel (~6 units at the ship's
+  // ceiling), so it can never teleport anything through anything.
+  //
+  // NOT a violation of the no-recoil law: that law is about the RELEASE — a
+  // throw must never shove the ship. Being dragged by something you are still
+  // holding is the opposite, and it is the point.
+  // IT IS A RUBBER BAND, NOT A WALL (user design call). Arresting everything at
+  // one exact radius jolted — you were free, then instantly you were not. So the
+  // give lives INSIDE the stated limit rather than beyond it: the band starts to
+  // bite at `soft` (CFG.TETHER_STRETCH back from the ceiling) and is fully taut
+  // at `maxL`, which keeps "max length ~1.3x the beam ring" literally true while
+  // the last stretch of it is spent easing you to a stop.
+  //
+  // `grab` — the fraction of the separating velocity the band takes this substep
+  // — ramps QUADRATICALLY across that stretch. At first contact it takes almost
+  // nothing (no jolt); deep in the stretch it takes essentially all of it. The
+  // hard positional clamp at maxL then only ever catches the residue, so in
+  // practice it does nothing at all.
+  if (!atFull) {
+    b.ropeL = null;   // no rope until the beam is fully closed
+  } else {
+    const maxL = st.range * CFG.TETHER_MAX_MUL + b.radius;
+    const dx = b.x - s.x, dy = b.y - s.y;
+    const d = Math.hypot(dx, dy) || 1;
+    // THE ROPE PAYS OUT TO WHERE THE LOAD ALREADY IS, THEN REELS IN.
+    //
+    // Full power can easily arrive while the rock is ALREADY past the limit —
+    // it lags behind during the wind-up, and the winch on a world runs for
+    // seconds while you are flying. Sizing the rope at `maxL` on that first
+    // substep snapped the load across the whole gap in one frame. So the rope's
+    // length is state, seeded at whatever distance it engaged at and hauled in
+    // at a bounded CFG.TETHER_REEL — you feel it take up the slack instead of
+    // arriving already taut, and it still ends at the stated 1.3x.
+    if (b.ropeL == null) b.ropeL = Math.max(maxL, d);
+    else b.ropeL = Math.max(maxL, b.ropeL - CFG.TETHER_REEL * dt);
+    const lim = b.ropeL;
+    const soft = lim * (1 - CFG.TETHER_STRETCH);
+    if (d > soft) {
+      const nx = dx / d, ny = dy / d;
+      const ms = Math.max(1, s.mass), mb = Math.max(1, b.mass);
+      const t = clamp((d - soft) / (lim - soft), 0, 1);
+      const grab = t * t;
+      const sep = (b.vx - s.vx) * nx + (b.vy - s.vy) * ny;
+      if (sep > 0) {                       // only while they are pulling APART
+        const j = (grab * sep) / (1 / ms + 1 / mb);
+        s.vx += (j / ms) * nx; s.vy += (j / ms) * ny;
+        b.vx -= (j / mb) * nx; b.vy -= (j / mb) * ny;
+      }
+      if (d > lim) {
+        // The backstop, and it acts against the LIVE rope length — never
+        // against maxL, or it would be the instant snap all over again.
+        // Heavier body moves less: the ship takes mb/(ms+mb).
+        const over = d - lim;
+        s.x += nx * over * (mb / (ms + mb)); s.y += ny * over * (mb / (ms + mb));
+        b.x -= nx * over * (ms / (ms + mb)); b.y -= ny * over * (ms / (ms + mb));
+      }
+    }
+  }
 }
 
 // Auto-drop the rock in the given slot (it died or drifted out of range).
@@ -285,7 +640,7 @@ function dropSlot(game, slot) {
   if (slot === 0) { releaseHeld(game, false); return; }   // drops held, promotes held2
   const b = game.held2;
   game.held2 = null;
-  if (b) { b.heldBy = null; b.extAx = 0; b.extAy = 0; }
+  if (b) { b.heldBy = null; clearHoldState(game, b); }
 }
 
 // ---------- orbit shield ----------
@@ -312,12 +667,14 @@ export function addToOrbit(game) {
   const b = game.held;
   const st = game.st;
   if (!b || !b.alive || b.type === 'nest') return false;   // nests never orbit you
-  if (st.orbitCap <= 0 || b.mass > st.orbitCap || game.orbit.length >= st.maxOrbiters) return false;
+  // Same two-part gate as the beam, one class lower (config.canStow).
+  if (!canStow(st, b) || game.orbit.length >= st.maxOrbiters) return false;
   game.held = game.held2 || null;   // Twin Grip: promote the second rock
   game.held2 = null;
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
   b.primed = false;   // stowing wastes the Dead Stop prime — the ring can't bank it
+  b.holdT = null;     // the ring is exempt from the wind-up (design law) — see beamGrip
   // The tractor capture spins the rock up — captured bodies visibly whirl
   // (ambient spin is a sleepy ±0.3 rad/s)
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
@@ -343,8 +700,8 @@ export function updateTethers(game, dt) {
     const d = Math.hypot(dx, dy) || 1;
     if (d < s.radius + 90) {                                // home — capture into orbit if there's room
       b.tether = 0;
-      if (s.alive && st.orbitCap > 0 && b.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters) {
-        b.thrownBy = null; b.thrownTimer = 0; b.heldBy = 'orbit';
+      if (s.alive && canStow(st, b) && game.orbit.length < st.maxOrbiters) {
+        b.thrownBy = null; b.thrownTimer = 0; b.heldBy = 'orbit'; b.holdT = null;
         b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
         game.orbit.push(b);
         bump(game, 'tetherBack');
@@ -377,6 +734,7 @@ export function retrieveFromOrbit(game) {
   const b = game.orbit.splice(best, 1)[0];
   b.heldBy = 'player';
   b.orbitAng = undefined;
+  b.holdT = 0;   // back in the beam is a fresh hold — it spools up again (springHeld)
   game.held = b;
   bump(game, 'retrieves');
   sfx.sfxGrab();
@@ -413,6 +771,9 @@ export function flingAllFromOrbit(game, count = Infinity) {
     const a = ang + (i - (n - 1) / 2) * st.volleySpread;
     b.vx = s.vx + Math.cos(a) * speed;
     b.vy = s.vy + Math.sin(a) * speed;
+    // Every pellet gets its own muzzle flash — a volley should read as a volley,
+    // and LAUNCH_FX_MAX is sized to hold a full seven-slot ring firing at once.
+    pushLaunchFx(game, b, b.vx, b.vy, false);
     b.thrownBy = 'player';
     // A rock the PLAYER launched gets the long leash (CFG.THROW_LEASH):
     // `thrownBy` is cleared a second later, so the debris cull needs a mark
@@ -421,6 +782,7 @@ export function flingAllFromOrbit(game, count = Infinity) {
     // decision for the player.
     b.slung = true;
     b.thrownTimer = 4;
+    b.throwLock = CFG.THROW_LOCKOUT;  // same lockout as a single throw (see releaseHeld)
     b.chainN = 0;                     // link 0, like releaseHeld
     b.throwX = b.x; b.throwY = b.y;   // volley pellets can snipe too (see releaseHeld)
   });

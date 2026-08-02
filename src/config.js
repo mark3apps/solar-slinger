@@ -496,6 +496,93 @@ export const CFG = {
   PICKUP_MAGNET: 620,      // scrap starts homing inside this range
   DEBRIS_LIFE: 150,
 
+  // HEFT AND SPOOL-UP — why a big rock does not handle like a pebble.
+  //
+  // `st.force` is a force and springHeld divides it by the load's mass, so the
+  // beam's authority already falls as 1/m. That is not the same thing as a big
+  // rock being HARD TO PUSH: force scales with `capacity`, so the heaviest
+  // thing your beam can lift always swung with about the same authority as the
+  // heaviest thing it could lift a tier ago, and a maxed hauler whipped a moon
+  // around exactly like a scout whips a pebble.
+  //
+  // TRACTOR_HEFT re-couples the two: authority is scaled by 1/(1 + HEFT*heft²)
+  // where heft is the load's mass as a fraction of your allowance. It is
+  // SQUARED so the drag stays off the light end — anything under half your
+  // allowance keeps ~90% of its authority and the ordinary belt-rock loop is
+  // untouched — and bites hard only at the top of your class (0.385x at a
+  // max-weight load).
+  //
+  // TRACTOR_SPOOL is the other half: the beam does not lock in instantly, it
+  // takes a grip. Authority opens from TRACTOR_SPOOL_MIN on a squared ramp, so
+  // it is weak for the first moment and only gets really strong after you have
+  // held the thing a while — the ramp is scaled by heft, so a pebble is at full
+  // strength in about a second and a max-weight load takes the full time. NOT
+  // applied to the orbit shield or the brawler's trail rack (tractor.updateOrbit
+  // owns those, with its own caps): those are formations you have already paid
+  // for, and re-spooling every rock in a seven-slot ring on every capture would
+  // make the wall sag exactly when it is being shot at.
+  TRACTOR_HEFT: 1.6,       // authority falloff strength vs load fraction (squared)
+  TRACTOR_SPOOL: 3.2,      // seconds to a full grip on a max-weight load
+  TRACTOR_SPOOL_MIN: 0.4,  // authority the instant the beam takes hold
+  // A ROCK YOU JUST THREW IS NOT A TARGET AT ALL FOR THIS LONG (user design
+  // rule). tractor.pickTarget already ranks your own shots last, but demotion
+  // only helps when something ELSE is under the cursor — out in open space your
+  // last shot is alone out there and still won the click. A hard window is what
+  // makes rapid fire feel right: throw, throw, throw, and the beam never once
+  // reaches back for the rock already doing its job. After it expires the rock
+  // is grabbable again, still at the bottom of the precedence ladder.
+  // Stamped by the two BEAM launches only (releaseHeld / flingAllFromOrbit) —
+  // NOT by billiards credit, where `thrownBy = 'player'` marks a rock your shot
+  // merely knocked, and locking those out would block grabbing the scatter from
+  // your own impact.
+  THROW_LOCKOUT: 2,        // seconds
+  // ONCE THE BEAM IS AT FULL POWER THE TETHER CANNOT BE BROKEN, and instead of
+  // snapping at the old leash it goes TAUT at this multiple of the beam ring
+  // (`st.range` — the ring drawn around the ship, so the limit is something the
+  // player can already see). tractor.springHeld resolves it as a rope: cancel
+  // the separating velocity, split the overshoot by mass. Against a moon the
+  // ship is the one that moves.
+  TETHER_MAX_MUL: 1.3,
+  // …and it RUBBER BANDS into that limit rather than hitting it as a wall. The
+  // give is a fraction of the max taken from INSIDE it: the band starts biting
+  // at (1 - this) x max and is fully taut at max, so the stated ceiling stays
+  // literally true and a third of the way in is spent easing you to a stop.
+  // The band only ever acts on SEPARATING motion, so a long soft zone costs
+  // nothing during ordinary holding — the rock tracks the ship and never
+  // separates. It is only felt when you actively pull against it, which is the
+  // only moment it should be felt at all. (Was 0.16, which still read as a
+  // wall arriving early rather than as rubber.)
+  TETHER_STRETCH: 0.35,
+  // How fast the rope hauls in slack, once it has taken hold somewhere past the
+  // limit (see springHeld: the rope's length is state, not a constant). Slow
+  // enough to read as being reeled in, fast enough that a world does not stay
+  // out at arm's length for long.
+  TETHER_REEL: 300,        // world units per second
+
+  // THE WINCH CREDITS THE WIND-UP BUT MUST NEVER FINISH IT (user design rule:
+  // full power always takes longer than the winch). The winch seconds carry
+  // into `holdT` so the player is not billed twice — but carried in FULL they
+  // covered the whole ramp on the heavy rungs, so a moon or a world hit full
+  // power at the exact instant it latched. That collapses two mechanics into
+  // one number and leaves the READY signal with nothing to announce. grabBody
+  // caps the carry so at least this long is always left to run after the beam
+  // takes hold, whatever the class.
+  WINDUP_AFTER_LATCH: 1.2, // seconds of wind-up guaranteed after every latch
+  // THE CHARGE READOUT (render.drawCharge). Only shown for loads at or above
+  // this fraction of your allowance: below it the wind-up multiplier is within
+  // a few percent of 1 and the ring would be noise on every belt pebble.
+  CHARGE_SHOW_HEFT: 0.25,
+  CHARGE_FLASH: 0.5,       // seconds the "full power" bloom lasts
+  // THE LAUNCH. A throw is the loudest thing the player does and it used to
+  // happen in total silence visually — the rock simply changed velocity. This
+  // is the muzzle flash: one record per launch (tractor pushes, render.js
+  // draws, main.js decays), scaled by how big the load was and whether it went
+  // out at full power, so a charged moon leaves a crater of light and a pebble
+  // a blip. A LIST, not a single timer like game.jinkT: rapid fire overlaps,
+  // and a shotgun volley launches a whole ring at once.
+  LAUNCH_FX: 0.42,         // seconds a launch flash lives
+  LAUNCH_FX_MAX: 12,       // most flashes alive at once (a full volley + change)
+
   ORBIT_OMEGA: 1.5,        // rad/s — how fast the shield orbit spins
   // SHOTGUN volley: holding RMB arms orbiters progressively over this many
   // seconds (1 at a tap -> all at full charge); release fires what's armed,
@@ -834,11 +921,15 @@ export function fieldFrac(f, x, y) {
 // So drawn radius maps to mass through one curve, tuned against the TIER CAPS
 // rather than against rock density (belt rock's own radius curve would put a
 // 130-unit body at 9 million, heavier than the sun — the same reason worlds are
-// big-not-heavy under the WORLD SCALE law). The ladder it produces:
+// big-not-heavy under the WORLD SCALE law). The ladder it produces, read
+// against the beam class ladder (TIERS):
 //   ~12u crumb  ->    ~300  grabbable from tier 0 — this is the ammunition
-//   ~40u piece  ->   ~3,900 needs tier 1
-//   ~90u slab   ->  ~21,000 needs tier 2
-//  ~130u slab   ->  ~45,000 needs tier 3, and that is the ceiling
+//   ~40u piece  ->   ~3,900 boulder class, needs tier 2
+//   ~90u slab   ->  ~21,000 large-moon weight, needs tier 4
+//  ~130u slab   ->  ~45,000 world weight, needs tier 5, and that is the ceiling
+// A full-severity slab off a gas giant IS a small world, and it asks for the
+// beam a small world asks for; the crumbs and pieces that make up the bulk of
+// any wound stay early-game ammunition, which is what the crumble loop runs on.
 // The ceiling is the point: it stays under the 5e4 rail-disturber threshold, so
 // even a thrown slab of planet can never wake whole rail lanes.
 export function crustMass(R) {
@@ -878,12 +969,131 @@ export function worldDebris(ptype, hostColor, mix = 0.5) {
   }
 }
 
-// Tractor size tiers. Your ORBIT can hold objects one tier below what your
-// BEAM can grab.
+// ---------------------------------------------------------------------------
+// THE BEAM CLASS LADDER (user design law: *a rank buys mass inside your class,
+// never the class above*).
+//
+// Your beam TIER names a CLASS OF THING — pebbles, belt rock, boulders, small
+// moons, large moons, worlds — and that class is a HARD GATE: a planet is
+// unliftable below the top tier however many catch ranks you own, and a moon is
+// unliftable below the moon rungs however light that particular moon happens to
+// be. Inside your class, `capacity` is the mass allowance, and catch ranks raise
+// it from `caps[tier]` toward `ceil[tier]` (shipStats) — which is exactly and
+// only what a rank buys.
+//
+// This used to be ONE mass number with an unbounded multiplier on it
+// (`caps[tier] * (1 + 0.22 * catchC)`), and the multiplier ran to 3.64x on a
+// stacked catch channel (Heavy Winch 6 + Bulk Freighter 6). A tier-2 beam with
+// that build carried 127,000 — most of the solid planets in the sky — and a
+// tier-3 one carried a gas giant. Ranks were silently buying TIERS, so hauling
+// a world stopped being the top of the ladder and became something you fell
+// into a third of the way up it. The ceiling is what stops that: the class gate
+// makes the promise, and the capped fill keeps ranks honest inside it.
+//
+// The rungs are fitted to the sky's actual mass census (seed 20260721):
+//   ice shards 64-446, probe junk 70-384, crust crumbs 90-2,837, belt rock
+//   15-2,600, comets 2,400, caches 2,800, derelict stations 1,500-1,900,
+//   boulders 2,702-5,756, cored rock 677-4,416, shoal rock 120-4,999,
+//   moons 900 + 2,400-17,050, shoal monoliths 19,523-480,000,
+//   planets 20,000-650,000.
 export const TIERS = {
-  caps: [1200, 6000, 35000, 120000, 400000, 1200000],
-  labels: ['Asteroids', 'Moons', 'Minor planets', 'Planets', 'Gas giants', 'Anything but stars'],
+  // The MASS CEILING of each class — and the class boundary itself (liftClass
+  // walks this ladder). Catch ranks asymptote toward your own tier's entry and
+  // can never cross it.
+  ceil:   [1600, 3200, 6200, 8200, 18000, 1200000],
+  // The allowance with NO catch ranks: where each tier starts. ceil[0] is set
+  // so that an unranked tier-0 beam grabs what an unranked tier-0 beam always
+  // grabbed (1,200) — the opening is unchanged; only the top of the ladder is.
+  caps:   [1100, 2100, 4300, 6200, 11500,  360000],
+  labels: ['Pebbles & ice', 'Belt rock', 'Boulders & cores', 'Small moons', 'Large moons', 'Planets'],
 };
+
+// WHAT CLASS OF THING THIS IS TO THE BEAM — the rung your tier must reach
+// before the beam will take hold at all, independent of your mass allowance.
+//
+// Everything rides the one mass ladder above, with two type rules on top:
+//   - A WORLD IS ALWAYS THE TOP RUNG. A planet is a planet whether it is the
+//     20,000-mass lava pebble at the inner lane or the 650,000 amber giant;
+//     "planets only at the top tier" is the whole point and a mass test would
+//     hand the small ones over three tiers early.
+//   - A MOON IS NEVER BELT ROCK, however light. Moon mass (900, then
+//     2,400-17,050) overlaps boulders and shoal rock across two whole rungs, so
+//     a pure mass test would sell a named, charted moon at the boulder tier.
+//     The moon rungs are its own, split small/large at ceil[3].
+// Anything else — belt rock, crust slabs, shoal monoliths, derelicts — is
+// classed purely by weight, so a full-severity slab off a gas giant asks for
+// the same beam a moon of the same mass does.
+// Off the ladder entirely — no beam tier ever reaches these.
+export const LIFT_NEVER = 99;
+
+export function liftClass(b) {
+  // A GAS GIANT HAS NOTHING TO GRIP (user design law). It is not a heavier rung
+  // you buy your way up to; it is not on the ladder. This is the same fact the
+  // ship already lives with — `CFG.GAS_*`, "gas giants have no surface for the
+  // SHIP", it flies straight through the cloud tops — applied to the beam, and
+  // it is why a giant is the one world in the sky you have to fight instead of
+  // carry. STRIPPING one is the answer: physics.gasStrip sets `ptype = 'rocky'`
+  // on what is left, so the exposed CORE is an ordinary top-rung world you can
+  // absolutely pick up. That is the reward for the fight.
+  if (b.type === 'star') return LIFT_NEVER;
+  if (b.ptype === 'gas' && (b.type === 'planet' || b.type === 'rogue')) return LIFT_NEVER;
+  if (b.type === 'planet' || b.type === 'rogue') return 5;
+  let k = b.type === 'moon' ? 3 : 0;   // the moon floor
+  while (k < 5 && b.mass > TIERS.ceil[k]) k++;
+  return k;
+}
+
+// HOW LONG THE BEAM MUST WINCH BEFORE IT TAKES HOLD AT ALL, by lift class
+// (user design law). Belt rock snaps into the beam the way it always has — 0
+// here, and the whole early game is untouched. A MOON OR A WORLD has to be
+// worked at: hold the button on it and the emitters bite in over seconds.
+// Letting go or leaving beam RANGE drops it; the cursor is free to wander once
+// the target is picked (tractor.updateLatch). It is what makes taking one an
+// ACT rather than a click, and it is the front half of the same idea as the
+// throw wind-up (tractor.beamGrip) — which is why the winch seconds carry over
+// into `holdT` rather than being charged twice.
+// THE WINCH IS A BAND PER CLASS, AND MASS POSITIONS YOU INSIDE IT (user design
+// rule: "semi based on their mass as well, but shouldn't be outside of the
+// numbers you have here"). A flat per-class number said a 2,400-mass moon and a
+// 17,000-mass moon were the same job, which they visibly are not.
+//
+// The bands stay inside the 1.6 – 5.8 envelope the flat ladder set, and they do
+// not overlap, so the CLASS ordering still holds absolutely: every small moon
+// winches quicker than every large moon, which winches quicker than every
+// world. Nothing below the moon rungs winches at all.
+// (History: 1.1 / 1.8 / 2.9 flat, then doubled at the top end to 1.6 / 3.6 /
+// 5.8 flat, now spread into bands over the same envelope.)
+export const LATCH_BAND = { 3: [1.6, 2.6], 4: [2.6, 4.0], 5: [4.0, 5.8] };
+// The mass span each band interpolates across. Moons read their own class
+// bounds; WORLDS use a fixed reference span rather than the live planet range,
+// because planet masses are seed-shaped and the feel of winching a world must
+// not change from seed to seed.
+const LATCH_SPAN = { 3: [900, 8200], 4: [8200, 18000], 5: [2e4, 7e5] };
+export function latchTime(b) {
+  const k = liftClass(b);
+  const band = LATCH_BAND[k];
+  if (!band) return 0;                       // belt rock takes hold on the click
+  const [m0, m1] = LATCH_SPAN[k];
+  const x = (b.mass - m0) / (m1 - m0);
+  // SQRT, not linear: a world's band spans 33x in mass, and read linearly every
+  // planet under ~150,000 would pin to the floor and the mass sensitivity would
+  // only exist for the two giants nobody can lift anyway.
+  const t = Math.sqrt(x < 0 ? 0 : x > 1 ? 1 : x);
+  return Math.round((band[0] + (band[1] - band[0]) * t) * 100) / 100;
+}
+
+// THE ONE GRAB TEST — class gate first, then the mass allowance inside it.
+// tractor.tryGrab, the hover hint ring (render) and the stow tests all route
+// through here so the ring can never promise a grab the beam refuses.
+export function canLift(st, b) {
+  return liftClass(b) <= st.tier && b.mass <= st.capacity;
+}
+
+// The same pair for the STOW (orbit shield / brawler rack), which rides one
+// class below the beam — see shipStats for how orbitTier/orbitCap are derived.
+export function canStow(st, b) {
+  return st.orbitCap > 0 && liftClass(b) <= st.orbitTier && b.mass <= st.orbitCap;
+}
 
 // Per-tier collision radius. DERIVED, not hand-picked: the ship's full drawn
 // FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the SAME RATIO
@@ -900,6 +1110,22 @@ export const TIERS = {
 // changing the fraction moves ONLY the hitbox, never the drawn size.
 export const SHIP_HIT_FRAC = 0.66;
 export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
+
+// PER-TIER SHIP MASS. It was a flat 10 forever — which was harmless while
+// nothing read it, and stopped being harmless the moment the tether went taut
+// (CFG.TETHER_MAX_MUL): a rope resolves by MASS RATIO, so a constant-10 ship
+// meant a Titan wrestled a moon exactly as badly as a Scout did, and every
+// load in the game won every fight outright.
+//
+// DERIVED from the drawn footprint, not hand-felt: SHIP_RADIUS grows by a
+// uniform x1.62 per tier, and mass rides that at the power 2.5 (1.62^2.5 =
+// x3.34 a tier) — between area and volume, because a ship is hull and framing
+// rather than a solid lump. Over the run that is ~420x, so what you can wrestle
+// changes completely from end to end: a Scout is a gnat on anything it can
+// lift, a Titan can genuinely muscle the smaller worlds and still gets swung
+// around by a gas giant's core.
+// If SHIP_RADIUS is ever re-derived, re-derive this with it.
+export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
 
 // Per-tier camera zoom TARGET (the value cam zoom eases toward): a
 // geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
@@ -1597,7 +1823,15 @@ export function shipStats(prog) {
   // orbit = Sling + Bay) are scaled against the SUMMED old ceiling, not one
   // row's. Anything that reads a channel and was already six ranks (catch,
   // reach, engine, fling, magnet, hull, deflect, brawler shield) is untouched.
-  const capacity = TIERS.caps[tier] * (1 + 0.22 * catchC);
+  // CATCH RANKS BUY MASS INSIDE YOUR CLASS, NEVER THE CLASS ABOVE (see the
+  // TIERS block for the ladder and for the 3.64x rank multiplier this replaced).
+  // The fill is asymptotic on purpose: it approaches the tier's own ceiling
+  // without ever touching it, so no amount of stacking can round its way into
+  // the rung above, and the last ranks still buy something rather than dead-
+  // ending against a hard clamp. 12 stacked ranks (Heavy Winch 6 + Bulk
+  // Freighter 6, the deepest catch channel in the game) reach ~90% of the gap.
+  const catchFill = 1 - Math.pow(0.82, catchC);
+  const capacity = TIERS.caps[tier] + (TIERS.ceil[tier] - TIERS.caps[tier]) * catchFill;
   // ram armor beefs the hull too — 30/rank over the old 4+3 ceiling, so 17.5
   // over the new 6+6 (same +210 at the top).
   const maxHull = 120 + 40 * tier + 55 * hullC + 17.5 * ramC;
@@ -1638,18 +1872,25 @@ export function shipStats(prog) {
   }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
 
-  // Stow cap: one tier below the beam (or 45% of capacity), unlocked by an
-  // orbit ability. The FORMATION is spec DNA like the shield: HAULER's stow
-  // orbits and protects; BRAWLER's trails BEHIND the ship (trailStow — an
-  // ammo train, not a shield) and is CAPPED AT MOON CLASS forever, however
-  // high the beam tier climbs — the rack is shotgun ammo, not a planet garage.
+  // Stow: ONE CLASS BELOW THE BEAM, unlocked by an orbit ability. It is the
+  // same two-part gate the beam runs (config.canStow) — a class rung plus a
+  // mass allowance inside it — so a rock you can hold is not automatically a
+  // rock you can stow. The FORMATION is spec DNA like the shield: HAULER's stow
+  // orbits and protects; BRAWLER's trails BEHIND the ship (trailStow — an ammo
+  // train, not a shield) and is CAPPED AT BOULDER CLASS forever, however high
+  // the beam tier climbs — the rack is shotgun ammo, not a planet garage.
+  // (That cap read "moon class" when tier 1's label was 'Moons' and its cap was
+  // 6,000; on the class ladder 6,000 is boulder weight, and holding the RACK at
+  // 6,200 is what keeps the brawler's ammo mass where it has always been. The
+  // moon rungs would have tripled it.)
   const trailStow = prog.spec === 'brawler';
-  let orbitCap = orbitLvl > 0 ? Math.max(tier >= 1 ? TIERS.caps[tier - 1] : 0, capacity * 0.45) : 0;
-  let orbitLabel = tier >= 1 ? TIERS.labels[tier - 1] : 'Small rocks';
-  if (trailStow && orbitCap > TIERS.caps[1]) {
-    orbitCap = TIERS.caps[1];
-    orbitLabel = TIERS.labels[1];
-  }
+  // Floored at 0, not at tier-1: a tier-0 beam still has a class to stow FROM,
+  // and an orbit ability that granted nothing until the first tier-up would be
+  // a dead card in two of the three starting kits.
+  let orbitTier = orbitLvl > 0 ? Math.max(0, tier - 1) : -1;
+  if (trailStow && orbitTier > 2) orbitTier = 2;
+  const orbitCap = orbitTier >= 0 ? Math.min(capacity * 0.55, TIERS.ceil[orbitTier]) : 0;
+  const orbitLabel = orbitTier >= 0 ? TIERS.labels[orbitTier] : 'Nothing yet';
 
   // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it in
   // the old ~0..25 band so combat/physics balance is preserved: it's just the sum
@@ -1675,6 +1916,11 @@ export function shipStats(prog) {
     // every tier; reach abilities + the orbit ring extend it.
     range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 20 * orbitLvl,
     grabSlack: 70 + 22 * reachC,
+    // Beam FORCE (newtons, not acceleration): tractor.springHeld divides by the
+    // load's mass, so this scaling with `capacity` is what keeps a max-weight
+    // load feeling roughly the same at every tier. What makes a heavy load feel
+    // heavy is layered on top of it per-body — CFG.TRACTOR_HEFT and the
+    // spool-up, both in springHeld.
     force: capacity * 55 * (0.6 + 0.12 * tier),
     maxSpeed: 280 + 40 * tier + 80 * engineC,
     thrust: 180 + 30 * tier + 95 * engineC,
@@ -1684,8 +1930,11 @@ export function shipStats(prog) {
     hullMax,
     shieldMax: Math.round(maxHull) - hullMax,
     // Stow is LOCKED until an orbit ability (rank 0 -> no slots); see the
-    // trailStow/moon-cap derivation above for the brawler differences.
+    // trailStow/boulder-cap derivation above for the brawler differences.
+    // orbitTier is the CLASS rung (-1 = locked), orbitCap the mass allowance
+    // inside it — config.canStow is the pair, and every stow test uses it.
     orbitCap,
+    orbitTier,
     orbitLabel,
     trailStow,
     // 1/2/3/5/6/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital
@@ -1815,6 +2064,10 @@ export function shipStats(prog) {
       + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
+    // What the ship WEIGHS, for anything that resolves by mass ratio — today
+    // the taut tether (tractor.springHeld). main.js copies it onto game.ship
+    // beside the radius, so `s.mass` stays the single authoritative read.
+    shipMass: SHIP_MASS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };

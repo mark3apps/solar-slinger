@@ -73,8 +73,12 @@ const pools = SPECS.map((s) => {
 // ---- derived ship stats ---------------------------------------------------
 // The shape of each spec at the start and at full build. These are what every
 // consumer reads, so a change here is a change to how the ship feels.
+// NOTE: 'grabRange' / 'grabMass' / 'flingSpeed' / 'radius' are NOT shipStats
+// keys and never were — the filter below silently dropped them, so the beam's
+// own numbers went uncovered. The real names are range / capacity / fling.
 const statKeys = ['hullMax', 'shieldMax', 'shieldFrac', 'shieldArc', 'maxSpeed', 'thrust',
-                  'grabRange', 'grabMass', 'flingSpeed', 'orbitCap', 'maxOrbiters', 'radius'];
+                  'range', 'capacity', 'force', 'fling', 'orbitCap', 'orbitTier',
+                  'maxOrbiters', 'shipMass'];
 const specStats = SPECS.map((s) => {
   const mk = (tier, maxed) => {
     const p = newProgress(); p.spec = s.id; p.tier = tier;

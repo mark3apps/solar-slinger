@@ -3,7 +3,7 @@ import {
   makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
 import { spawnAsteroid, markFieldRock } from './world.js';
-import { computeFlingVelocity } from './tractor.js';
+import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
 } from './util.js';
@@ -387,6 +387,13 @@ function updateCrust(game, dt) {
     // for a beat as gravity-billiards credit without the player ever having
     // touched it, and unbinding on that emptied the halo as it formed.
     if (b.heldBy) { b.crust = null; continue; }
+    // THE HOST IS IN SOMEBODY'S BEAM: the halo stands down. tractor.tryGrab
+    // cuts every rail anchored to a grabbed world so its sky stops being welded
+    // to it — and this assist would spend the whole haul railing the rubble
+    // straight back on, which is the same glue by another route. Held open with
+    // the same free window a fresh calve gets, so the shell resettles after the
+    // drop rather than snapping back the instant the beam lets go.
+    if (h.heldBy) { b.crustFree = CFG.CRUST_FREE; continue; }
     // NEVER touch a piece in flight — "throws never steer" is a design law,
     // and an assist that curved a thrown slab back toward its planet would
     // break it outright. It re-settles from scratch once it lands.
@@ -692,6 +699,7 @@ export function shatter(game, body, credit = null) {
     game.held = game.held2 || null;
     game.held2 = null;
     if (!game.held) sfx.setBeam(false);
+    clearHoldState(game, body);   // …and the wind-up/charge state with it
   }
 
   // FIELD GIANT: cracking one sprays a cascade of smaller FIELD rock — the
@@ -1188,6 +1196,7 @@ function vaporize(game, body) {
     game.held = game.held2 || null;
     game.held2 = null;
     if (!game.held) sfx.setBeam(false);
+    clearHoldState(game, body);   // …and the wind-up/charge state with it
   }
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
@@ -1268,7 +1277,7 @@ export function damageShip(game, dmg, cause, hitAng) {
     for (const b of [game.held, game.held2]) {
       if (!b) continue;
       if (b.heldBy === 'player') b.heldBy = null;
-      b.extAx = 0; b.extAy = 0;
+      clearHoldState(game, b);   // extAx/extAy, the wind-up timer, the readout
     }
     game.held = null;
     game.held2 = null;   // Twin Grip: drop the second rock too
@@ -3125,6 +3134,7 @@ export function step(game, dt) {
     if (!b.alive || b.type === 'star' || b.dormant) continue;
     b.rot += b.spin * dt;
     if (b.thrownTimer > 0) b.thrownTimer -= dt; else b.thrownBy = null;
+    if (b.throwLock > 0) b.throwLock -= dt;   // re-grab lockout (CFG.THROW_LOCKOUT)
     if (b.inertT > 0) b.inertT -= dt;       // fresh fragment, flying clear of its siblings
     // SHRINK, EASED. damageBody sets a radius TARGET; the body walks to it over
     // about a second and a half instead of snapping. Everything downstream reads

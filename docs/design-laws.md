@@ -9,6 +9,156 @@ code "works."
 
 - **Flinging has no recoil** that pushes the ship back. The tractor tug reaction is capped at 150 so the
   ship stays flyable, but throws must never shove the ship. (`tractor.js:197`)
+- **A BIG ROCK DOES NOT HANDLE LIKE A PEBBLE, and the beam takes a grip rather than snapping to one**
+  (user design law). `st.force` is a force and `tractor.springHeld` divides it by the load's mass, so
+  authority already fell as `1/m` — but force scales with `capacity`, which meant the heaviest thing
+  your beam could lift always swung with about the authority the heaviest thing it could lift a tier
+  ago did, and a maxed hauler whipped a moon around exactly like a scout whips a pebble. Two
+  multipliers on the acceleration cap fix that, both in `springHeld`:
+  - **HEFT** (`CFG.TRACTOR_HEFT` 1.6): `1 / (1 + HEFT × heft²)` where `heft` is the load's mass as a
+    fraction of your allowance. **Squared on purpose** — anything under half your allowance keeps
+    ~90% of its authority, so the ordinary belt-rock loop is untouched and only the top of your class
+    fights you (0.385× at a max-weight load).
+  - **SPOOL-UP** (`CFG.TRACTOR_SPOOL` 3.2s, `TRACTOR_SPOOL_MIN` 0.4): a squared ramp over a window
+    that scales with heft, so a pebble is at full strength in about a second and a moon takes the
+    full 3.2s. `b.holdT` is reset at every grab and every retrieve from the ring, so letting go and
+    re-grabbing to dodge the ramp costs you the ramp again.
+  - **THE WIND-UP APPLIES TO THE THROW, NOT JUST THE HOLD** — `flingSpeedFor` reads the same
+    `beamGrip` the hold does, scaled by heft (`speed × (1 - heft × (1 - spool))`). It has to: with
+    the ramp on positioning alone, the hardest throw in the game was grab-and-release on the SAME
+    FRAME, and letting go and re-grabbing handed you a fresh full-power throw every time — so
+    spamming the beam beat holding it, which is the exact inversion of the law. Measured on an
+    11,177 moon at 78% of allowance: 262 on an instant throw, 490 after 3s, and 262 again on a
+    re-grab. Scaling by heft is what keeps the belt loop untouched (a pebble at ~0.97× on a
+    same-frame throw). `b.holdT` is **null** for anything not in the beam — the ring, the rack, a
+    rock in flight — and `beamGrip` exempts those, so a volley never winds up.
+
+  **NEITHER applies to the orbit shield or the brawler's trail rack** (`tractor.updateOrbit` owns
+  those, with its own caps): those are formations you have already paid for, and re-spooling every
+  rock in a seven-slot ring on every capture would make the wall sag exactly when it is being shot
+  at. The grip is VISIBLE — `game.heldGrip` feeds `render.drawBeam`, which draws a fresh or heavy
+  hold thin, dim and fluttering and settles it as the emitters take hold; at grip 1 it is exactly the
+  beam it always was. A mechanic the player cannot see reads as the beam being broken.
+- **A MOON OR A WORLD MUST BE WINCHED BEFORE THE BEAM HAS IT AT ALL** (`config.latchTime` /
+  `tractor.updateLatch`). **Nothing below the moon rungs winches** — belt rock takes hold on the
+  click exactly as it always did, and the whole early game is untouched. Taking a world is an ACT,
+  not a click.
+  - **The winch is a BAND per class, and MASS positions you inside it** (`config.LATCH_BAND`):
+    small moons **1.6–2.6s**, large moons **2.6–4.0s**, worlds **4.0–5.8s**. A flat per-class number
+    said a 2,400-mass moon and a 17,000-mass one were the same job. The bands do not overlap, so the
+    class ordering still holds absolutely: every small moon is quicker than every large moon, which
+    is quicker than every world. Interpolation is **sqrt**, not linear — a world's band spans 33× in
+    mass and read linearly every planet under ~150,000 would pin to the floor.
+    (History: 1.1 / 1.8 / 2.9 flat → doubled at the top end to 1.6 / 3.6 / 5.8 flat → spread into
+    bands over the same 1.6–5.8 envelope.)
+  - **AT FULL POWER THE TETHER CANNOT BE BROKEN** (user design law). A hold that has fully closed
+    does not let go because you flew away — past `CFG.TETHER_MAX_MUL` (1.3) × the beam ring (the ring
+    `drawShipRings` already draws, so the limit is something the player can see) it goes **taut** and
+    `tractor.springHeld` resolves it as a rope: take the separating velocity, split by MASS. Only
+    death drops it; distance no longer can. The rope only ever REMOVES separating motion, so it
+    cannot inject energy or become a slingshot. **This is not the no-recoil law being broken** — that
+    law is about the RELEASE (a throw must never shove the ship); being dragged by something you are
+    still holding is the opposite, and it is the point.
+  - **IT IS A RUBBER BAND, NOT A WALL.** Arresting everything at one exact radius jolted — free one
+    substep, stopped the next. The give lives INSIDE the stated ceiling rather than beyond it: the
+    band starts biting at `(1 - CFG.TETHER_STRETCH)` × the limit and is fully taut at the limit, so
+    "max ~1.3× the ring" stays literally true while a third of the way in is spent easing you to a
+    stop. The fraction of separating velocity taken ramps **quadratically** across that stretch, so
+    first contact takes almost nothing. A long soft zone costs nothing during ordinary holding: the
+    band only ever acts on SEPARATING motion, and a tracked rock never separates.
+  - **THE ROPE'S LENGTH IS STATE, NOT A CONSTANT** (`b.ropeL`). Full power routinely arrives with the
+    rock ALREADY outside the limit — it lags during the wind-up, and a world's winch runs for seconds
+    while you are flying. Sizing the rope at the limit on that first substep snapped the load across
+    the whole gap in one frame (measured: a ~2,000-unit yank). The rope is seeded at whatever
+    distance it engaged at and hauled in at `CFG.TETHER_REEL`, and the taut/backstop maths run
+    against that LIVE length — never against the constant, or it is the instant snap again.
+    Measured after the fix: worst single-substep jump **2.5 units**, reeling in at exactly 300 u/s
+    from 3,000 down to the 921 limit.
+  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 4,200 across the ladder), because a rope
+    resolves by mass RATIO and a constant-10 ship meant a Titan wrestled a moon exactly as badly as
+    a Scout did. Derived from the drawn footprint — `SHIP_RADIUS` grows ×1.62 a tier and mass rides
+    it at the power 2.5 (between area and volume; a ship is hull and framing, not a solid lump).
+    Measured load:ship ratios — t0 scout vs a 1,200 rock **120:1**, t2 vs a 5,000 boulder **45:1**,
+    t4 vs a 9,000 moon **7:1**, t5 titan vs a 220,000 world **52:1**. Re-derive it if `SHIP_RADIUS`
+    ever moves.
+  - **FULL POWER MUST ALWAYS LAND AFTER THE LATCH** (`CFG.WINDUP_AFTER_LATCH`, 1.2s). The winch
+    seconds carry into `holdT` so the player is not billed twice — but carried in FULL they covered
+    the entire wind-up ramp on the heavy rungs, so a moon or a world hit full power at the exact
+    instant it latched. That collapses two mechanics into one number and leaves the READY signal
+    with nothing to announce. `grabBody` caps the carry at `window - WINDUP_AFTER_LATCH`, so there
+    is always wind-up left to run. Measured: full power lands 1.09–1.21s after every latch, across
+    the lightest moon (900) to the biggest solid planet (220,000).
+  - **Once the beam has picked its target, the cursor is free** (user design rule). The winch holds
+    on the button and on beam RANGE, and never re-tests the cursor. Re-testing it was wrong twice
+    over: a moon is a moving target on a rail and so is the ship, so holding still lost the winch
+    through no decision of the player's — and the cursor is also the AIM, so pinning it to the load
+    meant you could not line up the throw you were winching up for. `render.drawLatch` roots its
+    emitter on the bearing to the TARGET for the same reason.
+  - **The winch seconds carry into the wind-up** (`grabBody(game, b, L.t)`), they are not charged
+    twice — from the player's side it was one continuous press, and billing the full `beamGrip` ramp
+    on top would put a hard throw on a moon five seconds out from the click. Releasing abandons the
+    winch outright; nothing is banked for the next press.
+- **A GAS GIANT CANNOT BE PICKED UP AT ALL** (`config.LIFT_NEVER`), at any tier, with any build. It
+  is not a heavier rung you buy your way up to — it is off the ladder, the same fact the ship already
+  lives with (`CFG.GAS_*`: no surface, the ship flies straight through the cloud tops). It is what
+  makes a giant the one world in the sky you have to FIGHT instead of carry. The way through is
+  stripping it: `physics.gasStrip` sets `ptype = 'rocky'` on what is left, so the exposed core is an
+  ordinary top-rung world you can absolutely take — and the refusal message says so, because "never"
+  without a way out reads as a bug.
+- **"MY THROW IS AT FULL POWER" IS A COLOUR AND A POP, NOT A PROGRESS BAR** (user design call;
+  `render.drawCharge` + `drawBeam`'s colour argument). The beam brightening as it spools says
+  *something* is happening; it does not say the one instant that matters when you are lining up a
+  shot. But a filling meter is not the answer either — watching a bar creep is not what the player
+  wants mid-fight, and a ring around the load is clutter around the exact thing you are aiming at.
+  So the readout is exactly two things:
+  - **the beam runs HOT** (cyan → near-white `#dcf8ff`) for as long as it is charged — the steady
+    state, and with no ring this colour *is* the readout, so it is a real shift and not a tint;
+  - **a one-shot bloom on the CROSSING** — a ring thrown outward over a brief flare on the rock, so
+    the pop reads as coming FROM the load. The flash is the event; the colour is the state.
+
+  Both gated on `CFG.CHARGE_SHOW_HEFT` (0.25 of your allowance): below it a rock is at full power
+  almost at once and the multiplier is within a few percent of 1, so a pop on every belt pebble
+  would be noise on the loop the player spends most of the game in.
+  (History: this first shipped as an amber filling arc with pips and a halo at completion; the arc
+  and the steady ring were cut — "just the color / pop at the end".)
+- **THE BEAM GRIPS THE SIDES OF A BODY, NEVER ITS MIDDLE** (`render.gripPoints`). Strands that
+  converge on the centre read as passing straight THROUGH the rock, and on a moon or a world — whose
+  disc is most of the screen — they bury the whole effect under the sprite where none of it can be
+  seen. Every strand lands on the rim, spread either side of the bearing facing the ship, with the
+  contact glows and the bright limb arc out there with them; a bigger load is taken in a wider
+  embrace. **And the winch AMPS UP**: `drawLatch` scales everything by an eased `amp` from near-zero,
+  so the effect builds into the full hold with no visual step at the hand-over. The progress ring is
+  the exception — full brightness from the first instant, because it is the one element that has to
+  be legible before the effect is.
+- **PICKING UP A WORLD UNSTICKS ITS SKY.** A world's family — moons, ring chunks, probe junk, its
+  rubble shell — rides RAILS anchored to it, and the rails pass reads the parent's LIVE position
+  every substep. So a grabbed planet used to carry its whole system with it, **welded**: fifty bodies
+  teleporting along at whatever speed the beam was swinging the planet, passing through anything in
+  the way, and snapping back into perfect formation the instant you let go. A moon family is held by
+  gravity, and the moment something ELSE is holding the planet, gravity is no longer what is moving
+  it. So the grab cuts every rail anchored to the body (`tractor.unglue`, planet/moon/rogue only).
+  Each child keeps the truthful velocity the rails pass last wrote — its real orbital velocity — so
+  left alone it simply keeps orbiting, and it re-rails on the ordinary scan once you have dropped the
+  world and flown off. Haul the world away and its moons stay where their momentum left them, which
+  is the point. The crust halo is the one binding not cut here: `physics.updateCrust` stands its
+  assist down while the host is held (it would rail the rubble straight back on — the same glue by
+  another route) and the shell resettles after the drop.
+- **YOUR OWN SHOT IS THE LOWEST-PRECEDENCE GRAB TARGET IN THE GAME**, in two stages
+  (`tractor.pickTarget`; `render`'s hover hint mirrors both):
+  - For **`CFG.THROW_LOCKOUT` (2s)** after a beam launch the rock is skipped OUTRIGHT — not a target,
+    no hint ring. Demotion alone was not enough, because out in open space your last shot is the only
+    thing under the cursor and still won the click.
+  - After that it is merely demoted: it wins again once nothing else is in reach, so chasing down
+    your own throw stays possible.
+  - And a **loaded stow ring outranks it outright** — `tryGrab` reports `null` so `main.onGrab`'s
+    retrieve fallback fires, which is the next rock the player was reaching for.
+
+  The precedence ladder is **loose rock → orbit ring → your own shot in flight**. The whole rule
+  exists for the rapid-fire loop (retrieve → fling → retrieve): the rock you just let go sits a
+  beam-length away, dead centre under the crosshair, and the second click kept catching it instead of
+  launching the next one. Only the two BEAM launches stamp the lockout (`releaseHeld` /
+  `flingAllFromOrbit`) — NOT billiards credit, where `thrownBy = 'player'` marks a rock your shot
+  merely knocked, and locking those out would block grabbing the scatter from your own impact.
 - **Throws never steer and the game never bends the release angle** — a rock flies exactly at the cursor,
   *from its own held position* (~70u out), not from the ship. The aim assist is informational only: lead
   markers (✕) show where the cursor must be at release. Solving from the ship offsets the ✕ and every shot
@@ -108,8 +258,11 @@ code "works."
     radius draws a 3,200-mass chunk at 10 units beside a 705-unit world. But every gate in the game
     — the beam's tier caps above all — is a MASS test, so leaving the two unrelated made a
     130-unit slab of planet weigh a pebble and every gravity tool picked it up like one.
-    `config.crustMass` maps drawn radius to mass against `TIERS.caps`: a crumb is tier-0 ammo, a
-    slab needs tier 2-3, and the 45,000 ceiling stays under the 5e4 rail-disturber threshold. The
+    `config.crustMass` maps drawn radius to mass against the beam class ladder: a crumb is tier-0
+    ammo, a mid piece is boulder class, a full-severity slab off a giant is world weight and asks for
+    the beam a small world asks for — and the 45,000 ceiling stays under the 5e4 rail-disturber
+    threshold. The crumbs and pieces that make up the bulk of any wound stay early-game ammunition,
+    which is what the crumble loop runs on. The
     calve deliberately does NOT bill the host for that mass (a four-piece calve mints ~90,000,
     half a mid planet — subtracting it visibly deflated the world); erosion stays on the chip path.
     Crust is never an `attractor`, at any mass — the dense-field rock rule, for both its reasons.

@@ -63,6 +63,9 @@ export class Body {
     this.heldBy = null;      // 'player' | 'orbit' | alien ref | null
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;
+    this.throwLock = 0;      // seconds left in which YOUR beam may not re-grab it (CFG.THROW_LOCKOUT)
+    this.holdT = null;       // seconds in the beam — the wind-up (tractor.beamGrip); null = not held
+    this.ropeL = null;       // live length of a taut tether (tractor.springHeld); null = no rope
     this.catchCount = 0;     // repeat catches of the same rock grow the beam less
     this.onRails = false;    // riding a precomputed orbit (circular or ellipse)
     this.rail = null;        // circular {parent,r,w,ang} | ellipse {parent,e,a,...}
@@ -227,7 +230,7 @@ export class Ship {
     this.vx = 0; this.vy = 0;
     this.angle = 0;
     this.radius = 9;         // grows with progression (see shipStats)
-    this.mass = 10;
+    this.mass = 10;          // tier-0 seed; main.js keeps it at st.shipMass (CFG SHIP_MASS)
     this.hull = 67;
     this.shield = 33;        // recharging layer; absorbs damage before the hull
     this.shieldHitT = 0;

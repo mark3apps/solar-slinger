@@ -1,8 +1,10 @@
-import { CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX } from './config.js';
-import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
-import { volleyPick } from './tractor.js';
 import {
-  TAU, angDiff, lerp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
+  CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX, canLift, canStow, liftClass,
+} from './config.js';
+import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
+import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
+import {
+  TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
 } from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
@@ -1490,14 +1492,16 @@ function drawBody(game, b) {
   // only the helper-UI rings below outrank it.
   if (b.ring) drawRing(game, b, true);
 
-  // Held / orbiting highlights
-  if (b.heldBy === 'player') {
-    ctx.strokeStyle = 'rgba(120, 220, 255, 0.8)';
-    ctx.lineWidth = 2 / game.cam.zoom;
-    ctx.setLineDash([6 / game.cam.zoom, 5 / game.cam.zoom]);
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius + 8 / game.cam.zoom, 0, TAU); ctx.stroke();
-    ctx.setLineDash([]);
-  } else if (b.heldBy === 'orbit') {
+  // Orbiting highlights.
+  //
+  // NOTHING IS DRAWN FOR heldBy === 'player' (user design call). There used to
+  // be a dashed cyan ring here saying "this one is in your beam" — from a time
+  // when the beam was a single thin line and needed the help. It does not any
+  // more: the beam now braids, blooms where it grips the rim, and runs
+  // near-white at full power, all of which say the same thing louder. The ring
+  // was a second, older answer to a question already answered, and it crowded
+  // the only spot on screen the player is actually looking at while aiming.
+  if (b.heldBy === 'orbit') {
     if (armedSet && armedSet.has(b)) {
       // Armed for the shotgun: hot amber, pulsing
       const pulse = 0.6 + 0.4 * Math.sin(game.time * 9);
@@ -3077,17 +3081,329 @@ function drawShipRings(game) {
   }
 }
 
-function drawBeam(game, fromX, fromY, obj, color) {
-  const grad = ctx.createLinearGradient(fromX, fromY, obj.x, obj.y);
-  grad.addColorStop(0, color + 'cc');
-  grad.addColorStop(1, color + '22');
-  ctx.strokeStyle = grad;
-  const pulse = 1 + Math.sin(game.time * 18) * 0.25;
-  ctx.lineWidth = 3.5 * pulse / Math.max(game.cam.zoom, 0.4);
+// ---- the tractor beam -------------------------------------------------------
+//
+// THE BEAM IS THE VERB. It is on screen for most of the game and it carries two
+// live readouts, so it is drawn as a real emitter rather than a line:
+//
+//   GRIP (0..1) is the spool-up made visible (CFG.TRACTOR_HEFT / TRACTOR_SPOOL,
+//   applied in tractor.springHeld/beamGrip). A beam that has just closed on a
+//   heavy load runs thin, dim and unsteady and settles as the emitters take
+//   hold — the wind-up governs the THROW too, so this is the player's only
+//   sight of how hard the next fling will leave.
+//
+//   HEAVY (the moon/world rungs) splits the beam into three braided strands
+//   that bow apart and converge on the load, with a brighter anchor bloom where
+//   it bites. A pebble gets one clean strand. The difference is the point: the
+//   sky should look like it is being fought, not clicked.
+//
+// Canvas discipline: additive passes are opened and closed here, `globalAlpha`
+// is left at 1, and every width is divided by the zoom so the beam reads the
+// same at tier 0 and tier 5. Solid strokes only — dashes are reserved for
+// helper/aiming UI (design law), and the beam is a thing in the world.
+const hexA = (a) => Math.round(clamp(a, 0, 1) * 255).toString(16).padStart(2, '0');
+
+// THE BEAM GRIPS THE SIDES OF A BODY, NEVER ITS MIDDLE (user design rule). A
+// strand that converges on the CENTRE reads as passing straight through the
+// rock — and on a moon or a world, whose disc is most of the screen, it buries
+// the whole effect under the sprite where none of it can be seen. So every
+// strand lands on the RIM, spread either side of the bearing that faces the
+// ship, and the glow lives at those contact points. `spread` is the half-angle
+// of the grip; a bigger load is taken in a wider embrace.
+// Returns world-space contact points, outermost first.
+function gripPoints(game, fromX, fromY, obj, n, spread) {
+  const base = Math.atan2(fromY - obj.y, fromX - obj.x);   // the bearing facing the ship
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    // -1..1 across the spread, skipping dead centre on even counts — the point
+    // is to take it by the sides.
+    const t = n === 1 ? 0.6 : (i / (n - 1)) * 2 - 1;
+    const a = base + t * spread + Math.sin(game.time * 0.8 + i * 1.9) * 0.05;
+    pts.push({ x: obj.x + Math.cos(a) * obj.radius * 0.97,
+               y: obj.y + Math.sin(a) * obj.radius * 0.97, a });
+  }
+  return { pts, base, spread };
+}
+
+function drawBeam(game, fromX, fromY, obj, color, grip = 1, heavy = 0) {
+  const g = clamp(grip, 0.15, 1);
+  const z = Math.max(game.cam.zoom, 0.4);
+  // A struggling emitter flutters; a settled one hums. Same breath either way,
+  // faster and deeper the less grip there is.
+  const pulse = 1 + Math.sin(game.time * (16 + 26 * (1 - g))) * (0.18 + 0.4 * (1 - g));
+  const w = (1.4 + 2.1 * g) * pulse / z;
+  const n = heavy > 0 ? 4 : 2;
+  const { pts, base, spread } = gripPoints(game, fromX, fromY, obj, n, 0.5 + 0.75 * heavy);
+  // The axis runs to the NEAR RIM, not the centre — everything that travels
+  // down the beam stops where the beam actually ends.
+  const rimX = obj.x + Math.cos(base) * obj.radius, rimY = obj.y + Math.sin(base) * obj.radius;
+  const dx = rimX - fromX, dy = rimY - fromY;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len, px = -uy, py = ux;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);   // solid always — see drawCharge on inheriting a dash
+  // 1. THE ENVELOPE — a wide, soft, additive wash the strands ride inside. This
+  //    is what stops the beam reading as a hairline at low zoom.
+  ctx.globalCompositeOperation = 'lighter';
+  const halo = ctx.createLinearGradient(fromX, fromY, rimX, rimY);
+  halo.addColorStop(0, color + hexA(0.20 + 0.16 * g));
+  halo.addColorStop(0.55, color + hexA(0.08 + 0.10 * g));
+  halo.addColorStop(1, color + hexA(0.03 + 0.06 * g));
+  ctx.strokeStyle = halo;
+  ctx.lineWidth = w * (3.4 + 2.6 * heavy);
+  ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(rimX, rimY); ctx.stroke();
+
+  // 2. THE STRANDS — two for a rock, four for a world, each fanning out from the
+  //    emitter to its own point on the rim. Each bows on its own slow phase so
+  //    the rig looks like it is under load; the bow collapses at the endpoints,
+  //    which is what keeps them anchored instead of floating.
+  const core = ctx.createLinearGradient(fromX, fromY, rimX, rimY);
+  core.addColorStop(0, color + hexA(0.55 + 0.35 * g));
+  core.addColorStop(1, color + hexA(0.18 + 0.35 * g));
+  ctx.strokeStyle = core;
+  pts.forEach((p, i) => {
+    const bow = Math.sin(game.time * (2.2 + 0.5 * i) + i * 2.1) * (5 + 16 * heavy) * (1.15 - g) / z;
+    ctx.lineWidth = w * (0.6 + 0.4 * (1 - Math.abs((i / Math.max(1, n - 1)) * 2 - 1)));
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(fromX + ux * len * 0.55 + px * bow, fromY + uy * len * 0.55 + py * bow, p.x, p.y);
+    ctx.stroke();
+  });
+
+  // 3. CHARGE RUNNING DOWN THE BEAM — bright nodes travelling emitter-to-rim,
+  //    faster and more of them as the grip closes. Round nodes, never a dash
+  //    pattern: this is a real effect, not helper UI.
+  const nodes = 2 + Math.round(3 * g) + (heavy > 0 ? 2 : 0);
+  const travel = (game.time * (0.5 + 0.9 * g)) % 1;
+  ctx.fillStyle = color + hexA(0.35 + 0.5 * g);
+  for (let i = 0; i < nodes; i++) {
+    const f = (travel + i / nodes) % 1;
+    const r = (1.1 + 1.7 * g) * (0.45 + 0.55 * Math.sin(f * Math.PI)) / z;
+    ctx.beginPath();
+    ctx.arc(fromX + dx * f, fromY + dy * f, r, 0, TAU);
+    ctx.fill();
+  }
+
+  // 4. THE BITE — where the beam actually has hold: a glow at each contact point
+  //    on the rim, plus a bright arc running the span between them. On a world
+  //    this is the whole read, and it sits on the limb where you can see it
+  //    against the sprite rather than lost inside it.
+  for (const p of pts) {
+    const r = (5 + 11 * heavy) * (0.5 + 0.6 * g) / z + obj.radius * 0.06;
+    const bloom = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    bloom.addColorStop(0, color + hexA(0.42 * g + 0.14));
+    bloom.addColorStop(1, color + '00');
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
+  }
+  ctx.strokeStyle = color + hexA(0.12 + 0.30 * g);
+  ctx.lineWidth = (1 + 2.4 * g) / z;
   ctx.beginPath();
-  ctx.moveTo(fromX, fromY);
-  ctx.lineTo(obj.x, obj.y);
+  ctx.arc(obj.x, obj.y, obj.radius * 0.97, base - spread, base + spread);
   ctx.stroke();
+  ctx.restore();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+}
+
+// THE LAUNCH. A throw is the loudest thing the player does and it used to happen
+// in visual silence — the rock simply changed velocity and left. This is the
+// muzzle flash, drawn from the records tractor.pushLaunchFx leaves behind:
+//   - a RING thrown off the launch point, expanding and fading
+//   - a CONE opening along the throw bearing, so the flash points where the
+//     rock went and a launch never reads as an explosion
+//   - SPEED LINES raking back along the axis, the recoil the ship never takes
+// Everything scales with `heft` (how much of the beam that load was using) and
+// gets a hotter, wider kick when it went out at full power, so the spectacle
+// tracks the effort: a charged moon leaves a crater of light, a pebble a blip.
+function drawLaunchFx(game) {
+  if (!game.launchFx.length) return;
+  const z = Math.max(game.cam.zoom, 0.4);
+  ctx.save();
+  ctx.setLineDash([]);   // solid — see drawCharge on inheriting a dash
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  for (const fx of game.launchFx) {
+    const k = clamp(1 - fx.t / CFG.LAUNCH_FX, 0, 1);   // 1 at the instant of release
+    const grow = 1 - k;
+    const big = fx.heft * (fx.charged ? 1.35 : 1);
+    const col = fx.charged ? '255, 245, 215' : '190, 232, 255';
+    const cx = fx.x, cy = fx.y;
+    const ux = Math.cos(fx.ang), uy = Math.sin(fx.ang), px = -uy, py = ux;
+    // 1. The ring off the launch point.
+    ctx.strokeStyle = `rgba(${col}, ${k * 0.75})`;
+    ctx.lineWidth = (0.8 + 4 * big) * k / z;
+    ctx.beginPath();
+    ctx.arc(cx, cy, fx.r * 0.7 + grow * (30 + 90 * big) / z, 0, TAU);
+    ctx.stroke();
+    // 2. The cone, opening along the bearing the rock left on.
+    const reach = (fx.r + (26 + 120 * big) / z) * (0.35 + grow);
+    const spread = 0.34 + 0.5 * grow;
+    ctx.strokeStyle = `rgba(${col}, ${k * 0.6})`;
+    ctx.lineWidth = (0.8 + 2.6 * big) * k / z;
+    for (const sgn of [-1, 1]) {
+      const a = fx.ang + sgn * spread;
+      ctx.beginPath();
+      ctx.moveTo(cx + ux * fx.r * 0.5, cy + uy * fx.r * 0.5);
+      ctx.lineTo(cx + Math.cos(a) * reach, cy + Math.sin(a) * reach);
+      ctx.stroke();
+    }
+    // 3. Speed lines raking BACK down the axis — the kick the ship never takes
+    //    (flinging has no recoil; this is where that force visibly goes).
+    ctx.strokeStyle = `rgba(${col}, ${k * 0.45})`;
+    ctx.lineWidth = (0.6 + 1.6 * big) * k / z;
+    for (let i = -1; i <= 1; i++) {
+      const off = i * (fx.r * 0.55 + 7 / z);
+      const bx = cx - ux * fx.r * 0.3 + px * off, by = cy - uy * fx.r * 0.3 + py * off;
+      const len = (18 + 70 * big) * (0.3 + grow) / z;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx - ux * len, by - uy * len);
+      ctx.stroke();
+    }
+    // 4. The flash at the muzzle itself, gone fastest of all.
+    const fr = (fx.r * 1.1 + (10 + 40 * big) / z) * k;
+    if (fr > 0.5) {
+      const gl = ctx.createRadialGradient(cx, cy, 0, cx, cy, fr);
+      gl.addColorStop(0, `rgba(${col}, ${k * k * 0.7})`);
+      gl.addColorStop(1, `rgba(${col}, 0)`);
+      ctx.fillStyle = gl;
+      ctx.beginPath(); ctx.arc(cx, cy, fr, 0, TAU); ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// FULL POWER IS A COLOUR AND A POP, NOT A PROGRESS BAR (user design call).
+// The instant that matters is the one where the throw goes live; watching a
+// meter creep toward it is not information the player wants mid-fight, and a
+// filling ring on every heavy grab was clutter around the thing you are aiming
+// at. So the readout is exactly two things and nothing else:
+//   - the BEAM RUNS HOT the whole time it is charged (drawBeam's colour arg) —
+//     the steady state, readable in peripheral vision
+//   - a one-shot BLOOM thrown outward on the CROSSING — the event
+// Both gated on CFG.CHARGE_SHOW_HEFT, because a pebble is at full power almost
+// at once and a pop on every belt rock would be noise on the loop the player
+// spends most of the game in.
+function drawCharge(game, b) {
+  if (!(game.chargeFlashT > 0)) return;
+  const k = clamp(game.chargeFlashT / CFG.CHARGE_FLASH, 0, 1);
+  const z = Math.max(game.cam.zoom, 0.4);
+  ctx.save();
+  // EXPLICITLY SOLID. save()/restore() stops this function leaking a dash OUT,
+  // but it does not stop it inheriting one set before the save — and an earlier
+  // pass in this frame legitimately leaves patterns set. The pop drawn in
+  // inherited dashes reads as helper/aiming UI, which is what dashes are for.
+  ctx.setLineDash([]);
+  ctx.globalCompositeOperation = 'lighter';
+  // A ring thrown outward once, fading as it expands, so the moment is
+  // impossible to miss even while you are looking at the target instead.
+  ctx.strokeStyle = `rgba(255, 238, 190, ${k * 0.95})`;
+  ctx.lineWidth = (1 + 5 * k) / z;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.radius + (1 - k) * (44 + b.radius * 0.8) / z, 0, TAU);
+  ctx.stroke();
+  // …over a brief flare on the rock itself, so the pop reads as coming FROM the
+  // load rather than as a ring that happens to be centred on it.
+  const flare = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius * 1.5);
+  flare.addColorStop(0, `rgba(255, 245, 215, ${k * 0.45})`);
+  flare.addColorStop(1, 'rgba(255, 245, 215, 0)');
+  ctx.fillStyle = flare;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.5, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// THE WINCH, before the beam has hold of anything (tractor.updateLatch): a moon
+// or a world has to be worked at for seconds before the emitters bite. It has
+// to look like EFFORT and it has to show progress, or a press that appears to
+// do nothing reads as a dead button.
+//
+// Three searching strands whip and re-seat against the target while it builds,
+// and a solid arc closes around the body as the winch fills — that arc is the
+// same helper-UI idiom as the shotgun charge ring, solid, never dashed. On
+// completion the caller's beam takes over in the same frame, so the two read as
+// one continuous action.
+function drawLatch(game, fromX, fromY) {
+  const L = game.latch;
+  const b = L.body;
+  const f = clamp(L.t / L.need, 0, 1);
+  const z = Math.max(game.cam.zoom, 0.4);
+  const col = '#5ac8ff';
+  // THE EFFECT AMPS UP WITH THE WINCH — it must start at almost nothing and
+  // build, because the ramp IS the readout. `amp` is the eased fill everything
+  // below is scaled by; at f=0 the strands are the faintest thread the emitter
+  // can throw and by f=1 they are as strong as a real hold, so the winch hands
+  // straight over to drawBeam with no visual step.
+  const amp = 0.10 + 0.90 * f * f;
+  // Same side-grip law as the beam: the strands reach for the RIM, and they
+  // reach WIDE at the start and close down onto the final grip as it fills.
+  const { pts, base, spread } = gripPoints(game, fromX, fromY, b, 4, (1.5 - 0.7 * f));
+  const rimX = b.x + Math.cos(base) * b.radius, rimY = b.y + Math.sin(base) * b.radius;
+  const len = Math.hypot(rimX - fromX, rimY - fromY) || 1;
+  const ux = (rimX - fromX) / len, uy = (rimY - fromY) / len, px = -uy, py = ux;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);   // solid always — see drawCharge on inheriting a dash
+  ctx.globalCompositeOperation = 'lighter';
+  // A soft envelope that only really arrives at the end of the winch.
+  ctx.strokeStyle = col + hexA(0.16 * amp);
+  ctx.lineWidth = (2 + 12 * amp) / z;
+  ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(rimX, rimY); ctx.stroke();
+  // Searching strands: loose and whipping at the start, drawn tight and bright
+  // as the emitters find purchase.
+  pts.forEach((p, i) => {
+    const bow = Math.sin(game.time * (5.5 - 2.4 * f) + i * 2.1) * (54 * (1 - f) + 6) / z;
+    ctx.strokeStyle = col + hexA(0.10 + 0.62 * amp);
+    ctx.lineWidth = (0.5 + 2.2 * amp) / z;
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.quadraticCurveTo(fromX + ux * len * 0.55 + px * bow, fromY + uy * len * 0.55 + py * bow, p.x, p.y);
+    ctx.stroke();
+  });
+  // Charge starts running down the beam only once it is really biting.
+  const nodes = Math.round(5 * amp);
+  const travel = (game.time * (0.4 + 1.1 * f)) % 1;
+  ctx.fillStyle = col + hexA(0.55 * amp);
+  for (let i = 0; i < nodes; i++) {
+    const t = (travel + i / Math.max(1, nodes)) % 1;
+    const r = (0.8 + 2 * amp) * (0.45 + 0.55 * Math.sin(t * Math.PI)) / z;
+    ctx.beginPath();
+    ctx.arc(fromX + (rimX - fromX) * t, fromY + (rimY - fromY) * t, r, 0, TAU);
+    ctx.fill();
+  }
+  // The bite building at each contact point on the rim — never at the centre.
+  for (const p of pts) {
+    const r = Math.max(1, (4 + 9 * amp) / z + b.radius * 0.05 * amp);
+    const bloom = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+    bloom.addColorStop(0, col + hexA(0.5 * amp));
+    bloom.addColorStop(1, col + '00');
+    ctx.fillStyle = bloom;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
+  }
+  ctx.strokeStyle = col + hexA(0.30 * amp);
+  ctx.lineWidth = (0.8 + 2 * amp) / z;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.radius * 0.97, base - spread, base + spread);
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Progress ring around the load — helper UI, so it is drawn flat and solid
+  // and sized in screen pixels, not world units. Full brightness from the first
+  // instant: this is the one element that must be legible before the effect is.
+  ctx.strokeStyle = `rgba(140, 215, 255, ${0.55 + 0.45 * f})`;
+  ctx.lineWidth = 2.6 / z;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.radius + 13 / z, -Math.PI / 2, -Math.PI / 2 + f * TAU);
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 // ---- Player-ship hull: procedural vector art --------------------------------
@@ -3686,13 +4002,39 @@ function drawShip(game) {
 
   ctx.restore();
 
-  if (game.held) {
+  if (game.held || game.latch) {
     // Beams sprout from the DRAWN hull edge (bodyR), not the larger hitbox
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    drawBeam(game, s.x + Math.cos(ang) * bodyR, s.y + Math.sin(ang) * bodyR, game.held, '#5ac8ff');
+    // `heavy` is the moon/world read (config.liftClass rungs 3+) — it braids the
+    // beam and blooms the bite, so taking a world never looks like taking a rock.
+    if (game.held) {
+      // THE BEAM RUNS HOT AT FULL POWER, and with the progress ring gone this
+      // colour IS the steady-state readout — so it is a real shift (cyan to
+      // near-white), not a tint you have to hunt for.
+      drawBeam(game, s.x + Math.cos(ang) * bodyR, s.y + Math.sin(ang) * bodyR, game.held,
+        game.heldCharged ? '#dcf8ff' : '#5ac8ff', game.heldGrip, beamHeavy(game.held));
+      if (game.heldChargeShow) drawCharge(game, game.held);
+    }
     // Twin Grip: a second beam to the flanking second rock
-    if (game.held2) drawBeam(game, s.x + Math.cos(ang + 0.5) * bodyR, s.y + Math.sin(ang + 0.5) * bodyR, game.held2, '#5ac8ff');
+    if (game.held2) {
+      drawBeam(game, s.x + Math.cos(ang + 0.5) * bodyR, s.y + Math.sin(ang + 0.5) * bodyR, game.held2,
+        '#5ac8ff', game.heldGrip2, beamHeavy(game.held2));
+    }
+    // The winch, when one is running — it has no rock in hand yet. Its emitter
+    // roots on the bearing to the TARGET, not to the cursor: once the beam has
+    // picked its load the cursor is free to go aim the throw (tractor.updateLatch),
+    // and a beam sprouting from the far side of the hull would read as broken.
+    if (game.latch) {
+      const la = Math.atan2(game.latch.body.y - s.y, game.latch.body.x - s.x);
+      drawLatch(game, s.x + Math.cos(la) * bodyR, s.y + Math.sin(la) * bodyR);
+    }
   }
+}
+
+// 0 for belt rock, ramping to 1 across the moon/world rungs — the one knob that
+// makes a big load's beam look like a big load's beam.
+function beamHeavy(b) {
+  return clamp((liftClass(b) - 2) / 3, 0, 1);
 }
 
 function drawAlien(game, al) {
@@ -5117,6 +5459,9 @@ export function render(game) {
   }
 
   for (const al of game.aliens) if (al.alive) drawAlien(game, al);
+  // Muzzle flashes go UNDER the ship and its beam: the launch happens out at the
+  // hold point and the ship should never be lost inside its own effect.
+  drawLaunchFx(game);
   drawShip(game);
 
   // Surface-scrape feedback: a hot friction glow at the contact point while
@@ -5139,17 +5484,29 @@ export function render(game) {
   if (game.ship.alive) {
     const st = game.st;
     let hov = null, hovD2 = Infinity;
+    let mine = null, mineD2 = Infinity;
     // Awake list: the cursor is on screen, and the screen is inside the bubble.
     for (const b of (game.bodies._awake || game.bodies)) {
       if (!b.alive || b.type === 'star' || b.type === 'nest' || b.heldBy) continue;
       const gr = b.radius + st.grabSlack;
       const d2 = (b.x - game.aim.x) ** 2 + (b.y - game.aim.y) ** 2;
       if (d2 > gr * gr) continue;
+      // MIRRORS tractor.pickTarget — a rock you just launched is no target at
+      // all for CFG.THROW_LOCKOUT, and after that it is merely demoted (a loaded
+      // stow ring still beats it). Keep the pair in sync: this ring is a promise
+      // about what the next click does, and highlighting a rock the click will
+      // ignore is worse than highlighting nothing.
+      if (throwLocked(b)) continue;
+      if (isOwnShot(b)) { if (d2 < mineD2) { mine = b; mineD2 = d2; } continue; }
       if (d2 < hovD2) { hov = b; hovD2 = d2; }
     }
+    if (!hov && mine && !(game.orbit.length && !game.held)) hov = mine;
     if (hov && hov !== game.held) {
-      const canOrbit = hov.mass <= st.orbitCap && game.orbit.length < st.maxOrbiters && !hov.fort;
-      const canGrab = hov.mass <= st.capacity && !hov.fort;
+      // The SAME calls the beam itself runs (config.canLift/canStow) — the ring
+      // is a promise about what the next click does, so a hand-rolled mass test
+      // here would lie the moment the class gate refused a light planet.
+      const canOrbit = canStow(st, hov) && game.orbit.length < st.maxOrbiters && !hov.fort;
+      const canGrab = canLift(st, hov) && !hov.fort;
       const inRange = Math.hypot(hov.x - game.ship.x, hov.y - game.ship.y) <= st.range + hov.radius;
       const pulse = 1 + Math.sin(game.time * 6) * 0.18;
       const alpha = (inRange ? 0.85 : 0.3) * (0.7 + 0.3 * Math.sin(game.time * 6));

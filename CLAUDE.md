@@ -207,6 +207,30 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
 ### Gameplay + visual design laws → [docs/design-laws.md](docs/design-laws.md)
 
 - **Flinging has no recoil**; the tractor tug reaction stays capped.
+- **A big rock doesn't handle like a pebble** — beam authority falls with the load's fraction of your
+  allowance (`TRACTOR_HEFT`, squared) and *spools up* over `TRACTOR_SPOOL`. The wind-up governs the
+  **throw** as well as the hold (`beamGrip` feeds both), or grab-and-instant-fling and re-grab spam
+  beat holding. Neither applies to the orbit shield or the brawler's trail rack.
+- **A moon or a world must be WINCHED first** — `config.LATCH_BAND` bands it by class and MASS
+  (small moons 1.6–2.6s, large 2.6–4.0s, worlds 4.0–5.8s); belt rock still takes hold on the click.
+  The winch holds on the button and on range, never on the cursor, and its seconds carry into the
+  wind-up — but capped, so **full power always lands after the latch** (`WINDUP_AFTER_LATCH`).
+  **Gas giants can never be picked up at all** (`LIFT_NEVER`) — strip one and carry its core.
+- **Full throw power is a COLOUR and a POP, never a progress bar** — the beam runs near-white while
+  charged, plus a one-shot bloom on the crossing (`render.drawCharge`); only above `CHARGE_SHOW_HEFT`.
+- **At full power the tether can't be broken** — it goes taut at `TETHER_MAX_MUL` × the beam ring and
+  resolves as a rope (take separating velocity, split by mass). It **rubber-bands** into that limit
+  (`TETHER_STRETCH`), and the rope's length is **state** (`b.ropeL`, reeled in at `TETHER_REEL`) —
+  engaging at the constant instead snaps a lagging load across the gap in one frame.
+  **Ship mass is per-tier** (`SHIP_MASS` 10 → 4,200): that ratio is the whole fight, so it can't
+  stay constant.
+- **Your own shot is the lowest-precedence grab target**: not a target *at all* for
+  `CFG.THROW_LOCKOUT` (2s) after a beam launch, then merely demoted, and a loaded stow ring outranks
+  it either way. Ladder: loose rock → orbit ring → your own shot.
+- **The beam grips the SIDES of a body, never its middle**, and the winch VFX amps up from near-zero
+  into the full hold (`render.gripPoints` / `drawLatch`).
+- **Picking up a world unsticks its sky** — grabbing a planet/moon cuts every rail anchored to it;
+  its family keeps its own momentum instead of being welded to the beam.
 - **Throws never steer** — a rock flies exactly at the cursor *from its own held position*, never
   from the ship. Aim assist is informational only.
 - **Dashed lines are reserved for helper/aiming UI.** Real objects use solid strokes; always reset
@@ -231,7 +255,11 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
 
 ### Progression → [docs/progression.md](docs/progression.md)
 
-Specialization-based, no passive leveling. **Two parallel tracks off one XP stream:** ability ranks
+Specialization-based, no passive leveling. **A rank buys mass inside your class, never the class
+above:** the beam tier names a CLASS (`TIERS.labels` — pebbles → belt rock → boulders → small moons
+→ large moons → planets, assigned by `config.liftClass`) and that class is a hard gate; catch ranks
+only fill `capacity` from `TIERS.caps[tier]` toward `ceil[tier]`. `config.canLift`/`canStow` are the
+only grab tests. **Two parallel tracks off one XP stream:** ability ranks
 are automatic and never a card; picks only ever offer *new* abilities. Achievements are a third
 track that feeds the other two. Field XP is gated twice (per-rock multiplier + per-field budget) and
 billiards credit is depth-capped inside a pocket. Add an ability = a catalog row + reading its

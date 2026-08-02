@@ -54,6 +54,31 @@
   distinct). Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
   Freighter, Juggernaut) are the exception — they must stay separately named to coexist as cards, and
   their descs read as "more of the same".
+- **A RANK BUYS MASS INSIDE YOUR CLASS, NEVER THE CLASS ABOVE** (user design law). The beam tier
+  names a **class of thing** — `TIERS.labels`: *Pebbles & ice / Belt rock / Boulders & cores / Small
+  moons / Large moons / Planets* — and `config.liftClass` puts every body on that ladder. The class
+  is a **hard gate**: a planet is unliftable below tier 5 however many catch ranks you own, and a
+  moon is unliftable below the moon rungs however light that particular moon rolled. Inside your
+  class, `st.capacity` is the mass allowance, and catch ranks fill it **asymptotically** from
+  `TIERS.caps[tier]` toward `TIERS.ceil[tier]` (`1 - 0.82^catchC`, so 12 stacked ranks reach ~90% of
+  the gap and nothing can round its way into the rung above).
+  **The bug this fixes:** capacity was one mass number with an unbounded rank multiplier on it
+  (`caps[tier] * (1 + 0.22 * catchC)`), and stacking the catch channel (Heavy Winch 6 + Bulk
+  Freighter 6) ran it to **3.64×**. A tier-2 beam carried 127,000 — most of the solid planets in the
+  sky — and a tier-3 one carried a gas giant, so ranks were silently buying TIERS and hauling a
+  world stopped being the top of the ladder. The stow shows the same shape: a maxed HAULER's orbit
+  ring could hold **1,965,600** of mass (gas giants in your shield), now one class below the beam and
+  capped at large-moon weight.
+  **Two type rules ride on top of the mass ladder**, and both are load-bearing: a **world is always
+  the top rung** (a mass test hands the 20,000-mass inner lava world over three tiers early), and a
+  **moon is never belt rock** (moon mass 900 + 2,400–17,050 overlaps boulders and shoal rock across
+  two whole rungs, so a mass test sells a named, charted moon at the boulder tier). Everything else —
+  belt rock, crust slabs, shoal monoliths, derelicts — is classed purely by weight.
+  **`config.canLift` / `config.canStow` are the only grab tests**: `tractor.tryGrab`, `addToOrbit`,
+  the Recovery Tether's homing capture, `main`'s auto-stow and the hover hint ring all route through
+  them, so the ring can never promise a grab the beam refuses. The one thing NOT re-gated is the
+  brawler's parry (`parryEligible` / `drawDeflectable`), which is loose-asteroid-only and stays a
+  plain `capacity * 1.5` mass window.
 - **TWO PROGRESSION TRACKS, ONE XP STREAM.** Good play (catch, smash, ram-kill, parry, skim/skate,
   kill, collect scrap, survey, slingshot, shield-block) grants XP via `addXp(game, amount)`
   (`PROG.XP_*`). Ram kills pay `XP_RAM` in `shatter`'s `'ram'` branch (kills only — chip damage,
@@ -190,8 +215,11 @@
     additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
     protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
     NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots
-    through the wake), and its `orbitCap` is clamped to MOON CLASS (`TIERS.caps[1]`) at every
-    tier (config.shipStats) — shotgun ammo, never a planet garage.
+    through the wake), and its stow is clamped to BOULDER CLASS (`orbitTier` 2) at every tier
+    (config.shipStats) — shotgun ammo, never a planet garage. (That clamp read "moon class /
+    `TIERS.caps[1]`" when tier 1's label was 'Moons' and its cap was 6,000; on the class ladder
+    6,000 is boulder weight, and holding the rack at `ceil[2]` = 6,200 is what keeps the brawler's
+    ammo mass where it has always been — the moon rungs would have tripled it.)
   - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
     (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
     `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render; its RANKS steady the
