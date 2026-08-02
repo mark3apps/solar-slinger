@@ -5,6 +5,7 @@ import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
+  rockShape, bigRockSurfAt,
 } from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
@@ -543,6 +544,18 @@ const ROCK_ARCHS = 24;   // silhouettes per size bucket. MUST stay a multiple of
 const ROCK_BUCKET_MAX = [3.5, 5.5, 8, 11];
 const ROCK_BUCKET_R = [2.6, 4.5, 6.7, 9.4];
 const archJags = [];   // [bucket * ROCK_ARCHS + arch] -> jag array
+// Vertex ceiling on the unique big-rock silhouette. It only binds past r ~ 87
+// (a shoal monolith at CFG.FIELD_MONOLITH_R_MUL), and it exists so a body that
+// somehow grows without bound can't take the path build with it — the shape
+// itself has no reason to stop getting finer.
+const BIG_ROCK_VERTS = 46;
+const ROCK_SIL_N = 128;   // silhouette samples for a shaped rock (see bigRockSil)
+// Screen size (world radius x zoom) below which the intricate surface skips
+// its fine layers — they are sub-pixel there and cost more than they show.
+// WHICH rocks get the pass at all is world.shapeBig's `b.bigShape`, never a
+// radius here: that one flag is what keeps the drawn shape, the collider and
+// the detail on the same set of bodies.
+const BIG_FINE_PX = 26;
 
 function rockBucket(r) {
   for (let i = 0; i < ROCK_BUCKET_MAX.length; i++) if (r <= ROCK_BUCKET_MAX[i]) return i;
@@ -572,7 +585,56 @@ function archJag(arch, bk) {
 // The vertex offsets are cached on the body and regenerated if the radius
 // changes (chip damage shrinks rocks), which is also what re-buckets a rock
 // that has shed its way down a size class.
+// THE BIG-ROCK SILHOUETTE — its broken shape ring with its impact craters cut
+// out of it, sampled from util.bigRockSurfAt, which is the SAME function
+// physics.surfRadius collides against. That is the CRUMBLE law reaching rock:
+// the notch you can see in a giant is the notch you can fly into.
+//
+// Cached like worldSil and invalidated on the same three things — vertex count,
+// newest scar, radius — because unlike every other rock this outline is not
+// static: it wears as the rock is hit. SIL_N samples is dense enough that a
+// slab's corner lands within a fraction of a unit of true at 300 units drawn,
+// and it is what lets one profile serve both the polygon and the craters
+// instead of tracking corners and bowls separately.
+function bigRockSil(b) {
+  const sh = (b._shape ||= rockShape(b.id));
+  const scars = b.scars;
+  const newest = scars && scars.length ? scars[scars.length - 1].t : -1;
+  let s = b._rsil;
+  if (!s || s.n !== (scars ? scars.length : 0) || s.t !== newest || s.r !== b.radius) {
+    s = b._rsil = { n: scars ? scars.length : 0, t: newest, r: b.radius,
+      rr: new Float32Array(ROCK_SIL_N) };
+    for (let i = 0; i < ROCK_SIL_N; i++) {
+      s.rr[i] = bigRockSurfAt(sh, scars, b.radius, (i / ROCK_SIL_N) * TAU);
+    }
+  }
+  return s;
+}
+
 function traceAsteroid(b) {
+  if (b.bigShape) {
+    const s = bigRockSil(b);
+    const step = TAU / ROCK_SIL_N;
+    const dc = Math.cos(step), ds = Math.sin(step);
+    let c = Math.cos(b.rot), sn = Math.sin(b.rot);
+    ctx.beginPath();
+    for (let i = 0; i < ROCK_SIL_N; i++) {
+      const rr = s.rr[i] * b.radius;
+      const px = b.x + c * rr, py = b.y + sn * rr;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      const nc = c * dc - sn * ds;
+      sn = sn * dc + c * ds;
+      c = nc;
+    }
+    ctx.closePath();
+    // The crack clip and the scar edge sampler index b.jag as `i/n * TAU`, so
+    // hand them the same samples rather than a second, separate shape.
+    if (!b.jag || b.jag.length !== ROCK_SIL_N || b.jagR !== b.radius) {
+      b.jag = Array.from(s.rr);
+      b.jagR = b.radius;
+    }
+    return;
+  }
   if (!b.jag || b.jagR !== b.radius) {
     let bk;
     if (b.carved) {
@@ -581,13 +643,40 @@ function traceAsteroid(b) {
     } else if ((bk = rockBucket(b.radius)) >= 0) {
       b.jag = archJag(b.id % ROCK_ARCHS, bk);
     } else {
-      // Big rock keeps a one-of-a-kind silhouette (see the header above)
+      // Big rock keeps a one-of-a-kind silhouette (see the header above) — and
+      // the biggest carry it at TWO SCALES.
+      //
+      // The old shape was n = 7 + min(9, r*0.45): a hard 16-vertex ceiling, one
+      // noise octave, every vertex an independent draw. That flatters a boulder
+      // and falls apart on a giant, and it falls apart completely on a monolith
+      // drawn at 90+ world units — a rock you fly right up to, rendered as a
+      // crude 16-gon whose facets are each longer than the ship.
+      //
+      // So: the vertex count keeps climbing with radius instead of clipping,
+      // and the profile is built as a COARSE ring of facets (nC control points,
+      // smoothstepped between) with a finer chip octave riding on top. Two
+      // scales is what makes a silhouette read as carved stone rather than as
+      // a noisy circle — the coarse pass is the shape you recognise a landmark
+      // by from across the pocket, the fine pass is the detail that survives
+      // flying up to it. One octave can only ever give you one or the other.
+      //
+      // b.jag stays the ONE table: the crack clip and the scar edge sampler
+      // both read it, so a shape that lived anywhere else would put cracks and
+      // bites off the drawn edge.
       const t = Math.min(1, Math.max(0, (b.radius - 3) / 27));
-      const n = 7 + Math.min(9, Math.round(b.radius * 0.45));
+      const n = Math.min(BIG_ROCK_VERTS, 7 + Math.round(b.radius * 0.45));
       const amp = 0.06 + 0.3 * t;
       const rng = mulberry32(b.id * 7919 + 13);
+      const nC = Math.max(7, Math.min(11, Math.round(n / 3.4)));
+      const coarse = [];
+      for (let i = 0; i < nC; i++) coarse.push(1 - amp + rng() * amp * 2);
       const pts = [];
-      for (let i = 0; i < n; i++) pts.push(1 - amp + rng() * amp * 2);
+      for (let i = 0; i < n; i++) {
+        const u = (i / n) * nC, k = Math.floor(u), fr = u - k;
+        const c0 = coarse[k % nC], c1 = coarse[(k + 1) % nC];
+        const sm = fr * fr * (3 - 2 * fr);   // smoothstep: facets, not spikes
+        pts.push((c0 + (c1 - c0) * sm) * (1 + (rng() - 0.5) * amp * 0.6));
+      }
       b.jag = pts;
     }
     b.jagR = b.radius;
@@ -803,6 +892,12 @@ function rockNeedsOverlay(b) {
 }
 
 function blitRock(game, b) {
+  // A shaped landmark is never bakeable: the atlas is a ring of 24 quantized
+  // silhouettes, and the whole contract of b.bigShape is that the drawn edge is
+  // the collided edge. It is also the flag physics keys off, so an atlas rock
+  // here would put the picture and the hitbox on different tables — checked
+  // BEFORE the bucket, since a chipped-down giant can fall inside one.
+  if (b.bigShape) return false;
   const bk = rockBucket(b.radius);
   if (bk < 0) return false;                  // big rock keeps its unique silhouette
   const need = b.radius * game.cam.zoom * dpr * SPRITE_HEAD;
@@ -847,6 +942,10 @@ function drawRock(game, b) {
   if (blitRock(game, b)) return true;
   traceAsteroid(b);
   ctx.fill();
+  // A LANDMARK gets the intricate surface instead of the pits. Gated on the
+  // same b.bigShape the collider uses, so "detailed" and "shaped" are one set
+  // of rocks and cannot drift apart. Same reuse of the just-filled path.
+  if (b.bigShape) { drawBigRockDetail(game, b); return true; }
   // Pits clipped to the silhouette. fill() does not consume the path, so the
   // polygon just filled is reused for the clip — the old code traced the same
   // 7-16 vertices a second time to get it.
@@ -871,6 +970,188 @@ function drawRock(game, b) {
   }
   ctx.restore();   // also puts fillStyle back to b.color for the passes below
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// THE LANDMARK SURFACE — what a b.bigShape rock wears instead of pits.
+//
+// Three flat dark dots are enough on a 10-unit boulder and nowhere near enough
+// on a shoal giant (15-25 units) or a monolith (~90). At that size the old
+// treatment read as a sticker: one flat colour, three circles, no light
+// direction, on a body drawn wider than the ship is long that the player flies
+// right up to and navigates a whole pocket by.
+//
+// Five layers, seeded off b.id and cached in the body's LOCAL frame so the
+// stone is the same stone every frame and every session (the same discipline
+// as worldSil and traceAsteroid — nothing here may be re-randomised per frame
+// or the rock would boil):
+//   1. BLOTCHES   broad tonal patches — the rock is not one colour
+//   2. CRATERS    a bowl with a LIT far wall and a shadowed near wall, both
+//                 keyed to the sun, so they read as depth instead of as paint
+//   3. SEAMS      fracture lines — the structure you read the shape by
+//   4. GRAIN      fine flecks; the texture that only exists close up
+//   5. LIGHT      a sunward brightening and an anti-sunward shade
+//
+// Layers 3 and 4 are gated on DRAWN size, not world size: zoomed out they are
+// sub-pixel and cost more than they show. Layer 5 is the one place a rock gets
+// a terminator at all — drawBody's shading pass skips asteroids on purpose,
+// because it is dead cost on a pebble, and that reasoning stops applying at
+// exactly the size where a flat disc starts looking like a hole in the sky.
+// It stays deliberately gentler than the world terminator (0.30 vs 0.5): a
+// rock is small enough that the far limb should still be legible.
+//
+// Cost: ~72 bodies in the whole world are this big (4 shoals x 18), and only
+// the ones near you are drawn at all.
+// ---------------------------------------------------------------------------
+function bigRockDetail(b) {
+  let d = b._bigDet;
+  if (d && d.r === b.radius) return d;
+  const r = b.radius;
+  const rng = mulberry32(b.id * 2654435761 + 77);
+  // Broad tonal variation, and it has to stay BROAD: the first cut ran these
+  // at 0.13 alpha across 0.64r, which on a 98-unit monolith is a 60-unit
+  // near-black disc — several of them stacking read as holes punched in the
+  // rock, not as the rock being unevenly coloured.
+  const blots = [];
+  for (let i = 0, n = 3 + Math.round(rng() * 3); i < n; i++) {
+    blots.push({ a: rng() * TAU, q: rng() * 0.62,
+      br: 0.30 + rng() * 0.34, dark: rng() < 0.58 });
+  }
+  // MANY SMALL craters, not a few big ones — a landmark reads as intricate
+  // because it is finely pocked, and a dozen 25-unit bowls at 0.24 alpha just
+  // compound into one dark mass wherever they overlap. Placement rejects on
+  // top of an existing bowl for the same reason (bounded tries; a near miss is
+  // fine and welcome, a stack is not).
+  const craters = [];
+  for (let i = 0, n = 8 + Math.min(34, Math.round(r * 0.22)); i < n; i++) {
+    let c = null;
+    for (let t = 0; t < 5; t++) {
+      // Size skewed hard to the small end and TONE varied per bowl. Uniform
+      // size at uniform alpha is what made the first cut read as polka dots on
+      // a 270-unit giant: real cratering is mostly small, occasionally huge,
+      // and never all the same depth.
+      const cand = { a: rng() * TAU, q: Math.sqrt(rng()) * 0.74,
+        cr: 0.016 + Math.pow(rng(), 2.6) * 0.165,
+        k: 0.55 + rng() * 0.75 };
+      const cx = Math.cos(cand.a) * cand.q, cy = Math.sin(cand.a) * cand.q;
+      let clash = false;
+      for (const o of craters) {
+        const ox = Math.cos(o.a) * o.q, oy = Math.sin(o.a) * o.q;
+        if (Math.hypot(ox - cx, oy - cy) < (o.cr + cand.cr) * 0.85) { clash = true; break; }
+      }
+      c = cand;
+      if (!clash) break;
+    }
+    craters.push(c);
+  }
+  // Seams are SHORT wandering fractures over the surface, not chords across
+  // it: a long near-straight line at this size reads as a scratch on the lens.
+  const seams = [];
+  for (let i = 0, n = Math.min(7, 3 + Math.round(r / 26)); i < n; i++) {
+    const a0 = rng() * TAU, q0 = Math.sqrt(rng()) * 0.7;
+    const steps = 4 + Math.round(rng() * 3);
+    const step = (0.26 + rng() * 0.34) / steps;
+    let px = Math.cos(a0) * q0, py = Math.sin(a0) * q0;
+    let dir = rng() * TAU;
+    const pts = [px, py];
+    for (let k = 0; k < steps; k++) {
+      dir += (rng() - 0.5) * 1.1;
+      px += Math.cos(dir) * step; py += Math.sin(dir) * step;
+      pts.push(px, py);
+    }
+    seams.push(pts);
+  }
+  const grain = [];
+  for (let i = 0, n = Math.min(70, Math.round(r * 0.8)); i < n; i++) {
+    grain.push({ a: rng() * TAU, q: Math.sqrt(rng()) * 0.88,
+      g: 0.012 + rng() * 0.020, lit: rng() < 0.45 });
+  }
+  d = b._bigDet = { r, blots, craters, seams, grain };
+  return d;
+}
+
+// The caller has just filled the silhouette and left the path on the context —
+// it is reused here for the clip, exactly as the pit pass does.
+function drawBigRockDetail(game, b) {
+  const d = bigRockDetail(b);
+  const r = b.radius;
+  const st = nearestStar(game, b.x, b.y);
+  const sunA = st ? Math.atan2(st.y - b.y, st.x - b.x) : -2.2;
+  const fine = r * game.cam.zoom > BIG_FINE_PX;   // drawn size, not world size
+
+  ctx.save();
+  ctx.clip();
+
+  // 1. BLOTCHES — broad, soft tonal variation across the face. Kept very low
+  // alpha: these are meant to be felt, not seen (see the note on the geometry).
+  for (const bl of d.blots) {
+    const a = bl.a + b.rot;
+    ctx.fillStyle = bl.dark ? 'rgba(0,0,0,0.055)' : 'rgba(255,246,232,0.040)';
+    ctx.beginPath();
+    ctx.arc(b.x + Math.cos(a) * bl.q * r, b.y + Math.sin(a) * bl.q * r,
+      bl.br * r, 0, TAU);
+    ctx.fill();
+  }
+
+  // 2. CRATERS — a bowl, then the far wall lit and the near wall shadowed.
+  // Light travels from sunA across the body, so inside a bowl it lands on the
+  // wall OPPOSITE the sun; that pairing is the whole reason these read as
+  // holes rather than as dark spots painted on.
+  for (const c of d.craters) {
+    const a = c.a + b.rot;
+    const cx = b.x + Math.cos(a) * c.q * r, cy = b.y + Math.sin(a) * c.q * r;
+    const cr = c.cr * r;
+    ctx.fillStyle = `rgba(0,0,0,${(0.13 * c.k).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, cr, 0, TAU); ctx.fill();
+    if (!fine) continue;
+    ctx.lineWidth = cr * 0.32;
+    ctx.strokeStyle = `rgba(255,244,226,${(0.16 * c.k).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, cr * 0.82, sunA + Math.PI - 1.0, sunA + Math.PI + 1.0);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(0,0,0,${(0.12 * c.k).toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, cr * 0.82, sunA - 1.0, sunA + 1.0);
+    ctx.stroke();
+  }
+
+  if (fine) {
+    // 3. SEAMS — solid strokes; dashes are reserved for helper/aiming UI, and
+    // in-world line widths are world units so they scale with the rock.
+    const cs = Math.cos(b.rot), sn = Math.sin(b.rot);
+    ctx.lineWidth = Math.max(0.4, r * 0.013);
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath();
+    for (const s of d.seams) {
+      for (let i = 0; i < s.length; i += 2) {
+        const x = b.x + (s[i] * cs - s[i + 1] * sn) * r;
+        const y = b.y + (s[i] * sn + s[i + 1] * cs) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+
+    // 4. GRAIN
+    for (const g of d.grain) {
+      const a = g.a + b.rot;
+      ctx.fillStyle = g.lit ? 'rgba(255,248,236,0.13)' : 'rgba(0,0,0,0.16)';
+      ctx.beginPath();
+      ctx.arc(b.x + Math.cos(a) * g.q * r, b.y + Math.sin(a) * g.q * r,
+        g.g * r, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  // 5. LIGHT — a sunward brightening and the shade opposite it. Two offset
+  // discs clipped to the silhouette, the same shape drawBody uses on worlds.
+  ctx.fillStyle = 'rgba(255,243,225,0.06)';
+  ctx.beginPath();
+  ctx.arc(b.x + Math.cos(sunA) * r * 0.52, b.y + Math.sin(sunA) * r * 0.52, r * 0.92, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(2,4,14,0.26)';
+  ctx.beginPath();
+  ctx.arc(b.x - Math.cos(sunA) * r * 0.72, b.y - Math.sin(sunA) * r * 0.72, r * 1.06, 0, TAU);
+  ctx.fill();
+
+  ctx.restore();   // also puts fillStyle back to b.color for the passes below
 }
 
 // CRYSTAL WORLDS are jagged, not round: the seeded shard polygon

@@ -619,25 +619,80 @@ export const CFG = {
   // you fly INTO and are surrounded by, with real open lanes inside it rather
   // than wall-to-wall gravel. Rock SIZE carries the density impression
   // instead (world.fieldMass skews big, few pebbles).
-  FIELD_ROCKS: 1900,       // rocks per field (~58u mean spacing — thick, trimmed from 2200)
+  // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
+  // against them (world.seedDenseFields fills the remainder with rubble, so the
+  // small-rock count is this minus however many the packer placed, ~74).
+  //
+  // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
+  // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
+  // the maze is carried by rock you can see and route around, and a dense haze
+  // of pebbles between the giants only obscured it. Density is a fifth of what
+  // it was, and the pocket reads as more open BECAUSE the structure in it is
+  // more legible, not less full.
+  FIELD_ROCKS: 740,
   // Pocket size is PHYSICAL, not angular — an angular width scales with the
   // orbit radius and turned the outer field into an 11,000u dilute arc.
   // The pocket is deliberately close to ROUND rather than a long lane-shaped
   // smear: the design goal is that flying in you get LOST in it, and a wide
   // arc you cross in one straight line never does that no matter how long it
-  // is. At 6200 x 4600 against a ~450u view radius, the far side is a dozen
-  // screens away in every direction. These are the EXTENTS of the outline,
-  // not a rectangle: the actual boundary is the lobed blob in fieldLobe()
-  // below, sampled by world.fieldPoint — a rectangular scatter at these
-  // numbers read as an obvious square of rocks.
-  FIELD_LEN: 2950,         // tangential half-length of the pocket (world units)
-  FIELD_SPREAD: 2200,      // radial half-thickness (world units)
+  // is. At 7700 x 5700 against a ~450u view radius, the far side is nearly
+  // twenty screens away in every direction. These are the EXTENTS of the
+  // outline, not a rectangle: the actual boundary is the lobed blob in
+  // fieldLobe() below, sampled by world.fieldPoint — a rectangular scatter at
+  // these numbers read as an obvious square of rocks.
+  //
+  // THE POCKET AND EVERYTHING IN IT SCALE TOGETHER. These extents were cut 15%
+  // on each axis, and FIELD_GIANT_R_MUL / FIELD_MONOLITH_R_MUL / FIELD_PACK_GAP
+  // / FIELD_RUBBLE_BAND were all cut by the same 0.85 with them. That is not
+  // tidiness, it is the only way to shrink a pocket without losing rocks: a
+  // 15%-per-axis cut is 28% less AREA, and these pockets already run ~71% rock
+  // coverage, so holding the rocks at their old size would have needed ~99%
+  // coverage — above the theoretical limit for packing circles at all. The
+  // packer would simply have failed the last ~25 draws per pocket and quietly
+  // thinned the maze. Scaled together, the count, the density, the passage
+  // widths and the traversability are all preserved exactly; the whole shoal is
+  // just 15% smaller.
+  // (Earlier this went the other way — grown 30% on each axis.) NOTE WHAT THE
+  // EXTENTS TOUCH: a pocket
+  // reaches FIELD_SPREAD x FIELD_LOBE_MAX either side of its lane, which is
+  // ~4,060 units now, and the fields sit only ~800-1,000 units clear of the
+  // neighbouring PLANET lanes (the Shoal at 10,400 spans two of them). That
+  // overlap already existed and is fine — field rock is gravity-free so it
+  // cannot perturb a lane, and a planet simply ploughs through — but it is why
+  // the stability suite across all four seeds is the check that matters when
+  // these numbers move, not worldgen.
+  // FIELD_GIANTS / FIELD_MONOLITHS were scaled with the AREA at the same time.
+  // Growing the pocket without growing the masonry spreads the huge rocks
+  // apart, the packing gaps stop being gaps, and the maze quietly dissolves
+  // into a scatter — the size and the structure are one knob in two halves.
+  FIELD_LEN: 3260,         // tangential half-length of the pocket (world units)
+  FIELD_SPREAD: 2431,      // radial half-thickness (world units)
   // A few GIANTS per pocket: landmark rocks big enough to navigate by and to
   // shatter into a cascade of smaller field rock (physics.shatter), which is
   // the chaos engine of the whole shoal. Gravity-free like everything else in
   // here — see the FIELD ROCK note below.
-  FIELD_GIANTS: 9,
+  // Raised 9 -> 200, and each one is scaled up by FIELD_GIANT_R_MUL: the giants
+  // are the MAZE ITSELF now, not decoration in it. They are packed across the
+  // pocket (world.packBigRock) and the passages are what they leave between
+  // them, so this count IS the maze's density — scaled with FIELD_LEN /
+  // FIELD_SPREAD, because spreading the same rocks over a bigger pocket turns
+  // the gaps into open space and there is nothing left to navigate.
+  // It is ALSO the budget for the shaped narrow phase: every one carries a real
+  // polygon collider (util.rockShape via world.shapeBig). ~350 in the world, of
+  // which only the awake ones are ever swept.
+  // The packer is best-effort — a full pocket rejects the last dozen draws, so
+  // the placed count runs a little under this.
+  FIELD_GIANTS: 200,
   FIELD_GIANT_MASS: [14000, 60000],   // the biggest are moon-scale monoliths
+  // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL
+  // below, and for the same reasons (grab class, damage ladder and payout all
+  // key off mass and none of them are what "bigger" is asking for).
+  // 12x puts a giant at 185-296 units — four to six ship-lengths of rock, and
+  // the size at which a rock stops being an obstacle you dodge and becomes a
+  // wall you route around. That is what makes the packing a maze: at the old
+  // 2.4x the gaps between neighbours were wider than the view and there was
+  // nothing to navigate.
+  FIELD_GIANT_R_MUL: 10.2,
   FIELD_GIANT_SHARDS: [5, 9],   // pieces a giant breaks into (big shards re-flag as giants — one more cascade level)
   // Both lurker ranges are sized OFF the pocket, not absolutely: the wake
   // must reach past the far end (FIELD_LEN) or you could sit deep inside the
@@ -647,13 +702,87 @@ export const CFG = {
   // POCKET FOOTPRINT itself, via fieldFrac() below: a circle wide enough to
   // cover the long axis overshot the short axis by 2x, and the baddies
   // visibly hunted open space outside their own rocks.)
-  // MONOLITHS: a couple of rocks per pocket (plus the named heart) at twice
-  // the drawn radius of the biggest regular giant (radius goes with cbrt of
-  // mass, so 2x the size = 8x the mass). Landmarks you steer by from across
-  // the shoal; still field rock — no gravity, and breakable only by a truly
-  // heavy blow (see FIELD_HP_CAP).
-  FIELD_MONOLITHS: 2,
+  // MONOLITHS: a couple of rocks per pocket (plus the named heart), the
+  // landmarks you steer by from across the shoal. Still field rock — no
+  // gravity, and breakable only by a truly heavy blow (see FIELD_HP_CAP).
+  FIELD_MONOLITHS: 5,
   FIELD_MONOLITH_MASS: [3e5, 4.8e5],
+  // ...and then DOUBLED AGAIN in drawn size. This is the world-scale law
+  // (PLANET_R_MUL / MOON_R_MUL) applied to the shoal: it grows the RADIUS
+  // only, and the mass is untouched. Going the other way — 8x the mass, since
+  // radius goes with cbrt — would have moved everything that keys off mass:
+  // it lifts a monolith past TIERS.ceil[5] (1.2e6), i.e. permanently
+  // ungrabbable even at the top tier, and it re-prices the impact damage a
+  // thrown one deals. Size is the thing being asked for here, so size is the
+  // only thing that moves. Consequences that are deliberate: the collision
+  // cross-section grows with the square (a bigger thing to thread past — that
+  // IS the landmark), and the density is nominally lower, which nothing in the
+  // sim reads. Applied in world.seedDenseFields to radius AND baseRadius, or
+  // the first chip would snap it back to its mass-derived size (physics
+  // eases radiusT off baseRadius * cbrt(mass / baseMass)).
+  // 8x puts a monolith at ~340-390 units, keeping it clearly the biggest thing
+  // in the pocket now that FIELD_GIANT_R_MUL has taken the giants to ~185-296.
+  // A monolith is most of a screen of solid rock: the thing you round and find
+  // the way blocked by.
+  FIELD_MONOLITH_R_MUL: 6.8,
+
+  // ------------------------------------------------------------------ MAZE --
+  // THE MAZE IS THE ROCKS. Not a corridor network carved out of the pocket and
+  // then filled around — that was the first attempt and it was wrong twice
+  // over: the lanes read as randomly generated cleared paths (because that is
+  // what they were), and the thing actually blocking you was gravel rather
+  // than anything you could see coming.
+  //
+  // Instead the huge rocks are PACKED across the pocket at roughly half its
+  // area, and the maze is the GAPS BETWEEN THEM. Everything follows from the
+  // packing gap:
+  //   - a passage is wherever two neighbours failed to touch
+  //   - a dead end is wherever three of them did
+  //   - passages open and close along their length because the gap is drawn
+  //     per pair, so a route widens, pinches, and sometimes stops
+  // Nothing is authored. The layout is a consequence of rock the player can
+  // see and fly around, which is the whole point.
+  //
+  // The gap band, in world units, drawn per neighbour pair. The low end is
+  // under a ship-length: those pairs read as touching and wall a route off.
+  // Tightened with the giant count: the packer saturates long before it runs
+  // out of rocks to place, so "more big rocks" is really "less room between
+  // them" — raising FIELD_GIANTS alone just raises the number it gives up on.
+  // This is the FLOOR on spacing, not a target — the greedy search in
+  // world.packBigRock is what actually aims at it. The two have to move
+  // together: with rejection sampling a tight floor did nothing (rocks still
+  // landed wherever they first fit), and with a greedy search a loose floor
+  // holds every rock at arm's length however hard it tries to snug up.
+  // At [4, 58] most neighbour pairs are within a ship-length of touching.
+  FIELD_PACK_GAP: [4, 58],
+  // PER-ROCK SIZE VARIATION on top of the class multiplier — every big rock
+  // draws its own factor in this band. Without it the giants all came out
+  // within a whisker of the same size (their masses span 14k-60k, but radius
+  // goes with cbrt, so that whole range is only a 1.6x spread) and a pocket of
+  // near-identical boulders reads as tiled rather than tumbled. The packer
+  // resolves each rock's final radius BEFORE placing it, so the small ones
+  // genuinely slot into gaps the big ones cannot.
+  FIELD_SIZE_VARY: [0.8, 1.3],
+  // Packing attempts per huge rock. A pocket this full rejects a lot of draws,
+  // and giving up early leaves a thin field rather than a maze — but the
+  // budget has to be bounded, because freshRun/mechTest regenerate the world
+  // constantly. world.seedDenseFields reports what it actually placed.
+  // Good enough to stop searching: a candidate sitting within this of its
+  // nearest neighbour is snug, so the packer takes it rather than spending the
+  // rest of its try budget looking for better. Without an early-out the greedy
+  // search costs every try on every rock, and worldgen runs constantly
+  // (freshRun / mechTest).
+  FIELD_PACK_SNUG: 12,
+  FIELD_PACK_TRIES: 110,
+  // RUBBLE. The small rock is not scattered across the pocket any more — it is
+  // drawn as a SKIRT around the huge rocks, so gravel banks up against the
+  // masonry and the passages stay flyable. A uniform scatter silts every gap
+  // up and the maze stops existing at exactly the scale the ship cares about.
+  // Fraction of small rock that is loose scatter instead of skirt: enough to
+  // keep the pocket from reading as rings around boulders, few enough that a
+  // passage stays a passage.
+  FIELD_RUBBLE_LOOSE: 0.22,
+  FIELD_RUBBLE_BAND: [7, 179],   // how far off a host's surface its skirt sits
   // Field-rock hp ceiling. Without it FIELD_HP_MUL made a monolith ~34,000 hp
   // — unbreakable, which contradicts the design ("bigger rocks break into
   // smaller pieces and keep the chaos going"). At 5200 a thrown moon-class
@@ -713,6 +842,38 @@ export const CFG = {
   // stay glorious.
   FIELD_CHAIN_MAX: 2,
   FIELD_HP_MUL: 6,         // field rock is MUCH tougher stuff than belt rock
+  // ...but NOT the landmarks. FIELD_HP_MUL is tuned for the gravel — "tough
+  // against its own kind", so a pocket doesn't grind itself to dust — and
+  // stacking it on a giant made one that shrugged off everything: measured, a
+  // 600-mass rock thrown at 700 took 15 hp off a 2,582-hp giant, i.e. 172 solid
+  // hits to break the thing the player is meant to be breaking. The gravel keeps
+  // its 6x; the masonry is meant to come apart.
+  FIELD_BIG_HP_MUL: 2.2,
+  // MASS DOMINANCE SOFTENING for a landmark rock, exactly the gas-giant idiom
+  // (GAS_DOM_EXP) and for the same reason. Damage carries `b.mass * domA` where
+  // domA = b.mass/(a.mass+b.mass), which is effectively QUADRATIC in the light
+  // body's mass — a rock a fiftieth of a giant's mass lands a fiftieth of the
+  // damage at a fiftieth of the weight. Dominance models a compact rigid body
+  // shrugging off a pebble; a 400-unit shoal giant is a rubble pile, and it is
+  // drawn huge precisely BECAUSE its mass was left alone (the radius-not-mass
+  // rule), so the player's expectation is set by a size the formula never sees.
+  // Raising the factor to a power < 1 pulls it back toward parity: at 0.45 a
+  // 600-mass rock does ~9.5x what it did, and a giant is ~9 hits rather than 172.
+  // AMBIENT contact is untouched — FIELD_TOUGH (0.08) still damps every
+  // field-vs-field impact that isn't a player throw, so a pocket does not start
+  // dismantling its own landmarks.
+  FIELD_BIG_DOM_EXP: 0.45,
+  // ...and a CEILING on what one impact may take, as a fraction of maxHp — the
+  // same idiom as LURKER_HIT_CAP and GAS_HIT_CAP, reached for the same reason.
+  // Impact damage is quadratic in closing speed and linear in mass across three
+  // orders of magnitude, so no hp value is tunable across the whole throw
+  // ladder: softening dominance enough that a 600-mass rock chips a giant in 7
+  // hits also let a thrown MOON one-shot the shoal's named heart (measured, 6
+  // hits -> 1). Bounding one blow decouples the two — the number of hits stops
+  // depending on how hard the player happens to be able to throw, so a pebble
+  // still chips and a moon still hits like a moon without ending a landmark in
+  // one blow. 0.34 => at least three solid hits, whatever you throw.
+  FIELD_BIG_HIT_CAP: 0.34,
   FIELD_BROOD: 7,          // lurkers per field per run — finite; a cleared field is QUIET
   FIELD_HUNTERS: 3,        // how many of that brood may hunt at once (ai.updateFields)
   // NOT frail any more. At 34 hp a lurker was a jump-scare that died to the
@@ -729,7 +890,23 @@ export const CFG = {
   LURKER_HIT_CAP: 0.34,    // => 3 hits minimum
   LURKER_RADIUS: 10,
   LURKER_DMG: 16,          // contact damage per slash pass (grabbers hit for 24)
-  LURKER_SPEED: 1.35,      // x ALIEN_SPEED — the fastest thing in the sky up close
+  // x ALIEN_SPEED. Still the quickest thing in the sky up close, but no longer
+  // by so much that it is simply everywhere at once: at 1.35 (446, charging at
+  // 624) a lurker crossed the gap between two rocks faster than the player
+  // could read which rock it was setting up, so the `line` swing-around — the
+  // whole tell the attack is built on — went by too fast to be a window. At
+  // 1.1 (363, charging at 508) it still outruns an early hull (maxSpeed 280)
+  // and the tell has time to land, while a late-game ship can genuinely
+  // outpace one, which is what the tier ladder is for.
+  // This is an ABSOLUTE speed budget, not a flow-relative one (ai.steer sets a
+  // desired world velocity), so it has to clear the pocket's orbital flow or a
+  // lurker could never catch its own rocks. Measured, that floor is low — 103
+  // at The Shoal down to 52 at The Farshoal — so there is plenty of room here;
+  // it is only worth remembering before anyone cuts this much further.
+  // Cutting the cap 18% moved the MEAN speed only 200 -> 180: a lurker spends
+  // most of its time manoeuvring under ai.steer's arrive damping rather than
+  // flat out. The 18% lands in full on the charge, which is the part you feel.
+  LURKER_SPEED: 1.1,
   // The lurker fights like a BRAWLER, not a grabber: it has no beam, it
   // BODY-CHECKS field rocks at you. Ambient rock contact can't hurt it (it
   // lives in the rocks — see the shove branch in physics.collideAlienBody);
@@ -739,11 +916,30 @@ export const CFG = {
   // (below) was doing all the work of making the shot connect. It sits above
   // ALIEN_THROW (430) on purpose — a body-check is the lurker's whole attack,
   // where a grabber's throw is one of several.
-  // 700 -> 1000 and the cadence tightened: a body-check now arrives faster than
-  // you can comfortably reposition, and a shoal under attack is a place with
-  // rock genuinely flying AT you rather than a place where rock exists.
+  // 700 -> 1000: a shoal under attack is a place with rock genuinely flying AT
+  // you rather than a place where rock exists. The SPEED of the shot is what
+  // makes it a threat and it is unchanged — what came down is how OFTEN one
+  // arrives (LURKER_SHOVE_CD, below).
   LURKER_SHOVE: 1000,      // speed imparted to a rock it charges through
-  LURKER_SHOVE_CD: 0.5,    // seconds before it can body-check again
+  // Seconds before it can body-check again — the cadence knob, and the reason
+  // it is this and not the states: `stalk` refuses to pick a new rock while
+  // this is running, so it governs the whole loop no matter which branch the
+  // lurker took to get back there.
+  // 0.5 -> 2.2. At 0.5 the cooldown expired inside the `slip` that follows a
+  // charge, so it was never the limiter at all — the brood re-armed the instant
+  // it finished breaking off, and each shove is a 1000-speed threat the player
+  // is supposed to answer individually rather than sit inside a stream of. The
+  // gap now outlasts the slip, so a lurker visibly circles before it lines up
+  // again.
+  // MEASURING THIS NEEDS CARE, and the trap cost real time: only 2-4 lurkers
+  // hunt at once and their AI rides Math.random, so a 60s probe sees
+  // single-digit events and is pure Poisson noise — the same build measured 13
+  // shoves, then 0, then 4, then 8. Fatten the brood for the event rate and
+  // ALTERNATE the two configs inside one session. Done that way, over 14
+  // lurker-minutes: 3.89 -> 2.42 shoves per lurker-minute (x0.62), the speed
+  // cut above contributing as much as the cooldown by stretching the `line`
+  // swing-around that precedes every shot.
+  LURKER_SHOVE_CD: 2.2,
   // It only sets up a body-check when it is genuinely CLOSE — a rock punted
   // from across the pocket is a random event the player never reads as aimed,
   // and it wastes the charge. Inside this range the shot is a real threat.
