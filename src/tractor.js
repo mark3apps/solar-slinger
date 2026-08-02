@@ -477,8 +477,21 @@ function springHeld(game, b, dt, slot) {
   if (!b) return;
   const s = game.ship;
   const st = game.st;
-  // A dead / too-far rock auto-drops from ITS slot.
-  if (!b.alive || !s.alive || Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius) {
+  // HEFT + SPOOL (beamGrip — the same numbers the THROW reads, so the hold and
+  // the throw can never disagree). The timer advances only while the rock is
+  // actually in the beam, and is reset at the grab: letting go and re-grabbing
+  // to dodge the ramp costs you the ramp again. Computed BEFORE the drop test,
+  // because whether the beam is fully closed decides whether a drop is even
+  // possible.
+  b.holdT = (b.holdT || 0) + dt;
+  const { heft, f, spool } = beamGrip(st, b);
+  // ONCE THE BEAM IS AT FULL POWER THE TETHER CANNOT BE BROKEN (user design
+  // law). A hold that has fully closed does not let go because you flew away —
+  // it goes TAUT (the rope below) and the ship and the rock fight over the
+  // momentum from there. Death still drops it; distance no longer can.
+  const atFull = f >= 1;
+  if (!b.alive || !s.alive ||
+      (!atFull && Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius)) {
     dropSlot(game, slot);
     return;
   }
@@ -486,12 +499,6 @@ function springHeld(game, b, dt, slot) {
   const relX = hp.x - b.x, relY = hp.y - b.y;
   const desVx = relX * 7 + s.vx, desVy = relY * 7 + s.vy;
   let ax = (desVx - b.vx) * 5, ay = (desVy - b.vy) * 5;
-  // HEFT + SPOOL (beamGrip — the same numbers the THROW reads, so the hold and
-  // the throw can never disagree). The timer advances only while the rock is
-  // actually in the beam, and is reset at the grab: letting go and re-grabbing
-  // to dodge the ramp costs you the ramp again.
-  b.holdT = (b.holdT || 0) + dt;
-  const { heft, f, spool } = beamGrip(st, b);
   // Authority falls off with the SQUARE of heft, so belt rock handles exactly
   // as it always did and only a load near the top of your class fights you.
   const heftMul = 1 / (1 + CFG.TRACTOR_HEFT * heft * heft);
@@ -534,6 +541,44 @@ function springHeld(game, b, dt, slot) {
   const sm = Math.hypot(sax, say);
   if (sm > tugCap) { sax *= tugCap / sm; say *= tugCap / sm; }
   s.vx += sax * dt; s.vy += say * dt;
+
+  // THE ROPE — what an unbreakable tether does instead of snapping.
+  //
+  // Past CFG.TETHER_MAX_MUL x the beam ring (the ring the player can already
+  // SEE, drawShipRings) the hold stops being a spring and becomes a CONSTRAINT:
+  // the separating velocity is cancelled and the overshoot is divided between
+  // the two by MASS. That is the "fight for momentum" — and against a moon the
+  // ship loses it, decisively, because the ship masses 10 and the moon 9,000.
+  // What the player then has is their ENGINES against the load's inertia: you
+  // tow a boulder slowly and you do not tow a world at all, you swing around it.
+  //
+  // It can only ever REMOVE separating motion, never add any, so it cannot
+  // become a slingshot and cannot inject energy into the sim. The positional
+  // correction is bounded by one substep of travel (~6 units at the ship's
+  // ceiling), so it can never teleport anything through anything.
+  //
+  // NOT a violation of the no-recoil law: that law is about the RELEASE — a
+  // throw must never shove the ship. Being dragged by something you are still
+  // holding is the opposite, and it is the point.
+  if (atFull) {
+    const maxL = st.range * CFG.TETHER_MAX_MUL + b.radius;
+    const dx = b.x - s.x, dy = b.y - s.y;
+    const d = Math.hypot(dx, dy);
+    if (d > maxL && d > 0) {
+      const nx = dx / d, ny = dy / d;
+      const ms = Math.max(1, s.mass), mb = Math.max(1, b.mass);
+      const over = d - maxL;
+      // Heavier body moves less: the ship takes mb/(ms+mb) of the correction.
+      s.x += nx * over * (mb / (ms + mb)); s.y += ny * over * (mb / (ms + mb));
+      b.x -= nx * over * (ms / (ms + mb)); b.y -= ny * over * (ms / (ms + mb));
+      const sep = (b.vx - s.vx) * nx + (b.vy - s.vy) * ny;
+      if (sep > 0) {                       // only while they are pulling APART
+        const j = sep / (1 / ms + 1 / mb);
+        s.vx += (j / ms) * nx; s.vy += (j / ms) * ny;
+        b.vx -= (j / mb) * nx; b.vy -= (j / mb) * ny;
+      }
+    }
+  }
 }
 
 // Auto-drop the rock in the given slot (it died or drifted out of range).

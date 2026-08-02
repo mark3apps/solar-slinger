@@ -536,6 +536,13 @@ export const CFG = {
   // merely knocked, and locking those out would block grabbing the scatter from
   // your own impact.
   THROW_LOCKOUT: 2,        // seconds
+  // ONCE THE BEAM IS AT FULL POWER THE TETHER CANNOT BE BROKEN, and instead of
+  // snapping at the old leash it goes TAUT at this multiple of the beam ring
+  // (`st.range` — the ring drawn around the ship, so the limit is something the
+  // player can already see). tractor.springHeld resolves it as a rope: cancel
+  // the separating velocity, split the overshoot by mass. Against a moon the
+  // ship is the one that moves.
+  TETHER_MAX_MUL: 1.3,
 
   // THE WINCH CREDITS THE WIND-UP BUT MUST NEVER FINISH IT (user design rule:
   // full power always takes longer than the winch). The winch seconds carry
@@ -1086,6 +1093,22 @@ export function canStow(st, b) {
 // changing the fraction moves ONLY the hitbox, never the drawn size.
 export const SHIP_HIT_FRAC = 0.66;
 export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
+
+// PER-TIER SHIP MASS. It was a flat 10 forever — which was harmless while
+// nothing read it, and stopped being harmless the moment the tether went taut
+// (CFG.TETHER_MAX_MUL): a rope resolves by MASS RATIO, so a constant-10 ship
+// meant a Titan wrestled a moon exactly as badly as a Scout did, and every
+// load in the game won every fight outright.
+//
+// DERIVED from the drawn footprint, not hand-felt: SHIP_RADIUS grows by a
+// uniform x1.62 per tier, and mass rides that at the power 2.5 (1.62^2.5 =
+// x3.34 a tier) — between area and volume, because a ship is hull and framing
+// rather than a solid lump. Over the run that is ~420x, so what you can wrestle
+// changes completely from end to end: a Scout is a gnat on anything it can
+// lift, a Titan can genuinely muscle the smaller worlds and still gets swung
+// around by a gas giant's core.
+// If SHIP_RADIUS is ever re-derived, re-derive this with it.
+export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
 
 // Per-tier camera zoom TARGET (the value cam zoom eases toward): a
 // geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
@@ -2024,6 +2047,10 @@ export function shipStats(prog) {
       + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
+    // What the ship WEIGHS, for anything that resolves by mass ratio — today
+    // the taut tether (tractor.springHeld). main.js copies it onto game.ship
+    // beside the radius, so `s.mass` stays the single authoritative read.
+    shipMass: SHIP_MASS[tier],
     zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };

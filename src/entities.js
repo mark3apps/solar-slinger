@@ -222,7 +222,7 @@ export class Ship {
     this.vx = 0; this.vy = 0;
     this.angle = 0;
     this.radius = 9;         // grows with progression (see shipStats)
-    this.mass = 10;
+    this.mass = 10;          // tier-0 seed; main.js keeps it at st.shipMass (CFG SHIP_MASS)
     this.hull = 67;
     this.shield = 33;        // recharging layer; absorbs damage before the hull
     this.shieldHitT = 0;

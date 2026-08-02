@@ -1185,6 +1185,7 @@ function update(dtReal) {
     const preRankHullMax = game.st.hullMax;
     game.st = shipStats(game.prog);
     game.ship.radius = game.st.radius;
+    game.ship.mass = game.st.shipMass;   // tier-scaled; the taut tether reads it
     if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe

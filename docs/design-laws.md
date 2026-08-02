@@ -51,6 +51,22 @@ code "works."
     mass and read linearly every planet under ~150,000 would pin to the floor.
     (History: 1.1 / 1.8 / 2.9 flat → doubled at the top end to 1.6 / 3.6 / 5.8 flat → spread into
     bands over the same 1.6–5.8 envelope.)
+  - **AT FULL POWER THE TETHER CANNOT BE BROKEN** (user design law). A hold that has fully closed
+    does not let go because you flew away — past `CFG.TETHER_MAX_MUL` (1.3) × the beam ring (the ring
+    `drawShipRings` already draws, so the limit is something the player can see) it goes **taut** and
+    `tractor.springHeld` resolves it as a rope: cancel the separating velocity, split the overshoot
+    by MASS. Only death drops it; distance no longer can. The rope only ever REMOVES separating
+    motion, so it cannot inject energy or become a slingshot, and the positional correction is
+    bounded by one substep of travel. **This is not the no-recoil law being broken** — that law is
+    about the RELEASE (a throw must never shove the ship); being dragged by something you are still
+    holding is the opposite, and it is the point.
+  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 4,200 across the ladder), because a rope
+    resolves by mass RATIO and a constant-10 ship meant a Titan wrestled a moon exactly as badly as
+    a Scout did. Derived from the drawn footprint — `SHIP_RADIUS` grows ×1.62 a tier and mass rides
+    it at the power 2.5 (between area and volume; a ship is hull and framing, not a solid lump).
+    Measured load:ship ratios — t0 scout vs a 1,200 rock **120:1**, t2 vs a 5,000 boulder **45:1**,
+    t4 vs a 9,000 moon **7:1**, t5 titan vs a 220,000 world **52:1**. Re-derive it if `SHIP_RADIUS`
+    ever moves.
   - **FULL POWER MUST ALWAYS LAND AFTER THE LATCH** (`CFG.WINDUP_AFTER_LATCH`, 1.2s). The winch
     seconds carry into `holdT` so the player is not billed twice — but carried in FULL they covered
     the entire wind-up ramp on the heavy rungs, so a moon or a world hit full power at the exact

@@ -78,7 +78,7 @@ const pools = SPECS.map((s) => {
 // own numbers went uncovered. The real names are range / capacity / fling.
 const statKeys = ['hullMax', 'shieldMax', 'shieldFrac', 'shieldArc', 'maxSpeed', 'thrust',
                   'range', 'capacity', 'force', 'fling', 'orbitCap', 'orbitTier',
-                  'maxOrbiters'];
+                  'maxOrbiters', 'shipMass'];
 const specStats = SPECS.map((s) => {
   const mk = (tier, maxed) => {
     const p = newProgress(); p.spec = s.id; p.tier = tier;

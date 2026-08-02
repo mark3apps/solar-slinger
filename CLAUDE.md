@@ -218,6 +218,9 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
   **Gas giants can never be picked up at all** (`LIFT_NEVER`) — strip one and carry its core.
 - **Full throw power is a COLOUR and a POP, never a progress bar** — the beam runs near-white while
   charged, plus a one-shot bloom on the crossing (`render.drawCharge`); only above `CHARGE_SHOW_HEFT`.
+- **At full power the tether can't be broken** — it goes taut at `TETHER_MAX_MUL` × the beam ring and
+  resolves as a rope (cancel separating velocity, split by mass). **Ship mass is per-tier**
+  (`SHIP_MASS` 10 → 4,200): that ratio is the whole fight, so it can't stay constant.
 - **Your own shot is the lowest-precedence grab target**: not a target *at all* for
   `CFG.THROW_LOCKOUT` (2s) after a beam launch, then merely demoted, and a loaded stow ring outranks
   it either way. Ladder: loose rock → orbit ring → your own shot.
