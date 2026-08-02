@@ -496,7 +496,18 @@ function updateGasVents(game, dt) {
   const reg = game.reg;
   if (!reg) return;
   for (const p of reg.planets) {
-    if (!p.alive || p.ptype !== 'gas' || !p.nearShip) continue;
+    // THE THROES OWN THE VENTING, same as they already own the damage
+    // (damageBody: "a gas giant already coming apart takes no more damage").
+    // updateGasStrip also decrements p.ventT, and both run every substep --
+    // and during the throes this loop does NOT skip the giant, because ptype
+    // is still 'gas' and p.alive is still true until completeGasStrip, while
+    // beginGasStrip's p.hp = 1 puts dmg01 at ~1, well past GAS_VENT. So the
+    // timer drained at 2x and the two loops alternated firing gasErupt with
+    // different scales and different reset intervals: roughly double the
+    // ejecta across the 5s collapse, all of it charged to the ONE shared
+    // debris budget (invariant 7), plus double the shake and sfxBoom. This
+    // loop is nearShip-gated, so it fired precisely when it was being watched.
+    if (!p.alive || p.ptype !== 'gas' || !p.nearShip || p.stripT > 0) continue;
     const dmg01 = 1 - p.hp / p.maxHp;
     if (dmg01 <= CFG.GAS_VENT) { p.ventT = 0; continue; }
     const v = (dmg01 - CFG.GAS_VENT) / (1 - CFG.GAS_VENT);
