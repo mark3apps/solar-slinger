@@ -3035,8 +3035,10 @@ function drawShipRings(game) {
   // Gravity Compass is an upgrade — no chevrons until it's unlocked
   const gx = game.compassX || 0, gy = game.compassY || 0;
   const mag = Math.hypot(gx, gy);
-  if (game.st.hasCompass && mag > 1.2) {
-    // log scale: ~1.2 (barely felt) -> ~200 (deep well) saturates
+  if (game.st.hasCompass && mag > game.st.compassFloor) {
+    // log scale: ~1.2 (barely felt) -> ~200 (deep well) saturates. The FLOOR
+    // above is the ranked one (1.2 down to 0.6) — a ranked compass keeps
+    // pointing at pulls an unranked one reads as nothing at all.
     const t = Math.min(1, Math.max(0, (Math.log10(mag) - 0.08) / 2.2));
     const ang = Math.atan2(gy, gx);
     const gap = 15 / z;

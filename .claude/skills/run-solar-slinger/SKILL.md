@@ -371,4 +371,5 @@ product, not a test surface — it gives you no programmatic handle.
 | `{"…":null}` from an `eval` that should return data | the value isn't JSON-serializable (a DOM node, a `Body` with cyclic refs). Project it first: `eval game.bodies.slice(0,3).map(b=>b.name)` |
 | Game runs SILENT with no error | Git LFS pointer files instead of music. `git lfs pull` |
 | `Address already in use` on serve.py | another checkout is on 8642 → `PORT=8743 python3 serve.py` |
+| A parallel sweep hangs (minutes instead of ~20s) | Observed once right after several back-to-back single runs. Check `pgrep -f "Solar system.*Electron"`, kill any strays, and retry — a single seed at 60s is the quick sanity probe (should be ~0.9s wall, ~67x realtime). Cause not pinned down; if it recurs reproducibly, that is worth a look |
 | Soak reports fewer moons than expected | check the seed first (`game.worldSeed`), then whether the losses are `swallowed by a gas giant` (a giant eating its own moons — a real content question, not a physics-invariant break) or `absorbed` (the Tantal sibling-slot eccentricity clamp in `world.js spawnMoon`, per `balance-test`) |

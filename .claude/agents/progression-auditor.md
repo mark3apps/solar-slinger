@@ -20,9 +20,14 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
 
 ## Ability catalog rules
 
-1. **Kit rule** — every spec's starting kit carries at least THREE abilities with `max > 1`. A max-1
-   unlock arrives already maxed and never ranks, so a thin kit opens the run with almost nothing
-   climbing. Flag a kit change that drops below three.
+1. **EVERY ABILITY IS SIX RANKS** (user design rule) — flag any new row with `max !== 6`. The catalog
+   used to run 1/3/4/6, which was three kinds of card wearing one name. One length means one promise,
+   and the price is paid in `shipStats`: a row that reached its ceiling in 3 ranks now takes 6, so its
+   per-rank step must be HALVED (4-rank rows ×2/3) with **the ceiling unchanged** — ranks got finer,
+   not stronger. Flag a six-rank row that raised its ceiling. Where a channel is shared by tracks of
+   different intended length, the fix is the row's **`chMul`** (a rank counts as less than 1 toward its
+   channel), never the channel coefficient, which would nerf the other spec. The old kit rule (three
+   rankable rows) is now satisfied by construction.
 2. **The spec choice is FREE** — it spends no XP, no level, no tier slot. Flag anything that charges
    for it.
 3. **A new ability is a catalog row + reading its channel in `shipStats`.** If a change needs a
@@ -51,10 +56,12 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
   a plain pick still increments `picksThisTier`, and a milestone tiers up anyway. Flag a change that
   can strand a spec whose pool is exhausted.
 - **Two laws over every ladder, both asserted by devtest T5c:** thresholds always RISE, and no two
-  abilities in a spec's STARTING KIT rank up together. `ABIL_XP_SPREAD` (0.23) + `ABIL_XP_WOBBLE`
-  (0.08) are a SEARCHED pair maximizing the tightest kit gap. **`ABIL_XP_WOBBLE` must stay under
-  ~0.108** or a later rank can cost less than an earlier one. Flag any edit to either constant that
-  wasn't re-searched against the real catalog, and require a `mechanics-test` run.
+  abilities in a spec's STARTING KIT rank up together. **Kit rows are SPACED EVENLY** across the
+  `ABIL_XP_SPREAD` band by their position in the kit (`config.ladderScale`), NOT hashed off the id —
+  so a kit's authored ORDER is its rank cadence and **reordering a kit re-times it**. Flag a kit
+  reorder that didn't re-check the gap. `ABIL_XP_WOBBLE` is 0.04 and **must stay under ~0.108** or a
+  later rank can cost less than an earlier one. Tightest kit gap is 47 XP; require a `mechanics-test`
+  run on any change here.
 - **`ABIL_XP_TOTAL` moves with the climb TOTAL, not the curve's shape.** If `XP_BASE`/`XP_STEP`/
   `XP_CURVE` change, `ABIL_XP_TOTAL` must move in ratio or abilities end the run mid-ladder. Flag one
   changed without the other.
@@ -84,7 +91,8 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
 - **Watch for freebies — this is the failure mode of the whole feature.** A predicate true on frame
   one is a bug; five have shipped and been caught. Concretely: count rows must sit ABOVE the biggest
   starting kit (5+, since BRAWLER and SCOUT kits are four); kit abilities need a RANK threshold, not
-  an unlock one; "maxed" must not count max-1 unlocks; timers must not start at a negative sentinel;
+  an unlock one; "maxed" must not count max-1 unlocks (history now that every row is six ranks, but
+  `achievements.js` keeps the guard); timers must not start at a negative sentinel;
   and a tier-up spends a pick, so "tier 2 with no picks taken" is unreachable.
   **Require the check: `window.freshRun(i)` + `window.tick(1)` for i = 0,1,2 — anything other than
   *Specialist* landing on frame one is a freebie.** Say so explicitly in your report.

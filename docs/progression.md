@@ -7,14 +7,27 @@
 - **Roguelite progression is SPECIALIZATION-based.** There is NO passive leveling. The run OPENS on a
   choice of one of three **specs** (`SPECS` in config.js — BRAWLER / HAULER / SCOUT; `main.openSpec`
   from `startGame`). `applySpec` locks `prog.spec` and grants that spec's **starting-kit**
-  abilities at rank 1. **Kit rule:** every kit carries at least THREE abilities with `max > 1` —
-  a max-1 unlock arrives already maxed and never ranks, so a thin kit opens the run with almost
-  nothing climbing (the ability bars are the minute-one feedback; the first card is minutes out).
+  abilities at rank 1. The old **kit rule** (at least three rankable rows, so the ability bars —
+  the minute-one feedback — actually climb while the first card is still minutes out) is satisfied
+  by construction now that EVERY ability is six ranks: a kit is three or four climbing bars.
   The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
   XP bar starts empty (a paid opener read as "it skipped my first upgrade").
 - **Named abilities, spec-scoped, one currency.** `ABILITIES` (config.js) is the whole catalog: each
   entry has an OWNER `spec`, `max` ranks, a `weight`, and a **`minTier` soft floor** (it can't be
-  OFFERED until you reach that tier — capstones sit at 3). An optional **`also: { specId: minTier }`**
+  OFFERED until you reach that tier — capstones sit at 3).
+  **EVERY ABILITY IS SIX RANKS** (user design rule). The catalog used to run 1/3/4/6, which was three
+  different kinds of card wearing one name: a max-1 row arrived already maxed (its bar was decoration),
+  and a 3-rank row finished half a run before a 6-rank one. One length means one promise. The price is
+  paid in `shipStats`, and paying it is mandatory: a row that reached its ceiling in 3 ranks now takes
+  6, so its **per-rank step was HALVED** (4-rank rows ×2/3) and every ceiling is unchanged — ranks got
+  finer, not stronger. Where a channel is shared by tracks that were different lengths, the fix is the
+  row's optional **`chMul`** (a rank counts as less than 1 toward its channel) rather than the channel
+  coefficient, which would nerf the other spec: HAULER's Reinforced Hull carries `chMul: 2/3` so its
+  deliberately-shorter hull track still sums to the 4 it always did against BRAWLER's 6. The five
+  former unlocks (Retro Jets, Gravity Compass, Impact Warning, Twin Grip, Slipstream) were the real
+  work — rank 1 does exactly what the unlock did, and ranks 2-6 deepen it (braking authority, a lower
+  compass sensing floor, forecast horizon, a steadier twin rig, warp distance/cooldown) — because a
+  rank that changes nothing is the failure mode this whole system exists to avoid. An optional **`also: { specId: minTier }`**
   map shares an ability with other specs at their own (usually higher) floors — the Scout sensor/QoL
   chain (Retro Jets, Gravity Compass at tier 1; Nav Plotter, Lead Computer, Impact Warning at tier 2)
   reaches BRAWLER/HAULER this way, and Afterburner reaches BRAWLER only at tier 4 (`tierFloorFor` is
@@ -57,12 +70,16 @@
     ratio with the pick curve or abilities end the run mid-ladder.
     **Two laws hold over that ladder, and devtest T5c asserts both:** thresholds always RISE, and no
     two abilities in a spec's STARTING KIT rank up together. Kit abilities are the only ones learned
-    at the same instant, so their pools stay equal forever and only the cost stagger separates them —
-    `ABIL_XP_SPREAD` (a per-ability ladder scale) + `ABIL_XP_WOBBLE` (a per-rank nudge), both hashed
-    off the ability id so the HUD bars stay steady and runs stay repeatable. The pair is SEARCHED
-    against the real catalog to maximize the tightest kit gap (49 XP at 0.23/0.08); a per-ability
-    scale alone cannot do it, because ladders of different LENGTH cross however they are scaled.
-    `ABIL_XP_WOBBLE` must stay under ~0.108 or a later rank can cost less than an earlier one.
+    at the same instant, so their pools stay equal forever and only the cost ladder separates them.
+    **Kit rows do NOT take their ladder scale from the id hash** (`config.ladderScale`): they are
+    SPACED EVENLY across the `ABIL_XP_SPREAD` band by their position in the kit, so a kit's authored
+    ORDER is its rank cadence (first listed ranks soonest) and reordering one re-times it. The hash
+    still scales every ability learned from a CARD — those pools are never equal anyway. Spacing
+    replaced searching when all six ranks landed: a kit now fires 15-20 rank-ups a run instead of
+    9-13, and searching the constants could not separate them (best tightest-gap anywhere on the
+    grid: 18 XP, against 52 before). `ABIL_XP_WOBBLE` (the per-rank nudge) was halved to 0.04 to stop
+    eating the spacing, and must stay under ~0.108 regardless or a later rank can cost less than an
+    earlier one. Tightest kit gap now 47 XP.
   - **PICKS ONLY EVER OFFER NEW ABILITIES.** Crossing `xpForPick(prog)` sets `game.choosingUpgrade`
     and PAUSES the sim (`frame()` gate) for a card; both kinds draw from `tierChoices(prog, 2)` —
     2 random abilities you do NOT own that clear their `minTier`. There is exactly ONE such pick
@@ -125,8 +142,12 @@
 - **`shipStats(prog)` = universal base + channels.** The base is tier-scaled and equals the old
   tier-0..5 baseline, so **the core grab / throw / fly loop works for every spec from frame one**;
   owned abilities add on top. All `st.*` field names are unchanged, so render/physics/tractor/hud
-  consumers never needed touching. `totalLevel` = `min(25, tier*2 + round(rankSum*0.6))` — keep it in
-  the 0–25 band, it still feeds enemy scaling (ai.js) and ship mass (physics.js).
+  consumers never needed touching. `totalLevel` = `min(25, tier*2 + round(rankSum*0.48))` — keep it in
+  the 0–25 band, it still feeds enemy scaling (ai.js) and ship mass (physics.js). The weight moved with
+  the six-rank pass (0.6 → 0.48) and had to: it is a POWER PROXY, power was deliberately held flat, but
+  the rank COUNT it reads inflated ~1.4× — at 0.6 a mid-run tier-2 scout read as level 23 instead of 16
+  and got tougher enemies and a heavier hull for a ship that had not changed. Re-fit it against the old
+  trajectory at matched XP if track lengths ever move again.
 - **Runtime abilities live outside config.** Most abilities are pure `shipStats` numbers, but each spec
   has real mechanics wired into the sim — keep the hook and the catalog row in sync:
   - BRAWLER — the ram is INNATE spec DNA: `st.ramMul`/`st.ramArmor` have a brawler-only base floor
@@ -134,8 +155,8 @@
     Winch) / Juggernaut / Berserker deepen it in `physics.collideShipBody` (Berserker also scales
     `tractor.flingSpeedFor`); Cluster Rounds / Shockwave / Demolition in `physics.brawlerThrowKill`,
     called ONLY from `shatter`'s `'player-throw'` branch. **The blast has TWO RADII and they are not
-    interchangeable:** `pushR` (`170 + 60 × shockwave`, 350 at max) keeps a long reach because the
-    shove is the spectacle and costs the world nothing, while `dmgR` (`90 + 38 × demolition`, 204 at
+    interchangeable:** `pushR` (`170 + 30 × shockwave`, 350 at max) keeps a long reach because the
+    shove is the spectacle and costs the world nothing, while `dmgR` (`90 + 19 × demolition`, 204 at
     max) is deliberately tight because *erasing* a body has to be earned. A rock caught between the
     two is thrown, not deleted — the more interesting outcome, since it becomes your next projectile.
     (History: one shared reach of `240 + 90/rank` = 510 at max, off EVERY throw-kill — a circle about
@@ -173,7 +194,10 @@
     tier (config.shipStats) — shotgun ammo, never a planet garage.
   - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
     (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
-    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render), Rockwall (orbit-held
+    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render; its RANKS steady the
+    rig rather than adding a third hand — `st.twinHold` springs the flanking rock harder and
+    `st.twinTug` shrinks the per-rock tug, which may only ever go DOWN, since the halved 75 exists to
+    keep the COMBINED tug under the 150 the no-recoil law allows), Rockwall (orbit-held
     rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`),
     Dead Stop (`st.deadStop`: catching an alien-thrown rock in `tryGrab` sets `b.primed` — a
     multiplier in `flingSpeedFor`, consumed in `releaseHeld`; `flingSpeedFor` takes the BODY as well
@@ -185,7 +209,9 @@
     AND the governor ceiling — reading Shift directly desyncs thrust from the tank. Dash Jets
     (`main.onDash`, cooldown `game.evadeT`) darts perpendicular to the NOSE (`angle ± π/2`). Reflex
     Jink is the auto-dodge closest-approach scan in `physics.step` (recharge `game.autoEvadeT`,
-    ticked in main.js); Slipstream (`main.onWarp`, `game.warpT`); Recon Drone (survey radius, world.js).
+    ticked in main.js); Slipstream (`main.onWarp`, `game.warpT`; distance/cooldown/i-frames come from
+    `st.warpDist`/`warpCool`/`warpInvuln`, never literals, so its ranks mean something); Recon Drone
+    (survey radius, world.js).
 - **Controls the abilities add:** hold **Shift** = Afterburner (spends the BURN tank), tap **A / D** =
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
@@ -225,7 +251,8 @@
     coast/spin/no-damage streaks are integrated inside the sweep off flags that already exist, so the
     hot path never grew a line for them.
   - **Watch for freebies — this is the failure mode of the whole feature.** A predicate true on frame
-    one is a bug, and five have been caught so far: counting max-1 unlocks as "maxed" handed SCOUT
+    one is a bug, and five have been caught so far (the first is history now that no ability is
+    max-1, but `achievements.js` keeps the guard that shut it): counting max-1 unlocks as "maxed" handed SCOUT
     *Maxed Out* immediately (Retro Jets is in its kit); `game.lastDamage` starting at `-99` handed
     every run 99 free seconds of "untouched"; an "own four abilities" row landed instantly because
     the BRAWLER and SCOUT kits ARE four (count rows must sit above the biggest kit — 5+); an

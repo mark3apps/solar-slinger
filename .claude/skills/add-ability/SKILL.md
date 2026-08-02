@@ -25,7 +25,7 @@ Full rationale: [docs/progression.md](../../../docs/progression.md). This skill 
 | `id` | unique; stays distinct even when two specs share a `name` |
 | `spec` | the OWNER spec — `brawler` / `hauler` / `scout` |
 | `channel` | the stat bucket. `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one channel |
-| `max` | rank count. **Prefer `max > 1`** — a max-1 unlock arrives already maxed and its bar never climbs |
+| `max` | **always 6.** Every ability is six ranks (user design rule) — see the six-rank law below |
 | `minTier` | soft floor: can't be OFFERED until this tier. Capstones sit at 3 |
 | `weight` | offer weight in `tierChoices` |
 | `also` | optional `{ specId: minTier }` — shares the row with other specs at their own, usually higher, floor. `tierFloorFor` is the one resolver |
@@ -50,8 +50,10 @@ read as "more of the same".
 Still in config.js. Sum the rank into the stat it feeds. All existing `st.*` field names must stay
 unchanged — render/physics/tractor/hud consume them by name.
 
-`totalLevel` = `min(25, tier*2 + round(rankSum*0.6))`; keep it in the 0–25 band, it feeds enemy scaling
-(ai.js) and ship mass (physics.js).
+`totalLevel` = `min(25, tier*2 + round(rankSum*0.48))`; keep it in the 0–25 band, it feeds enemy
+scaling (ai.js) and ship mass (physics.js). The 0.48 weight is a POWER PROXY and moved with the
+six-rank pass (from 0.6) because the rank COUNT it reads inflated ~1.4x while power was held flat —
+**re-fit it against the old trajectory at matched XP if track lengths ever move again.**
 
 **HAULER never gets a `shield`-channel ability.** Its protection is the orbit rock wall, by design.
 
@@ -72,16 +74,22 @@ player input, and gets a `data-fn`/`data-note` key cap in the CONTROLS schematic
 
 ## 4. If you touched a starting kit
 
-**Kit rule: every kit carries at least THREE abilities with `max > 1`.** The ability bars are the
-minute-one feedback and the first card is minutes out, so a thin kit opens the run with almost nothing
-climbing. Current kits are 4 / 3 / 4 abilities.
+**The old kit rule** (at least three rankable rows, so the bars actually climb while the first card is
+still minutes out) is **satisfied by construction now that every ability is six ranks** — a kit is
+three or four climbing bars. Current kits are 4 / 3 / 4 abilities.
 
 **Kit abilities are the only ones learned at the same instant**, so their pools stay equal forever and
-only the cost stagger separates them. If you change a kit, re-verify devtest T5c: thresholds always
-RISE, and **no two kit abilities rank up together**. The separating constants (`ABIL_XP_SPREAD` 0.23,
-`ABIL_XP_WOBBLE` 0.08) were SEARCHED against the real catalog to maximize the tightest kit gap (49 XP)
-— a per-ability scale alone cannot do it, because ladders of different LENGTH cross however they are
-scaled. **`ABIL_XP_WOBBLE` must stay under ~0.108** or a later rank can cost less than an earlier one.
+only the cost ladder separates them. If you change a kit, re-verify devtest T5c: thresholds always
+RISE, and **no two kit abilities rank up together**.
+
+**Kit rows do NOT take their ladder scale from the id hash** (`config.ladderScale`) — they are SPACED
+EVENLY across the `ABIL_XP_SPREAD` band by their **position in the kit**, so a kit's authored ORDER is
+its rank cadence (first listed ranks soonest) and **reordering a kit re-times it**. The hash still
+scales every ability learned from a card. Spacing replaced searching when all six ranks landed: a kit
+now fires 15–20 rank-ups a run instead of 9–13, and no value of the constants could separate them
+(best tightest-gap on the whole grid: 18 XP, against 52 before). Tightest kit gap is now 47 XP.
+**`ABIL_XP_WOBBLE` was halved to 0.04** to stop eating the spacing, and must stay under ~0.108
+regardless or a later rank can cost less than an earlier one.
 
 ## 5. Verify
 

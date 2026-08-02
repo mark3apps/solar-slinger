@@ -55,7 +55,7 @@ const kitGaps = SPECS.map((s) => {
     if (d < tightest) { tightest = d; pair = `${events[i - 1].id}r${events[i - 1].r}/${events[i].id}r${events[i].r}`; }
   }
   return { spec: s.id, kit: s.start.length,
-           rankable: s.start.filter((id) => abilityById(id).max > 1).length,   // KIT RULE: >= 3
+           rankable: s.start.filter((id) => abilityById(id).max > 1).length,   // every row is 6 ranks now
            tightestRankGapXp: tightest === Infinity ? null : tightest, at: pair };
 });
 
@@ -94,7 +94,9 @@ return {
              withNeeds: ABILITIES.filter((a) => a.needs).length,
              withAlso: ABILITIES.filter((a) => a.also).length,
              withXpMul: ABILITIES.filter((a) => a.xpMul).length,
-             max1: ABILITIES.filter((a) => a.max === 1).length },
+             max1: ABILITIES.filter((a) => a.max === 1).length,   // must be 0 — every ability is six ranks
+             notSix: ABILITIES.filter((a) => a.max !== 6).length,
+             withChMul: ABILITIES.filter((a) => a.chMul).length },
   xp: { perTier, climbTotal: perTier.reduce((s, v) => s + v, 0),
         abilXpTotal: PROG.ABIL_XP_TOTAL, perAchPoint: PROG.XP_PER_ACH_POINT,
         fieldMul: PROG.XP_FIELD_MUL, fieldBudget: PROG.FIELD_XP_BUDGET },

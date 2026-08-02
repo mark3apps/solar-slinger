@@ -175,7 +175,6 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
   is FIXED, so the seed varies placement, masses and features, never the structural counts: the
   balance baseline holds on any seed. Runtime spawns/spall/AI intentionally use `Math.random`.
   Procedural sprite geometry is seeded off `b.id` and cached.
-
 ### Canvas discipline
 
 - Pair every `translate`/`rotate`/`clip` with `save()`/`restore()`.

@@ -386,10 +386,10 @@ initInput(canvas, {
     if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
     const s = game.ship;
     const ang = s.angle + dir * Math.PI / 2;
-    const burst = 380 + 70 * game.st.evasion;
+    const burst = 380 + 35 * game.st.evasion;
     s.vx += Math.cos(ang) * burst; s.vy += Math.sin(ang) * burst;
-    s.invuln = Math.max(s.invuln, 0.25 + 0.08 * game.st.evasion);
-    game.evadeT = Math.max(0.45, 1.2 - 0.2 * game.st.evasion);
+    s.invuln = Math.max(s.invuln, 0.25 + 0.04 * game.st.evasion);
+    game.evadeT = Math.max(0.45, 1.2 - 0.1 * game.st.evasion);
     game.dashT = 0.22; game.dashDir = dir;   // render: side-jet flash
     bump(game, 'dashes');
     sfx.sfxEvade();
@@ -399,12 +399,13 @@ initInput(canvas, {
     if (menuBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
     const s = game.ship;
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-    s.x += Math.cos(ang) * 950; s.y += Math.sin(ang) * 950;
+    const dist = game.st.warpDist;
+    s.x += Math.cos(ang) * dist; s.y += Math.sin(ang) * dist;
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
-    s.invuln = Math.max(s.invuln, 0.5);
-    game.warpT = 3.5;
+    s.invuln = Math.max(s.invuln, game.st.warpInvuln);
+    game.warpT = game.st.warpCool;
     // Reclassify the field LOD at the exit point (dt 0 = no rail advance):
-    // a 950u jump can outrun the wake bubble's guaranteed margin, and the
+    // a ~1000u jump can outrun the wake bubble's guaranteed margin, and the
     // renderer skips dormant rocks outright — without this, a warp INTO a
     // shoal would show empty space for one frame.
     updateFieldLOD(game, 0);

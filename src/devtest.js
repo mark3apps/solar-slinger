@@ -198,8 +198,10 @@ export function runMechTest(game, hooks, opts = {}) {
     // T5c — DESIGN LAW: ability thresholds always RISE, and no two abilities
     // in a spec's starting kit rank up at the same moment. Kit abilities are
     // the only ones learned simultaneously, so their pools stay equal forever
-    // and only the cost stagger (ABIL_XP_SPREAD / _WOBBLE) keeps them apart.
-    // This is a pure catalog property — no sim needed.
+    // and only the cost ladder keeps them apart: kit rows are SPACED by their
+    // position in the kit (config.ladderScale) inside a band ABIL_XP_SPREAD
+    // wide, with ABIL_XP_WOBBLE nudging each rank. This is a pure catalog
+    // property — no sim needed.
     t('ability thresholds rise, and kits never rank in lockstep', () => {
       for (const a of ABILITIES) {
         let prev = 0;

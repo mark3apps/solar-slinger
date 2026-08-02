@@ -93,11 +93,11 @@ function flingSpeedFor(game, mass, body = null) {
   // ship's CURRENT hull fraction at release time, so it's a live risk/reward.
   if (st.berserk > 0 && game.ship.alive) {
     const hullFrac = clamp(game.ship.hull / Math.max(1, st.maxHull), 0, 1);
-    speed *= 1 + st.berserk * 0.3 * (1 - hullFrac);
+    speed *= 1 + st.berserk * 0.15 * (1 - hullFrac);
   }
   // DEAD STOP (hauler): a rock caught mid-alien-throw is primed — the
   // counterpunch flies far harder. Consumed on release (releaseHeld).
-  if (body && body.primed && st.deadStop > 0) speed *= 1 + 0.3 * st.deadStop;
+  if (body && body.primed && st.deadStop > 0) speed *= 1 + 0.15 * st.deadStop;
   game.tetherMul = 1;
   if (st.tier >= 2 && game.controls.f > 0 && game.ship.alive) {
     const sp = Math.hypot(game.ship.vx, game.ship.vy);
@@ -260,17 +260,21 @@ function springHeld(game, b, dt, slot) {
   const relX = hp.x - b.x, relY = hp.y - b.y;
   const desVx = relX * 7 + s.vx, desVy = relY * 7 + s.vy;
   let ax = (desVx - b.vx) * 5, ay = (desVy - b.vy) * 5;
-  const cap = st.force / b.mass;
+  // Twin Grip ranks spring the FLANKING rock harder (slot 1); the primary
+  // hold is untouched, so ranking the ability never changes single-rock feel.
+  const cap = st.force * (slot ? st.twinHold : 1) / b.mass;
   const am = Math.hypot(ax, ay);
   if (am > cap) { ax *= cap / am; ay *= cap / am; }
   b.extAx = ax; b.extAy = ay;
 
   // Equal-and-opposite tug on the ship (capped so it stays flyable). With Twin
   // Grip both rocks tug, so halve the per-rock cap — combined stays at the 150
-  // the design law allows.
+  // the design law allows. Twin Grip RANKS only ever shrink it further (down to
+  // 0.7x at rank 6): the rig gets steadier, and the combined tug can never
+  // climb back toward the cap the law sets.
   const fx = ax * b.mass, fy = ay * b.mass;
   let sax = -fx / 2500, say = -fy / 2500;
-  const tugCap = game.held2 ? 75 : 150;
+  const tugCap = game.held2 ? 75 * st.twinTug : 150;
   const sm = Math.hypot(sax, say);
   if (sm > tugCap) { sax *= tugCap / sm; say *= tugCap / sm; }
   s.vx += sax * dt; s.vy += say * dt;
@@ -352,7 +356,7 @@ export function updateTethers(game, dt) {
     // desired velocity, like the tractor hold) — it converges like a boomerang
     // and never accumulates speed, so a tether that never lands can't sandblast
     // the belt. Faster return with rank.
-    const returnSpd = 300 + 120 * b.tether;
+    const returnSpd = 300 + 60 * b.tether;
     const desVx = (dx / d) * returnSpd + s.vx, desVy = (dy / d) * returnSpd + s.vy;
     b.vx += (desVx - b.vx) * 3 * dt; b.vy += (desVy - b.vy) * 3 * dt;
     if (b.tetherT > 6) b.tether = 0;                        // give up eventually
@@ -405,8 +409,8 @@ export function flingAllFromOrbit(game, count = Infinity) {
     b.heldBy = null;
     b.orbitAng = undefined;
     b.extAx = 0; b.extAy = 0;
-    const speed = flingSpeedFor(game, b.mass);
-    const a = ang + (i - (n - 1) / 2) * 0.07;
+    const speed = flingSpeedFor(game, b.mass) * st.volleySpeed;
+    const a = ang + (i - (n - 1) / 2) * st.volleySpread;
     b.vx = s.vx + Math.cos(a) * speed;
     b.vy = s.vy + Math.sin(a) * speed;
     b.thrownBy = 'player';
@@ -539,7 +543,7 @@ export function updateOrbit(game, dt) {
     // constant — a shared angular speed makes outer slots move faster than
     // the approach cap and big rocks can never catch them. ROCKWALL (hauler)
     // spins the whole wall faster, so more of the sky is covered per second.
-    const w = CFG.ORBIT_OMEGA * (1 + 0.22 * (game.st.rockwall || 0)) * Math.min(1, 80 / Ri);
+    const w = CFG.ORBIT_OMEGA * (1 + 0.11 * (game.st.rockwall || 0)) * Math.min(1, 80 / Ri);
     b.orbitAng = (b.orbitAng ?? Math.atan2(b.y - s.y, b.x - s.x)) + w * dt;
     const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;

@@ -62,7 +62,7 @@ A predicate true on frame one is a bug. **Five have shipped and been caught:**
 
 | Freebie | Cause |
 |---|---|
-| SCOUT *Maxed Out* instantly | counted max-1 unlocks as "maxed" (Retro Jets is in its kit) |
+| SCOUT *Maxed Out* instantly | counted max-1 unlocks as "maxed" (Retro Jets is in its kit). History now that every ability is six ranks — but `achievements.js` keeps the guard |
 | every run got 99 free seconds "untouched" | `game.lastDamage` starts at `-99` |
 | "own four abilities" landed instantly | the BRAWLER and SCOUT kits ARE four — **count rows must sit at 5+** |
 | "unlock the Deflector" free for BRAWLER | it starts with it — **kit abilities need a RANK threshold, not an unlock one** |
