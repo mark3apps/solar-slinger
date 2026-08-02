@@ -6,6 +6,7 @@ import { spawnAsteroid, markFieldRock } from './world.js';
 import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
+  rockShape, bigRockSurfAt, rockNormalAt,
 } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as sfx from './sfx.js';
@@ -305,6 +306,20 @@ function calveCrust(game, host, ang, sev, credit) {
   // the same reason it is limited to a DIRECT throw (shard/Demolition damage
   // stays credit-neutral so those chains stay bounded).
   if (credit === 'player-throw') { f.thrownBy = 'player'; f.thrownTimer = 1.4; }
+  // A PIECE OF FIELD ROCK IS STILL FIELD ROCK. Without this the shoal launders
+  // itself into ordinary gravel one calve at a time — the piece would feel
+  // gravity, exert it once it got heavy enough, bounce dead instead of live,
+  // and pay belt XP rates. Same rule physics.shatter already follows for the
+  // shards it mints (world.markFieldRock is the one stamp).
+  if (host.fieldRock) markFieldRock(f, host.field);
+  // ...and unlike a world, a rock IS BILLED for what came off it. The world
+  // path deliberately is not: crust mass is derived from DRAWN size, and a
+  // planet calving four slabs would mint ~90,000 and visibly hollow itself out.
+  // A giant is the other way round — it is drawn huge but weighs little (the
+  // radius-not-mass rule), so a slab is a real fraction of it, and NOT billing
+  // would let a pocket gain mass every time the player hit something. The floor
+  // keeps a giant from being whittled to nothing before its hp runs out.
+  if (host.bigShape) host.mass = Math.max(host.baseMass * 0.3, host.mass - m);
   return f;
 }
 
@@ -1124,8 +1139,25 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     // break off. The CRATER still lands either way — that is a cheap array push
     // and it is the world's record of the wound, so a planet you left under
     // bombardment still shows the wear when you come back.
-    if (isWorldBody && bigEnough && body.nearShip) {
-      const n = Math.min(hard ? 1 + Math.round(sev * 3) : 1, debrisRoom(game));
+    // A LANDMARK ROCK COMES APART LIKE A WORLD. It used to take the loose-body
+    // spray below — chunks fired off at 80-450 that were a screen away before
+    // you could look at them, and only on a `hard` hit. Now that a giant is
+    // 200-390 units of drawn rock that wears real craters, the world path is
+    // the right one: pieces that POP out of the wound and STAY there, and a
+    // crater sized to the piece that left it. calveCrust marks them field rock
+    // and bills the host (see the notes at the end of it).
+    // A LANDMARK ROCK ONLY CALVES ON A REAL BLOW. A world calves on every
+    // wounding hit because there are ~21 of them; there are ~509 landmark
+    // rocks, and letting each shed on every chip turned a stirred pocket into a
+    // debris storm — measured, one stir of 99 flying rocks minted ~300 extra
+    // bodies and put 1.0ms on the substep, which persists because the pieces
+    // stay. Gated to `hard`, the feature survives (a real throw still takes a
+    // slab off) and the ambient grinding of a busy shoal stops paying for it.
+    const calves = isWorldBody || (body.bigShape && hard);
+    if (calves && bigEnough && body.nearShip) {
+      // ...and fewer pieces per blow than a world sheds, for the same reason.
+      const n = Math.min(hard ? (isWorldBody ? 1 + Math.round(sev * 3) : 1 + Math.round(sev)) : 1,
+        debrisRoom(game));
       for (let k = 0; k < n; k++) {
         // The first piece is the SLAB the hit took off, and it comes out of
         // the crater. The rest are crumbs knocked loose around it.
@@ -1143,7 +1175,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
       // cbrt(mass/baseMass)) and would have hollowed it out long before its hp
       // ran out. Erosion still happens, through the chip path below, which is
       // where it was always metered.
-    } else if (hard && !isWorldBody && debrisRoom(game) > 0) {
+    } else if (hard && !calves && debrisRoom(game) > 0) {
       const n = Math.min(2 + Math.round(sev * 4), debrisRoom(game));
       let shed = 0;
       for (let k = 0; k < n; k++) {
@@ -1472,6 +1504,21 @@ function surfRadius(body, ang) {
     const sh = (body.cjag ||= crystalShards(body.id));
     return body.radius * crystalRadiusAt(sh, ang - body.rot);
   }
+  // BIG ROCK collides as the slab / wedge / shard / cleft / lump it is DRAWN as
+  // (util.rockShape — render.traceAsteroid reads the identical table), WITH its
+  // impact craters taken out of it exactly like a moon or a planet. Landmark
+  // rock is visibly angular, and colliding it as a circle meant bouncing off
+  // nothing beside a wedge's point and clipping through a slab's corner; the
+  // crater half is the CRUMBLE law applied to rock, which used to stop at
+  // worlds ("Rocks are excluded from cratering in BOTH" — no longer true for
+  // the ones you get close enough to see).
+  // `bigShape` is stamped by world.js on the rocks that earn it; everything
+  // smaller stays the circle it was, which is what keeps the sweep affordable
+  // at ~7,600 field rocks.
+  if (body.bigShape) {
+    const sh = (body._shape ||= rockShape(body.id));
+    return body.radius * bigRockSurfAt(sh, body.scars, body.radius, ang - body.rot);
+  }
   // CRATERED WORLDS collide as the shape they are DRAWN as, for exactly the
   // reason crystal worlds do. Once impacts started cutting real notches out of
   // a world's outline, the collider was still the full circle behind them, so
@@ -1479,8 +1526,10 @@ function surfRadius(body, ang) {
   // wound was a hole in the picture only. util.scarSurfaceAt is the shared
   // profile (render.worldSil draws from the same call), and scars are stored
   // surface-local, so the bearing loses b.rot exactly as the crystal path does.
-  // Rocks are excluded — they collide as circles and draw as their own jag,
-  // and render.traceSurface makes the same exclusion.
+  // Plain rocks are still excluded — they collide as circles and draw as their
+  // own jag, and render.traceSurface makes the same exclusion. Big rock takes
+  // its craters through the bigShape branch above instead, where they compose
+  // with the shape ring.
   if (body.type !== 'asteroid' && body.scars.length) {
     return body.radius * scarSurfaceAt(body.scars, body.radius, ang - body.rot);
   }
@@ -1495,8 +1544,12 @@ function surfRadius(body, ang) {
 // no cost. Crystal worlds are NOT gated: their spikes reach OUTSIDE the radius,
 // so dropping to the disc would make the collider smaller than the body, and
 // the railed junk ring floating just past those spikes is tuned against them.
+// Big rock is NOT gated on nearShip, for the crystal reason: a slab's corners
+// reach past its nominal radius, so dropping to the disc off-view would make
+// the collider SMALLER than the body and rock would visibly interpenetrate the
+// moment it woke.
 function shaped(body) {
-  return body.ptype === 'crystal'
+  return body.ptype === 'crystal' || body.bigShape === true
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
@@ -1504,7 +1557,32 @@ function shaped(body) {
 // crystal spike takes collision damage and sheds again (the exact feedback
 // loop invariant 7 warns about).
 function surfReach(body) {
-  return body.ptype === 'crystal' ? body.radius * CRYSTAL_REACH : body.radius;
+  if (body.ptype === 'crystal') return body.radius * CRYSTAL_REACH;
+  if (body.bigShape) return body.radius * (body._shape ||= rockShape(body.id)).reach;
+  return body.radius;
+}
+
+// THE CONTACT NORMAL — the direction the resolver separates and bounces along.
+//
+// For a circle that is the centre-to-centre line, and every collider in this
+// file assumed it. On a big rock's long FLAT face it is not: radial and
+// perpendicular diverge by however far along the face the contact sits, so the
+// resolver pushed partly ALONG the face and the contact read as a slide down
+// the rock rather than a stop against it. Reported as "a weird slide when I hit
+// a long flat area", and it is the one place the radial shortcut visibly fails.
+//
+// Scoped to b.bigShape. Crystal worlds keep the radial normal on purpose:
+// their spikes ARE roughly radial, and that resolver is long-tuned against the
+// railed junk ring that floats just past them.
+// `ang` is the world bearing FROM the body TOWARD the other party; the returned
+// normal points the same way (outward from this body).
+const _nrm = { x: 0, y: 0 };
+function surfNormal(body, ang) {
+  if (!body.bigShape) { _nrm.x = Math.cos(ang); _nrm.y = Math.sin(ang); return _nrm; }
+  const sh = (body._shape ||= rockShape(body.id));
+  const na = rockNormalAt(sh, ang - body.rot) + body.rot;
+  _nrm.x = Math.cos(na); _nrm.y = Math.sin(na);
+  return _nrm;
 }
 
 function collideBodies(game, a, b) {
@@ -1555,7 +1633,19 @@ function collideBodies(game, a, b) {
     return;
   }
 
-  const nx = dx / d, ny = dy / d;
+  // Contact normal. Radial for everything round; the FACE normal when a big
+  // rock is involved (see surfNormal) — the flat-face slide. When both are big
+  // the heavier one owns the normal: it is the wall, the other is what hit it.
+  let nx = dx / d, ny = dy / d;
+  if (a.bigShape || b.bigShape) {
+    const wall = (a.bigShape && (!b.bigShape || a.mass >= b.mass)) ? a : b;
+    const towardOther = wall === a ? Math.atan2(dy, dx) : Math.atan2(-dy, -dx);
+    const n = surfNormal(wall, towardOther);
+    // Re-expressed as "from a toward b", which is the sense the impulse and
+    // the separation below are both written in.
+    const sgn = wall === a ? 1 : -1;
+    nx = n.x * sgn; ny = n.y * sgn;
+  }
   const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
   const closing = -(rvx * nx + rvy * ny);
 
@@ -1764,8 +1854,13 @@ function collideBodies(game, a, b) {
 
   // Positional separation (mass-weighted among movers)
   const total = (aMoves ? a.mass : 0) + (bMoves ? b.mass : 0) || 1;
-  if (aMoves) { const p = overlap * (bMoves ? b.mass / total : 1); a.x -= nx * p; a.y -= ny * p; }
-  if (bMoves) { const p = overlap * (aMoves ? a.mass / total : 1); b.x += nx * p; b.y += ny * p; }
+  // `overlap` is measured RADIALLY (rr - d). Separating along a face normal by
+  // that full amount over-pushes by 1/cos of the angle between them, so project
+  // it back onto the normal first — otherwise the fix for the slide trades it
+  // for a pop off flat faces.
+  const sep = overlap * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
+  if (aMoves) { const p = sep * (bMoves ? b.mass / total : 1); a.x -= nx * p; a.y -= ny * p; }
+  if (bMoves) { const p = sep * (aMoves ? a.mass / total : 1); b.x += nx * p; b.y += ny * p; }
 
   if (closing > 0) {
     // A real bounce knocks a body off its rails into live physics
@@ -1850,11 +1945,19 @@ function collideBodies(game, a, b) {
     // throws keep full lethality on top of their own threshold/multiplier.
     const domA = b.mass / (a.mass + b.mass);   // how dominant the OTHER body is
     const natural = thrown ? 1 : 0.55;
-    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domA;
-    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * (1 - domA);
+    // A LANDMARK ROCK IS A RUBBLE PILE, NOT A RIGID BLOCK — dominance softened
+    // on the way IN, the same idiom (and the same argument) as GAS_DOM_EXP.
+    // Applied only to the damage the big rock TAKES, never to what it deals:
+    // it is the target's toughness being re-priced, not the impact.
+    const domIn = (x, target) => (target.bigShape ? Math.pow(x, CFG.FIELD_BIG_DOM_EXP) : x);
+    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domIn(domA, a);
+    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * domIn(1 - domA, b);
     // Comparable-mass natural hits never one-shot: cap at 70% of remaining
     // hp so they crunch (and spall, below) instead of vanishing. Truly
     // lopsided impacts (8x+) keep their insta-crush — big IS stronger.
+    // No single blow ends a landmark rock — see CFG.FIELD_BIG_HIT_CAP.
+    if (a.bigShape) dmgToA = Math.min(dmgToA, a.maxHp * CFG.FIELD_BIG_HIT_CAP);
+    if (b.bigShape) dmgToB = Math.min(dmgToB, b.maxHp * CFG.FIELD_BIG_HIT_CAP);
     const ratio = Math.max(a.mass, b.mass) / Math.min(a.mass, b.mass);
     if (!thrown && ratio < 8) {
       dmgToA = Math.min(dmgToA, a.hp * 0.7);
@@ -2014,7 +2117,13 @@ function collideShipBody(game, s, b, dt) {
   if (b.thrownBy === 'player' && b.thrownTimer > 0) return; // your own throws pass through you
   if (b.parryFrozen) return;        // the parried rock is pinned at the hull — no re-collide
 
-  const nx = dx / d, ny = dy / d;
+  let nx = dx / d, ny = dy / d;
+  // Same face-normal fix as collideBodies — this is the path the player
+  // actually feels, and the one the slide was reported against.
+  if (b.bigShape) {
+    const n = surfNormal(b, Math.atan2(-dy, -dx));
+    nx = -n.x; ny = -n.y;   // rewritten as "from ship toward body"
+  }
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
   const closing = -(rvx * nx + rvy * ny);
 
@@ -2029,7 +2138,8 @@ function collideShipBody(game, s, b, dt) {
   // a teleport to a border that is not where the surface is. (The same bug sat
   // in the crystal path from the day shard colliders landed: the ship was
   // ejected to the mean disc rather than to the facet it actually touched.)
-  const overlap = rr - d;
+  // Projected onto the contact normal — see the note in collideBodies.
+  const overlap = (rr - d) * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
   s.x -= nx * overlap; s.y -= ny * overlap;
 
   // SURFACE SKIMMING: sliding along a surface in contact grinds the hull.
@@ -2562,7 +2672,13 @@ export function updateFieldLOD(game, dt) {
     // are near its limb rather than only near its core. Off-view a cratered
     // world simply collides as the circle it used to be — nothing can observe
     // the difference, and it costs a bearing solve per contact to maintain.
-    if (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue') {
+    // Big rock is on this list because it now does the same world-detail work:
+    // it calves crust when hit (damageBody). It was NOT, which made that gate
+    // permanently false on a rock and silently cost the whole feature — a giant
+    // recorded its crater and shed nothing, because `nearShip` is undefined on
+    // an asteroid and undefined is falsy. Its cratered COLLIDER is deliberately
+    // not gated on this (see `shaped`), only the calving is.
+    if (b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.bigShape) {
       b.nearShip = Math.hypot(b.x - cx, b.y - cy) - b.radius < wakeR;
     }
     let dormant;
@@ -2632,10 +2748,14 @@ export function step(game, dt) {
   for (const b of live) {
     if (!b.alive || b.dormant) continue;
     aliveCount++;
-    // Broad-phase radius: crystal planets' spikes reach past the disc, and
-    // the sweep must see the TALLEST feature or spike hits get pruned before
-    // the narrow phase ever runs. Everything else: _bp IS the radius.
-    b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH : b.radius;
+    // Broad-phase radius: crystal planets' spikes reach past the disc, and a
+    // big rock's corners do the same (a slab's diagonal is ~1.1r, a wedge's
+    // point further). The sweep must see the TALLEST feature or those hits get
+    // pruned before the narrow phase ever runs. Everything else: _bp IS the
+    // radius — one property read, no shape lookup, on the ~7,600 pebbles.
+    b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH
+      : b.bigShape ? b.radius * (b._shape ||= rockShape(b.id)).reach
+      : b.radius;
     if (!b.attractor) continue;
     // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
     // are never culled — the sun is the structural anchor of every orbit.
