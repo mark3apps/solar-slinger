@@ -71,8 +71,13 @@ html, body {
 /* The mood wash: a wide, soft edge glow in the chrome's current color, sitting
    BEHIND every instrument (z-index -1 — #hud is fixed, so it can't escape past
    the canvas) and well under the #fx alarm vignettes, which must always
-   out-shout it. Invisible at calm, where --moodI is 0. Now the ONLY mood
-   surface, so it carries a floor of its own once an alarm class is up. */
+   out-shout it. It is driven by MOOD INTENSITY ALONE and is invisible at calm,
+   where --moodI is 0 — there is no alarm floor here, deliberately. The alarm
+   classes below only retint it, so under threat it shows exactly as far as the
+   music director's danger blend pushes --moodI; what actually makes an alarm
+   legible is #fx::after's pulsing red/amber vignette, at full opacity. Don't
+   add a floor to make the wash fire on lowhull/heat: that paints a second red
+   layer under one that is already there, and the law is that #fx wins. */
 #hud::after {
   content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   opacity: calc(.42 * var(--moodI, 0));
