@@ -988,9 +988,20 @@ function seedDebrisBelts(bodies, planets, rng) {
     // frame one and the survivors ground moons out of the sky inside four
     // idle minutes.
     // Collect the lanes already spoken for, as forbidden intervals.
-    const blocked = [];
+    // GATHER THIS WORLD'S SATELLITES IN THE SAME PASS. The per-slot overlap
+    // test below needs the full list (down to the 5-unit ring pellets) while
+    // the lane search only wants the ones big enough to hold a lane — but both
+    // used to walk the whole `bodies` array, the slot test once per slot. This
+    // pass runs AFTER seedDenseFields, so the array already holds ~7,600 shoal
+    // rocks and every one of them is railed: the parent compare alone ran into
+    // millions of iterations per generateWorld. One walk, two lists. Same
+    // membership, so placement is unchanged. (generateWorld now also runs on a
+    // main-menu backout, which puts this cost behind a player-visible click.)
+    const blocked = [], sats = [];
     for (const b of bodies) {
-      if (!b.rail || b.rail.parent !== p || b.radius < 8) continue;   // specks can't hold a lane
+      if (!b.rail || b.rail.parent !== p) continue;
+      sats.push(b);
+      if (b.radius < 8) continue;   // specks can't hold a lane
       // A CIRCULAR RAIL AND AN ELLIPTICAL RAIL ARE DIFFERENT OBJECTS, and
       // moons ride ellipses: rail.r simply does not exist on one, so reading it
       // here yielded undefined, NaN'd the band, slipped through a `<=` guard
@@ -1054,8 +1065,7 @@ function seedDebrisBelts(bodies, planets, rng) {
       // rubble joins, and a piece born overlapping one is eaten by the
       // gentle-contact absorb rule before the world has finished loading.
       let clear = true;
-      for (const q of bodies) {
-        if (!q.rail || q.rail.parent !== p) continue;
+      for (const q of sats) {
         if (Math.hypot(q.x - x, q.y - y) < q.radius + cr + 14) { clear = false; break; }
       }
       if (!clear) continue;
@@ -1067,6 +1077,9 @@ function seedDebrisBelts(bodies, planets, rng) {
       // crust a wounded world calves into the same band (entities.chunkHaloW).
       // Mixed rates inside one shell means neighbours catch up and grind.
       c.rail.w = chunkHaloW(p);
+      // The piece just placed has to be visible to the remaining slots — the
+      // old test read `bodies`, which was growing under it as the belt filled.
+      sats.push(c);
     }
   }
 }
