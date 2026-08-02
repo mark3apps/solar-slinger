@@ -242,9 +242,10 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
   pink stay semantic).
 - **No hard edges in-world** — the world boundary and the Oort cloud are stochastic weather, never a
   stroke at an exact radius. In-world transitions are organic, never geometric.
-- **A rock is never a regular polygon** — gravel is elongation + lobes + chip (`util.rockJagRing`),
-  and a landmark's corners come off and its long faces break (`util.rockShape`). Every push is
-  capped against the LOCAL radius, or the ring reorders in bearing and the outline grows a sliver.
+- **A rock is never a perturbed primitive** — a base shape plus noise reads as the base shape, however
+  hard you rough it. `util.rockOutline` is the ONE generator for gravel and landmarks alike: lobes,
+  stretch, 1/f grain, half-plane facets, concave bites, composed as a radial function (so the outline
+  cannot self-intersect and there is no vertex sort to produce a sliver).
 - **THE CRUMBLE:** a world under fire comes apart and the pieces stay; the crater you *see* is the
   crater you can fly into (one profile feeds render, physics and both predict mirrors).
 - **AN ERUPTION THROWS BOULDERS, NOT DUST** — a hit gas giant must shoot stuff *out*, but as a few

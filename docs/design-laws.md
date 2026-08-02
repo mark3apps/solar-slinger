@@ -298,40 +298,48 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
-- **A ROCK IS NEVER A REGULAR POLYGON** (user design law: *"triangles, perfect rectangles — that's not
-  at all how that'd look"*). Both rock silhouettes were a base shape plus one noise octave, and one
-  octave is not enough to stop reading as the thing underneath it:
-  - **The gravel** (`util.rockJagRing`, shared by render's bucketed archetypes and by the unique ring
-    a big-but-unshaped rock builds off its id) was `n` independent samples at EVEN bearings with an
-    amplitude of 0.06-0.13 — i.e. an octagon or a decagon with a wobble, which is exactly what a
-    shoal of them looked like. It is now three terms: an **elongation** (a 2-lobe stretch — real rock
-    is rarely equant, and this is what stops a silhouette being a circle with events on it), 3-5
-    **lobes** smoothstepped between (the humps and hollows, and the only term that survives being
-    minified into a 6px sprite), and the per-vertex **chip** it always had, biased inward. Every
-    amplitude is a RANGE: a bucket whose rocks all wobble by the same amount is its own kind of
-    uniform. The ring's peak is normalised to `JAG_PEAK`, because the sprite atlas bakes it into a
-    cell `SPRITE_EXT` radii wide and a ring that reached past it would be clipped in the bake.
-  - **The landmarks** (`util.rockShape` — the slab/wedge/shard/cleft/lump a `bigShape` rock is drawn
-    AND collided as) kept their base polygon's CORNERS, and corners are the most geometric thing a
-    shape has: chip the faces all you like and four right angles still read as a drawn rectangle.
-    So, in order: any **face longer than `FACE_SPLIT`** is broken into sub-faces with a real kink
-    (one large deviation at a low slope — the only way to bend a face by something you can SEE),
-    every **corner is chamfered** into 2-3 points (a slab leaves as a 12-gon, a wedge as a 9-gon),
-    and the per-segment chip now rides on a **coarse facet walk** along each face. The kinds still
-    read as themselves: a slab is still a slab with long faces you route along, a shard keeps its
-    nose and its waist, a cleft keeps the notch it exists for.
-  - **The constraint all of it answers to is that the pushes stay STAR-SHAPED about the centre.**
-    Displacement bounded by the *edge* says nothing about how close to the origin that edge runs, and
-    near a thin part a push that is small against the face is enormous against the local radius: it
-    shoves the point past its neighbour IN BEARING, and since the ring is sorted by bearing the
-    outline comes back with a hairline SLIVER — a radius discontinuity the collider feels as a spike
-    the picture barely shows. Hence `DISP_CAP`/`CORNER_CAP` (displacement as a fraction of the local
-    radius) and `FACE_SPLIT_R` (no kink, no bow on a face that runs near the centre — a shard's waist
-    is nearly radial, and a kink there is a step in the profile, not a bend). Measured over 3,000
-    ids, adjacent-sample radius jumps land at or under where the shape family already sat.
-  - The **slide** rule the segment-relative chip exists for is not reopened: what causes it is normal
-    swing between ADJACENT segments, and a facet is a constant slope that adds none — it spends its
-    budget at the 1-3 breaks per face, which is a corner, which is a thing the shape already has.
+- **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
+  *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
+  been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
+  second verdict is the important one, because it is a verdict on the METHOD. Both silhouettes were
+  a base shape plus noise — gravel was a regular polygon with a wobble, a landmark was a rectangle,
+  a triangle or a splinter with roughened edges — and rounding a rectangle's corners leaves a
+  rounded rectangle. The primitive reads through whatever you do to it. So there is no primitive.
+  - **`util.rockOutline` is the ONE generator**, for the shoal's gravel, the belt's pebbles and the
+    landmark monoliths alike (`render.archJag` and `util.rockJagRing` are callers of it, not rivals
+    to it). A shoal should be one material; the old split — potatoes down at gravel size, blocks up
+    at landmark size — was visible the moment a giant sat among its own rubble.
+  - **Five terms, and each does something the others cannot.** LOBES: 2-5 overlapping discs offset
+    along a body axis, which is the shape and not decoration — where one lobe's reach overtakes
+    another's the profile creases, and that crease is the neck that makes a rock read as something
+    broken off something bigger. STRETCH: a 2-lobe elongation, because real rock is rarely equant.
+    GRAIN: six harmonics at 1/f amplitude — one octave is a wobble, a SPECTRUM is what reads as
+    stone at every distance, because the feature you notice changes with how close you are.
+    FACETS: 0-5 half-plane cuts, and a `min` against a line is a genuinely FLAT face with two real
+    corners, which noise cannot produce at any amplitude — this is what keeps a slab a slab and
+    stops the set drifting into potatoes. BITES: 0-4 concave scallops, craters in the silhouette,
+    the deepest concave features a real rock has. (An early version built the shape from half-planes
+    and NOTHING else and drew as a machined block, because convex. Flats are a good ingredient and
+    a terrible base.)
+  - **The kinds are parameter presets now, not five constructions** — and they still mean what the
+    pocket is navigated by: a SLAB has long flat faces you route along, a WEDGE tapers to a point, a
+    SHARD is a splinter with a narrow waist, a CLEFT's notch is deep enough to fly into, a LUMP is
+    the gnarled general case. The mix (`util.rockKind`) is unchanged.
+  - **It is a RADIAL FUNCTION about one origin, sampled at even bearings, and two things fall out of
+    that.** The outline cannot self-intersect however hard the terms are driven, and there is no
+    vertex sort — the previous build sorted by bearing, and a point pushed past its neighbour came
+    back as a hairline SLIVER, a radius discontinuity the collider felt as a spike the picture barely
+    showed. That failure mode is now unreachable rather than merely bounded: 0 of 3,000 ids carry an
+    adjacent-sample jump over 0.20r, against 58 before any of this. And the sampled profile IS the
+    table `physics.surfRadius` reads, with no resampling in between, so the drawn edge and the
+    collided edge are the same numbers — the CRUMBLE law, reaching rock.
+  - **Gravel is drawn SQUATTER than a landmark of the same kind** (`GRAVEL_SQUAT`/`GRAVEL_OFF`), and
+    that is a memory bill, not a fudge: the sprite cell must span the ring's longest axis, so the
+    atlas pays for the peak-to-mean ratio (`SPRITE_EXT` 1.63 and 6.2 MB of the 8 MB budget at full
+    strength, against 1.46 and 5.0 MB squatted) — and a 1.7:1 splinter drawn at 8 px is three pixels
+    wide. The extremes cost real memory exactly where they cannot be seen. Rings normalise to a mean
+    radius of 1, not a peak, so a body draws the size it collides at whether it came out knobbly or
+    smooth.
 - **Damage detail is sized against a FIXED reference radius, not the body** (`DETAIL_R` 260 in
   render's `drawBodyDamage`). Crack widths, crack lengths, the ember fissure glow and a crater's
   fracture rays were all authored as fractions of R when nothing drew bigger than ~250 units; at

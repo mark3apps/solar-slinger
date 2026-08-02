@@ -519,16 +519,17 @@ function drawOort(game) {
 // vector path draws — a silhouette that changed as you flew in would morph,
 // and the crack clip and the scar edge sampler both read b.jag, so there can
 // only be one shape per rock. What carries it is not small drawn size but the
-// per-body rotation, the exact per-body radius, and how shallow the jag is
-// (amplitude 0.06-0.13 of the radius): 24 archetypes read as "all different"
-// even on a boulder. Big rock — giants, monoliths, the bodies you steer a
-// shoal by — is EXEMPT (rockBucket returns -1 past the last bucket edge) and
-// keeps a unique silhouette, because those are few and you get close enough
-// to them to tell.
+// per-body rotation, the exact per-body radius, and the fact that no two
+// archetypes are the same rock: 24 of them read as "all different" even on a
+// boulder. Big rock — giants, monoliths, the bodies you steer a shoal by — is
+// EXEMPT (rockBucket returns -1 past the last bucket edge) and keeps a unique
+// silhouette, because those are few and you get close enough to them to tell.
 //
-// WHAT an archetype is — elongation, lobes, chip — is util.rockJagRing, shared
-// with the unique ring big rock builds below so a rock that chips across the
-// last bucket edge keeps its character as well as its size.
+// WHAT an archetype is — lobes, stretch, grain, facets, bites — is
+// util.rockOutline, the SAME generator and the same five kinds the landmark
+// rocks are built from. A shoal is one material: the old split (a wobbly
+// polygon down here, a shaped block up there) was visible the moment a giant
+// sat among its own gravel.
 //
 // The archetype IS b.jag, not a parallel table: traceAsteroid, the damage
 // crack clip and the scar edge sampler all read b.jag, so a shape that existed
@@ -538,13 +539,12 @@ const ROCK_ARCHS = 24;   // silhouettes per size bucket. MUST stay a multiple of
                          // 3: the crater COUNT is `2 + (id % 3)` and the bake
                          // keys it off `arch % 3` instead, so every rock keeps
                          // exactly the pit count it has today.
-// Upper radius edge / representative radius of each size bucket. The original
-// shape math (vertex count, lobe/chip amplitude) is a continuous function of
-// radius; it is evaluated once per bucket at the representative radius
-// instead. So a rock that CHIPS across an edge steps its silhouette instead of
-// easing it — the steps are small (each term moves by a few hundredths across
-// a whole bucket) and only land on a real damage event, which is already a
-// visible moment. That is the honest cost of bucketing, not a bug.
+// Upper radius edge / representative radius of each size bucket. The only
+// thing radius feeds is the outline's SAMPLE COUNT, evaluated once per bucket
+// at the representative radius instead of per rock. So a rock that CHIPS across
+// an edge steps to a different archetype rather than easing — and that only
+// lands on a real damage event, which is already a visible moment. That is the
+// honest cost of bucketing, not a bug.
 const ROCK_BUCKET_MAX = [3.5, 5.5, 8, 11];
 const ROCK_BUCKET_R = [2.6, 4.5, 6.7, 9.4];
 const archJags = [];   // [bucket * ROCK_ARCHS + arch] -> jag array
@@ -570,11 +570,10 @@ function archJag(arch, bk) {
   return j;
 }
 
-// Asteroids are jagged polygons, not discs — and the bigger the rock, the
-// craggier the silhouette (pebbles stay nearly round, boulders are gnarled).
-// The vertex offsets are cached on the body and regenerated if the radius
-// changes (chip damage shrinks rocks), which is also what re-buckets a rock
-// that has shed its way down a size class.
+// Asteroids are broken rock, not discs — see util.rockOutline for what that
+// means and why it is not a roughened polygon. The ring is cached on the body
+// and regenerated if the radius changes (chip damage shrinks rocks), which is
+// also what re-buckets a rock that has shed its way down a size class.
 // THE BIG-ROCK SILHOUETTE — its broken shape ring with its impact craters cut
 // out of it, sampled from util.bigRockSurfAt, which is the SAME function
 // physics.surfRadius collides against. That is the CRUMBLE law reaching rock:
@@ -635,11 +634,11 @@ function traceAsteroid(b) {
     } else {
       // Big rock keeps a one-of-a-kind silhouette (see the header above): past
       // the last bucket edge there is no atlas row to share, so it draws its
-      // own ring off its own id instead of an archetype. Same generator, same
-      // three terms — a rock that chips down across the edge changes which
-      // TABLE it reads, never what kind of shape it is.
+      // own ring off its own id instead of an archetype. Same generator — a
+      // rock that chips down across the edge changes which TABLE it reads,
+      // never what kind of shape it is.
       //
-      // The vertex count keeps climbing with radius (rockJagRing's own ceiling
+      // The sample count keeps climbing with radius (rockJagRing's own ceiling
       // is the only stop) because this is the path a monolith drawn at 90+
       // world units takes — a rock you fly right up to. The old hard 16-vertex
       // cap rendered one as a crude polygon whose facets were each longer than
@@ -710,11 +709,13 @@ const SPRITE_HEAD = 1.2;     // resolution headroom over the drawn size
 // a second live source for a difference that is invisible in a shoal — before
 // and after screenshots of the same 1845-rock frame are indistinguishable.
 const SPRITE_TIERS = [8, 16];
-// Cell half-width in body radii. util.JAG_PEAK is where the ring's outermost
-// point sits (it is normalised there, exactly), so this is that plus headroom
-// for the blit's own filtering — raise JAG_PEAK and this has to follow, or the
-// bake clips the corners off every rock.
-const SPRITE_EXT = JAG_PEAK + 0.10;
+// Cell half-width in body radii. util.JAG_PEAK is the ceiling on a gravel
+// ring's outermost point, so this is that plus headroom for the blit's own
+// filtering — raise JAG_PEAK and this has to follow, or the bake clips the
+// corners off every rock. The rings mean-normalise to 1 rather than
+// peak-normalise (a rock draws the size it collides at), so the gap between
+// mean and peak has to live in the cell.
+const SPRITE_EXT = JAG_PEAK + 0.08;
 // Rows are bucket x colour. Four buckets against the handful of small-rock
 // colours (belt grey, boulder rust, cored, ice, junk) already fills 16, and
 // the whole win rests on one sheet per tier — so this carries real headroom
