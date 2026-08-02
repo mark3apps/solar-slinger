@@ -34,9 +34,15 @@
       <span class="stattrack"><span class="statwell"><span id="burnFill"></span></span></span>
     </div>
   </div>
-  <div id="xpBar"><span id="xpFill"></span></div>
-  <div id="tierLabel" class="hidden">TIER 0 &middot; SCOUT</div>
+  <!-- The PILOT CARD. Top to bottom it reads as one object: the XP rail across
+       the card's top edge, the tier it measures, who you are, then the loadout
+       that rail is filling toward. -->
   <div id="bottomleft">
+    <div id="xpBar"><span id="xpFill"></span></div>
+    <div id="xpRow">
+      <span id="tierLabel">TIER 0 &middot; SCOUT</span>
+      <span id="xpNext"></span>
+    </div>
     <div id="progRow">
       <span id="specLabel" class="hidden"></span>
       <span id="scoreChip" class="hidden" title="Achievement score (V)"></span>
@@ -44,13 +50,20 @@
     </div>
     <div id="upList2"></div>
   </div>
+  <!-- Hovered-ability readout. Its own node OUTSIDE the card: growing the card
+       to hold it would shove the XP rail up the screen every time the cursor
+       crossed a row. hud.js fills and places it. -->
+  <div id="abilOut" class="hidden"></div>
   <div id="combo" class="hidden"></div>
   <!-- Achievement toasts stack here (hud.achToast pushes, each removes itself).
        Its own channel, deliberately clear of #msg: a score notification must
        never overwrite a hazard warning, or be overwritten by one. -->
   <div id="achRail"></div>
   <canvas id="radar" width="200" height="200"></canvas>
-  <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu">&#9776;</button>
+  <!-- Docked into the radar's bezel (see #menuBtn in style.css): the button's
+       box is the dial's, clipped to an arc, so the glyph needs its own node to
+       be placed on the band rather than in the box's dead centre. -->
+  <button id="menuBtn" class="hidden" title="Menu (Esc)" aria-label="Open menu"><span class="mbg">&#9776;</span></button>
   <div id="speedBadge" class="hidden"></div>
   <div id="perfBadge" class="hidden"></div>
   <div id="msg" class="hidden"></div>

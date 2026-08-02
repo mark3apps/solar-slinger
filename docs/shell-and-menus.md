@@ -24,7 +24,8 @@ re-arms it for a fresh run.
   a flag flips) — same owner-split as the upgrade modal. `hud.initMenus(handlers)` wires the buttons once.
 - **ESC / P** are one context-sensitive handler (`toggleMenu`): resume↔pause in-game, back out of whichever
   shell modal is up, never dismiss an upgrade card, no-op on the splash or over the death/game-over panels.
-  The on-screen **☰ button** (top-right, below the minimap) just calls `pauseGame`. Player input
+  The on-screen **☰ button** (a tab docked on the minimap's left rim — see design-laws) just calls
+  `pauseGame`. Player input
   (grab/fling/RMB) is gated behind `menuBlocking()` so nothing reaches the sim through a menu.
 - **The splash backdrop is a LIVE sim, not a still.** `driftSplash` (main.js) flies a slow wide
   establishing shot — the camera orbits the sun at `SPLASH_ZOOM` — while running the fixed-step

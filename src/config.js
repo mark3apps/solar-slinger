@@ -1498,7 +1498,11 @@ export const ABILITIES = [
   { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once. Ranks steady the rig — the second rock rides tighter and drags you around less.' },
 
   // 🔭 SCOUT
-  { id: 'tunedThrusters', spec: 'scout', name: 'Tuned Thrusters', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Faster thrust and a higher speed ceiling.' },
+  // ICONS ARE MONOCHROME LINE GLYPHS, never emoji. ⏩ (U+23E9) has emoji
+  // PRESENTATION by default, so the OS painted a filled blue rounded square in
+  // a list of hairline symbols — it read as a foreign object. The two engine
+  // rows escalate on purpose: two arrows tuned, three overtuned.
+  { id: 'tunedThrusters', spec: 'scout', name: 'Tuned Thrusters', icon: '⇉', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Faster thrust and a higher speed ceiling.' },
   // The sensor/QoL chain is SHARED (`also`): Scout-native at tier 0, offered to
   // the other specs later — the two flight-feel rows at tier 1, the sensor
   // tracks at tier 2 (below the tier-3 capstone band so they don't crowd it).
@@ -1507,7 +1511,7 @@ export const ABILITIES = [
   { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
   { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, needs: 'plotter', weight: 1.0, desc: 'Mark where your path will hit (needs the plotter). Ranks forecast farther ahead.' },
   { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
-  { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⏩', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
+  { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⇶', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
   { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
   { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 6, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
   // Afterburner is shared to BRAWLER only, and LATE (tier 4 — above even the
