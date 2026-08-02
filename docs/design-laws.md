@@ -492,7 +492,165 @@ code "works."
   radar's bezel (`#menuBtn`), not a square parked under the dial — its box is concentric with `#radar`
   and clip-path'd to an arc hugging the rim. The geometry is a hand-computed agreement between two
   files: `render.drawMinimap`'s centre and rim radius, and the polygon in `style.css`. **Move or resize
-  the radar and the tab's polygon has to be regenerated** — nothing derives it at runtime.
+  the radar and the tab's polygon has to be regenerated** — nothing derives it at runtime. The SYSTEM
+  CHART tab (`#mapBtn`) is the same construction one sector further round the same band: menu at
+  r 98→122 over 164°–196°, chart over 126°–158°, with a 6° gap between them; the glyph of each rides
+  its own sector's midline at r 110 (☰ at 30px/100px in that 240×240 box, ◎ at 53px/168px). Both
+  polygons are generated the same way and BOTH have to be regenerated together — the shared
+  properties live in a `#menuBtn, #mapBtn` rule so only the clip-paths and glyph offsets can drift.
+- **THE RADAR IS A SCAN; THE CHART IS A CHART, and that difference is why both exist.** The dial is
+  ship-centred, forgets the moment the sweep passes, and shows nothing past its rim — out in the
+  scan band a contact is a ping and an unswept bearing is empty. `starmap.js`'s **system chart** is
+  the other instrument: sun-centred, fixed, remembering, and the ONE place allowed to carry an old,
+  vague plot. It has four tiers and every draw decision hangs off `contactLevel`:
+
+  | state | test | mark |
+  |---|---|---|
+  | `charted` | `game.charted[b.chartKey]` | a clean lit disc in its own colour, named, with its orbit lane and its family |
+  | `unknown` | not charted | a soft colourless bloom, with an uncertainty ring. No name, class, size or lane — **and only for a WORLD** |
+  | `null` | `b.hidden` | **nothing, ever** |
+
+  **TWO STATES AND A FLOOR** (user call). There was a third tier between them — `seen`, "the fog scan
+  found it but you never went", drawn as a hollow ring — and it was one distinction too many: the
+  player only ever acts on *have I been there or not*, and a chart with three marks to learn is a
+  chart you read instead of glance at. **A charted mark carries NO OUTLINE**: it wore a white rim,
+  and on a world drawn at any real size that reads as a thick ring bolted round the planet rather
+  than as a light. The bloom already separates it from the bed; a stroke on top of a glow is one edge
+  too many.
+
+  `starmap.hasFix` (`b.seen || charted`) survives underneath, and is **not** a third state — it never
+  changes which mark is drawn, only how tight the bloom is and whether the error circle shows. It
+  exists because the ROUTE needs it: a stop pinned to an unexplored world tracks its *plotted*
+  position, and that guess can sit up to 3,400 units off the truth — further than the world's own
+  arrival radius — so a route flown to a pure guess would land you in empty space with the stop never
+  popping and the world never charting. The fog scan reaches 2,600 units, comfortably outside that
+  radius, so tying the collapse to `b.seen` means the fix always lands before you arrive.
+
+  **Names are earned.** Reading the nameplate is what charts a body (world.js's chart scan), so a
+  world the scan has merely swept is still `UNEXPLORED WORLD`. **`b.hidden` is absolute** — the
+  powered relay stays the only way to learn the Wanderer's Star exists, and a chart that leaked it
+  would gut the questline exactly as a minimap blip would. **The guess is deterministic**
+  (`ghostOff`, mulberry32's mixing step hashed off `b.id`): a plotted position that re-rolled every
+  frame would boil, and a boiling mark reads as a rendering bug rather than as uncertainty. Zooming
+  in does not sharpen it — the uncertainty ring simply gets wider, which is the honest reason why.
+
+  **The `unknown` state is deliberately NARROW** (`starmap.plottable`, user call): only **worlds** and
+  **shoals** are plotted before you have found them. Moons, installations, nests, comets and the
+  barge appear the moment the scan picks them up and not a second before — an unknown mark carries no
+  information beyond "something is roughly there", and 59 moons' worth of that is not a chart, it is
+  fog with dots in it. Worlds and shoals are what you set out toward; the rest is what you find when
+  you get there, which is the shape of the discovery layer itself. **A MOON IS ITS HOST'S**: nothing
+  hangs off a world you have not found, whatever the fog scan happened to catch on the way past — a
+  family of pips orbiting an unexplored bloom would claim you know the system's shape while still
+  refusing to name the world at the middle of it, which is the one thing the ladder must never do.
+  One predicate serves the draw AND the hit test, so the chart can never show a mark that cannot be
+  clicked or answer a click on a mark that was never drawn.
+
+  **Belt rock is not on the chart at all**: it plots PLACES, and a few hundred anonymous asteroid
+  marks would bury the ones that mean something. Dense fields ARE on it, as named regions,
+  **stippled and never outlined** — the no-hard-edges law read across from the dial's own dot layer,
+  since a boundary ring would claim an edge the pocket does not have.
+
+  **MOONS ARE ICONS — they carry no chart label** (user call). Moons have no individual names in this
+  game, so a zoomed-in family printed the same `MOON OF OSSIA` four times in a ring around a disc
+  already labelled `OSSIA`. Their host names them, and the readout strip names them on demand.
+  Labels belong to worlds and landmarks.
+
+  **PLAIN WORDS.** The unexplored tier said `UNCHARTED RETURN` — a "return" is radar jargon for an
+  echo, which is precise, wrong for a chart (a chart carries plots, not returns) and meaningless to
+  anyone who has not worked a radar. `UNEXPLORED WORLD` / `UNEXPLORED SHOAL`. That is the standard
+  for every string on this instrument: it is read by a pilot, not by an operator.
+- **THE CHART HAS AN LOD, AND IT IS ONE KNOB** (user call: too busy zoomed out). `zk` — 0 at the fit
+  scale, 1 by zoom 4 — carries the marks: **small contacts grow** from 1.3px pips into real marks
+  (drawn at a flat 2px with a wide halo, fifty-odd moons and installations made the inner system one
+  continuous smear at exactly the zoom whose job is to show the SHAPE of the system, not its
+  contents). Three details wait for a zoom
+  with room for them, each on its own threshold: an unexplored world's **uncertainty circle** (past
+  ~30px, else it is a second ring around every one of them); the **smaller landmarks' labels**
+  (`POI_LABEL_ZOOM` 2.5 — at the fit scale a RELAY STATION plate lands straight on top of the world
+  it orbits); and **moon lanes**, which have their OWN much later ramp (`MOON_LANE_ZOOM` 4, fading in
+  over the next 5 — user call). The moons say "this world has a household", worth knowing from a
+  distance; the lanes say "and here is each one's orbit", worth drawing only once they read as
+  separate rings rather than a smudge around the disc. Worlds label at every zoom; they are the
+  skeleton.
+- **THE CHART IS LIT, NOT DRAWN** (user call: "more stylized and glowy"). It is a neon instrument in
+  the same kit as the rest of the console, and almost all of that comes from additive passes: a
+  seeded star-dust field parallaxed behind the system (seeded ONCE at module load — re-rolled per
+  frame it is static hissing, re-rolled per open it quietly says the stars moved), the star's light
+  pooling through the inner system, panel-kit scanlines, a vignette, a bloom under every identified
+  contact, a glow along the route's legs, and a two-stage corona on the sun. Every `'lighter'` pass
+  resets to `'source-over'` — the canvas-discipline law, and on a full-screen instrument a leaked
+  composite mode is not subtle. The contact bloom is deliberately **TIGHT** (user call): small
+  radius, hot core, fast falloff. A wide soft halo on every mark is a fog bank, not a glow. A charted
+  world also gets an additive **hot core over its own colour** — a flat fill of a body's colour is
+  the one thing on this chart that reads as paint rather than as something switched on.
+- **A LANE IS BRIGHTEST WHERE THE BODY IS** (user call) and fades away around the ring. Drawn flat it
+  was a hoop of equal weight everywhere, which says "this whole circle is the subject" — the body is
+  the subject and the lane is context that should thin out behind it. One **conic gradient** centred
+  on the parent with its start angle pinned to the body's own bearing does it symmetrically for the
+  price of a single stroke, instead of forty short ones. `createConicGradient` is feature-checked
+  exactly as `drawMinimap` checks it (`src/` may never assume a capability); a flat stroke is the
+  honest fallback.
+- **FEW RANGE RINGS** (user call): ~2-3 across the view (`niceStep(spanW / 5)`), there to give the
+  eye a sense of scale, not to divide the system into bands. At one ring per 10% of the span the
+  chart read as a target and the system inside it stopped being the thing you were looking at.
+- **THE READOUT STRIP HAS A LIVE PORTRAIT** (user call), and it is the knowledge state on a third
+  channel — the one a player reads without learning a key first. A **charted** world turns under its
+  own banded weather with a fixed terminator, its ring, and its moons going round; an **unexplored**
+  one gets sensor static and the words NO IMAGERY. It runs on `chart.t`, the panel's OWN clock
+  (advanced by `chartEase`), because the sim behind a shell modal is frozen and `game.time` cannot
+  animate anything here; everything procedural is seeded off `b.id`, so a world's face is ITS face
+  every time you point at it rather than a fresh scribble. The strip's text is split three ways —
+  name, one sentence of prose, and a gold DATA line (range / orbit / household) — because a sentence
+  and a number are read differently, and running them together made the range something you had to
+  parse a paragraph to find.
+- **The legend is a KEY, not a paragraph** (user call): swatch and word, one short row. The sentence
+  that used to ride each line was read once and then sat in front of the chart forever. **RECENTRE is
+  an icon sharing a row with the scale bar** — both read the VIEW rather than the system — and it is
+  deliberately lighter chrome than the panel kit (a hairline and a glyph), because it is a control
+  sitting over the chart rather than a button in a menu. Its position and the canvas-drawn scale
+  bar's are a hand-matched pair, like the radar's bezel tabs: move one and move the other.
+- **THE JOURNEY RAIL DOES NOT EXIST UNTIL THERE IS A JOURNEY** (user call). An empty panel explaining
+  a feature is chrome you read past every time you open the chart; the header's hint line already
+  says how to start one. RECENTRE therefore lives in the HEADER, beside the zoom readout it undoes —
+  it is a view control and must not disappear with the rail, which only owns CLEAR.
+- **THE CHART HAS WEIGHT** (user call). Pan and zoom ease toward a TARGET rather than tracking the
+  pointer exactly (`starmap.chartEase`, on `dtReal` — the sim behind a shell modal is frozen, so
+  `game.time` is not a clock it could use). Three things follow from that and each is load-bearing:
+  the cursor-anchored zoom is computed in **target space** (correcting against a zoom that is itself
+  still easing chases its own tail, and the point under the cursor walks away as you spin the wheel);
+  zoom eases in **log space** (the eye reads the ratio, so a linear lerp crawls at 40× and snaps at
+  1×); and the release momentum is taken from **the drag's own lag** (`chartDragEnd`) rather than a
+  measured pointer velocity — the residual already IS how fast you were dragging, so it needs no
+  clock, timestamp or velocity history. RECENTRE glides home; OPENING is instant, because easing in
+  from wherever the last session was left is a fly-through from a place the player is not looking at.
+- **A JOURNEY IS AN ORDERED PATH PINNED TO MOVING BODIES.** Everything on this chart orbits, so a
+  waypoint is a body REFERENCE, never a pair of coordinates — a stop stored as a position is stale
+  before you have finished plotting the next one. Four rules that each guard a real failure:
+  **arrival pops the HEAD ONLY** (dropping every stop you happen to pass is forgiving right up until
+  a route doubles back and eats two you still wanted); **the arrival radius IS world.js's chart-scan
+  zone**, to the number, so a stop ticks over exactly as the place names itself (sized independently
+  first, it popped ~200 units before the nameplate faded up — the confirmation arrived before the
+  thing being confirmed); **a destroyed body leaves a flagged LOST CONTACT** at its last known
+  position rather than vanishing from the list; and **a drag is not a click** (3px slop), or panning
+  across a crowded inner system litters the route with stops nobody asked for. The route's own ink is
+  the CHROME family — a plan is a UI construct, not a thing that is out there, and painting one in an
+  instrument's colour would make a journey read as a warning.
+- **The chart is a SHELL MODAL, and full-bleed.** It freezes the sim like the other four, which is
+  what lets it be a chart at all rather than a live display: the positions you click are the
+  positions you saw. Because it covers the whole screen it also **hides `#hud` outright** — the other
+  shell panels are centred boxes with the cockpit showing around them (right: you are still in the
+  cockpit reading a screen), but a radar sitting on top of the chart is two instruments claiming the
+  same corner, one showing a slice of the very system the other is showing whole. Its own refusals
+  go to the chart's readout strip, never `hud.message`: `#msg` is deliberately hidden under a modal.
+  **CLOSE is an X in the top-right corner** (user call), not a BACK button in a tray — every other
+  shell panel puts its button at the bottom of the slab, which works because the slab has a bottom;
+  a full-bleed overlay has no edge to sit one against, so it takes the convention overlays have.
+  In-world, the next stop draws its **arrival ring** whenever that ring could CROSS the view — not
+  when its centre is on screen. Those radii are routinely wider than the viewport (a planet's is
+  ~1,200 units against a view about 760 across), so culling on the centre meant the ring only ever
+  appeared once you were already inside it, i.e. after the stop had popped: the whole thing was dead
+  code that nothing errored on.
 - **THE XP RAIL IS MOUNTED ON THE PILOT CARD, not floating and not inset in it.** It used to be a wide
   hex pill alone at the top centre of the canopy, disconnected from the ability list it fills toward.
   It now straddles the card's top edge as its own rim-lit slab with a shadow under it — flush-inset

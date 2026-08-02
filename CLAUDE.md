@@ -19,7 +19,8 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 | `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
-| splash / pause / settings / controls / credits / achievements panel | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
+| splash / pause / settings / controls / credits / achievements / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
+| `starmap.js`, the chart's knowledge ladder, journey waypoints | [docs/design-laws.md](docs/design-laws.md) |
 | `sfx.js`, `music.js`, adding a sound to an event | [docs/audio.md](docs/audio.md) |
 | `electron/`, `package.json` `build:`, release workflow, changelog | [docs/packaging.md](docs/packaging.md) |
 | verifying any change | [docs/testing.md](docs/testing.md) |
@@ -138,6 +139,7 @@ presentation loop.
 | [sfx.js](src/sfx.js) | Audio engine: the AudioContext + sfx/music buses. Every sound is a real CC0 recording — see [docs/audio.md](docs/audio.md). |
 | [music.js](src/music.js) | Adaptive music director: 24 CC-BY tracks in six playlists, exactly one playing at a time — see [docs/audio.md](docs/audio.md). |
 | [zone.js](src/zone.js) | Locale director: which of five places the ship is in, and the crossfaded accent colour the cockpit chrome takes there. Same bucket/hysteresis/dwell machine as music.js, but its presence scores are pure geometry over the frame registries. |
+| [starmap.js](src/starmap.js) | The SYSTEM CHART's model: the sun-centred projection, the knowledge ladder (charted / seen / unknown / sensor-null) that decides what each contact may say about itself, and the journey route. Draws nothing — `render.drawStarMap` paints it, hud.js carries the DOM chrome, main.js owns the `mapOpen` flag. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`, `shellModal`, `senseBlind`, `crystalShards`). |
 | [devtest.js](src/devtest.js) | The scripted mechanics suite (`window.mechTest`). Lazy-loaded — normal play never imports it. |
 
@@ -258,6 +260,31 @@ Plus the three scaling rules that make a big debris cascade affordable:
   `setLineDash([])`.
 - **The ship shield is a calm, steady rim glow** — no dashes, no idle motion; motion is for events
   only. **Shield down draws nothing at all.**
+- **THE RADAR IS A SCAN; THE CHART IS A CHART.** The dial is ship-centred, forgets what the sweep has
+  passed, and shows nothing past its rim. `starmap.js`'s system chart is sun-centred, remembers, and
+  is the one instrument allowed to plot a place the scan has never swept — as a GUESS: a soft bloom
+  at a deterministic offset (`ghostOff`, hashed off `b.id`, never re-rolled) inside an uncertainty
+  ring. **TWO states and a floor**: **charted** (a clean lit disc — named, with its lane and family,
+  and no outline) → **unexplored** (the bloom, and **only for worlds and shoals** —
+  `starmap.plottable`; a moon never shows around a world you haven't found) → **`b.hidden` shows
+  NOTHING, chart included** (the relay stays the only way to learn the Wanderer's Star exists).
+  **Moons are icons, never labels**; belt rock is not on the chart at all. `hasFix` is not a third
+  state — it only tightens the bloom and keeps the ROUTE honest, since a stop flown to a pure guess
+  would never pop.
+- **The chart is LIT, not drawn, and it has WEIGHT** — tight additive bloom over a hot core, seeded
+  star dust, scanlines, a vignette, and orbit lanes that fade away from the body (one conic gradient,
+  feature-checked); pan and zoom ease toward a target (`chartEase` on `dtReal`, zoom in log space,
+  momentum taken from the drag's own lag). Close is an X in the corner, the journey rail does not
+  exist until a journey does, the legend is swatch-and-word, and the readout carries a **live
+  portrait** on the chart's own clock — a charted world turns with its moons, an unexplored one shows
+  sensor static.
+- **One LOD knob (`zk`, 0 at the fit scale → 1 by zoom 4)** carries everything that would otherwise
+  clutter the wide view: moon lanes fade in, small contacts grow, POI labels and uncertainty circles
+  wait for a zoom with room for them. Worlds label at every zoom — they are the skeleton.
+- **A journey is an ORDERED path pinned to MOVING BODIES.** Everything on that chart orbits, so a
+  stop is a body reference, not a coordinate; arrival pops the HEAD ONLY, at world.js's own chart-scan
+  zone (so a stop ticks over exactly as the place names itself); a destroyed body leaves a flagged
+  "lost contact" at its last position rather than silently vanishing from the list.
 - **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
 - **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
   pink stay semantic). `zone.js` picks the accent from WHERE THE SHIP IS — deep space violet, world

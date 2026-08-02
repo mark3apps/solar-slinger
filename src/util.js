@@ -1,12 +1,19 @@
 export const TAU = Math.PI * 2;
 
-// Is a full-screen shell modal up? Settings / Controls / Credits / Achievements
-// are separate flags because each is its own panel, but every gate in the game
-// treats them identically — the sim freezes, player input is blocked, the music
-// ducks, the trajectory forecast hides. Kept here (a leaf) so main, hud, music
-// and render can all ask without importing each other.
+// Is a full-screen shell modal up? Settings, Controls, Credits, Achievements
+// and the system Chart each get their own flag because each is its own panel,
+// but every gate in the game treats them identically — the sim freezes, player
+// input is blocked, the music ducks, the trajectory forecast hides. Kept here
+// (a leaf) so main, hud, music and render can all ask without importing each
+// other.
+//
+// The CHART is in the set for a reason worth stating: it is a full-screen
+// instrument you read and plot on, and reading it under fire — while a wave
+// climbs at you and the sky keeps moving — would make it a thing you daren't
+// open. Freezing is also what lets it be a chart at all rather than a live
+// display: the positions you click are the positions you saw.
 export const shellModal = (g) =>
-  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen);
+  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen || g.mapOpen);
 
 // Can anything alien find the ship right now? Two unrelated causes, one
 // answer: the dust/shroud cloak (a LOCAL hiding place, computed with release
