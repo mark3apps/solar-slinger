@@ -321,6 +321,87 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+- **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
+  *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
+  been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
+  second verdict is the important one, because it is a verdict on the METHOD. Both silhouettes were
+  a base shape plus noise — gravel was a regular polygon with a wobble, a landmark was a rectangle,
+  a triangle or a splinter with roughened edges — and rounding a rectangle's corners leaves a
+  rounded rectangle. The primitive reads through whatever you do to it. So there is no primitive.
+  - **`util.rockOutline` is the ONE generator**, for the shoal's gravel, the belt's pebbles and the
+    landmark monoliths alike (`render.archJag` and `util.rockJagRing` are callers of it, not rivals
+    to it). A shoal should be one material; the old split — potatoes down at gravel size, blocks up
+    at landmark size — was visible the moment a giant sat among its own rubble.
+  - **Five terms, and each does something the others cannot.** LOBES: 2-5 overlapping discs offset
+    along a body axis, which is the shape and not decoration — where one lobe's reach overtakes
+    another's the profile creases, and that crease is the neck that makes a rock read as something
+    broken off something bigger. STRETCH: a 2-lobe elongation, because real rock is rarely equant.
+    GRAIN: six harmonics at 1/f amplitude — one octave is a wobble, a SPECTRUM is what reads as
+    stone at every distance, because the feature you notice changes with how close you are.
+    FACETS: 0-5 half-plane cuts, and a `min` against a line is a genuinely FLAT face with two real
+    corners, which noise cannot produce at any amplitude — this is what keeps a slab a slab and
+    stops the set drifting into potatoes. BITES: 0-4 concave scallops, craters in the silhouette,
+    the deepest concave features a real rock has. (An early version built the shape from half-planes
+    and NOTHING else and drew as a machined block, because convex. Flats are a good ingredient and
+    a terrible base.)
+  - **The kinds are parameter presets now, not five constructions** — and they still mean what the
+    pocket is navigated by: a SLAB has long flat faces you route along, a WEDGE tapers to a point, a
+    SHARD is a splinter with a narrow waist, a CLEFT's notch is deep enough to fly into, a LUMP is
+    the gnarled general case. The mix (`util.rockKind`) is unchanged.
+  - **It is a RADIAL FUNCTION about one origin, sampled at even bearings, and two things fall out of
+    that.** The outline cannot self-intersect however hard the terms are driven, and there is no
+    vertex sort — the previous build sorted by bearing, and a point pushed past its neighbour came
+    back as a hairline SLIVER, a radius discontinuity the collider felt as a spike the picture barely
+    showed. That failure mode is now unreachable rather than merely bounded: 0 of 3,000 ids carry an
+    adjacent-sample jump over 0.20r, against 58 before any of this. And the sampled profile IS the
+    table `physics.surfRadius` reads, with no resampling in between, so the drawn edge and the
+    collided edge are the same numbers — the CRUMBLE law, reaching rock.
+  - **AND IT IS NEVER CONVEX** (user design law: *"I want there to be more extreme concave shapes as
+    well in there"*). Two mechanisms, because "some rocks are dramatically hollowed" and "no rock is
+    a shape" are different requirements:
+    - **The GOUGE** — one dominant concave feature, on `gougeP` of rocks (always, for a CLEFT).
+      **Width is the half that matters and the half that is easy to get wrong**: a narrow notch
+      removes almost no AREA however deep it goes, so it reads as a crack rather than as a rock with
+      a piece missing. It takes the 0.7 power of the raised cosine — flatter floor, steeper walls,
+      because the walls are what read as a notch — and never `sqrt`, whose infinite slope at the rim
+      puts a vertical wall between two adjacent samples for the collider to catch on. `gougeTwin`
+      adds its opposite number, and cutting from both sides is what makes a WAIST rather than a bay:
+      a dumbbell held together at the middle, which is a real asteroid (Kleopatra, Itokawa) and, at
+      monolith scale, a place to fly through. Measured over 3,000 ids the deepest dent runs p10 0.14
+      / p50 0.35 / p90 0.72 of the chord across it — a spread from merely irregular to hollowed, not
+      a set that is uniformly chewed.
+    - **The CONVEXITY GUARD** — facets are a `min` against a line, so enough of them landing well
+      spread out IS a convex polygon: the machined-block failure arriving by the back door, and it
+      shipped a clean triangle. So `chordDeficit` measures the deepest dent the outline actually has
+      and cuts a modest gouge if there isn't one. Three details are each a bug that was in it:
+      it measures at **three window widths** (one window only sees dents its own size, so a chord
+      drawn across a narrow window sits inside a wide bay and calls it flat); it runs **after the
+      floor**, because a notch that bottoms out ON the floor is shallower than the cut that made it;
+      and its depth is a fraction of the **local** surface, since an absolute cut landing on a tall
+      lobe barely dents it. With all three, 0% of ids come out under the threshold — against 48%
+      measuring near-convex before the guard existed. Its own cut is deliberately MODEST: the drama
+      is supposed to come from `gougeP`, or the kinds that come out convex most often (slab, wedge)
+      would end up the most chewed.
+    - **Gravel's concave features are pulled back** (`GRAVEL_GOUGE_*`) for the same reason it is
+      squatted: a gouge is sized against the body, so on an 18-sample ring drawn at 6 px it is most
+      of the rock, and the deep ones came out as little hearts and bowties — a silhouette, which is
+      the complaint again from the other end. The guard still applies at both scales; it is the
+      DRAMA that scales, not the rule.
+    - **The honest limit of the representation**: a rock may be notched, waisted, hollowed or cut
+      most of the way through, but never HOOKED. An overhang would put two surfaces on one bearing,
+      and the collider's whole narrow phase is a single radial query. `OUTLINE_FLOOR` is how close to
+      the middle a surface may come (0.19 of the mean radius).
+  - **Gravel is drawn SQUATTER than a landmark of the same kind** (`GRAVEL_SQUAT`/`GRAVEL_OFF`), and
+    that is a memory bill, not a fudge: the sprite cell must span the ring's longest axis, so the
+    atlas pays for the peak-to-mean ratio in BOTH memory and fill: `SPRITE_EXT` is sized from
+    `JAG_PEAK`, so every blit in a shoal rasterises that margin whether the rock fills it or not.
+    **This is a measured, accepted cost** — 1.43 against the 1.25 a near-circular ring needed is 31%
+    more quad area, and it shows up as roughly +6% on the dense-field frame and +8% on debris-heavy.
+    It was not worth buying back: pulling `JAG_PEAK` to 1.30 drops the gravel's mean radius to 0.91
+    of the body radius it COLLIDES at, and a rock drawing 9% small is a worse bug than a wider quad.
+    Squatting harder does not help either — the peak's tail comes from the grain, not the
+    elongation. Rings normalise to a mean radius of 1, not a peak, so a body draws the size it
+    collides at whether it came out knobbly or smooth.
 - **Damage detail is sized against a FIXED reference radius, not the body** (`DETAIL_R` 260 in
   render's `drawBodyDamage`). Crack widths, crack lengths, the ember fissure glow and a crater's
   fracture rays were all authored as fractions of R when nothing drew bigger than ~250 units; at

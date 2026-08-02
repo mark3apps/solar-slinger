@@ -1227,9 +1227,22 @@ const FIELD_DEFS = [
 // pocket's nearest-neighbour spacing where it was (~59u at FIELD_ROCKS 1800)
 // while the visible material in it goes up — LESS gravel, MORE rock, which is
 // a different thing from "denser".
-function fieldMass(rng) {
-  if (rng() < 0.46) return 2200 + rng() * 4200;     // chunky tier: 2200-6400
-  return 220 + Math.pow(rng(), 1.05) * 1780;
+//
+// AND IT KNOWS WHERE IT IS. `frac` is the rock's normalised distance from the
+// heart (config.fieldFrac, 0 at the centre and 1 at the outline), and both the
+// chunky tier's share and the ladder's overall scale fall across it. A pocket
+// whose gravel is the same size everywhere reads as one texture stretched over
+// a big area; graded, the middle is where the material is and the rim is where
+// it runs out. The endpoints (CFG.FIELD_CHUNK_* / FIELD_GRAVEL_TAPER) are set
+// so the MEAN gravel mass barely moves — the gradient is the change, not the
+// tonnage.
+function fieldMass(rng, frac = 0.5) {
+  const t = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+  const chunky = CFG.FIELD_CHUNK_CORE + (CFG.FIELD_CHUNK_EDGE - CFG.FIELD_CHUNK_CORE) * t;
+  const scale = CFG.FIELD_GRAVEL_TAPER[0]
+    + (CFG.FIELD_GRAVEL_TAPER[1] - CFG.FIELD_GRAVEL_TAPER[0]) * t;
+  if (rng() < chunky) return (2200 + rng() * 4200) * scale;   // chunky tier
+  return (220 + Math.pow(rng(), 1.05) * 1780) * scale;
 }
 
 // Stamp a body as FIELD ROCK — the shoal's own material. Exported because
@@ -1274,14 +1287,23 @@ export function markFieldRock(b, fi) {
 // that correction a 3900u-long pocket at the inner lane sags ~730u sunward at
 // its ends — a third of its own half-thickness — and the containment test
 // stops agreeing with where the rocks visibly are.
-function fieldPoint(f, sun, rng) {
+// `pow` is the exponent on the normalised radius (see CFG.FIELD_*_POW): 0.5 is
+// area-uniform, larger pulls the draw toward the HEART. It is a parameter and
+// not a constant because the same sampler places a monolith, a giant and loose
+// gravel, and those want different gradients — the biggest rock hard into the
+// middle, the gravel gently, the fringe stragglers not at all.
+function fieldPoint(f, sun, rng, pow = 0.5) {
   let th = rng() * TAU, lb = fieldLobe(f, th);
   for (let k = 0; k < 3; k++) {
     if (rng() < (lb * lb) / (FIELD_LOBE_MAX * FIELD_LOBE_MAX)) break;
     th = rng() * TAU; lb = fieldLobe(f, th);
   }
-  let q = Math.sqrt(rng()) * lb;
-  if (rng() < 0.07) q *= 1 + rng() * 0.35;   // fringe straggler
+  let q = Math.pow(rng(), pow) * lb;
+  // The fringe straggler is drawn AFTER the taper and pushes outward regardless
+  // of it: the ragged edge is the no-hard-edges law, and a pocket that tapers
+  // its way to nothing at the rim would still end on a visible boundary — it
+  // would just end on a fainter one.
+  if (rng() < 0.07) q *= 1 + rng() * 0.35;
   const tan = Math.cos(th) * q * CFG.FIELD_LEN;
   const rad = Math.sin(th) * q * CFG.FIELD_SPREAD;
   const rr = f.r + rad + (tan * tan) / (2 * f.r);
@@ -1295,8 +1317,24 @@ function fieldPoint(f, sun, rng) {
 // silts every passage up and the maze stops existing at the only scale the
 // ship cares about. A minority (CFG.FIELD_RUBBLE_LOOSE) still spawns loose, or
 // the pocket reads as a set of rings drawn around boulders.
+// How likely a rock is to be KEPT where it landed: 1 at the heart, falling to
+// CFG.FIELD_EDGE_KEEP at the outline and holding there. It holds rather than
+// continuing to fall because the fringe past the outline is the ragged edge the
+// no-hard-edges law asks for, and thinning it toward nothing would put the
+// visible boundary back — just a softer one, in a different place.
+function fieldKeep(f, x, y) {
+  const t = Math.min(1, fieldFrac(f, x, y));
+  return 1 + (CFG.FIELD_EDGE_KEEP - 1) * t;
+}
+
+// The skirt draw needs no taper of its own: it banks against the huge rocks,
+// and those are now packed from the heart outward, so the gravel inherits the
+// gradient from its hosts. Only the LOOSE minority is drawn against the pocket
+// directly, and that is the draw CFG.FIELD_RUBBLE_POW pulls inward.
 function rubblePoint(f, sun, rng, bigs) {
-  if (!bigs.length || rng() < CFG.FIELD_RUBBLE_LOOSE) return fieldPoint(f, sun, rng);
+  if (!bigs.length || rng() < CFG.FIELD_RUBBLE_LOOSE) {
+    return fieldPoint(f, sun, rng, CFG.FIELD_RUBBLE_POW);
+  }
   const h = bigs[Math.floor(rng() * bigs.length)];
   const a = rng() * TAU;
   const d = h.radius * 1.02
@@ -1345,19 +1383,43 @@ function pocketKeepOut(game, f) {
 // before it looks for room. Placing on the class radius and varying afterwards
 // would be the same bug the celestial keep-out fixes: a rock that grew after
 // placement overlaps whatever it was measured to clear.
+// THE BIGGEST GO IN FIRST AND THEY GO IN THE MIDDLE. `spec` is placed in the
+// order given (seedDenseFields sorts it heaviest-first) and each entry carries
+// its own `pow`, interpolated from CFG.FIELD_CORE_POW down to FIELD_EDGE_POW
+// across the size range — so a monolith is drawn hard toward the heart and the
+// smallest giant is drawn almost anywhere. Combined with heaviest-first, the
+// core fills with the big masonry and everything after it packs around and
+// outward from that, which is the clumping the pocket is supposed to have.
+//
+// THE BIAS IS DROPPED ON THE LAST TRIES, and that is not a detail. The packer
+// is best-effort within a try budget, and a centre-biased draw into a centre
+// that is already full rejects every candidate — so the rock would be silently
+// LOST rather than placed further out, and the count that vanishes is exactly
+// the biggest rocks. Past FIELD_PACK_BIAS_TRIES the draw goes back to uniform
+// and the rock takes what room is left.
 function packBigRock(f, sun, rng, spec, radiusOf, slots, keepOut) {
   let placed = 0;
   for (const sp of spec) {
     const mass = sp.mass;
     const r = radiusOf(mass) * sp.vary;    // the radius this rock WILL have
     let spot = null, spotNear = Infinity;
+    const biasTries = CFG.FIELD_PACK_TRIES * CFG.FIELD_PACK_BIAS_FRAC;
     for (let t = 0; t < CFG.FIELD_PACK_TRIES; t++) {
-      const p = fieldPoint(f, sun, rng);
+      const p = fieldPoint(f, sun, rng, t < biasTries ? sp.pow : 0.5);
       const gap = rand(rng, CFG.FIELD_PACK_GAP[0], CFG.FIELD_PACK_GAP[1]);
       let clash = false, near = Infinity;
       for (const g of slots) {
         const d = Math.hypot(g.x - p.x, g.y - p.y) - g.r - r;
-        if (d < gap) { clash = true; break; }
+        // THE HEART KEEPS ITS OWN CLEARANCE. Everything else is spaced by the
+        // per-pair FIELD_PACK_GAP (4-58 units — at the low end, two neighbours
+        // read as touching), and once the biggest rocks are drawn toward the
+        // middle that gap welds a ring of monoliths onto the heart. Measured:
+        // a staged shot at the heart lost 60% of its damage to whatever was
+        // parked in front of it, and FIELD_HP_CAP exists precisely so a
+        // monolith stays breakable. The heart is also the field's NAME, its
+        // chart entry and the AI's anchor — it is the thing you fly in to
+        // reach, so it is the one rock that is allowed some room around it.
+        if (d < (g.heart ? CFG.FIELD_HEART_CLEAR : gap)) { clash = true; break; }
         if (d < near) near = d;
       }
       // Celestials get a fat margin on top of both radii. Touching is not good
@@ -1459,6 +1521,21 @@ function seedDenseFields(game, sun, rng) {
       giantSpec.push({ mass: rand(rng, CFG.FIELD_GIANT_MASS[0], CFG.FIELD_GIANT_MASS[1]),
         vary: vary() });
     }
+    // HEAVIEST FIRST, and each rock's own pull toward the heart set from where
+    // it sits in the size range. Sorting is what makes the bias mean anything:
+    // draw order IS packing order, so whatever goes first takes the middle.
+    // The two classes are ranked TOGETHER — monoliths are 5-8x a giant's mass,
+    // so ranking within each class separately would have the smallest monolith
+    // and the biggest giant asking for the same spot with the same claim.
+    const spanLo = CFG.FIELD_GIANT_MASS[0], spanHi = CFG.FIELD_MONOLITH_MASS[1];
+    const setPow = (sp) => {
+      const s = Math.min(1, Math.max(0, (sp.mass * sp.vary - spanLo) / (spanHi - spanLo)));
+      sp.pow = CFG.FIELD_EDGE_POW + (CFG.FIELD_CORE_POW - CFG.FIELD_EDGE_POW) * s;
+      return sp;
+    };
+    monoSpec.forEach(setPow); giantSpec.forEach(setPow);
+    monoSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
+    giantSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
     const keepOut = pocketKeepOut(game, f);
     packBigRock(f, sun, rng, monoSpec,
       (m) => asteroidRadius(m) * CFG.FIELD_MONOLITH_R_MUL, slots, keepOut);
@@ -1499,12 +1576,25 @@ function seedDenseFields(game, sun, rng) {
         for (const g of bigs) {
           if (Math.hypot(g.x - x, g.y - y) < g.radius + 26) { clash = true; break; }
         }
+        // THE DENSITY TAPER, applied where the rock actually LANDED. Biasing
+        // the samplers is not enough on its own: four rocks in five are skirt
+        // gravel banked against a host, so they inherit the masonry's spread
+        // and no amount of pull on the loose draw moves them. A rejection on
+        // the final position is the one place that catches every path into the
+        // pocket. Count is unchanged — a rejected draw is retried, so the same
+        // FIELD_ROCKS end up further in rather than fewer.
+        if (!clash && rng() > fieldKeep(f, x, y) && tries < 7) continue;
         if (!clash) break;
       }
       const v = orbitVel(sun, x, y, 1);
+      // The mass ladder is drawn against where the rock LANDED, not where it
+      // was aimed — the skirt draw offsets it off a host by up to a couple of
+      // hundred units, and a rock banked on the outside of an outer giant is at
+      // the rim whatever its host's own frac says.
       const rock = rng() < 0.02
         ? spawnCache(game.bodies, x, y, v.vx, v.vy)   // shoals hide salvage
-        : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+        : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          fieldMass(rng, fieldFrac(f, x, y))), rng);
       railBody(rock, sun);
       rock.rail.w = w;
       markFieldRock(rock, fi);
@@ -1979,7 +2069,11 @@ export function replenishWorld(game, dt) {
         // Never in view — a rock fading into existence mid-screen reads wrong
         if (Math.hypot(x - s.x, y - s.y) < (game.viewR || 1200) * 1.3) continue;
         const v = orbitVel(game.homeStar, x, y, 1);
-        const rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+        // Same taper the seed pass uses. Reknitting from a flat ladder would
+        // slowly erase the size gradient over a long run — the same failure the
+        // skirt draw above exists to prevent, one knob along.
+        const rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          fieldMass(rng, fieldFrac(f, x, y))), rng);
         railBody(rock, game.homeStar);
         rock.rail.w = f.w;   // join the rigid pocket, not the jittered flow
         markFieldRock(rock, fi);

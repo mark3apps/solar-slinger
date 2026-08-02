@@ -170,6 +170,44 @@ give directions by). Rules that keep it from breaking the invariants above:
     `f.ang`, so an off-centre heart drags the whole containment frame with it (measured before the
     fix: 40% of a shoal's own rocks fell outside `fieldFrac <= 1`, i.e. outside its own leash, wake
     and entry announce).
+    **A POCKET IS GRADED FROM ITS HEART OUTWARD** (user design call: *the really large clumped
+    together ones should be focused near the heart, and it should be less dense and large as you
+    move to the edge*). Every knob here used to be flat — an area-uniform scatter, a landmark packer
+    drawing from the same flat sampler, and a mass ladder that did not know where it was — so a
+    pocket had the same rock everywhere and its middle was no more of a place than its rim. Four
+    parts, and they are separate because each catches a path the others miss:
+    - **The samplers pull inward.** `fieldPoint` takes an exponent on the normalised radius
+      (`CFG.FIELD_*_POW`; 0.5 is the old area-uniform draw, larger pulls in). The fringe straggler is
+      applied AFTER the taper and pushes outward regardless of it, or the ragged edge the
+      no-hard-edges law asks for would just become a fainter edge in a different place.
+    - **The masonry is packed heaviest-first, each rock with its own pull.** `packBigRock` places
+      `spec` in order and interpolates each entry's exponent from `FIELD_CORE_POW` down to
+      `FIELD_EDGE_POW` across the size range, so the biggest go in first and go in the middle. The
+      two classes are ranked TOGETHER — a monolith is 5-8x a giant, so ranking within each class
+      would have the smallest monolith and the biggest giant claiming the same spot with the same
+      claim. **The bias is dropped past `FIELD_PACK_BIAS_FRAC` of the try budget**: a biased draw
+      into a core that is already full rejects everything, and what gets silently lost is precisely
+      the biggest rocks (measured: 14 of 126 landmarks, before the fallback existed).
+    - **A rejection on where the rock LANDED** (`fieldKeep` / `FIELD_EDGE_KEEP`) is what actually
+      produces the density gradient. Biasing the samplers is not enough on its own, because four
+      rocks in five are skirt gravel banked against a host and inherit the masonry's spread. The
+      count is unchanged: a rejected draw is retried, so the same `FIELD_ROCKS` end up further in.
+    - **The mass ladder reads its own position** (`fieldMass(rng, frac)`), at seed AND at reknit —
+      refilling from a flat ladder would erase the gradient over a long run, the same failure the
+      skirt draw exists to prevent one knob along.
+
+    **The HEART keeps its own clearance** (`FIELD_HEART_CLEAR`). The per-pair pack gap bottoms out at
+    4 units, so once the big rocks are drawn inward it welds a ring of monoliths onto the one rock
+    the field is named for — and that rock is the chart entry, the AI anchor and the thing you fly in
+    to reach. Measured before the clearance: a staged shot at a heart lost ~60% of its damage to
+    whatever was parked in front of it, against a `FIELD_HP_CAP` that exists precisely so a monolith
+    stays breakable.
+
+    **Grading a pocket must not re-weigh it.** `FIELD_GRAVEL_TAPER` is SOLVED against the measured
+    distribution, not picked to look balanced: gravel sits at a mean normalised distance of 0.74 and
+    37% of it is at or past the rim, so an eyeballed taper took 30% of the pocket's gravel mass out
+    and surfaced in the `giants` census (field rock over 3000 mass). Re-solve it if
+    `FIELD_RUBBLE_POW`, `FIELD_EDGE_KEEP` or the pocket extents move.
     **The whole shoal shares ONE `rail.w`** (the id-hashed ±4% jitter is overridden per rock, at seed,
     at reknit, AND in the physics re-rail scan): a pocket with mixed angular speeds shears apart and
     same-radius rocks grind each other, so a rigid pocket is what keeps a field a field. Each field's
