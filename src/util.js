@@ -151,6 +151,70 @@ export function ringRadiusAt(v, ang) {
 }
 export function crystalRadiusAt(shards, ang) { return ringRadiusAt(shards.verts, ang); }
 
+// ---- GRAVEL geometry ----
+// The ring of radius multipliers, at EVEN bearings, that every rock which is
+// NOT a shaped landmark draws: render.js's bucketed archetypes and the unique
+// ring a big-but-unshaped rock builds off its id both come from here. Callers
+// index it as `i / n * TAU`, so the bearings are implicit and the array is the
+// whole shape. It lives in util (a leaf) rather than render because it is
+// geometry, and because being importable outside a DOM is what makes it
+// checkable.
+//
+// WHY IT IS NOT ONE OCTAVE. The ring used to be `n` independent samples of
+// `1 - amp + rng() * 2 * amp`, amp 0.06-0.13 — which is a REGULAR POLYGON with
+// a wobble on it, and at the sizes a shoal is made of it read as exactly that:
+// octagons and decagons. Three terms replace it, and each does something the
+// other two cannot:
+//   ELONGATION  a 2-lobe stretch. Real rock is rarely equant, and this is the
+//               single most asteroid-like thing on the list — it is what stops
+//               a silhouette being "a circle with events on it".
+//   LOBES       3-5 smoothstepped control points: the humps and hollows you
+//               read the shape by, and the only term that survives being
+//               minified into a 6px sprite.
+//   CHIP        a per-vertex bite, mostly INWARD, so the outline is nibbled
+//               rather than spiked. This is the term the old ring had.
+// Small rock collides as a CIRCLE of b.radius (only b.bigShape gets a polygon
+// narrow phase), so none of this is load-bearing for physics — it is the
+// picture, and the picture is all it has to be.
+export const JAG_PEAK = 1.15;   // outermost point, in body radii. See below.
+export const ROCK_JAG_MAX = 46; // vertex ceiling (a rock that grows without
+                                // bound must not take the path build with it)
+export function rockJagRing(rng, r) {
+  const t = clamp((r - 3) / 27, 0, 1);   // 0 pebble -> 1 boulder
+  const n = Math.min(ROCK_JAG_MAX, 12 + Math.round(r * 0.55));
+  // Every amplitude is a RANGE, not a value: a bucket of rocks that all wobble
+  // by the same amount is its own kind of uniform, and the old ring's real
+  // tell was that every rock in a shoal was the same rock. Drawn per archetype,
+  // these span near-equant pebble to gnarled 1.7:1 boulder.
+  const elong = 0.04 + rng() * (0.13 + 0.09 * t);
+  const eAng = rng() * TAU;
+  const nL = 3 + Math.floor(rng() * 3);
+  const lAmp = 0.10 + 0.07 * t + rng() * (0.09 + 0.07 * t);
+  const cAmp = 0.04 + 0.04 * t;
+  const lobes = [];
+  for (let k = 0; k < nL; k++) lobes.push(1 + (rng() * 2 - 1) * lAmp);
+  const ring = new Array(n);
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU;
+    const u = (i / n) * nL, k = Math.floor(u), fr = u - k;
+    const sm = fr * fr * (3 - 2 * fr);   // smoothstep: humps, not spikes
+    const l0 = lobes[k % nL], l1 = lobes[(k + 1) % nL];
+    const chip = rng() < 0.68 ? -rng() * cAmp : rng() * cAmp * 0.5;
+    const v = (l0 + (l1 - l0) * sm) * (1 + elong * Math.cos(2 * (a - eAng))) + chip;
+    ring[i] = v;
+    if (v > peak) peak = v;
+  }
+  // NORMALISE THE PEAK, always. The sprite atlas bakes this ring into a cell
+  // SPRITE_EXT body-radii wide, so a ring that reached past it would have its
+  // outermost corners clipped off in the bake — and pinning the outermost
+  // point also keeps every rock's drawn extent a fixed multiple of the radius
+  // it collides at, which the old +-amp ring got for free by being round.
+  const k = JAG_PEAK / peak;
+  for (let i = 0; i < n; i++) ring[i] *= k;
+  return ring;
+}
+
 // ---- BIG ROCK geometry ----
 // The shape a landmark rock is BOTH drawn as and collided as. Same law as the
 // crystal shards above and the crater profile above that, and it fixed the same
@@ -193,12 +257,41 @@ const LUT_N = 256;    // surface/normal samples per shape — see the tables in 
 const EDGE_SEG = 62;    // world-ish units of edge per subdivision, at r = 1 scale
 const CHIP_IN = 0.11;   // inward bite, as a fraction of the SEGMENT's length
 const CHIP_OUT = 0.05;  // ...and outward
+// CORNER CHAMFER depth, as a fraction of the SHORTER of the corner's two
+// edges — so a cut can never eat a whole short face, and two chamfers sharing
+// an edge (2 x 0.30 < 1) can never cross.
+const CORNER_MIN = 0.11, CORNER_MAX = 0.30, CORNER_CAP = 0.35;
+// COARSE FACET amplitude, as a fraction of the spacing between control points
+// along a face. This is the mid-scale term; see the walk in `bow` below.
+const FACE_BOW = 0.14;
+// LONG-FACE SPLIT. A base edge longer than this (in body radii) is broken into
+// sub-faces with a kink between them, of up to FACE_KINK of the edge length.
+const FACE_SPLIT = 0.62, FACE_KINK = 0.09;
+// ...and only on a face that runs CLEAR of the centre. A face with an end this
+// close to the origin (a shard's waist) is nearly radial: its drawn radius
+// already races from 0.08 to 0.9 across a few degrees of bearing, and putting
+// a kink in the middle of it turns that ramp into a step. Those are the ONLY
+// faces the split has to skip — a slab's or a wedge's sit at 0.7-1.0.
+const FACE_SPLIT_R = 0.35;
+// AND THE CAP THAT KEEPS ALL OF IT STAR-SHAPED. Every displacement above is
+// bounded by an EDGE length, which says nothing about how close to the centre
+// that edge runs — and near a thin part (a wedge's point, a shard's nose) a
+// push that is small against the face is enormous against the local radius. It
+// shoves the point past its neighbour IN BEARING, and since the ring is sorted
+// by bearing the outline comes back with a hairline SLIVER in it: a radius
+// discontinuity between adjacent samples, which the collider reads as a spike
+// the picture barely shows. Capping displacement at a fraction of the smaller
+// endpoint radius costs nothing on a fat face (it never binds there) and binds
+// hard exactly where the geometry is thin. Measured over 3000 ids, this holds
+// the worst adjacent-sample jump at or under what the shape family had before
+// any of this was added.
+const DISP_CAP = 0.16;
 export function rockShape(id) {
   const rng = mulberry32(id * 2246822519 + 31);
   const roll = rng();
   const spin = rng() * TAU;
   let kind;
-  const base = [];
+  let base = [];
   if (roll < 0.24) {
     kind = 'slab';
     const h = 0.30 + rng() * 0.32;
@@ -256,12 +349,90 @@ export function rockShape(id) {
     const x = p.x * cs - p.y * sn, y = p.x * sn + p.y * cs;
     p.x = x; p.y = y;
   }
-  // BREAK THE EDGES. Each edge is cut into segments and every interior point is
-  // pushed along the edge normal — mostly INWARD, which is the bit convexity
-  // could never give: a bitten-out edge is what makes rock look fractured
-  // rather than cut. Displacement is kept well under the local radius so the
-  // outline stays star-shaped about the centre and the radial query stays
-  // single-valued.
+  // SPLIT THE LONG FACES. The base kinds are named for shapes with long flat
+  // sides, and a long flat side is what reads as drawn-with-a-ruler: at the 300+
+  // units a monolith spans, one unbroken face IS the whole silhouette. So any
+  // base edge past FACE_SPLIT becomes 2-3 sub-faces with a real kink between
+  // them — ONE large deviation at a low slope, which is the only way to bend a
+  // face by something you can see without turning it into a sawtooth. (The
+  // per-segment chip below cannot do this: its displacement is bounded by the
+  // SEGMENT, so on a long face it can only ever add fuzz to a straight line.)
+  // It runs BEFORE the chamfer, so a kink gets its corner broken like any
+  // other; and the slab stays a slab, because a face bent by 9% still reads as
+  // one face you can route along.
+  const split = [];
+  for (let i = 0; i < base.length; i++) {
+    const p = base[i], q = base[(i + 1) % base.length];
+    const ex = q.x - p.x, ey = q.y - p.y;
+    const len = Math.hypot(ex, ey) || 1;
+    split.push(p);
+    if (len < FACE_SPLIT || Math.min(Math.hypot(p.x, p.y), Math.hypot(q.x, q.y)) < FACE_SPLIT_R) continue;
+    const nSub = Math.min(3, 1 + Math.floor(len / FACE_SPLIT));
+    for (let k = 1; k < nSub; k++) {
+      const t = (k + (rng() - 0.5) * 0.5) / nSub;
+      const bx = p.x + ex * t, by = p.y + ey * t;
+      const cap = DISP_CAP * Math.hypot(bx, by);
+      const d = clamp((rng() * 2 - 1) * FACE_KINK * len, -cap, cap);
+      split.push({ x: bx + (ey / len) * d, y: by - (ex / len) * d });
+    }
+  }
+  base = split;
+  // KNOCK THE CORNERS OFF — and this is the pass that stops a slab drawing as
+  // a rectangle and a wedge as a triangle. A base polygon's CORNERS are its
+  // most geometric feature: chip the faces between them all you like and four
+  // right angles still read as a drawn rectangle, three points still read as a
+  // drawn triangle. Nothing that has actually been broken off something bigger
+  // keeps its corners — they are the first thing to go.
+  //
+  // Every corner becomes three points: a cut back along each of its two edges,
+  // and a middle point riding between the flat cut and where the corner used
+  // to be (rng() * rng() is drawn low and wide, so most corners come off blunt
+  // and a few stay proud). A slab leaves here as a 12-gon, a wedge as a 9-gon.
+  // Depth is measured against the SHORTER adjacent edge so a cut can never eat
+  // a whole short face — which is what keeps a shard's nose a nose.
+  const corners = [];
+  for (let i = 0; i < base.length; i++) {
+    const p = base[i];
+    const pv = base[(i + base.length - 1) % base.length], nx2 = base[(i + 1) % base.length];
+    const dpx = pv.x - p.x, dpy = pv.y - p.y;
+    const dnx = nx2.x - p.x, dny = nx2.y - p.y;
+    const lp = Math.hypot(dpx, dpy) || 1, ln = Math.hypot(dnx, dny) || 1;
+    // Depth is capped by the corner's own RADIUS as well as by its edges — see
+    // DISP_CAP. A shard's waist corner sits ~0.08 from the centre with metre-
+    // long edges either side, and cutting it back by a third of an EDGE would
+    // move it clean past its neighbours in bearing.
+    const d = Math.min((CORNER_MIN + rng() * (CORNER_MAX - CORNER_MIN)) * Math.min(lp, ln),
+                       CORNER_CAP * Math.hypot(p.x, p.y));
+    const ax = p.x + (dpx / lp) * d, ay = p.y + (dpy / lp) * d;
+    const bx = p.x + (dnx / ln) * d, by = p.y + (dny / ln) * d;
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    const k = rng() * rng();
+    corners.push({ x: ax, y: ay });
+    corners.push({ x: mx + (p.x - mx) * k, y: my + (p.y - my) * k });
+    corners.push({ x: bx, y: by });
+  }
+  base = corners;
+  // BREAK THE EDGES, AT TWO SCALES. Each edge is cut into segments and every
+  // interior point is pushed along the edge normal — mostly INWARD, which is
+  // the bit convexity could never give: a bitten-out edge is what makes rock
+  // look fractured rather than cut. Displacement is kept well under the local
+  // radius so the outline stays star-shaped about the centre and the radial
+  // query stays single-valued.
+  //
+  // The COARSE term (`bow`) is what was missing and what made a face read as
+  // drawn-with-a-ruler: a random WALK along a handful of control points,
+  // de-trended so both ends stay pinned to the corners the chamfer put there.
+  // Independent per-control offsets would not do — they cannot wander, so the
+  // face stays on its chord and only gets fuzzy. A walk breaks the face into
+  // 2-4 FACETS that each go their own way, by up to ~0.06 of the face length.
+  //
+  // It does not reopen the sawtooth bug the segment-relative rule above fixed,
+  // because the metric that bug is about is the normal swing between ADJACENT
+  // segments. Inside a facet the bow is a constant slope and adds none; it
+  // spends its whole budget at the 1-3 facet breaks per face, which is a
+  // corner, which is a thing this shape already has. Per-step slope is bounded
+  // at 2 * FACE_BOW (~13 degrees) by construction: the step is a fraction of
+  // the control SPACING, and the de-trend can only add another one of those.
   const pts = [];
   for (let i = 0; i < base.length; i++) {
     const p = base[i], q = base[(i + 1) % base.length];
@@ -270,11 +441,24 @@ export function rockShape(id) {
     const nx = ey / len, ny = -ex / len;
     const segs = Math.max(2, Math.min(9, Math.round(len * EDGE_SEG / 10)));
     const seg = len / segs;
+    // Same near-radial faces the split skips, and for the same reason: a
+    // mid-face displacement there is a step in the radial profile, not a bend.
+    const bowAmp = Math.min(Math.hypot(p.x, p.y), Math.hypot(q.x, q.y)) < FACE_SPLIT_R ? 0 : FACE_BOW;
+    const nB = Math.max(1, Math.min(4, Math.round(segs / 2.5)));
+    const ctrl = [0];
+    for (let k = 1; k <= nB; k++) ctrl.push(ctrl[k - 1] + (rng() * 2 - 1) * bowAmp * (len / nB));
+    const drift = ctrl[nB];
+    for (let k = 1; k <= nB; k++) ctrl[k] -= drift * (k / nB);   // pin the far corner back
     pts.push({ x: p.x, y: p.y });
     for (let k = 1; k < segs; k++) {
       const t = k / segs + (rng() - 0.5) * 0.18 / segs;
       const bx = p.x + ex * t, by = p.y + ey * t;
-      const push = (rng() < 0.68 ? -CHIP_IN * rng() : CHIP_OUT * rng()) * seg;
+      const u = t * nB, ci = Math.min(nB - 1, Math.floor(u));
+      // LINEAR between controls, never smoothstepped: rock is faceted, and a
+      // smooth blend would hand back the rounded, eroded look this is fixing.
+      const bow = ctrl[ci] + (ctrl[ci + 1] - ctrl[ci]) * (u - ci);
+      const cap = DISP_CAP * Math.hypot(bx, by);
+      const push = clamp(bow + (rng() < 0.68 ? -CHIP_IN * rng() : CHIP_OUT * rng()) * seg, -cap, cap);
       pts.push({ x: bx + nx * push, y: by + ny * push });
     }
   }
@@ -377,8 +561,15 @@ function edgeNormalAt(v, th) {
 // punch straight through the narrow parts.
 // physics.damageBody already records b.scars on rocks ("wear is universal");
 // until this, nothing on a rock ever read them back.
+// It reads the LUT, not the honest walker. This is the collider's per-contact
+// query (physics.surfRadius) and render's silhouette rebuild, i.e. the two
+// callers the tables were built for — the normal half already indexed them
+// while the radius half was still doing the linear scan they were meant to
+// replace. It matters more now the outline carries the corner and facet passes
+// above: those roughly double the vertex count, and a scan is O(verts) where
+// an index is not.
 export function bigRockSurfAt(shape, scars, radius, th) {
-  const base = ringRadiusAt(shape.verts, th);
+  const base = rockSurfAt(shape, th);
   if (!scars || !scars.length) return base;
   return base * scarSurfaceAt(scars, radius, th);
 }
