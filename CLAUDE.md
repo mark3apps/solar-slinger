@@ -14,7 +14,7 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 |---|---|
 | `physics.js`, rails, gravity, collisions, `CFG` hazard tuning | [docs/physics-invariants.md](docs/physics-invariants.md) |
 | `config.js` progression, `ABILITIES`, `shipStats`, `achievements.js` | [docs/progression.md](docs/progression.md) |
-| `render.js`, `hud.js`, `style.css`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
+| `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
 | splash / pause / settings / controls / credits / achievements panel | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
@@ -133,6 +133,7 @@ presentation loop.
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Audio engine: the AudioContext + sfx/music buses. Every sound is a real CC0 recording — see [docs/audio.md](docs/audio.md). |
 | [music.js](src/music.js) | Adaptive music director: 24 CC-BY tracks in six playlists, exactly one playing at a time — see [docs/audio.md](docs/audio.md). |
+| [zone.js](src/zone.js) | Locale director: which of five places the ship is in, and the crossfaded accent colour the cockpit chrome takes there. Same bucket/hysteresis/dwell machine as music.js, but its presence scores are pure geometry over the frame registries. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`, `shellModal`, `senseBlind`, `crystalShards`). |
 | [devtest.js](src/devtest.js) | The scripted mechanics suite (`window.mechTest`). Lazy-loaded — normal play never imports it. |
 
@@ -240,8 +241,10 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
 - **The ship shield is a calm, steady rim glow** — no dashes, no idle motion; motion is for events
   only. **Shield down draws nothing at all.**
 - **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
-- **The cockpit chrome is mood-reactive; the instruments are not** (hull green / shield blue / lives
-  pink stay semantic).
+- **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
+  pink stay semantic). `zone.js` picks the accent from WHERE THE SHIP IS — deep space violet, world
+  gold, corona ice, shoal orchid, fringe glacial — each chosen to sit OPPOSITE that region's sky.
+  Hue is the locale's; the edge wash's INTENSITY is still the music director's mood.
 - **No hard edges in-world** — the world boundary and the Oort cloud are stochastic weather, never a
   stroke at an exact radius. In-world transitions are organic, never geometric.
 - **THE CRUMBLE:** a world under fire comes apart and the pieces stay; the crater you *see* is the

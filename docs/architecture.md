@@ -34,6 +34,11 @@
   on the coarse step those differ by 2x, and ~7000 dormant field rocks would silently drift off the sim clock.
 - **Gameplay math goes inside the `CFG.DT` loop.** Cosmetic easing with no quantized target
   (shake decay, the zoom ramp) rides `dtReal`. Frame-rate-independent easing idiom: `lerp(a, b, 1 - Math.exp(-k*dt))`.
+- **The two DIRECTORS run every frame, frozen or not**, after the sim block and before `render`:
+  `music.updateMusic(game, dtReal)` then `zone.updateZone(game, dtReal)`. Both smooth on the wall clock
+  (a menu still has to duck the music, and both crossfades are cosmetic easing with no quantized
+  target), and both are also driven from `window.tick` — the pane suspends rAF when hidden, so a
+  headless soak is the only clock they'd otherwise have.
 - **The camera follow is the exception: it lives INSIDE the `CFG.DT` loop**, not on `dtReal`. Its target
   (the ship) advances in quantized DT chunks; a `dtReal`-chased camera beats against that quantization as
   the substeps-per-frame count wobbles, and the ship visibly jerks back and forth around screen centre

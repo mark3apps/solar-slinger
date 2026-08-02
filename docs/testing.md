@@ -62,6 +62,10 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   then `window.tick(1/60)` once to rebuild `game.st` before measuring.
 - `window.musicState()` — the music director's live mood vector (`world`/`sun`/`danger`), duck level,
   and per-bed gains/stream state. Mood advances under `window.tick` even with no AudioContext.
+- `window.zoneState()` — the locale director (`zone.js`): the zone owning the cockpit accent, seconds
+  in it, what it `want`s next, the crossfaded `rgb`, and every `pres`ence score — i.e. the whole
+  switch decision in one object. Park the ship and `window.tick(9)` (past `DWELL_OUT` + the fade) to
+  read a settled zone; presence is pure geometry, so it is the same on every seed.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
 - `game.nanEvents` — count of NaN-tripwire firings (body culls / ship resets). Any nonzero value is
