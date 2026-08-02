@@ -63,6 +63,7 @@ export class Body {
     this.heldBy = null;      // 'player' | 'orbit' | alien ref | null
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;
+    this.throwLock = 0;      // seconds left in which YOUR beam may not re-grab it (CFG.THROW_LOCKOUT)
     this.catchCount = 0;     // repeat catches of the same rock grow the beam less
     this.onRails = false;    // riding a precomputed orbit (circular or ellipse)
     this.rail = null;        // circular {parent,r,w,ang} | ellipse {parent,e,a,...}

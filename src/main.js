@@ -1,12 +1,12 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, xpForPick, pickIsMilestone, tierChoices,
-  consumePickCost, applyAbility, applySpec, applyTierUp,
+  consumePickCost, applyAbility, applySpec, applyTierUp, canStow,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
 import { step, updateFieldLOD, frameReg } from './physics.js';
-import { updateTractor, updateOrbit, updateTethers, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
+import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
@@ -112,6 +112,26 @@ const game = {
   lastDamage: -99,
   tooHeavy: null,
   tooHeavyT: 0,
+  // Beam grip, 0..1 — how far the tractor has spooled up on each held rock
+  // (tractor.springHeld writes it, render.drawBeam is the only reader).
+  heldGrip: 1,
+  heldGrip2: 1,
+  // The THROW-POWER readout for the rock in hand (tractor.springHeld writes all
+  // four). heldCharged is the READY state — render turns the beam near-white
+  // for it — and chargeFlashT is the one-shot bloom on the crossing;
+  // heldChargeShow gates both to loads where the wind-up costs something.
+  // heldCharge is the raw wind-up fraction: render no longer draws it (there is
+  // deliberately no progress bar), but it is the measurable truth the test
+  // harness reads to time "full power at".
+  heldCharge: 0,
+  heldCharged: false,
+  heldChargeShow: false,
+  chargeFlashT: 0,
+  // One record per launch — the muzzle flash (tractor.pushLaunchFx writes,
+  // render.drawLaunchFx draws, the dtReal block below ages and reaps).
+  launchFx: [],
+  // The WINCH in progress on a moon/world: { body, t, need } (tractor.updateLatch).
+  latch: null,
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
@@ -311,11 +331,16 @@ const menuBlocking = () => !game.started || game.paused || shellModal(game) || g
 initInput(canvas, {
   onGrab: () => {
     if (menuBlocking() || !game.ship.alive) return;
-    if (tryGrab(game)) {
+    // tryGrab reports WHAT THE CLICK DID, not a boolean (see its doc comment).
+    // The orbit-retrieve fallback below is for an EMPTY click only: a click the
+    // beam answered — a winch it just started, or a refusal it just sounded —
+    // must not also reach in and pull a rock back out of your own shield ring.
+    const did = tryGrab(game);
+    if (did === 'held') {
       // Anything that fits your orbit is captured into it automatically — but a
       // Twin Grip SECOND grab (held2 filled) is a big rock held alongside, kept in hand.
       const b = game.held;
-      if (!game.held2 && b.mass <= game.st.orbitCap && game.orbit.length < game.st.maxOrbiters) {
+      if (!game.held2 && canStow(game.st, b) && game.orbit.length < game.st.maxOrbiters) {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
@@ -327,7 +352,7 @@ initInput(canvas, {
         game.tut.grabbed = true;
         hud.message('Got it! RELEASE to FLING it toward the cursor. Good moves earn XP — level up to pick upgrades.', 5);
       }
-    } else if (retrieveFromOrbit(game)) {
+    } else if (did === null && retrieveFromOrbit(game)) {
       if (!game.tut.retrieved) {
         game.tut.retrieved = true;
         hud.message('Rock pulled back from your orbit — release to fling it.', 4);
@@ -336,6 +361,10 @@ initInput(canvas, {
   },
   onFling: () => {
     if (menuBlocking()) return;
+    // Letting go mid-winch abandons it — the winch is a HELD commitment, and
+    // banking partial progress would turn "hold to take a moon" back into a
+    // click you repeat.
+    cancelLatch(game);
     if (game.held) {
       releaseHeld(game, true);
       if (!game.tut.flung) {
@@ -844,6 +873,9 @@ function resetRun(seed, openCard = true) {
   game.alienTimer = 0; game.asteroidTimer = 10;
   game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
   game.predictRef = null; game.lock = null; game.lockTarget = null; game.tooHeavy = null;
+  game.latch = null;
+  game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
+  game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
@@ -893,6 +925,19 @@ const EVENT_MSGS = [
   { flag: 'tetherShow', tut: 'tether', snd: sfx.sfxChime,
     first: [(v) => `TETHER THROW ×${v.toFixed(2)} — boosting while flinging whip-cracks the rock with your momentum.`, 4.5],
     repeat: [(v) => `TETHER THROW! ×${v.toFixed(2)}`, 1.8] },
+  // The beam refused on CLASS, not weight (tractor.tryGrab). No `snd`: the
+  // grab already played sfxDenied, and doubling it turns a refusal into an
+  // event. Carries the class the body actually needs, so "what would lift
+  // this?" is never a guess.
+  { flag: 'beamClassWarn', tut: 'beamClass',
+    first: [(v) => `BEAM CLASS TOO LOW — that is ${v.toUpperCase()}. Tier up your beam to take hold of it.`, 5],
+    repeat: [(v) => `NEEDS A ${v.toUpperCase()} BEAM.`, 2.2] },
+  // A gas giant is off the ladder entirely (config.liftClass) — no tier ever
+  // lifts one. Says the WAY OUT, because "never" without a way out reads as a
+  // bug: strip the atmosphere and the core it leaves behind is carryable.
+  { flag: 'beamNoGripWarn', tut: 'beamNoGrip',
+    first: [(v) => `NOTHING TO GRIP — ${v.toUpperCase()} IS ALL ATMOSPHERE. Strip it and carry the core.`, 5.5],
+    repeat: [(v) => `${v.toUpperCase()} — nothing solid to grip.`, 2.2] },
   { flag: 'jinkWarn', tut: 'jink', snd: sfx.sfxChime,
     first: ['REFLEX JINK — your ship auto-dodged that rock. The jink recharges slowly.', 5] },
   { flag: 'deadStopWarn', tut: 'deadstop', snd: sfx.sfxChime,
@@ -1210,6 +1255,7 @@ function update(dtReal) {
     const camK = 1 - Math.exp(-6 * dt);
     let simSteps = 0;   // substeps taken THIS call — the field LOD advances by the same clock
     while (acc >= dt && simSteps < CFG.SUBSTEP_MAX) {
+      updateLatch(game, dt);     // the winch on a moon/world — gameplay timing, so fixed-step
       updateTractor(game, dt);
       updateOrbit(game, dt);
       updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
@@ -1364,6 +1410,16 @@ function update(dtReal) {
 
     // Timers & one-shot event messages (drained from the EVENT_MSGS table)
     if (game.tooHeavyT > 0) game.tooHeavyT -= dtReal;
+    // Cosmetic bloom with no quantized target — rides dtReal like the other
+    // pure-decay timers here, not the fixed step.
+    if (game.chargeFlashT > 0) game.chargeFlashT -= dtReal;
+    // Launch flashes, same clock and the same reason. Reaped in place; the list
+    // is capped at push time (CFG.LAUNCH_FX_MAX) so this stays trivially short.
+    for (let i = game.launchFx.length - 1; i >= 0; i--) {
+      const fx = game.launchFx[i];
+      fx.t += dtReal;
+      if (fx.t >= CFG.LAUNCH_FX) game.launchFx.splice(i, 1);
+    }
     // skimT is a decaying timer set in physics, not a drain-once flag — the
     // one event condition that doesn't fit the table's shape.
     if (game.skimT > 0 && !game.tut.skim) {
@@ -1417,8 +1473,12 @@ function update(dtReal) {
     sfx.setSpeed(engineOn ? (game.speedFrac || 0) : 0);
     sfx.setHeat(s.alive ? (game.heatT || 0) : 0);
     sfx.setScrape(s.alive && game.scrapeT > 0 ? 1 : (s.alive && game.skimT > 0 ? 0.5 : 0));
-    sfx.setCharge(game.volleyCharging
-      ? 0.2 + 0.8 * Math.min(1, game.volleyT / CFG.VOLLEY_TIME) : 0);
+    // One whine loop, two sources — the shotgun charge and the beam winch. They
+    // can overlap (RMB arming while LMB winches), so take the louder rather
+    // than letting whichever ran last silence the other.
+    sfx.setCharge(Math.max(
+      game.volleyCharging ? 0.2 + 0.8 * Math.min(1, game.volleyT / CFG.VOLLEY_TIME) : 0,
+      game.latch ? 0.2 + 0.8 * Math.min(1, game.latch.t / game.latch.need) : 0));
 
     // ACHIEVEMENTS: evaluated last, so a row that fires this frame is testing
     // the state the player actually ended the frame in (the tier they just
