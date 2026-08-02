@@ -6,7 +6,7 @@ import * as gravel from './gravel.js';
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
-  rockShape, bigRockSurfAt,
+  rockShape, bigRockSurfAt, rockJagRing, jagSamples, JAG_PEAK,
 } from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
@@ -520,12 +520,17 @@ function drawOort(game) {
 // vector path draws — a silhouette that changed as you flew in would morph,
 // and the crack clip and the scar edge sampler both read b.jag, so there can
 // only be one shape per rock. What carries it is not small drawn size but the
-// per-body rotation, the exact per-body radius, and how shallow the jag is
-// (amplitude 0.06-0.13 of the radius): 24 archetypes read as "all different"
-// even on a boulder. Big rock — giants, monoliths, the bodies you steer a
-// shoal by — is EXEMPT (rockBucket returns -1 past the last bucket edge) and
-// keeps a unique silhouette, because those are few and you get close enough
-// to them to tell.
+// per-body rotation, the exact per-body radius, and the fact that no two
+// archetypes are the same rock: 24 of them read as "all different" even on a
+// boulder. Big rock — giants, monoliths, the bodies you steer a shoal by — is
+// EXEMPT (rockBucket returns -1 past the last bucket edge) and keeps a unique
+// silhouette, because those are few and you get close enough to them to tell.
+//
+// WHAT an archetype is — lobes, stretch, grain, facets, bites — is
+// util.rockOutline, the SAME generator and the same five kinds the landmark
+// rocks are built from. A shoal is one material: the old split (a wobbly
+// polygon down here, a shaped block up there) was visible the moment a giant
+// sat among its own gravel.
 //
 // The archetype IS b.jag, not a parallel table: traceAsteroid, the damage
 // crack clip and the scar edge sampler all read b.jag, so a shape that existed
@@ -535,21 +540,15 @@ const ROCK_ARCHS = 24;   // silhouettes per size bucket. MUST stay a multiple of
                          // 3: the crater COUNT is `2 + (id % 3)` and the bake
                          // keys it off `arch % 3` instead, so every rock keeps
                          // exactly the pit count it has today.
-// Upper radius edge / representative radius of each size bucket. The original
-// shape math (vertex count, jag amplitude) is a continuous function of radius;
-// it is evaluated once per bucket at the representative radius instead. So a
-// rock that CHIPS across an edge steps its silhouette instead of easing it
-// (amplitude 0.060/0.077/0.101/0.131, vertices 8/9/10/11) — the steps are
-// under 0.03r and only land on a real damage event, which is already a
-// visible moment. That is the honest cost of bucketing, not a bug.
+// Upper radius edge / representative radius of each size bucket. The only
+// thing radius feeds is the outline's SAMPLE COUNT, evaluated once per bucket
+// at the representative radius instead of per rock. So a rock that CHIPS across
+// an edge steps to a different archetype rather than easing — and that only
+// lands on a real damage event, which is already a visible moment. That is the
+// honest cost of bucketing, not a bug.
 const ROCK_BUCKET_MAX = [3.5, 5.5, 8, 11];
 const ROCK_BUCKET_R = [2.6, 4.5, 6.7, 9.4];
 const archJags = [];   // [bucket * ROCK_ARCHS + arch] -> jag array
-// Vertex ceiling on the unique big-rock silhouette. It only binds past r ~ 87
-// (a shoal monolith at CFG.FIELD_MONOLITH_R_MUL), and it exists so a body that
-// somehow grows without bound can't take the path build with it — the shape
-// itself has no reason to stop getting finer.
-const BIG_ROCK_VERTS = 46;
 const ROCK_SIL_N = 128;   // silhouette samples for a shaped rock (see bigRockSil)
 // Screen size (world radius x zoom) below which the intricate surface skips
 // its fine layers — they are sub-pixel there and cost more than they show.
@@ -568,16 +567,7 @@ function rockBucket(r) {
 function archJag(arch, bk) {
   const i = bk * ROCK_ARCHS + arch;
   let j = archJags[i];
-  if (!j) {
-    const R = ROCK_BUCKET_R[bk];
-    const t = Math.min(1, Math.max(0, (R - 3) / 27));   // 0 pebble -> 1 boulder
-    const n = 7 + Math.min(9, Math.round(R * 0.45));
-    const amp = 0.06 + 0.3 * t;
-    const rng = mulberry32(arch * 7919 + 13);
-    j = [];
-    for (let k = 0; k < n; k++) j.push(1 - amp + rng() * amp * 2);
-    archJags[i] = j;
-  }
+  if (!j) j = archJags[i] = rockJagRing(mulberry32(arch * 7919 + 13), ROCK_BUCKET_R[bk]);
   return j;
 }
 
@@ -681,11 +671,10 @@ function chunkShape(b) {
   b.faultAt = [Math.floor(rng() * n), Math.floor(rng() * n)];
 }
 
-// Asteroids are jagged polygons, not discs — and the bigger the rock, the
-// craggier the silhouette (pebbles stay nearly round, boulders are gnarled).
-// The vertex offsets are cached on the body and regenerated if the radius
-// changes (chip damage shrinks rocks), which is also what re-buckets a rock
-// that has shed its way down a size class.
+// Asteroids are broken rock, not discs — see util.rockOutline for what that
+// means and why it is not a roughened polygon. The ring is cached on the body
+// and regenerated if the radius changes (chip damage shrinks rocks), which is
+// also what re-buckets a rock that has shed its way down a size class.
 // THE BIG-ROCK SILHOUETTE — its broken shape ring with its impact craters cut
 // out of it, sampled from util.bigRockSurfAt, which is the SAME function
 // physics.surfRadius collides against. That is the CRUMBLE law reaching rock:
@@ -736,51 +725,43 @@ function traceAsteroid(b) {
     }
     return;
   }
-  if (!b.jag || b.jagR !== b.radius) {
-    let bk;
+  // CACHED ON WHAT THE RING ACTUALLY DEPENDS ON, which is not the radius. The
+  // ring is a profile in units of the radius, so a rock that chips only needs a
+  // new one when it changes ARCHETYPE — a different bucket, or (past the last
+  // bucket edge, where the ring is unique per id) a different sample count.
+  // Keying on b.radius rebuilt it on every point of chip damage, and a rebuild
+  // is now real work: ~14-20us, against the ~2us the one-octave loop cost. In a
+  // debris-heavy scene with a few hundred chipping rocks that was measurable in
+  // the frame (+25% on that scenario) — the rebuild rate was the whole cost,
+  // not the generator.
+  // key: 0..3 a size bucket, -1 the carved stone, -1-n a unique big-rock ring.
+  const bk = b.carved ? -2 : rockBucket(b.radius);
+  const key = bk >= 0 ? bk : bk === -2 ? -1 : -1 - jagSamples(b.radius);
+  if (!b.jag || b.jagKey !== key) {
     if (b.carved) {
       // The carved stone: a perfect hexagon — machined, not tumbled
       b.jag = [1, 1, 1, 1, 1, 1];
-    } else if ((bk = rockBucket(b.radius)) >= 0) {
+    } else if (bk >= 0) {
       b.jag = archJag(b.id % ROCK_ARCHS, bk);
     } else {
-      // Big rock keeps a one-of-a-kind silhouette (see the header above) — and
-      // the biggest carry it at TWO SCALES.
+      // Big rock keeps a one-of-a-kind silhouette (see the header above): past
+      // the last bucket edge there is no atlas row to share, so it draws its
+      // own ring off its own id instead of an archetype. Same generator — a
+      // rock that chips down across the edge changes which TABLE it reads,
+      // never what kind of shape it is.
       //
-      // The old shape was n = 7 + min(9, r*0.45): a hard 16-vertex ceiling, one
-      // noise octave, every vertex an independent draw. That flatters a boulder
-      // and falls apart on a giant, and it falls apart completely on a monolith
-      // drawn at 90+ world units — a rock you fly right up to, rendered as a
-      // crude 16-gon whose facets are each longer than the ship.
-      //
-      // So: the vertex count keeps climbing with radius instead of clipping,
-      // and the profile is built as a COARSE ring of facets (nC control points,
-      // smoothstepped between) with a finer chip octave riding on top. Two
-      // scales is what makes a silhouette read as carved stone rather than as
-      // a noisy circle — the coarse pass is the shape you recognise a landmark
-      // by from across the pocket, the fine pass is the detail that survives
-      // flying up to it. One octave can only ever give you one or the other.
+      // The sample count keeps climbing with radius (rockJagRing's own ceiling
+      // is the only stop) because this is the path a monolith drawn at 90+
+      // world units takes — a rock you fly right up to. The old hard 16-vertex
+      // cap rendered one as a crude polygon whose facets were each longer than
+      // the ship.
       //
       // b.jag stays the ONE table: the crack clip and the scar edge sampler
       // both read it, so a shape that lived anywhere else would put cracks and
       // bites off the drawn edge.
-      const t = Math.min(1, Math.max(0, (b.radius - 3) / 27));
-      const n = Math.min(BIG_ROCK_VERTS, 7 + Math.round(b.radius * 0.45));
-      const amp = 0.06 + 0.3 * t;
-      const rng = mulberry32(b.id * 7919 + 13);
-      const nC = Math.max(7, Math.min(11, Math.round(n / 3.4)));
-      const coarse = [];
-      for (let i = 0; i < nC; i++) coarse.push(1 - amp + rng() * amp * 2);
-      const pts = [];
-      for (let i = 0; i < n; i++) {
-        const u = (i / n) * nC, k = Math.floor(u), fr = u - k;
-        const c0 = coarse[k % nC], c1 = coarse[(k + 1) % nC];
-        const sm = fr * fr * (3 - 2 * fr);   // smoothstep: facets, not spikes
-        pts.push((c0 + (c1 - c0) * sm) * (1 + (rng() - 0.5) * amp * 0.6));
-      }
-      b.jag = pts;
+      b.jag = rockJagRing(mulberry32(b.id * 7919 + 13), b.radius);
     }
-    b.jagR = b.radius;
+    b.jagKey = key;
   }
   const n = b.jag.length;
   ctx.beginPath();
@@ -840,7 +821,13 @@ const SPRITE_HEAD = 1.2;     // resolution headroom over the drawn size
 // a second live source for a difference that is invisible in a shoal — before
 // and after screenshots of the same 1845-rock frame are indistinguishable.
 const SPRITE_TIERS = [8, 16];
-const SPRITE_EXT = 1.25;     // cell half-width in body radii (the jag peaks at ~1.15)
+// Cell half-width in body radii. util.JAG_PEAK is the ceiling on a gravel
+// ring's outermost point, so this is that plus headroom for the blit's own
+// filtering — raise JAG_PEAK and this has to follow, or the bake clips the
+// corners off every rock. The rings mean-normalise to 1 rather than
+// peak-normalise (a rock draws the size it collides at), so the gap between
+// mean and peak has to live in the cell.
+const SPRITE_EXT = JAG_PEAK + 0.05;
 // Rows are bucket x colour. Four buckets against the handful of small-rock
 // colours (belt grey, boulder rust, cored, ice, junk) already fills 16, and
 // the whole win rests on one sheet per tier — so this carries real headroom
@@ -4934,8 +4921,16 @@ function drawMinimap(game) {
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.clip();
 
+  // THE DIAL'S OWN CHROME takes the locale accent (zone.js -> game.zone), for
+  // the same reason the DOM chrome does — the top-right is ONE instrument, and
+  // a radar still lit violet inside a gold or ice-blue cockpit reads as a bug,
+  // not as a choice. Grid, scale break, sensor bubble and sweep only: every
+  // BLIP below keeps its semantic colour, because a blip's colour is what it IS.
+  const zc = game.zone ? game.zone.rgb : [176, 112, 255];
+  const acc = (a) => `rgba(${zc[0]}, ${zc[1]}, ${zc[2]}, ${a})`;
+
   // Grid: range rings + cross axes, barely-there
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.10)';
+  ctx.strokeStyle = acc(0.10);
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(cx, cy, mid * 0.5, 0, TAU); ctx.stroke();
   ctx.beginPath(); ctx.arc(cx, cy, mid + rim * 0.25, 0, TAU); ctx.stroke();
@@ -4945,7 +4940,7 @@ function drawMinimap(game) {
   ctx.stroke();
   // …and the SCALE BREAK itself, dashed (helper-UI grammar) so the jump in
   // scale is something the eye can see rather than a lie about distance.
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.28)';
+  ctx.strokeStyle = acc(0.28);
   ctx.setLineDash([3, 3]);
   ctx.beginPath(); ctx.arc(cx, cy, mid, 0, TAU); ctx.stroke();
   ctx.setLineDash([]);
@@ -4960,9 +4955,9 @@ function drawMinimap(game) {
     if (gh && gh.alive && gh.awake &&
         Math.hypot(gh.x - game.ship.x, gh.y - game.ship.y) < 6000) seeW *= 1.5;
     const seeR = radarR(seeW);
-    ctx.fillStyle = 'rgba(176, 112, 255, 0.05)';
+    ctx.fillStyle = acc(0.05);
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(176, 112, 255, 0.22)';
+    ctx.strokeStyle = acc(0.22);
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.stroke();
   }
 
@@ -5024,9 +5019,9 @@ function drawMinimap(game) {
   const sweepAng = (game.time * TAU / MINIMAP_SWEEP_T) % TAU;
   if (ctx.createConicGradient) {
     const sweep = ctx.createConicGradient(sweepAng, cx, cy);
-    sweep.addColorStop(0, 'rgba(176, 112, 255, 0)');
-    sweep.addColorStop(0.8, 'rgba(176, 112, 255, 0)');
-    sweep.addColorStop(1, 'rgba(176, 112, 255, 0.20)');
+    sweep.addColorStop(0, acc(0));
+    sweep.addColorStop(0.8, acc(0));
+    sweep.addColorStop(1, acc(0.20));
     ctx.fillStyle = sweep;
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
     ctx.strokeStyle = 'rgba(235, 218, 255, 0.5)';
@@ -5434,10 +5429,10 @@ function drawMinimap(game) {
   ctx.restore();
 
   // Rim: bright ring + halo + bearing ticks (cardinals heavier), outside the clip
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.55)';
+  ctx.strokeStyle = acc(0.55);
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.12)';
+  ctx.strokeStyle = acc(0.12);
   ctx.lineWidth = 3.5;
   ctx.beginPath(); ctx.arc(cx, cy, r + 2.5, 0, TAU); ctx.stroke();
   ctx.lineWidth = 1;
@@ -5445,7 +5440,7 @@ function drawMinimap(game) {
     const a = (i / 24) * TAU;
     const cardinal = i % 6 === 0;
     const len = cardinal ? 7 : 3.5;
-    ctx.strokeStyle = cardinal ? 'rgba(235, 218, 255, 0.8)' : 'rgba(176, 112, 255, 0.35)';
+    ctx.strokeStyle = cardinal ? 'rgba(235, 218, 255, 0.8)' : acc(0.35);
     ctx.beginPath();
     ctx.moveTo(cx + Math.cos(a) * (r - len), cy + Math.sin(a) * (r - len));
     ctx.lineTo(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1));

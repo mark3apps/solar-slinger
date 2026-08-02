@@ -8,7 +8,7 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
 - `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
   `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "21/21", moons: "48/48", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{ planets: "17/17", moons: "59/59", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
   **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
@@ -62,6 +62,10 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   then `window.tick(1/60)` once to rebuild `game.st` before measuring.
 - `window.musicState()` — the music director's live mood vector (`world`/`sun`/`danger`), duck level,
   and per-bed gains/stream state. Mood advances under `window.tick` even with no AudioContext.
+- `window.zoneState()` — the locale director (`zone.js`): the zone owning the cockpit accent, seconds
+  in it, what it `want`s next, the crossfaded `rgb`, and every `pres`ence score — i.e. the whole
+  switch decision in one object. Park the ship and `window.tick(9)` (past `DWELL_OUT` + the fade) to
+  read a settled zone; presence is pure geometry, so it is the same on every seed.
 - `game.collisionLog = []` — opt-in; records `{t,a,b,closing,dmgToA,dmgToB}` for impacts >2 dmg.
 - `game.deathLog = []` — opt-in; records `{t,how,type,mass}` on every body death.
 - `game.nanEvents` — count of NaN-tripwire firings (body culls / ship resets). Any nonzero value is
@@ -71,5 +75,5 @@ Run these from `javascript_tool` against the preview (the pane suspends rAF when
 /`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
 actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
 runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
-21-planet/48-moon baseline — the 21 includes The Wanderer's Star, the expedition layer's
-hidden dark dwarf).
+17-planet/59-moon baseline — the 17 is the layout's 15 worlds plus the crystal binary's
+companion and The Wanderer's Star, the expedition layer's hidden dark dwarf).

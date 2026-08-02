@@ -1,5 +1,26 @@
+// SYSTEM SCALE — how far apart the sky is spread. Every sun-anchored radius
+// world.js authors (the layout lanes, the belts, the graveyard, Vesper's
+// ellipse, the dense fields, the landmark lookups, the ship's own spawn) is a
+// SHAPE that gets multiplied by this, and CFG.WORLD_R rides it too so the
+// boundary and the Oort cloud stay in the same relation to the outermost lane.
+// It lives OUTSIDE the CFG literal only because WORLD_R has to be computed
+// from it and an object literal cannot read its own siblings — treat it as a
+// member of the WORLD SCALE family documented at PLANET_R_MUL below.
+//
+// It is a DISTANCE knob, not a speed one: sun-anchored orbital speed is
+// sqrt(G*sunMass/r), so spreading the sky 1.3x without touching the sun's mass
+// slows every orbit by 1/sqrt(1.3) (~12%) and lengthens every period by
+// 1.3^1.5 (~48%). That is the intent — a planet system you have to travel to
+// is more of an event — and it moves the sky AWAY from the ambient-damage
+// thresholds (invariant 3) rather than toward them, so the calmer sky is free.
+// If flight ever needs its old cruise back, raise the sun's mass by the same
+// factor (world.js) — sky speed and this constant are the pair, and the
+// camera-zoom note in docs/physics-invariants.md applies to that knob alone.
+const SYS = 1.3;
+
 // All gameplay tuning lives here.
 export const CFG = {
+  SYS_R_MUL: SYS,
   G: 8,                    // gravitational constant (gameplay-tuned)
   // FIXED PHYSICS SUBSTEP — the FINE step, and the reference every invariant in
   // CLAUDE.md was tuned at. Everything headless (window.tick / soak / mechTest)
@@ -12,7 +33,9 @@ export const CFG = {
   // a genuine positive feedback loop (measured in a dense shoal: sim 2.5ms at
   // 1 substep, 7.1ms at 6, against a 1.7ms draw — the sim overtook the draw 4x
   // over). Halving the substep rate halves that cost directly. Verified against
-  // the 20-sim-minute idle soak (seed 20260721): 21/21 planets, 48/48 moons,
+  // the 20-sim-minute idle soak (seed 20260721): every planet and moon of the
+  // then-current sky (21/21 and 48/48; it is 17/59 since the rarer/wider
+  // planet-system pass, and the finding is about the STEP, not the counts),
   // zero loose planets, zero NaN — the same fingerprint as 1/120, because the
   // celestials ride precomputed rails and never integrate at all. It is NOT the
   // default anyway: a coarser step doubles how far a fast body moves between
@@ -110,11 +133,15 @@ export const CFG = {
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
   // 46000 = the old 42000 grown 20% by AREA (42000 x sqrt(1.2)) — the extra
-  // room is the OUTER BAND (~37k-46k): three new planet lanes (world.js
-  // layout, stopping at 42600 — the rogue spawn ring needs clearance above
-  // the outermost lane), the dark star's 39500 lane, and the Farshoal dense
-  // field riding the frost fringe at 44300.
-  WORLD_R: 46000,
+  // room is the OUTER BAND: the outer planet lanes (world.js layout, stopping
+  // at an authored 40800), the dark star's authored 39500 lane, and the
+  // Farshoal dense field riding the frost fringe at an authored 44300.
+  // x SYS multiplies with the lanes so all four of those relationships — and
+  // the Oort warning band the Farshoal deliberately brushes — survive a
+  // change to the system scale. The outermost MOON reach is no longer left to
+  // arithmetic done by hand here: world.moonZone clamps a family by what this
+  // radius actually leaves, which is what makes invariant 6 structural.
+  WORLD_R: 46000 * SYS,
   // WORLD SCALE — planets and moons are built at these multiples of the radii
   // authored in world.js (the layout table, and spawnMoon's own 18-34 range).
   // SIZE ONLY: THE MASSES ARE UNTOUCHED, deliberately. Radius is inert to every
@@ -130,6 +157,25 @@ export const CFG = {
   // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
   PLANET_R_MUL: 3,
   MOON_R_MUL: 2,
+  // How far out a planet holds moons, as a multiple of its HILL radius
+  // (world.moonZone). Rails hold a moon on its orbit regardless of the sun's
+  // tide, so the zone deliberately reaches past raw Hill stability — this is
+  // the "wide, majestic moon systems" knob, and 1.95 is the authored 1.5 taken
+  // 30% wider so a family spreads further than the system scale alone would
+  // give it. It pairs with the moon COUNTS in the layout table: both moved by
+  // the same 1.3, which leaves spawnMoon's per-moon slot width — and with it
+  // every sibling-clearance margin the no-crossing rule depends on —
+  // unchanged. Move one without the other and you are re-tuning how tightly
+  // packed a family is, not how wide it is.
+  // Hill goes with orbitR x cbrt(mass), so this widens the BIGGEST worlds most
+  // in absolute terms, which is the point: a gas giant's family should read as
+  // a system you fly through, not a bracelet.
+  MOON_ZONE_MUL: 1.95,
+  // Eccentricity ceiling for an elliptical moon rail (spawnMoon's eCap). Read
+  // by moonZone as well, to turn a zone into the apoapsis it can actually
+  // reach — the two MUST agree or the boundary clamp under-counts the reach it
+  // is there to bound.
+  MOON_E_MAX: 0.34,
   // ...but a lane only holds so much world, which is why the multiplier above
   // is a CEILING ("up to 3x") rather than a flat scale. Two planets on
   // adjacent rails run at different angular speeds and so ALWAYS reach
@@ -852,7 +898,7 @@ export const CFG = {
   // search costs every try on every rock, and worldgen runs constantly
   // (freshRun / mechTest).
   FIELD_PACK_SNUG: 12,
-  FIELD_PACK_TRIES: 110,
+  FIELD_PACK_TRIES: 170,
   // RUBBLE. The small rock is not scattered across the pocket any more — it is
   // drawn as a SKIRT around the huge rocks, so gravel banks up against the
   // masonry and the passages stay flyable. A uniform scatter silts every gap
@@ -862,6 +908,64 @@ export const CFG = {
   // passage stays a passage.
   FIELD_RUBBLE_LOOSE: 0.22,
   FIELD_RUBBLE_BAND: [7, 179],   // how far off a host's surface its skirt sits
+  // ---- WHERE THE MASS SITS IN A POCKET (user design call: the really large
+  // clumped-together rocks belong near the HEART, and it should thin out and
+  // shrink toward the edge). Before this, every knob here was flat: the scatter
+  // was area-uniform, the landmark packer drew from the same flat sampler, and
+  // the gravel ladder did not know where it was. A pocket therefore had the
+  // same rock everywhere, and its middle was no more of a place than its rim.
+  //
+  // These are EXPONENTS on the pocket sampler's normalised radius, `q = u^p`.
+  // p = 0.5 is exactly area-uniform (the old behaviour); larger p pulls inward,
+  // with density going as q^(1/p - 2). Counts do NOT change (FIELD_ROCKS,
+  // FIELD_GIANTS and FIELD_MONOLITHS are what they were): this is a
+  // redistribution of the same rock, which is the only way to restate the shape
+  // of a pocket without also re-tuning how much is in it. Measured on The
+  // Grindstones, seed 20260721: rocks per unit area 2.58 / 1.47 / 1.09 / 0.75 /
+  // 0.81 across the five bands from heart to rim, against 0.77 / 1.10 / 0.97 /
+  // 0.88 / 1.10 before — flat, and if anything edge-heavy.
+  FIELD_CORE_POW: 1.15,     // the biggest landmark: hard into the heart
+  FIELD_EDGE_POW: 0.55,     // the smallest landmark: near enough to uniform
+  FIELD_RUBBLE_POW: 0.85,   // loose gravel (the skirt gravel follows its host)
+  // Share of the packer's try budget that keeps the centre bias. The rest go
+  // back to a uniform draw so a rock that cannot fit in a full core is placed
+  // further out instead of being silently dropped — and what gets dropped in a
+  // pocket packed from the middle is precisely the biggest rocks.
+  FIELD_PACK_BIAS_FRAC: 0.45,
+  // Clearance the HEART holds against the masonry, on top of both radii. The
+  // ordinary per-pair gap bottoms out at 4 units, which once the big rocks are
+  // drawn inward welds a ring of monoliths onto the one rock the field is named
+  // for — and it is the chart entry, the AI anchor and the thing you fly in to
+  // reach. Measured before this: a staged shot at a heart lost ~60% of its
+  // damage to whatever was parked in front of it.
+  FIELD_HEART_CLEAR: 240,
+  // ...and the SIZE gradient. A rock's mass ladder is drawn against how far out
+  // it lands: the chunky tier's share falls from core to rim, and the whole
+  // ladder is scaled on top of that. The endpoints are chosen so the pocket's
+  // MEAN gravel mass lands within a couple of percent of what it was — a size
+  // gradient that also changes how much is IN a shoal is two changes wearing
+  // one coat, and the second one is a balance change nobody asked for.
+  //
+  // THE ENDPOINTS ARE SOLVED, NOT PICKED. A taper whose two ends look balanced
+  // is not mass-neutral, because the rock is not spread evenly across it:
+  // gravel sits at a mean normalised distance of 0.74 and 37% of it is at or
+  // past the rim, so a first cut at [1.24, 0.60] quietly took 30% of the
+  // pocket's gravel mass out (mean 2538 -> 1772) and surfaced as a third of the
+  // `giants` census, which counts field rock over 3000 mass. Solved against the
+  // measured distribution instead, these land the mean at ~2512 against 2538.
+  // Re-solve them if FIELD_RUBBLE_POW, FIELD_EDGE_KEEP or the pocket's extents
+  // move — all three change where the rock sits, and therefore what the taper
+  // averages to.
+  //
+  // How much of the heart's density survives at the outline. Applied as a
+  // rejection on where a rock LANDED, which is the only place that catches
+  // skirt gravel (four rocks in five bank against a host and inherit its
+  // position, so biasing the samplers alone leaves the density flat). The count
+  // is unchanged — a rejected draw is retried, so the same rocks end up further
+  // in rather than fewer of them.
+  FIELD_EDGE_KEEP: 0.30,
+  FIELD_CHUNK_CORE: 0.62, FIELD_CHUNK_EDGE: 0.24,
+  FIELD_GRAVEL_TAPER: [1.80, 0.87],   // mass scale at the heart / at the rim
   // Field-rock hp ceiling. Without it FIELD_HP_MUL made a monolith ~34,000 hp
   // — unbreakable, which contradicts the design ("bigger rocks break into
   // smaller pieces and keep the chaos going"). At 5200 a thrown moon-class
@@ -1626,8 +1730,12 @@ export const PROG = {
   // it vanishes and a fresh pocket fades in ELSEWHERE, so the healing supply
   // constantly relocates and you're always flying on to the next one.
   GLOW_POCKETS: 48,        // active pockets kept scattered across the system
-  GLOW_RMIN: 4200,         // orbital band they scatter through — just above the graveyard ring
-  GLOW_RMAX: 31000,        // ...out to the far ice belt
+  // Orbital band the pockets scatter through — just above the graveyard ring,
+  // out to the far ice belt. Both are sun-anchored radii, so both ride SYSTEM
+  // SCALE with the lanes they are described against: without it, spreading the
+  // sky leaves the healing supply bunched in the inner third of it.
+  GLOW_RMIN: 4200 * SYS,
+  GLOW_RMAX: 31000 * SYS,
   GLOW_SPREAD: 480,        // field radius — WIDE, so you sweep the ship through it (and it's easy to spot)
   GLOW_MOTES: 9,           // motes in a fresh pocket (more, to keep the wide field dense enough to scoop)
   GLOW_R: 6,               // pop gap beyond the hull — the mote flies ALL the way in and pops AT the ship

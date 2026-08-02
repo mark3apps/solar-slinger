@@ -166,10 +166,33 @@ code "works."
 - **Dashed lines are reserved for helper/aiming UI** (throw line, beam ring, orbit rings, lead markers,
   prediction paths). Real objects use solid strokes. Always reset `ctx.setLineDash([])` after a dashed draw.
 - **The world is 20% larger by AREA than it first shipped** (`WORLD_R` 42000 → 46000 = ×√1.2).
-  The growth was taken entirely as an OUTER BAND (~37k–46k, above the last planet at 36800) rather
-  than by rescaling the orbit layout — moving every lane would re-tune sky speed, heat margins, and
-  the graveyard clearance for nothing. The band holds three planet lanes (38300 / 40800 /
-  42600), the dark star's 39500 lane, and The Farshoal dense field on the frost fringe at 44300. Planet lanes stop at 42600, leaving the fringe to the Farshoal.
+  That growth was taken entirely as an OUTER BAND (above the last planet at an authored 36800) rather
+  than by rescaling the orbit layout. The band holds the outer planet lanes (authored 38300 / 40800),
+  the dark star's authored 39500 lane, and The Farshoal dense field on the frost fringe at an
+  authored 44300.
+- **SYSTEM SCALE: the whole sky is then SPREAD by `CFG.SYS_R_MUL`** (1.3 — user call: "make the solar
+  system 30% larger"), `WORLD_R` included, so the boundary, the Oort warning band the Farshoal
+  deliberately brushes, and every lane keep their relationship. Three rules:
+  - **Every sun-anchored radius in world.js goes through `SR()`** — the layout lanes, the three
+    belts, the graveyard ring, Vesper's perihelion AND semi-major axis, the ghost, the carved stone,
+    the barge lane, the dark star, the four shoals, the ship's own spawn, and the
+    `planetAtOrbit(...)` landmark lookups. What is load-bearing is the RELATIONSHIPS between those
+    numbers — the shoals ride the gaps between lanes, the graveyard sits below the innermost world
+    and inside the flare zone, Vesper's perihelion sits above the graveyard, the dark star threads
+    two outer lanes. One radius left unscaled does not throw; it silently moves that piece of content
+    into a lane it was designed to avoid. The lookups scale INSIDE `planetAtOrbit` for the same
+    reason: a missed multiplier there returns `undefined`, and the world simply ships without its
+    landmark, its shepherd or its siege.
+  - **It moves DISTANCE, not speed.** Sun-anchored orbital speed is `sqrt(G*sunMass/r)`, so spreading
+    the sky 1.3x slows every orbit ~12% and lengthens every period ~48%; the sun's mass is the speed
+    knob and is deliberately NOT recompensated (see the sky-speed/camera-zoom pairing in
+    physics-invariants.md — that note governs the MASS, not this constant). The slower sky moves
+    AWAY from the ambient-damage thresholds rather than toward them, so `DMG_THRESH` was left alone:
+    the calmer sky is exactly what the rarer, wider systems wanted.
+  - **Bigger lanes hold bigger worlds.** `PLANET_LANE_GAP` clamps each grown disc by what its
+    neighbours leave free, so widening the lanes un-clamps the worlds that were losing the most to
+    it — the amber giant goes 1148 → 1560 (the full `PLANET_R_MUL`), the violet giant 1058 → 1290.
+    That is the second half of "bigger", and it came for free with the spacing.
 - **WORLD SCALE: worlds are built BIGGER THAN THEY ARE AUTHORED** — `CFG.PLANET_R_MUL` (3) and
   `CFG.MOON_R_MUL` (2) multiply the radii in world.js's layout table and `spawnMoon`'s own range,
   so planets and moons read as genuinely massive (user call: "we just want these things to be able
@@ -298,6 +321,87 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+- **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
+  *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
+  been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
+  second verdict is the important one, because it is a verdict on the METHOD. Both silhouettes were
+  a base shape plus noise — gravel was a regular polygon with a wobble, a landmark was a rectangle,
+  a triangle or a splinter with roughened edges — and rounding a rectangle's corners leaves a
+  rounded rectangle. The primitive reads through whatever you do to it. So there is no primitive.
+  - **`util.rockOutline` is the ONE generator**, for the shoal's gravel, the belt's pebbles and the
+    landmark monoliths alike (`render.archJag` and `util.rockJagRing` are callers of it, not rivals
+    to it). A shoal should be one material; the old split — potatoes down at gravel size, blocks up
+    at landmark size — was visible the moment a giant sat among its own rubble.
+  - **Five terms, and each does something the others cannot.** LOBES: 2-5 overlapping discs offset
+    along a body axis, which is the shape and not decoration — where one lobe's reach overtakes
+    another's the profile creases, and that crease is the neck that makes a rock read as something
+    broken off something bigger. STRETCH: a 2-lobe elongation, because real rock is rarely equant.
+    GRAIN: six harmonics at 1/f amplitude — one octave is a wobble, a SPECTRUM is what reads as
+    stone at every distance, because the feature you notice changes with how close you are.
+    FACETS: 0-5 half-plane cuts, and a `min` against a line is a genuinely FLAT face with two real
+    corners, which noise cannot produce at any amplitude — this is what keeps a slab a slab and
+    stops the set drifting into potatoes. BITES: 0-4 concave scallops, craters in the silhouette,
+    the deepest concave features a real rock has. (An early version built the shape from half-planes
+    and NOTHING else and drew as a machined block, because convex. Flats are a good ingredient and
+    a terrible base.)
+  - **The kinds are parameter presets now, not five constructions** — and they still mean what the
+    pocket is navigated by: a SLAB has long flat faces you route along, a WEDGE tapers to a point, a
+    SHARD is a splinter with a narrow waist, a CLEFT's notch is deep enough to fly into, a LUMP is
+    the gnarled general case. The mix (`util.rockKind`) is unchanged.
+  - **It is a RADIAL FUNCTION about one origin, sampled at even bearings, and two things fall out of
+    that.** The outline cannot self-intersect however hard the terms are driven, and there is no
+    vertex sort — the previous build sorted by bearing, and a point pushed past its neighbour came
+    back as a hairline SLIVER, a radius discontinuity the collider felt as a spike the picture barely
+    showed. That failure mode is now unreachable rather than merely bounded: 0 of 3,000 ids carry an
+    adjacent-sample jump over 0.20r, against 58 before any of this. And the sampled profile IS the
+    table `physics.surfRadius` reads, with no resampling in between, so the drawn edge and the
+    collided edge are the same numbers — the CRUMBLE law, reaching rock.
+  - **AND IT IS NEVER CONVEX** (user design law: *"I want there to be more extreme concave shapes as
+    well in there"*). Two mechanisms, because "some rocks are dramatically hollowed" and "no rock is
+    a shape" are different requirements:
+    - **The GOUGE** — one dominant concave feature, on `gougeP` of rocks (always, for a CLEFT).
+      **Width is the half that matters and the half that is easy to get wrong**: a narrow notch
+      removes almost no AREA however deep it goes, so it reads as a crack rather than as a rock with
+      a piece missing. It takes the 0.7 power of the raised cosine — flatter floor, steeper walls,
+      because the walls are what read as a notch — and never `sqrt`, whose infinite slope at the rim
+      puts a vertical wall between two adjacent samples for the collider to catch on. `gougeTwin`
+      adds its opposite number, and cutting from both sides is what makes a WAIST rather than a bay:
+      a dumbbell held together at the middle, which is a real asteroid (Kleopatra, Itokawa) and, at
+      monolith scale, a place to fly through. Measured over 3,000 ids the deepest dent runs p10 0.14
+      / p50 0.35 / p90 0.72 of the chord across it — a spread from merely irregular to hollowed, not
+      a set that is uniformly chewed.
+    - **The CONVEXITY GUARD** — facets are a `min` against a line, so enough of them landing well
+      spread out IS a convex polygon: the machined-block failure arriving by the back door, and it
+      shipped a clean triangle. So `chordDeficit` measures the deepest dent the outline actually has
+      and cuts a modest gouge if there isn't one. Three details are each a bug that was in it:
+      it measures at **three window widths** (one window only sees dents its own size, so a chord
+      drawn across a narrow window sits inside a wide bay and calls it flat); it runs **after the
+      floor**, because a notch that bottoms out ON the floor is shallower than the cut that made it;
+      and its depth is a fraction of the **local** surface, since an absolute cut landing on a tall
+      lobe barely dents it. With all three, 0% of ids come out under the threshold — against 48%
+      measuring near-convex before the guard existed. Its own cut is deliberately MODEST: the drama
+      is supposed to come from `gougeP`, or the kinds that come out convex most often (slab, wedge)
+      would end up the most chewed.
+    - **Gravel's concave features are pulled back** (`GRAVEL_GOUGE_*`) for the same reason it is
+      squatted: a gouge is sized against the body, so on an 18-sample ring drawn at 6 px it is most
+      of the rock, and the deep ones came out as little hearts and bowties — a silhouette, which is
+      the complaint again from the other end. The guard still applies at both scales; it is the
+      DRAMA that scales, not the rule.
+    - **The honest limit of the representation**: a rock may be notched, waisted, hollowed or cut
+      most of the way through, but never HOOKED. An overhang would put two surfaces on one bearing,
+      and the collider's whole narrow phase is a single radial query. `OUTLINE_FLOOR` is how close to
+      the middle a surface may come (0.19 of the mean radius).
+  - **Gravel is drawn SQUATTER than a landmark of the same kind** (`GRAVEL_SQUAT`/`GRAVEL_OFF`), and
+    that is a memory bill, not a fudge: the sprite cell must span the ring's longest axis, so the
+    atlas pays for the peak-to-mean ratio in BOTH memory and fill: `SPRITE_EXT` is sized from
+    `JAG_PEAK`, so every blit in a shoal rasterises that margin whether the rock fills it or not.
+    **This is a measured, accepted cost** — 1.43 against the 1.25 a near-circular ring needed is 31%
+    more quad area, and it shows up as roughly +6% on the dense-field frame and +8% on debris-heavy.
+    It was not worth buying back: pulling `JAG_PEAK` to 1.30 drops the gravel's mean radius to 0.91
+    of the body radius it COLLIDES at, and a rock drawing 9% small is a worse bug than a wider quad.
+    Squatting harder does not help either — the peak's tail comes from the grain, not the
+    elongation. Rings normalise to a mean radius of 1, not a peak, so a body draws the size it
+    collides at whether it came out knobbly or smooth.
 - **Damage detail is sized against a FIXED reference radius, not the body** (`DETAIL_R` 260 in
   render's `drawBodyDamage`). Crack widths, crack lengths, the ember fissure glow and a crater's
   fracture rays were all authored as fractions of R when nothing drew bigger than ~250 units; at
@@ -340,13 +444,43 @@ code "works."
   double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
   terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
 - **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
-- **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
-  vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and
-  the soft edge wash (`#hud::after`, in `--fr`) takes that color — violet when calm, corona amber near
-  the sun, ember under threat (danger blends last so it wins a tie). **CHROME ONLY**: hull green, shield
-  blue and lives pink stay semantic so the instruments still read at a glance. The `lowhull` / `heat`
-  alarm classes override `--fr` outright — an alarm always outranks a mood — and mood is all zeros until
-  `game.started`, so the title screen and a calm cruise look exactly as they always did.
+- **The cockpit chrome is LOCALE-reactive, the instruments are not.** `zone.js` — built as the same
+  machine as `music.js`, and meant to stay that way: buckets, a presence score each, ENTER/EXIT
+  hysteresis, a minimum dwell, a crossfade — decides which of five places the ship is in and publishes
+  the crossfaded accent as `game.zone`. `hud.zoneChrome` writes it to `#hud` as three comma triplets
+  (`--zone-rgb` / `--zone-soft-rgb` / `--zone-deep-rgb`, a pale→accent→well ramp mixed in JS because
+  CSS can't compute a ramp it can also spend at arbitrary alpha), and re-declares `--chrome` /
+  `--chrome-soft` off them, so everything already written in terms of those follows for free.
+  `render.drawMinimap` reads the same `game.zone` for the dial's grid, scale break, sensor bubble,
+  sweep and rim — the top-right is ONE instrument, and a radar still lit violet inside a gold cockpit
+  reads as a bug.
+
+  | zone | where | that region's sky | accent |
+  |---|---|---|---|
+  | `deep` | the fallthrough — open space | blue-black | violet `176,112,255` (the house chrome, unchanged) |
+  | `world` | inside a planet/moon/station domain | dark + the planet's own blush | gold `255,201,100` |
+  | `corona` | the star filling your sky (`R * 1.4`) | hot amber | ice blue `110,205,255` |
+  | `shoal` | inside a dense field's `fieldFrac` footprint | grey/rust rock | orchid `255,106,213` |
+  | `fringe` | the Oort approach, last lane to the wall | dim pale blue | glacial `198,226,255` |
+
+  **Every accent is picked AGAINST its region's sky, and that is the whole point** — the mood tint this
+  replaced blended TOWARD it and went corona amber over an amber sky, the lowest-contrast thing it
+  could have done. Measured against the pilot card's own bed, the switch buys 1.25×–2.4× contrast in
+  every zone that changes and leaves deep space exactly as it was.
+  The palette is also picked around the INSTRUMENTS, which is what actually decides it: mint green,
+  shield cyan, lives rose and alarm ember are spoken for. Acid lime was tried for the shoal first and
+  was wrong for exactly that reason — a lime cockpit sits four inches from a green hull bar. The
+  fringe is the one deliberately DESATURATED accent; saturation is the second axis, and it is what
+  keeps it apart from the corona's ice blue.
+
+  **It is a LOCATION channel, not a threat channel.** Combat is not a place: threat stays with the mood
+  vector, which still drives the edge wash's INTENSITY (`--moodI`), and with the alarm classes. The
+  `lowhull` / `heat` classes still override `--fr` outright — an alarm always outranks a locale — and
+  `game.zone` is undefined until the first frame, with the CSS fallbacks set to the house violet, so
+  the title screen is unchanged. **CHROME ONLY**: hull green, shield blue, lives pink, the gold ★ score
+  and the per-category achievement accents never take it, or the instruments stop reading at a glance.
+  The SHELL MENUS keep the house violet too — they live outside `#hud`, and a pause screen is not a
+  place the ship is at.
 - **NO FRAME AROUND THE VIEWPORT.** The chrome used to include glowing corner arcs — a masked rounded
   border on `#hud::before`, inset 10px, visible near each corner. It was removed on request: a violet
   outline tracing the whole screen reads as browser chrome laid over the game, not as a machine you fly.
@@ -392,11 +526,39 @@ code "works."
   existed — gravitationally CAPTURED light outer worlds and dragged them into the sun, taking every
   lane it crossed on the way down. Three separate guards were written against that one body type (the
   spawn-ring radius, an entry-speed floor, and the planet fiat re-rail in physics) before deleting it
-  turned out to be the honest fix; idle skies went from losing planets to holding 21/21 with zero
-  loose worlds. `type: 'rogue'` is still supported everywhere — render, minimap, weighted gravity, the
-  re-rail disturber list, `scrapValue`, `noteKill` — so the concept can return if it earns its keep.
-  **Nothing spawns one.** Don't "restore" the spawner without solving the capture problem first, and
-  note the two rogue achievement rows were retired with it (an unearnable row is worse than a short list).
+  turned out to be the honest fix; idle skies went from losing planets to holding every world with
+  zero loose ones. `type: 'rogue'` is still supported everywhere — render, minimap, weighted gravity,
+  the re-rail disturber list, `scrapValue`, `noteKill` — so the concept can return if it earns its
+  keep. **Nothing spawns one.** Don't "restore" the spawner without solving the capture problem first,
+  and note the two rogue achievement rows were retired with it (an unearnable row is worse than a
+  short list). The clearance rule that once sized the outermost planet lane was the rogue SPAWN RING,
+  so it stopped binding when they went — which is why the layout's outer lane could later move.
+- **A PLANET SYSTEM IS RARE, AND ARRIVING AT ONE IS AN EVENT** (user call: "make a planet system
+  rarer, bigger and more of an event"). The layout table holds FEWER worlds and gives each survivor a
+  bigger entourage: 19 authored planets → 15 (~80%), moon counts up ~30%, so the sky censuses 17
+  planets / 59 moons where it held 21 / 48. Three rules keep that from costing anything:
+  - **Cuts come off the DUPLICATES ONLY** — one of the two lava worlds and three of the six ice
+    worlds. Never a unique archetype and never a landmark host, because both are load-bearing beyond
+    flavour: "destroy one of every archetype" counts `PTYPE_COUNT` distinct ptypes and "strip every
+    gas giant" wants three, and the storm/crater/geyser/forge/shepherd hosts and the Bastion siege
+    are all found by lane (`planetAtOrbit`). A cut that takes a host doesn't error — the world just
+    ships without that content.
+  - **Moon COUNT and `MOON_ZONE_MUL` move TOGETHER**, both by the same factor. `spawnMoon` divides
+    the zone into one slot per moon, so scaling one without the other silently re-tunes how tightly
+    packed a family is — and the slot width IS the sibling-clearance margin the no-crossing rule
+    (`exCap`) depends on. Moving both leaves every margin exactly where it was.
+  - **Wider families are only safe because the sky turns one way** — see the all-prograde rule below.
+- **THE SKY TURNS ONE WAY** (user call: "planets orbit in the same direction… less worry about
+  planets and systems ramming into each other"). `addPlanet` fixes every sun-anchored planet
+  prograde; one in six used to be drawn retrograde. This is not cosmetic. Moon families deliberately
+  overlap radially, and the railed-conjunction pass-through that makes that safe is gated on
+  `closing < DMG_THRESH` — a retrograde lane meets each neighbour at the SUM of their angular speeds
+  instead of the difference, so its conjunctions come round several times more often AND arrive at
+  roughly twice the closing speed, on the wrong side of that gate. Deleting the class of event beat
+  guarding it, and it is what paid for the wider families above. Moons keep their ~15% retrograde
+  variety — a retrograde MOON stays inside its own slot and meets nothing. **The rng draw the
+  constant replaced is kept and discarded**: every angle, mass and feature below it comes out of the
+  same seeded stream, so removing a draw would reshuffle the entire sky.
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests and the dense fields' **shoal-lurker broods** are the *only* alien sources — there is no
   global wave spawner; a destroyed nest quiets its region forever, and a field's brood is a FINITE

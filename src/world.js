@@ -42,6 +42,39 @@ const ECHOES = {
 // shroud = cloud cloak (the dust-moon flag, ai.js), crystal = shard-polygon
 // COLLIDER (util.crystalShards, shared with render) + facet-shard salvage
 // (physics.damageBody).
+
+// SYSTEM SCALE. Every sun-anchored radius in this file is AUTHORED at its
+// original spacing and spread through this one helper — the lane table, the
+// belts, the graveyard ring, Vesper's ellipse, the ghost, the carved stone,
+// the barge lane, the dark star, the dense fields, the ship's own spawn, and
+// every `planetAtOrbit(...)` landmark lookup. The authored numbers stay the
+// readable SHAPE of the sky (and stay comparable with the notes written about
+// them); CFG.SYS_R_MUL is the only thing that says how far apart it all sits.
+//
+// PUT EVERY SUN-ANCHORED RADIUS THROUGH IT. The relationships between these
+// numbers are load-bearing — the fields ride the gaps BETWEEN lanes, the
+// graveyard sits below the innermost world and inside the flare zone, Vesper's
+// perihelion sits ABOVE the graveyard, the carved stone rides the middle belt,
+// the dark star threads two outer lanes — and one radius left unscaled quietly
+// moves that piece of content into a lane it was designed to avoid.
+// PLANET/MOON radii are a DIFFERENT knob (CFG.PLANET_R_MUL / MOON_R_MUL, the
+// WORLD SCALE family): this spreads the sky out, those grow the worlds in it.
+const SR = (r) => r * CFG.SYS_R_MUL;
+
+// ...and A LANE THAT IS NAMED TWICE GETS A CONSTANT, not a second SR() call.
+// The respawnable landmarks are each described in two places — the spawn
+// function that places the body, and replenishWorld's off-view check that
+// picks an arrival angle by testing where the body WOULD land. Those two must
+// agree exactly, and when they were both bare literals the first scaling pass
+// updated the spawn and missed the check: the test then measured a point
+// thousands of units off the real orbit, so "never pop into existence in view"
+// silently stopped being true. One binding read by both sites is what makes
+// that unrepresentable, which a second SR() at the call site would not.
+const GRAVEYARD_R = SR(3250);         // the wreck ring, just above the corona
+const VESPER_PERI = SR(3900);         // ...and Vesper's perihelion, deliberately above it
+const VESPER_SEMI = SR(12000);
+const TINKER_R = SR(12000);           // the barge's trade lane
+
 const PTYPE_COLORS = {
   lava:    ['#e0603a', '#d4502c', '#e8784a'],
   rocky:   ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
@@ -63,9 +96,11 @@ const GAS_KIND_COLORS = {
   violet: ['#b05ac9', '#a04fc0', '#c06ad4'],
 };
 // One name per layout planet — the list must be at least as long as the
-// layout's named-planet count (19) or nameIdx wraps and the sky gets two
+// layout's named-planet count (15) or nameIdx wraps and the sky gets two
 // worlds with one name (the old 14-name list shipped duplicate Khepri/Vantor,
-// which made chart messages and window.goto ambiguous).
+// which made chart messages and window.goto ambiguous). Kept at 19 with room
+// to spare: names are assigned in layout order, so the spares cost nothing and
+// a world added back later gets one without touching this list.
 const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex', 'Ferren', 'Wold', 'Corve', 'Naiad', 'Aster'];
 
 // Moon archetypes — like planets, each kind has its own palette and a distinct
@@ -147,7 +182,10 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // moons deterministically dead in the first 4.5 minutes of every run.
   // e is DRAWN first and clamped after, so the seeded rng stream (and thus
   // the rest of the generated world) is untouched by the clamp.
-  const eCap = Math.min(0.34, 1 - (planet.radius + radius + 60) / mr);
+  // MOON_E_MAX, not a literal: moonZone reads the same ceiling to work out the
+  // apoapsis a family can reach, and the boundary clamp there is only correct
+  // while the two agree.
+  const eCap = Math.min(CFG.MOON_E_MAX, 1 - (planet.radius + radius + 60) / mr);
   if (eCap > 0.08 && rng() < 0.55) {
     const e = Math.max(0, Math.min(rand(rng, 0.1, eCap), exCap / mr));
     railEllipse(m, planet, mr, e, rng() * TAU, rng() * TAU, dir);
@@ -168,17 +206,51 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
 // off and re-rail around the sun; that's fine and rare.)
 function moonZone(star, planet, orbitR) {
   const hill = orbitR * Math.cbrt(planet.mass / (3 * star.mass));
+  // ...AND THE BOUNDARY IS WHAT ACTUALLY ENDS IT (invariant 6: WORLD_R must
+  // exceed every system's outermost reach). The zone is a multiple of the Hill
+  // radius and Hill grows with orbitR, so the widest families in the sky are
+  // the outer band's — exactly where there is least room left before the edge.
+  // That used to be checked by arithmetic done by hand whenever the layout
+  // moved, and it had quietly stopped holding: at the authored 1.5x the
+  // outermost world's single moon already reached ~2,500 past WORLD_R, and
+  // widening the zone to MOON_ZONE_MUL would have taken that past 6,000. It is
+  // benign only for as long as the moon stays railed (star-anchored bodies are
+  // exempt from the boundary force); one derail and the edge is pushing on a
+  // charted moon. Bound it by construction instead — the same idiom as
+  // CRUST_PER_HOST and GAS_STRIP_EJECTA. An ellipse reaches a*(1+e) and
+  // spawnMoon's eCap tops out at MOON_E_MAX, so THAT is the multiple of maxR
+  // the boundary has to leave room for, not maxR itself.
+  const room = Math.max(0, CFG.WORLD_R - orbitR) / (1 + CFG.MOON_E_MAX);
   // The inner clearance rides MOON_R_MUL because that is what it is FOR: 90
   // comfortably cleared a 42-radius moon, and a doubled moon parked on the old
   // floor would hang 84 units into a planet that also grew underneath it.
-  return { minR: planet.radius + 90 * CFG.MOON_R_MUL, maxR: hill * 1.5 };
+  return {
+    minR: planet.radius + 90 * CFG.MOON_R_MUL,
+    maxR: Math.min(hill * CFG.MOON_ZONE_MUL, room),
+  };
 }
 
 function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   const th = rng() * TAU;
   const x = star.x + Math.cos(th) * orbitR;
   const y = star.y + Math.sin(th) * orbitR;
-  const dir = rng() < 0.85 ? 1 : -1;
+  // EVERY PLANET ORBITS THE SUN THE SAME WAY (user design law). One in six
+  // worlds used to be drawn retrograde, and a retrograde lane meets each of
+  // its neighbours at the SUM of their angular speeds instead of the
+  // difference — conjunctions with the lanes on either side of it come round
+  // several times more often, and each one closes at roughly twice the speed.
+  // Moon families deliberately overlap radially (see the railed-conjunction
+  // pass-through in physics.collideBodies), and that pass-through is gated on
+  // closing < DMG_THRESH: a prograde conjunction drifts through under the gate,
+  // a retrograde one arrives above it, which is a real impact, a derail, and a
+  // moon that falls into whatever it is near. Making the sky turn one way
+  // deletes that whole class of event instead of guarding it.
+  // The draw is KEPT and discarded: every angle, mass and feature in the sky
+  // below this point comes out of the same seeded stream, so buying a constant
+  // by removing a draw would reshuffle the entire world (see the WORLD SCALE
+  // note in spawnMoon — never pay for a value with the rng stream).
+  rng();
+  const dir = 1;
   const v = orbitVel(star, x, y, dir);
   const ptype = opts.ptype || 'rocky';
   const p = new Body({
@@ -349,7 +421,7 @@ function pickTinkerWant(game, not) {
 // puts it in the physics `install` set for free, so it station-keeps and can
 // never wander off its lane.
 function spawnTinker(game, sun, th) {
-  const r = 12000;
+  const r = TINKER_R;
   const x = sun.x + Math.cos(th) * r, y = sun.y + Math.sin(th) * r;
   const v = orbitVel(sun, x, y, 1);
   const tk = new Body({
@@ -377,7 +449,11 @@ function spawnTinker(game, sun, th) {
 // Comet Vesper at perihelion, falling into a fresh pass. Shared by
 // generateWorld (seeded angle) and the replenish respawn (random angle).
 function spawnVesper(game, sun, th) {
-  const peri = 3900, semi = 12000;
+  // SYSTEM SCALE: BOTH ends of the ellipse, or the shape of the orbit changes
+  // rather than its size — and the perihelion has to keep clearing the
+  // graveyard ring, which moved with it. vp is computed from the sun's mass
+  // below, so the speeds follow the geometry on their own.
+  const peri = VESPER_PERI, semi = VESPER_SEMI;
   const vp = Math.sqrt(CFG.G * sun.mass * (2 / peri - 1 / semi));
   const c = spawnAsteroid(game.bodies,
     sun.x + Math.cos(th) * peri, sun.y + Math.sin(th) * peri,
@@ -508,7 +584,7 @@ export function generateWorld(game, seed = 20260721) {
   });
   bodies.push(sun);
 
-  // Inner system is scorched lava worlds, then a warm world-sea, the terran
+  // Inner system is a scorched lava world, then a warm world-sea, the terran
   // world, a fortified desert, huge ringed gas giants of three kinds, a
   // crystal binary and a cloud-shrouded ringed world in the middle, and ice
   // in the far reaches. Top-end planet radius 520.
@@ -521,9 +597,23 @@ export function generateWorld(game, seed = 20260721) {
   // Spread wide: plenty of open flying and unoccupied worlds between the
   // occupied ones (2 nests, 1 fortified planet + 1 fortified moon, 1 ember
   // bloom — everything else is free space and salvage).
+  //
+  // ---- A PLANET SYSTEM IS RARE, AND IT IS AN EVENT (user design law).
+  // The table is deliberately SHORTER and each surviving entry is deliberately
+  // FULLER: 19 authored worlds went to 15 (~80%) while the moon counts went up
+  // ~30%, so the sky holds fewer systems and every one of them is a bigger
+  // arrival. The four that went were the DUPLICATES — one of the two lava
+  // worlds and three of the six ice worlds — never a unique archetype and
+  // never a landmark host, so all nine ptypes, all three gas giants, both
+  // nests, the fortified desert, the crater/geyser/storm/forge/shepherd hosts
+  // and every station lane are exactly where they were. (Both of those are
+  // load-bearing for achievements: "destroy one of every archetype" counts
+  // PTYPE_COUNT distinct ptypes and "strip every gas giant" wants three.)
+  // Lane radii and moon counts move TOGETHER with CFG.MOON_ZONE_MUL: the zone
+  // and the count both grew 1.3x, which leaves spawnMoon's slot width — and so
+  // every sibling-clearance margin — where it was.
   const layout = [
     { r: 3600,  mass: 2e4,   radius: 60,  ptype: 'lava' },
-    { r: 5000,  mass: 4e4,   radius: 85,  ptype: 'lava', moons: 1 },
     // Ocean at 6600, desert at 13000 — NOT the other way round: the Bastion
     // fortify pass always takes the 13000 slot, waterspouts are gated on
     // !fort (below), and an ocean world there would ship with its one
@@ -531,35 +621,40 @@ export function generateWorld(game, seed = 20260721) {
     // so the desert world under siege keeps its mechanic.
     { r: 6600,  mass: 6e4,   radius: 105, ptype: 'ocean', moons: 1 },
     { r: 8000,  belt: true, spread: 450, count: 60 },
-    { r: 9500,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 3, nest: true },
-    { r: 11200, mass: 2e5,   radius: 235, ptype: 'terran', moons: 4, station: true },
-    { r: 13000, mass: 1.3e5, radius: 170, ptype: 'desert', moons: 2 },
-    { r: 14800, mass: 5e5,   radius: 430, ptype: 'gas', gasKind: 'violet', ring: true, moons: 7 },
+    { r: 9500,  mass: 1.2e5, radius: 165, ptype: 'rocky', moons: 4, nest: true },
+    { r: 11200, mass: 2e5,   radius: 235, ptype: 'terran', moons: 5, station: true },
+    { r: 13000, mass: 1.3e5, radius: 170, ptype: 'desert', moons: 3 },
+    { r: 14800, mass: 5e5,   radius: 430, ptype: 'gas', gasKind: 'violet', ring: true, moons: 9 },
     { r: 16800, mass: 2.2e5, radius: 220, ptype: 'crystal', binary: true },
     { r: 18400, belt: true, spread: 500, count: 50 },
-    { r: 20200, mass: 3.5e5, radius: 340, ptype: 'gas', gasKind: 'azure', ring: true, moons: 6, station: true },
-    { r: 22000, mass: 1.8e5, radius: 205, ptype: 'shroud', ring: true, moons: 3 },
-    { r: 24000, mass: 6.5e5, radius: 520, ptype: 'gas', gasKind: 'amber', ring: true, moons: 8 },
-    { r: 26500, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 3, nest: true },
+    { r: 20200, mass: 3.5e5, radius: 340, ptype: 'gas', gasKind: 'azure', ring: true, moons: 8, station: true },
+    { r: 22000, mass: 1.8e5, radius: 205, ptype: 'shroud', ring: true, moons: 4 },
+    { r: 24000, mass: 6.5e5, radius: 520, ptype: 'gas', gasKind: 'amber', ring: true, moons: 10 },
+    { r: 26500, mass: 1.6e5, radius: 195, ptype: 'ice', moons: 4, nest: true },
     { r: 28500, belt: true, spread: 600, count: 45 },
-    { r: 30200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 2, station: true },
-    { r: 32500, mass: 4e4,   radius: 95,  ptype: 'ice', moons: 1 },
-    { r: 34500, mass: 1.1e5, radius: 150, ptype: 'rocky', moons: 2 },
-    { r: 36800, mass: 5e4,   radius: 120, ptype: 'ice', moons: 1 },
-    // ---- THE OUTER BAND (37k-46k): the room opened by the WORLD_R area
-    // growth. Entries are APPENDED so every earlier world's seeded placement
-    // is untouched (draws happen in layout order); only post-layout content
-    // re-rolls its angles. The dark star keeps its 39500 lane between the
-    // first two, and The Farshoal (dense field) rides at 42400.
-    // Lanes stop at 42600: the rogue spawn ring (WORLD_R - 600 = 45400) must
-    // clear the outermost planet by ~2x RAIL_DISTURB. At 43900 the sentinel
-    // sat 1500 from the ring — inside effective disturb reach (1400 + rogue
-    // radius) — so a just-spawned rogue derailed it, co-traveled, and
-    // gravitationally dragged it sunward (outer lanes orbit at only ~50 u/s).
-    { r: 38300, mass: 6e4,   radius: 115, ptype: 'ice', moons: 2 },
+    { r: 30200, mass: 9e4,   radius: 140, ptype: 'ice', moons: 3, station: true },
+    { r: 34500, mass: 1.1e5, radius: 150, ptype: 'rocky', moons: 3 },
+    // ---- THE OUTER BAND: the room opened by the WORLD_R area growth. Entries
+    // are APPENDED so every earlier world's seeded placement is untouched
+    // (draws happen in layout order); only post-layout content re-rolls its
+    // angles. The dark star keeps its 39500 lane between the two, and The
+    // Farshoal (dense field) rides the frost fringe beyond both.
+    // The frozen sentinel that used to close the table out at 42600 was one of
+    // the four worlds this pass cut, so 40800 is now the outermost lane. It
+    // has room to spare: the old clearance rule sizing that gap was the rogue
+    // spawn ring, and nothing has spawned a rogue since they were removed.
+    { r: 38300, mass: 6e4,   radius: 115, ptype: 'ice', moons: 3 },
     { r: 40800, mass: 5.5e4, radius: 105, ptype: 'rocky', moons: 1, station: true },
-    { r: 42600, mass: 3.5e4, radius: 85,  ptype: 'ice' },   // a lone frozen sentinel — no moons, under the moon-accretion mass floor
   ];
+  // ...spread out by SYSTEM SCALE before anything reads a lane. The authored
+  // radii above are the SHAPE; SR is what says how far apart it sits. Applied
+  // HERE, ahead of the neighbour-clearance pass below, so that pass measures
+  // the gaps the sky actually has — a 1.3x wider lane holds more world, which
+  // is the second half of "bigger": the amber giant clears its neighbours at
+  // the full PLANET_R_MUL now instead of being clamped down to 1148.
+  // Pure arithmetic, NO rng draw — the seeded stream is untouched.
+  for (const item of layout) item.r = SR(item.r);
+
   // ---- WORLD SCALE. The radii authored above are the SHAPE of the sky; the
   // worlds are built up to CFG.PLANET_R_MUL times that size (see the note on
   // the constant for why the MASSES stay put). "Up to", because a lane only
@@ -647,7 +742,14 @@ export function generateWorld(game, seed = 20260721) {
   // ---- DISCOVERY LAYER: landmarks and one-off finds. Everything here is
   // seeded, so each is in the same place every run — you can give directions
   // by them. (Set BEFORE the ring fields so ringGap shapes chunk placement.)
-  const planetAtOrbit = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
+  // Look a world up by the lane it was AUTHORED at, and apply SYSTEM SCALE
+  // here rather than at each call site: every caller below is naming a row of
+  // the layout table, and a lookup that missed the multiplier would not throw
+  // — it would return undefined and the world would simply ship without its
+  // landmark, its shepherd or its siege. One scaling point, six callers, no
+  // way to forget it. (This used to have an identical twin further down named
+  // planetAtR, which is precisely the drift this consolidates.)
+  const planetAtOrbit = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - SR(r)) < 60);
 
   // LANDMARKS: render-only flags giving select worlds a unique face — the
   // Great Eye on the big gas giant, a rayed impact basin, live cryo-geysers.
@@ -723,7 +825,7 @@ export function generateWorld(game, seed = 20260721) {
     const g0 = rng() * TAU;
     for (let i = 0; i < 9; i++) {
       const a = g0 + (i / 9) * TAU + rand(rng, -0.15, 0.15);
-      const gr = 3250 + rand(rng, -90, 90);
+      const gr = GRAVEYARD_R + rand(rng, -90, 90);
       const wx = Math.cos(a) * gr, wy = Math.sin(a) * gr;
       const wv = orbitVel(sun, wx, wy, 1);
       const w = spawnAsteroid(bodies, wx, wy, wv.vx, wv.vy, i === 0 ? 2800 : rand(rng, 200, 700));
@@ -752,7 +854,7 @@ export function generateWorld(game, seed = 20260721) {
   // station-keeping (it's a wreck, not infrastructure).
   {
     const th = rng() * TAU;
-    const gr = 31400;
+    const gr = SR(31400);
     const gx = Math.cos(th) * gr, gy = Math.sin(th) * gr;
     const gv = orbitVel(sun, gx, gy, 1);
     const gh = new Body({
@@ -772,7 +874,7 @@ export function generateWorld(game, seed = 20260721) {
   // and screenshot. (render.js gives carved rocks a machined silhouette.)
   {
     const th = rng() * TAU;
-    const cr2 = 18400 + rand(rng, -300, 300);
+    const cr2 = SR(18400) + rand(rng, -300, 300);   // the middle belt's own lane
     const cx2 = Math.cos(th) * cr2, cy2 = Math.sin(th) * cr2;
     const cv2 = orbitVel(sun, cx2, cy2, 1);
     const cs = spawnAsteroid(bodies, cx2, cy2, cv2.vx, cv2.vy, 777);
@@ -812,8 +914,7 @@ export function generateWorld(game, seed = 20260721) {
       })),
     };
   };
-  const planetAtR = (r) => planets.find((p) => p.parent === sun && Math.abs(Math.hypot(p.x, p.y) - r) < 60);
-  fortify(planetAtR(13000), 260, 3);
+  fortify(planetAtOrbit(13000), 260, 3);
   // (volcanic/shepherd moons are discovery content — never fortified — and a
   // fort on a DUST moon would contradict its stealth-haven job)
   // (the size floor rides MOON_R_MUL — unscaled it would pass EVERY moon and
@@ -843,7 +944,7 @@ export function generateWorld(game, seed = 20260721) {
   // Player starts in a stable orbit inside the inner asteroid belt.
   // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
   // from the rocks around it.
-  const sr = 8000;
+  const sr = SR(8000);
   const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
   game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
   game.homeStar = sun;
@@ -901,16 +1002,17 @@ export function generateWorld(game, seed = 20260721) {
   // noBoundary; that flag is the interstellar visitor's alone.
   {
     const th = rng() * TAU;
-    const dr2 = 39500;   // its lane threads the outer band, between the 38300 and 40800 worlds
+    const dr2 = SR(39500);   // its lane threads the outer band, between the 38300 and 40800 worlds
     const dx = Math.cos(th) * dr2, dy = Math.sin(th) * dr2;
     const dv = orbitVel(sun, dx, dy, 1);
     const dk = new Body({
       type: 'planet', x: dx, y: dy, vx: dv.vx, vy: dv.vy,
       // Scaled like a layout world (WORLD SCALE), but it is spawned outside
       // the layout so it takes the multiplier raw rather than the neighbour
-      // clamp. It can afford to: its 39500 lane sits 1200/1300 from the 38300
-      // and 40800 worlds, and the three grown discs together leave ~600 clear
-      // on the tighter side.
+      // clamp. It can afford to, and by a wider margin than it used to: an
+      // authored 1200/1300 to the 38300 and 40800 worlds became ~1560/1690
+      // once SYSTEM SCALE spread those lanes, against three grown discs that
+      // did not change size.
       mass: 4.5e4, radius: 70 * CFG.PLANET_R_MUL, color: '#241f2e',
       name: "The Wanderer's Star", parent: sun,
     });
@@ -1111,14 +1213,18 @@ function seedDebrisBelts(bodies, planets, rng) {
 // clear of the existing belts. Each field is home to a finite SHOAL LURKER
 // brood (CFG.FIELD_BROOD, ai.js) — the second and only other alien source
 // besides nests; a brood destroyed quiets its field for the run.
+// Radii are AUTHORED here and spread by SYSTEM SCALE at seed time (see SR),
+// so a pocket keeps sitting in the lane gap it was placed in however far apart
+// the sky is spread. The Hushfield's gap widened when the 32500 ice world was
+// cut, which only gives it more room on the sunward side.
 const FIELD_DEFS = [
   { r: 10400, name: 'The Shoal' },
   { r: 23000, name: 'The Grindstones' },
   { r: 33500, name: 'The Hushfield' },
   // The frost fringe of the outer band opened by the WORLD_R 42000→46000
-  // area growth. Beyond every planet lane (42600), brushing the Oort warning
-  // band — evocative and harmless: Oort grinding bites the SHIP only, rocks
-  // and lurkers are immune, and the reknit absorbs spawn-ring rogue plows.
+  // area growth. Beyond every planet lane, brushing the Oort warning band —
+  // evocative and harmless: Oort grinding bites the SHIP only, rocks and
+  // lurkers are immune, and the reknit absorbs spawn-ring rogue plows.
   { r: 44300, name: 'The Farshoal' },
 ];
 
@@ -1139,9 +1245,22 @@ const FIELD_DEFS = [
 // pocket's nearest-neighbour spacing where it was (~59u at FIELD_ROCKS 1800)
 // while the visible material in it goes up — LESS gravel, MORE rock, which is
 // a different thing from "denser".
-function fieldMass(rng) {
-  if (rng() < 0.46) return 2200 + rng() * 4200;     // chunky tier: 2200-6400
-  return 220 + Math.pow(rng(), 1.05) * 1780;
+//
+// AND IT KNOWS WHERE IT IS. `frac` is the rock's normalised distance from the
+// heart (config.fieldFrac, 0 at the centre and 1 at the outline), and both the
+// chunky tier's share and the ladder's overall scale fall across it. A pocket
+// whose gravel is the same size everywhere reads as one texture stretched over
+// a big area; graded, the middle is where the material is and the rim is where
+// it runs out. The endpoints (CFG.FIELD_CHUNK_* / FIELD_GRAVEL_TAPER) are set
+// so the MEAN gravel mass barely moves — the gradient is the change, not the
+// tonnage.
+function fieldMass(rng, frac = 0.5) {
+  const t = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+  const chunky = CFG.FIELD_CHUNK_CORE + (CFG.FIELD_CHUNK_EDGE - CFG.FIELD_CHUNK_CORE) * t;
+  const scale = CFG.FIELD_GRAVEL_TAPER[0]
+    + (CFG.FIELD_GRAVEL_TAPER[1] - CFG.FIELD_GRAVEL_TAPER[0]) * t;
+  if (rng() < chunky) return (2200 + rng() * 4200) * scale;   // chunky tier
+  return (220 + Math.pow(rng(), 1.05) * 1780) * scale;
 }
 
 // Stamp a body as FIELD ROCK — the shoal's own material. Exported because
@@ -1186,14 +1305,23 @@ export function markFieldRock(b, fi) {
 // that correction a 3900u-long pocket at the inner lane sags ~730u sunward at
 // its ends — a third of its own half-thickness — and the containment test
 // stops agreeing with where the rocks visibly are.
-function fieldPoint(f, sun, rng) {
+// `pow` is the exponent on the normalised radius (see CFG.FIELD_*_POW): 0.5 is
+// area-uniform, larger pulls the draw toward the HEART. It is a parameter and
+// not a constant because the same sampler places a monolith, a giant and loose
+// gravel, and those want different gradients — the biggest rock hard into the
+// middle, the gravel gently, the fringe stragglers not at all.
+function fieldPoint(f, sun, rng, pow = 0.5) {
   let th = rng() * TAU, lb = fieldLobe(f, th);
   for (let k = 0; k < 3; k++) {
     if (rng() < (lb * lb) / (FIELD_LOBE_MAX * FIELD_LOBE_MAX)) break;
     th = rng() * TAU; lb = fieldLobe(f, th);
   }
-  let q = Math.sqrt(rng()) * lb;
-  if (rng() < 0.07) q *= 1 + rng() * 0.35;   // fringe straggler
+  let q = Math.pow(rng(), pow) * lb;
+  // The fringe straggler is drawn AFTER the taper and pushes outward regardless
+  // of it: the ragged edge is the no-hard-edges law, and a pocket that tapers
+  // its way to nothing at the rim would still end on a visible boundary — it
+  // would just end on a fainter one.
+  if (rng() < 0.07) q *= 1 + rng() * 0.35;
   const tan = Math.cos(th) * q * CFG.FIELD_LEN;
   const rad = Math.sin(th) * q * CFG.FIELD_SPREAD;
   const rr = f.r + rad + (tan * tan) / (2 * f.r);
@@ -1207,8 +1335,24 @@ function fieldPoint(f, sun, rng) {
 // silts every passage up and the maze stops existing at the only scale the
 // ship cares about. A minority (CFG.FIELD_RUBBLE_LOOSE) still spawns loose, or
 // the pocket reads as a set of rings drawn around boulders.
+// How likely a rock is to be KEPT where it landed: 1 at the heart, falling to
+// CFG.FIELD_EDGE_KEEP at the outline and holding there. It holds rather than
+// continuing to fall because the fringe past the outline is the ragged edge the
+// no-hard-edges law asks for, and thinning it toward nothing would put the
+// visible boundary back — just a softer one, in a different place.
+function fieldKeep(f, x, y) {
+  const t = Math.min(1, fieldFrac(f, x, y));
+  return 1 + (CFG.FIELD_EDGE_KEEP - 1) * t;
+}
+
+// The skirt draw needs no taper of its own: it banks against the huge rocks,
+// and those are now packed from the heart outward, so the gravel inherits the
+// gradient from its hosts. Only the LOOSE minority is drawn against the pocket
+// directly, and that is the draw CFG.FIELD_RUBBLE_POW pulls inward.
 function rubblePoint(f, sun, rng, bigs) {
-  if (!bigs.length || rng() < CFG.FIELD_RUBBLE_LOOSE) return fieldPoint(f, sun, rng);
+  if (!bigs.length || rng() < CFG.FIELD_RUBBLE_LOOSE) {
+    return fieldPoint(f, sun, rng, CFG.FIELD_RUBBLE_POW);
+  }
   const h = bigs[Math.floor(rng() * bigs.length)];
   const a = rng() * TAU;
   const d = h.radius * 1.02
@@ -1257,19 +1401,43 @@ function pocketKeepOut(game, f) {
 // before it looks for room. Placing on the class radius and varying afterwards
 // would be the same bug the celestial keep-out fixes: a rock that grew after
 // placement overlaps whatever it was measured to clear.
+// THE BIGGEST GO IN FIRST AND THEY GO IN THE MIDDLE. `spec` is placed in the
+// order given (seedDenseFields sorts it heaviest-first) and each entry carries
+// its own `pow`, interpolated from CFG.FIELD_CORE_POW down to FIELD_EDGE_POW
+// across the size range — so a monolith is drawn hard toward the heart and the
+// smallest giant is drawn almost anywhere. Combined with heaviest-first, the
+// core fills with the big masonry and everything after it packs around and
+// outward from that, which is the clumping the pocket is supposed to have.
+//
+// THE BIAS IS DROPPED ON THE LAST TRIES, and that is not a detail. The packer
+// is best-effort within a try budget, and a centre-biased draw into a centre
+// that is already full rejects every candidate — so the rock would be silently
+// LOST rather than placed further out, and the count that vanishes is exactly
+// the biggest rocks. Past FIELD_PACK_BIAS_TRIES the draw goes back to uniform
+// and the rock takes what room is left.
 function packBigRock(f, sun, rng, spec, radiusOf, slots, keepOut) {
   let placed = 0;
   for (const sp of spec) {
     const mass = sp.mass;
     const r = radiusOf(mass) * sp.vary;    // the radius this rock WILL have
     let spot = null, spotNear = Infinity;
+    const biasTries = CFG.FIELD_PACK_TRIES * CFG.FIELD_PACK_BIAS_FRAC;
     for (let t = 0; t < CFG.FIELD_PACK_TRIES; t++) {
-      const p = fieldPoint(f, sun, rng);
+      const p = fieldPoint(f, sun, rng, t < biasTries ? sp.pow : 0.5);
       const gap = rand(rng, CFG.FIELD_PACK_GAP[0], CFG.FIELD_PACK_GAP[1]);
       let clash = false, near = Infinity;
       for (const g of slots) {
         const d = Math.hypot(g.x - p.x, g.y - p.y) - g.r - r;
-        if (d < gap) { clash = true; break; }
+        // THE HEART KEEPS ITS OWN CLEARANCE. Everything else is spaced by the
+        // per-pair FIELD_PACK_GAP (4-58 units — at the low end, two neighbours
+        // read as touching), and once the biggest rocks are drawn toward the
+        // middle that gap welds a ring of monoliths onto the heart. Measured:
+        // a staged shot at the heart lost 60% of its damage to whatever was
+        // parked in front of it, and FIELD_HP_CAP exists precisely so a
+        // monolith stays breakable. The heart is also the field's NAME, its
+        // chart entry and the AI's anchor — it is the thing you fly in to
+        // reach, so it is the one rock that is allowed some room around it.
+        if (d < (g.heart ? CFG.FIELD_HEART_CLEAR : gap)) { clash = true; break; }
         if (d < near) near = d;
       }
       // Celestials get a fat margin on top of both radii. Touching is not good
@@ -1317,6 +1485,7 @@ function seedDenseFields(game, sun, rng) {
   game.fields = [];
   for (let fi = 0; fi < FIELD_DEFS.length; fi++) {
     const fd = FIELD_DEFS[fi];
+    const fdR = SR(fd.r);   // SYSTEM SCALE — the authored radius spread out with the lanes
     const ang0 = rng() * TAU;
     // ONE shared angular speed for the whole shoal: railBody's per-body ±4%
     // w jitter would shear a pocket this tight into a long dilute arc within
@@ -1325,10 +1494,10 @@ function seedDenseFields(game, sun, rng) {
     // drift, which is what keeps "super dense" true for the whole run. The
     // FIELD's w is nudged once per field instead (deterministic off fi), so
     // the three shoals never sit in lockstep with the belts around them.
-    const w = Math.sqrt(CFG.G * sun.mass / (fd.r * fd.r * fd.r)) * (1 + (fi - 1) * 0.015);
+    const w = Math.sqrt(CFG.G * sun.mass / (fdR * fdR * fdR)) * (1 + (fi - 1) * 0.015);
     const f = {
-      r: fd.r, ang: ang0, w, name: fd.name, heart: null,
-      x: sun.x + Math.cos(ang0) * fd.r, y: sun.y + Math.sin(ang0) * fd.r,
+      r: fdR, ang: ang0, w, name: fd.name, heart: null,
+      x: sun.x + Math.cos(ang0) * fdR, y: sun.y + Math.sin(ang0) * fdR,
       brood: CFG.FIELD_BROOD, wakeT: 0, cleared: false, near: false, seen: false,
       // The pocket's own SILHOUETTE (config.fieldLobe): three harmonics drawn
       // once here, so a field's shape is part of the world seed and every
@@ -1370,6 +1539,21 @@ function seedDenseFields(game, sun, rng) {
       giantSpec.push({ mass: rand(rng, CFG.FIELD_GIANT_MASS[0], CFG.FIELD_GIANT_MASS[1]),
         vary: vary() });
     }
+    // HEAVIEST FIRST, and each rock's own pull toward the heart set from where
+    // it sits in the size range. Sorting is what makes the bias mean anything:
+    // draw order IS packing order, so whatever goes first takes the middle.
+    // The two classes are ranked TOGETHER — monoliths are 5-8x a giant's mass,
+    // so ranking within each class separately would have the smallest monolith
+    // and the biggest giant asking for the same spot with the same claim.
+    const spanLo = CFG.FIELD_GIANT_MASS[0], spanHi = CFG.FIELD_MONOLITH_MASS[1];
+    const setPow = (sp) => {
+      const s = Math.min(1, Math.max(0, (sp.mass * sp.vary - spanLo) / (spanHi - spanLo)));
+      sp.pow = CFG.FIELD_EDGE_POW + (CFG.FIELD_CORE_POW - CFG.FIELD_EDGE_POW) * s;
+      return sp;
+    };
+    monoSpec.forEach(setPow); giantSpec.forEach(setPow);
+    monoSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
+    giantSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
     const keepOut = pocketKeepOut(game, f);
     packBigRock(f, sun, rng, monoSpec,
       (m) => asteroidRadius(m) * CFG.FIELD_MONOLITH_R_MUL, slots, keepOut);
@@ -1410,12 +1594,25 @@ function seedDenseFields(game, sun, rng) {
         for (const g of bigs) {
           if (Math.hypot(g.x - x, g.y - y) < g.radius + 26) { clash = true; break; }
         }
+        // THE DENSITY TAPER, applied where the rock actually LANDED. Biasing
+        // the samplers is not enough on its own: four rocks in five are skirt
+        // gravel banked against a host, so they inherit the masonry's spread
+        // and no amount of pull on the loose draw moves them. A rejection on
+        // the final position is the one place that catches every path into the
+        // pocket. Count is unchanged — a rejected draw is retried, so the same
+        // FIELD_ROCKS end up further in rather than fewer.
+        if (!clash && rng() > fieldKeep(f, x, y) && tries < 7) continue;
         if (!clash) break;
       }
       const v = orbitVel(sun, x, y, 1);
+      // The mass ladder is drawn against where the rock LANDED, not where it
+      // was aimed — the skirt draw offsets it off a host by up to a couple of
+      // hundred units, and a rock banked on the outside of an outer giant is at
+      // the rim whatever its host's own frac says.
       const rock = rng() < 0.02
         ? spawnCache(game.bodies, x, y, v.vx, v.vy)   // shoals hide salvage
-        : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+        : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          fieldMass(rng, fieldFrac(f, x, y))), rng);
       railBody(rock, sun);
       rock.rail.w = w;
       markFieldRock(rock, fi);
@@ -1812,9 +2009,11 @@ export function replenishWorld(game, dt) {
     game.vesperRespawnT = (game.vesperRespawnT ?? 240) - dt;
     if (game.vesperRespawnT <= 0) {
       game.vesperRespawnT = null;
-      // Never pop into existence in view — flip to the far side if needed
+      // Never pop into existence in view — flip to the far side if needed.
+      // Test the point spawnVesper will ACTUALLY use (VESPER_PERI), not the
+      // authored radius: a check aimed at a different orbit is no check.
       let th = rng() * TAU;
-      const px = Math.cos(th) * 3900, py = Math.sin(th) * 3900;
+      const px = Math.cos(th) * VESPER_PERI, py = Math.sin(th) * VESPER_PERI;
       if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
       spawnVesper(game, game.homeStar, th);
     }
@@ -1828,7 +2027,9 @@ export function replenishWorld(game, dt) {
     if (game.tinkerRespawnT <= 0) {
       game.tinkerRespawnT = null;
       let th = Math.random() * TAU;
-      const px = Math.cos(th) * 12000, py = Math.sin(th) * 12000;
+      // Same rule as Vesper above: the off-view test has to be taken on the
+      // lane spawnTinker actually uses.
+      const px = Math.cos(th) * TINKER_R, py = Math.sin(th) * TINKER_R;
       if (Math.hypot(px - s.x, py - s.y) < (game.viewR || 1200) * 1.5) th += Math.PI;
       spawnTinker(game, game.homeStar, th);
     }
@@ -1886,7 +2087,11 @@ export function replenishWorld(game, dt) {
         // Never in view — a rock fading into existence mid-screen reads wrong
         if (Math.hypot(x - s.x, y - s.y) < (game.viewR || 1200) * 1.3) continue;
         const v = orbitVel(game.homeStar, x, y, 1);
-        const rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, fieldMass(rng)), rng);
+        // Same taper the seed pass uses. Reknitting from a flat ladder would
+        // slowly erase the size gradient over a long run — the same failure the
+        // skirt draw above exists to prevent, one knob along.
+        const rock = maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
+          fieldMass(rng, fieldFrac(f, x, y))), rng);
         railBody(rock, game.homeStar);
         rock.rail.w = f.w;   // join the rigid pocket, not the jittered flow
         markFieldRock(rock, fi);
@@ -2237,10 +2442,15 @@ export function replenishWorld(game, dt) {
         }
       }
     }
-    // Graveyard orbit: announce the wreck ring on first close pass
+    // Graveyard orbit: announce the wreck ring on first close pass. The band
+    // is a SUN-DISTANCE window straddling GRAVEYARD_R, so it rides SYSTEM
+    // SCALE with the ring it is announcing — left unscaled it would sit in
+    // empty space inside the innermost lane and the ring would never announce
+    // at all. Reaching up to VESPER_PERI is deliberate: the comet's perihelion
+    // is the top of the same neighbourhood.
     if (s.alive && !game.tut.graveyard) {
       const rc = Math.hypot(s.x - hs.x, s.y - hs.y);
-      if (rc > 2750 && rc < 3900) game.graveyardWarn = true;
+      if (rc > SR(2750) && rc < VESPER_PERI) game.graveyardWarn = true;
     }
     // Comet Vesper: announce the first time it crosses the player's view
     if (s.alive && game.vesper && game.vesper.alive && !game.tut.vesper &&

@@ -62,12 +62,29 @@ html, body {
    at the screen edge; the mood channel below carries the same information
    without drawing an outline around the world.
    --fr is the chrome color; alarm states on #hud repaint it (low hull → ember). */
-/* --mood / --moodI are written per frame by hud.js from the music director's
-   mood vector (see moodChrome): the chrome takes the mood's color and brightens
-   with its intensity, so the cockpit warms near the sun and goes ember under
-   threat. Both fall back when unset, and mood is zero until the run starts —
-   the title screen and a calm cruise look exactly as they did. */
-#hud { --fr: var(--mood, var(--chrome)); }
+/* THE COCKPIT'S ACCENT IS THE LOCALE'S, not one fixed violet.
+   --zone-*-rgb are written per frame by hud.js (see zoneChrome) from the locale
+   director's crossfaded accent: violet in deep space, gold at a world, ice blue
+   in the corona, orchid inside a shoal, glacial out at the Oort fringe. Each
+   is picked to sit OPPOSITE that region's sky, which is the whole point — the
+   old mood tint blended TOWARD it and went amber-on-amber near the star.
+   See src/zone.js for the zones and docs/design-laws.md for the law.
+
+   They are COMMA TRIPLETS so every rule below can spend them at its own alpha
+   (rgba(var(--zone-rgb), .4)). --chrome / --chrome-soft are re-declared here so
+   that everything already written in terms of them follows the locale for free;
+   the :root pair stays the house violet, which is what the SHELL MENUS keep —
+   they sit outside #hud, and a pause screen is not a place the ship is at.
+   The fallbacks are that same violet, so the title screen is unchanged.
+   Instruments never take the accent (hull green / shield blue / lives pink). */
+#hud {
+  --zone-rgb: 176, 112, 255;
+  --zone-soft-rgb: 216, 184, 255;
+  --zone-deep-rgb: 133, 81, 199;
+  --chrome: rgb(var(--zone-rgb));
+  --chrome-soft: rgb(var(--zone-soft-rgb));
+  --fr: var(--chrome);
+}
 /* The mood wash: a wide, soft edge glow in the chrome's current color, sitting
    BEHIND every instrument (z-index -1 — #hud is fixed, so it can't escape past
    the canvas) and well under the #fx alarm vignettes, which must always
@@ -289,7 +306,7 @@ body.preGame #hud::after { opacity: 0; }
   display: flex; flex-direction: column;
   width: 320px;
   padding: 16px 16px 13px 15px;
-  text-shadow: 0 0 6px rgba(176, 112, 255, .5);
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .5);
   font-size: 13px; letter-spacing: 1px;
 }
 /* The silhouette is drawn by ONE luminous stroke that starts hot on the spine
@@ -308,20 +325,20 @@ body.preGame #hud::after { opacity: 0; }
   content: ''; position: absolute; inset: 0; z-index: -2;
   background:
     /* the spine — brightest where the rail lands on it, fading to the foot */
-    linear-gradient(180deg, rgba(224, 190, 255, .95), rgba(150, 84, 240, .58) 50%, rgba(118, 58, 200, .22))
+    linear-gradient(180deg, rgba(var(--zone-soft-rgb), .95), rgba(var(--zone-deep-rgb), .58) 50%, rgba(var(--zone-deep-rgb), .22))
       left / 3px 100% no-repeat,
     /* the rest of the outline, dissolving as it goes */
-    linear-gradient(122deg, rgba(214, 172, 255, .6), rgba(176, 112, 255, .22) 42%, rgba(176, 112, 255, .04));
+    linear-gradient(122deg, rgba(var(--zone-soft-rgb), .6), rgba(var(--zone-rgb), .22) 42%, rgba(var(--zone-rgb), .04));
 }
 #bottomleft::after {
   content: ''; position: absolute; inset: 1px 1px 1px 3px; z-index: -1;
   background:
     /* circuit grid + scanlines, barely-there (the panel kit's texture) */
-    repeating-linear-gradient(90deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
-    repeating-linear-gradient(0deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
-    repeating-linear-gradient(0deg, rgba(216, 180, 255, .022) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(var(--zone-rgb), .035) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(var(--zone-rgb), .035) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(var(--zone-soft-rgb), .022) 0 1px, transparent 1px 3px),
     /* light spilling down out from under the rail */
-    radial-gradient(115% 58% at 18% 0%, rgba(150, 80, 255, .15), transparent 62%),
+    radial-gradient(115% 58% at 18% 0%, rgba(var(--zone-deep-rgb), .15), transparent 62%),
     /* the bed — sheer, and thinning further toward the right */
     linear-gradient(90deg, rgba(10, 5, 22, .62), rgba(10, 5, 22, .4) 58%, rgba(10, 5, 22, .17));
 }
@@ -363,14 +380,14 @@ body.preGame #hud::after { opacity: 0; }
 #upList2 { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
 #upList2 .ulhead {
   display: flex; align-items: center; gap: 9px;
-  font-size: 9px; letter-spacing: 3px; color: rgba(206, 170, 255, .7);
+  font-size: 9px; letter-spacing: 3px; color: rgba(var(--zone-soft-rgb), .7);
   margin: 0 0 3px;
   font-family: var(--font-ui); font-weight: 600;
-  text-shadow: 0 0 6px rgba(176, 112, 255, .5);
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .5);
 }
 #upList2 .ulhead::after {
   content: ''; flex: 1; height: 1px;
-  background: linear-gradient(90deg, rgba(176, 112, 255, .38), rgba(176, 112, 255, 0));
+  background: linear-gradient(90deg, rgba(var(--zone-rgb), .38), rgba(var(--zone-rgb), 0));
 }
 /* The row bleeds its highlight out into the card's own padding (negative margin
    cancelled by equal padding, so the text keeps its exact width and the name's
@@ -382,7 +399,7 @@ body.preGame #hud::after { opacity: 0; }
 }
 .uprow2 .ui-ic {
   width: 15px; text-align: center; color: var(--chrome-soft);
-  text-shadow: 0 0 7px rgba(176, 112, 255, .9);
+  text-shadow: 0 0 7px rgba(var(--zone-rgb), .9);
   transition: color .16s ease, text-shadow .16s ease;
 }
 .uprow2 .ui-nm {
@@ -392,7 +409,7 @@ body.preGame #hud::after { opacity: 0; }
 .uprow2 .ui-rk { display: inline-flex; gap: 4px; }
 .uprow2 .ui-rk .rp {
   width: 6px; height: 6px; border-radius: 50%;
-  border: 1px solid rgba(176, 112, 255, .4);
+  border: 1px solid rgba(var(--zone-rgb), .4);
   background: rgba(24, 12, 44, .6);
 }
 .uprow2 .ui-rk .rp.on {
@@ -410,21 +427,21 @@ body.preGame #hud::after { opacity: 0; }
    one composited layer and ends parked off the row. */
 .ab2 .uprow2 {
   background:
-    linear-gradient(100deg, transparent 24%, rgba(222, 194, 255, .3) 50%, transparent 76%)
+    linear-gradient(100deg, transparent 24%, rgba(var(--zone-soft-rgb), .3) 50%, transparent 76%)
       170% 0 / 240% 100% no-repeat;
 }
 .ab2.hover .uprow2 {
-  background-color: rgba(176, 112, 255, .14);
+  background-color: rgba(var(--zone-rgb), .14);
   animation: abilSheen .55s ease-out;
 }
 @keyframes abilSheen {
   from { background-position: 170% 0; }
   to   { background-position: -170% 0; }
 }
-.ab2.hover .ui-nm { color: #ffffff; text-shadow: 0 0 10px rgba(206, 170, 255, .85); }
-.ab2.hover .ui-ic { color: #f4ecff; text-shadow: 0 0 11px rgba(176, 112, 255, 1); }
+.ab2.hover .ui-nm { color: #ffffff; text-shadow: 0 0 10px rgba(var(--zone-soft-rgb), .85); }
+.ab2.hover .ui-ic { color: #f4ecff; text-shadow: 0 0 11px rgba(var(--zone-rgb), 1); }
 /* the row's own XP track comes up with it, so the whole entry reads as one */
-.ab2.hover .ui-xp { background: rgba(176, 112, 255, .3); }
+.ab2.hover .ui-xp { background: rgba(var(--zone-rgb), .3); }
 
 /* Per-ability XP track. Ranks are earned automatically (config.growAbilities),
    so every learned ability gets its own hairline bar filling toward its next
@@ -437,7 +454,7 @@ body.preGame #hud::after { opacity: 0; }
 .ab2 .ui-xp {
   height: 2px; margin-left: 22px;   /* indented past the icon column */
   border-radius: 999px;
-  background: rgba(176, 112, 255, .16);
+  background: rgba(var(--zone-rgb), .16);
   overflow: hidden;
   transition: background-color .16s ease;
 }
@@ -447,8 +464,8 @@ body.preGame #hud::after { opacity: 0; }
 .ab2 .ui-xpf {
   display: block; height: 100%; width: 0;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(150, 84, 240, .68), rgba(199, 162, 255, .9));
-  box-shadow: 0 0 4px rgba(176, 112, 255, .4);
+  background: linear-gradient(90deg, rgba(var(--zone-deep-rgb), .68), rgba(var(--zone-soft-rgb), .9));
+  box-shadow: 0 0 4px rgba(var(--zone-rgb), .4);
   transition: width .18s ease;
 }
 /* Maxed (or a single-unlock ability): nothing left to earn — the bar sits full
@@ -484,22 +501,24 @@ body.preGame #hud::after { opacity: 0; }
   height: 10px; padding: 2px;
   clip-path: var(--clip-oct);
   background: linear-gradient(150deg,
-    #f2e6ff, rgba(176, 112, 255, .85) 28%, rgba(176, 112, 255, .85) 72%, #e8d6ff);
+    #f2e6ff, rgba(var(--zone-rgb), .85) 28%, rgba(var(--zone-rgb), .85) 72%, #e8d6ff);
   filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .8));
 }
 #xpBar::before {   /* the dark well, inset inside the luminous rim */
   --ch: 3px;
   content: ''; position: absolute; inset: 2px;
   clip-path: var(--clip-oct);
-  background: linear-gradient(0deg, rgba(176, 112, 255, .1), rgba(176, 112, 255, .1)), rgba(9, 4, 20, .97);
+  background: linear-gradient(0deg, rgba(var(--zone-rgb), .1), rgba(var(--zone-rgb), .1)), rgba(9, 4, 20, .97);
 }
-#xpFill {   /* white-hot core, violet bloom — the vitals' sheen band rides it */
+#xpFill {   /* white-hot core, locale bloom — the vitals' sheen band rides it.
+               The rail is the biggest single piece of chrome on the canopy, so
+               it carries the accent hardest: hot rim, accent body, dark foot. */
   display: block; position: relative; z-index: 1; height: 100%; width: 0;
   border-radius: 2px;
   background:
     linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .32) 50%, transparent 58%) 0 0 / 260% 100%,
-    linear-gradient(180deg, #f0e2ff, #a35cff 58%, #6d27cc);
-  box-shadow: 0 0 11px rgba(176, 112, 255, .95), inset 0 1px 0 rgba(255, 255, 255, .6);
+    linear-gradient(180deg, rgba(var(--zone-soft-rgb), 1), rgba(var(--zone-rgb), 1) 58%, rgba(var(--zone-deep-rgb), 1));
+  box-shadow: 0 0 11px rgba(var(--zone-rgb), .95), inset 0 1px 0 rgba(255, 255, 255, .6);
   animation: gaugeSheen 4.5s linear infinite;
   transition: width .12s ease;
 }
@@ -528,12 +547,12 @@ body.preGame #hud::after { opacity: 0; }
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   margin: 0 0 9px;
   font-size: 9px; letter-spacing: 2.4px;
-  text-shadow: 0 0 7px rgba(176, 112, 255, .55), 0 1px 2px rgba(0, 0, 0, .9);
+  text-shadow: 0 0 7px rgba(var(--zone-rgb), .55), 0 1px 2px rgba(0, 0, 0, .9);
 }
 #tierLabel { white-space: nowrap; color: #e0d0ff; }
 #xpNext {
   white-space: nowrap; font-variant-numeric: tabular-nums;
-  color: rgba(206, 170, 255, .7);
+  color: rgba(var(--zone-soft-rgb), .7);
 }
 
 /* ---------------------------------------------------------------------------
@@ -555,32 +574,32 @@ body.preGame #hud::after { opacity: 0; }
   display: grid; grid-template-columns: auto 1fr auto;
   align-items: baseline; gap: 3px 9px;
   background: linear-gradient(150deg,
-    rgba(214, 178, 255, .62), rgba(150, 80, 255, .3) 30%, rgba(150, 80, 255, .3) 70%, rgba(214, 178, 255, .55));
+    rgba(var(--zone-soft-rgb), .62), rgba(var(--zone-deep-rgb), .3) 30%, rgba(var(--zone-deep-rgb), .3) 70%, rgba(var(--zone-soft-rgb), .55));
   filter: drop-shadow(0 3px 9px rgba(0, 0, 0, .6));
   animation: abilIn .13s ease;
 }
 #abilOut::before {   /* the glass, inside the rim */
   content: ''; position: absolute; inset: 2px; z-index: -1;
   background:
-    repeating-linear-gradient(0deg, rgba(216, 180, 255, .022) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(0deg, rgba(var(--zone-soft-rgb), .022) 0 1px, transparent 1px 3px),
     radial-gradient(120% 80% at 50% -10%, rgba(90, 40, 170, .3), transparent 62%),
     linear-gradient(165deg, rgba(12, 6, 28, .74), rgba(8, 4, 20, .78));
 }
 @keyframes abilIn { from { opacity: 0; transform: translateY(-50%) translateX(-6px); } }
 .aoIc {
   grid-row: 1; font-size: 15px; line-height: 1;
-  color: var(--chrome-soft); text-shadow: 0 0 9px rgba(176, 112, 255, .9);
+  color: var(--chrome-soft); text-shadow: 0 0 9px rgba(var(--zone-rgb), .9);
   margin: 11px 0 0 12px;
 }
 .aoNm {
   grid-row: 1; margin-top: 11px;
   font-family: var(--font-ui); font-weight: 600;
   font-size: 12.5px; letter-spacing: 1.4px; color: #f2e8ff;
-  text-shadow: 0 0 9px rgba(176, 112, 255, .6);
+  text-shadow: 0 0 9px rgba(var(--zone-rgb), .6);
 }
 .aoRk {
   grid-row: 1; margin: 11px 13px 0 0;
-  font-size: 9px; letter-spacing: 1.6px; color: rgba(206, 170, 255, .8);
+  font-size: 9px; letter-spacing: 1.6px; color: rgba(var(--zone-soft-rgb), .8);
 }
 .aoRk.max { color: var(--green); text-shadow: 0 0 8px rgba(120, 255, 180, .6); }
 .aoDesc {
@@ -592,7 +611,7 @@ body.preGame #hud::after { opacity: 0; }
   grid-column: 2 / -1; margin: 2px 13px 12px 0;
   font-size: 9px; letter-spacing: 1.8px;
   font-variant-numeric: tabular-nums;
-  color: rgba(176, 112, 255, .75);
+  color: rgba(var(--zone-rgb), .75);
 }
 
 /* Dev-only sim-speed badge (game.timeScale ≠ 1). Amber marks it as helper/
@@ -633,7 +652,7 @@ body.preGame #hud::after { opacity: 0; }
   font-family: var(--font-ui); font-weight: 600;
   font-size: 19px; letter-spacing: 3px; text-align: center;
   color: #f4edff;
-  text-shadow: 0 0 16px rgba(176, 112, 255, .95), 0 0 4px rgba(0, 0, 0, .9);
+  text-shadow: 0 0 16px rgba(var(--zone-rgb), .95), 0 0 4px rgba(0, 0, 0, .9);
   animation: msgfade .3s ease;
 }
 /* wing = a neon rule with a hot node at its outboard tip */
@@ -642,7 +661,7 @@ body.preGame #hud::after { opacity: 0; }
   background:
     radial-gradient(circle at 2.5px 50%, #ffffff 0 1.2px, var(--chrome) 2px, transparent 3px)
       left center / 6px 5px no-repeat,
-    linear-gradient(90deg, rgba(176, 112, 255, .9), rgba(176, 112, 255, 0))
+    linear-gradient(90deg, rgba(var(--zone-rgb), .9), rgba(var(--zone-rgb), 0))
       6px center / calc(100% - 6px) 1px no-repeat;
 }
 #msg::after { transform: scaleX(-1); }
@@ -1079,10 +1098,10 @@ body.preGame #radar { opacity: 0; }
   width: 240px; height: 240px; padding: 0;
   pointer-events: auto; cursor: pointer; border: none;
   color: var(--chrome-soft);
-  text-shadow: 0 0 7px rgba(176, 112, 255, .8);
+  text-shadow: 0 0 7px rgba(var(--zone-rgb), .8);
   background: linear-gradient(150deg,
-    rgba(176, 112, 255, .34), rgba(176, 112, 255, .12) 55%, rgba(176, 112, 255, .3));
-  filter: drop-shadow(0 0 5px rgba(150, 80, 255, .45));
+    rgba(var(--zone-rgb), .34), rgba(var(--zone-rgb), .12) 55%, rgba(var(--zone-rgb), .3));
+  filter: drop-shadow(0 0 5px rgba(var(--zone-deep-rgb), .45));
   transition: filter .14s ease, background .14s ease;
   clip-path: polygon(
     9.47% 55.68%, 8.91% 53.57%, 8.45% 51.43%, 8.07% 49.28%, 7.79% 47.12%,
@@ -1115,10 +1134,10 @@ body.preGame #radar { opacity: 0; }
   outline: none;
   color: #ffffff;
   background: linear-gradient(150deg,
-    rgba(200, 150, 255, .6), rgba(176, 112, 255, .28) 55%, rgba(200, 150, 255, .55));
-  filter: drop-shadow(0 0 11px rgba(150, 80, 255, .75));
+    rgba(var(--zone-soft-rgb), .6), rgba(var(--zone-rgb), .28) 55%, rgba(var(--zone-soft-rgb), .55));
+  filter: drop-shadow(0 0 11px rgba(var(--zone-deep-rgb), .75));
 }
-#menuBtn:active { filter: brightness(1.3) drop-shadow(0 0 11px rgba(150, 80, 255, .75)); }
+#menuBtn:active { filter: brightness(1.3) drop-shadow(0 0 11px rgba(var(--zone-deep-rgb), .75)); }
 
 /* ---------------------------------------------------------------------------
    Settings: labelled toggle switches + a read-only controls reference

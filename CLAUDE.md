@@ -16,7 +16,7 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 |---|---|
 | `physics.js`, rails, gravity, collisions, `CFG` hazard tuning | [docs/physics-invariants.md](docs/physics-invariants.md) |
 | `config.js` progression, `ABILITIES`, `shipStats`, `achievements.js` | [docs/progression.md](docs/progression.md) |
-| `render.js`, `hud.js`, `style.css`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
+| `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
 | splash / pause / settings / controls / credits / achievements panel | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
@@ -46,7 +46,7 @@ you're about to edit:
 |---|---|---|
 | `world.js` generation | `worldgen` | **1s** |
 | `config.js` progression / `ABILITIES` / `shipStats` | `progression` | **0.6s** |
-| `config.js` damage / hp / durability | `progression combat` | ~2s |
+| `config.js` damage / hp / durability | `progression combat` | ~4s |
 | `physics.js`, rails, gravity, collisions, `CFG` hazards | `stability combat` | ~16s |
 | `render.js`, hot loops, the LOD, registries | `perf` | ~11s |
 | anything you're unsure about, or a multi-file change | all — `node $B save` with no args | ~20s |
@@ -73,7 +73,7 @@ Skills wrap the recurring procedures; subagents audit a diff against the rules i
 
 | Skill | For |
 |---|---|
-| `balance-test` | long-horizon sky stability — `window.soak` against the 21-planet/48-moon baseline |
+| `balance-test` | long-horizon sky stability — `window.soak` against the 17-planet/59-moon baseline |
 | `mechanics-test` | fast "did I break the game loop?" — the fixed-seed `window.mechTest` suite |
 | `playtest` | **the default way to drive the game** — Browser pane: park the ship, force the event, screenshot it |
 | `run-solar-slinger` | clean-machine setup + scripted/unattended runs (Electron driver, nothing visible) |
@@ -137,6 +137,7 @@ presentation loop.
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Audio engine: the AudioContext + sfx/music buses. Every sound is a real CC0 recording — see [docs/audio.md](docs/audio.md). |
 | [music.js](src/music.js) | Adaptive music director: 24 CC-BY tracks in six playlists, exactly one playing at a time — see [docs/audio.md](docs/audio.md). |
+| [zone.js](src/zone.js) | Locale director: which of five places the ship is in, and the crossfaded accent colour the cockpit chrome takes there. Same bucket/hysteresis/dwell machine as music.js, but its presence scores are pure geometry over the frame registries. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`, `shellModal`, `senseBlind`, `crystalShards`). |
 | [devtest.js](src/devtest.js) | The scripted mechanics suite (`window.mechTest`). Lazy-loaded — normal play never imports it. |
 
@@ -175,9 +176,10 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
   optional `snd`: `sfxAlarm` = the ship is in danger NOW, `sfxWarnLow` = hostile contact / bad news,
   `sfxChime` = discovery / opportunity, `sfxLife` = triumph. Keep new events on that grammar.
 - **Determinism:** world *generation* uses a seeded `mulberry32`, but the seed is **random per run**
-  — pin one with `?seed=` for a repeatable world. The 20-planet/48-moon `layout` table in world.js
+  — pin one with `?seed=` for a repeatable world. The 15-planet/58-moon `layout` table in world.js
   is FIXED, so the seed varies placement, masses and features, never the structural counts: the
-  balance baseline holds on any seed. Runtime spawns/spall/AI intentionally use `Math.random`.
+  balance baseline holds on any seed. (It censuses as **17 planets / 59 moons** — the layout's 15
+  plus the crystal binary's companion and The Wanderer's Star, and the ring shepherd moonlet.) Runtime spawns/spall/AI intentionally use `Math.random`.
   Procedural sprite geometry is seeded off `b.id` and cached.
 ### Canvas discipline
 
@@ -198,7 +200,8 @@ changing anything it touches.**
 3. Ambient collisions below a closing-speed threshold do no damage; comparable-mass hits are capped.
 4. >20× mass ratio → the heavy body is immovable; natural celestial impulse is damped, thrown is not.
 5. Ship bounce kick is hard-capped at 200.
-6. `WORLD_R` exceeds every system's outermost reach; star-anchored bodies are exempt from the boundary force.
+6. `WORLD_R` exceeds every system's outermost reach — enforced by construction in `world.moonZone`,
+   not by arithmetic redone by hand; star-anchored bodies are exempt from the boundary force.
 7. Chunk shedding is gated, or it cascades — and every fragment system answers to one debris budget.
    7b. A split must not chain (no credit propagation, `chainOk`, `CHUNK_INERT`).
 8. A planet is its own durability class (flat `PLANET_HP_BASE` + gentle slope, not the mass curve).
@@ -256,10 +259,18 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **The ship shield is a calm, steady rim glow** — no dashes, no idle motion; motion is for events
   only. **Shield down draws nothing at all.**
 - **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
-- **The cockpit chrome is mood-reactive; the instruments are not** (hull green / shield blue / lives
-  pink stay semantic).
+- **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
+  pink stay semantic). `zone.js` picks the accent from WHERE THE SHIP IS — deep space violet, world
+  gold, corona ice, shoal orchid, fringe glacial — each chosen to sit OPPOSITE that region's sky.
+  Hue is the locale's; the edge wash's INTENSITY is still the music director's mood.
 - **No hard edges in-world** — the world boundary and the Oort cloud are stochastic weather, never a
   stroke at an exact radius. In-world transitions are organic, never geometric.
+- **A rock is never a perturbed primitive, and never convex** — a base shape plus noise reads as the
+  base shape, however hard you rough it. `util.rockOutline` is the ONE generator for gravel and
+  landmarks alike: lobes, stretch, 1/f grain, half-plane facets, concave bites and gouges, composed
+  as a radial function (so the outline cannot self-intersect and there is no vertex sort to produce a
+  sliver). A convexity guard cuts a notch into anything that comes out without one. It can be
+  notched, waisted or hollowed — never hooked; an overhang would break the single radial query.
 - **THE CRUMBLE:** a world under fire comes apart and the pieces stay; the crater you *see* is the
   crater you can fly into (one profile feeds render, physics and both predict mirrors).
 - **AN ERUPTION THROWS BOULDERS, NOT DUST** — a hit gas giant must shoot stuff *out*, but as a few
@@ -272,6 +283,20 @@ Plus the three scaling rules that make a big debris cascade affordable:
   later.
 - **World scale:** `PLANET_R_MUL`/`MOON_R_MUL` grow radii only — masses are untouched, and the
   multiplier is a *ceiling* capped by neighbouring lane clearance.
+- **System scale:** `CFG.SYS_R_MUL` spreads the sky. **Every sun-anchored radius in world.js goes
+  through `SR()`** — lanes, belts, graveyard, Vesper's ellipse, the shoals, the landmark lookups —
+  because the *relationships* between those numbers are what the content is built on. It moves
+  distance only: sky speed is `sqrt(G*sunMass/r)`, so spreading the sky slows every orbit rather
+  than keeping it (the sun's mass is the speed knob, and it is deliberately not recompensated).
+- **A PLANET SYSTEM IS RARE, AND IT IS AN EVENT** — fewer worlds, each with a bigger entourage.
+  Cuts come off the DUPLICATED archetypes only, never a unique ptype and never a landmark host
+  (`PTYPE_COUNT` and "strip every gas giant" both count them). Moon counts and `MOON_ZONE_MUL` move
+  TOGETHER, which is what leaves `spawnMoon`'s slot width — every sibling-clearance margin — intact.
+- **THE SKY TURNS ONE WAY** — every planet is prograde around the sun (`addPlanet`). A retrograde
+  lane meets its neighbours at the SUM of their angular speeds instead of the difference, so
+  conjunctions come round far more often and arrive above `DMG_THRESH`, where the railed-conjunction
+  pass-through no longer protects the overlapping moon families. The rng draw it replaced is KEPT
+  and discarded — never buy a constant with the seeded stream.
 - **A planet system is alive while you are in it**; loose debris is on a leash; a world you are not
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
@@ -310,7 +335,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 
 | Hook | Use |
 |---|---|
-| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "21/21", moons: "48/48", deaths, impacts, nanEvents, …}`. |
+| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "17/17", moons: "59/59", deaths, impacts, nanEvents, …}`. |
 | `window.mechTest()` | Fixed-seed scripted mechanics suite, ~1.5s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |

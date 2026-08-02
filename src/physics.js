@@ -1754,9 +1754,9 @@ function collideBodies(game, a, b) {
 
   // TWO RAILED CELESTIALS BRUSHING AT CONJUNCTION PASS THROUGH EACH OTHER.
   // Moon families deliberately reach past Hill stability (world.js moonZone,
-  // maxR = hill * 1.5) so systems stay wide, which means NEIGHBOURING planets'
-  // families overlap radially — measured on seed 3827467762, 16 of 20 adjacent
-  // pairs do, several by >8000u. Adjacent lanes run at different angular speeds
+  // maxR = hill * CFG.MOON_ZONE_MUL) so systems stay wide, which means
+  // NEIGHBOURING planets' families overlap radially — 14 of 16 adjacent pairs
+  // do, the worst by >20,000u. Adjacent lanes run at different angular speeds
   // and therefore ALWAYS reach conjunction, so these touches are a normal,
   // recurring event and not drama. They were silently lethal: at closing
   // 25-240 an impact does NO damage and logs NOTHING (see the sub-DMG_THRESH
@@ -1766,6 +1766,15 @@ function collideBodies(game, a, b) {
   // brush at closing 70-185: 4 swallowed + 7 absorbed moons per 600s idle soak,
   // with no player anywhere. Letting them overlap is the user's design call —
   // moons stay far out, and a conjunction must not unmake a charted world.
+  //
+  // THE OVERLAP IS DELIBERATELY LARGER NOW than when this guard was written
+  // (16 of 20 pairs, worst >8,000u), and what keeps it affordable is that
+  // every planet is PROGRADE (world.addPlanet). The guard is gated on
+  // `closing < DMG_THRESH`, and a retrograde lane meets its neighbours at the
+  // SUM of their angular speeds instead of the difference — more conjunctions,
+  // each about twice as fast, i.e. on the far side of the very gate that makes
+  // an overlap survivable. Reintroduce retrograde worlds and this guard stops
+  // covering the families it was written for.
   //
   // Deliberately narrow. It needs BOTH bodies railed (a rail is an exact,
   // deterministic orbit — nothing here is reacting to it) and BOTH natural

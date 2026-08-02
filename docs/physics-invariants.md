@@ -42,6 +42,15 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
    at 900+. (`physics.js:452`)
 6. **`WORLD_R` must exceed every system's outermost reach** (orbit + moons), and star-anchored
    planets/moons are exempt from the boundary force — it silently deorbits them otherwise. (`config.js:5`, `physics.js:613`)
+   **It is now BOUNDED BY CONSTRUCTION, in `world.moonZone`.** The zone a planet holds moons in is a
+   multiple of its HILL radius and Hill grows with `orbitR`, so the widest families in the sky are the
+   outer band's — exactly where there is least room left before the edge. Checking that by hand every
+   time the layout moved had quietly stopped working: measured on the pre-2026-08 sky, the outermost
+   world's single moon reached ~48,500 against a `WORLD_R` of 46,000, and widening the zone would have
+   taken that past 6,000 over. The clamp is `(WORLD_R - orbitR) / (1 + MOON_E_MAX)` — the ellipse
+   reaches `a*(1+e)`, so it is the APOAPSIS the boundary has to leave room for, not the semi-major
+   axis, and `MOON_E_MAX` is shared with `spawnMoon`'s `eCap` precisely so the two cannot drift apart.
+   Same idiom as `CRUST_PER_HOST` and `GAS_STRIP_EJECTA`: bound it by construction, not by hoping.
 7. **Chunk shedding is gated, or it cascades.** Big bodies (`CHUNK_MIN_MASS`+, moons and up; never
    stations/nests/gas giants) don't fail all-or-nothing — see **THE CRUMBLE** in the design laws for
    what a WORLD does with a hit; this invariant is the gating. Wear needs an IMPACT POINT (`hx/hy`):
@@ -113,21 +122,31 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
 **Two RAILED natural celestials touching below `DMG_THRESH` do not collide at all** — no derail, no
 separation, no impulse (`physics.collideBodies`, guarded right after `closing` is computed).
 
-Moon families deliberately reach past Hill stability (`world.moonZone`, `maxR = hill * 1.5`) so
-systems stay wide, which means **neighbouring planets' families overlap radially** — 16 of 20
-adjacent pairs on seed 3827467762, several by more than 8,000 units. Adjacent lanes run at different
-angular speeds and therefore always reach conjunction, so those touches are a normal recurring event.
-They were silently lethal: at closing 25–240 an impact does no damage and logs nothing, but the
-`closing > 25` derail still fired, and a moon knocked out of its exact orbit falls into whatever it is
-near — around a gas giant it was swallowed within seconds. Measured cost before the fix: 4 swallowed
-+ 7 absorbed moons per 600s idle soak, one planet left off-rail at −7.1% drift, **with no player
-anywhere**. After: all `moon:absorbed` gone, 48/48 moons on every seed, zero off-rail planets.
+Moon families deliberately reach past Hill stability (`world.moonZone`, `maxR = hill *
+CFG.MOON_ZONE_MUL`) so systems stay wide, which means **neighbouring planets' families overlap
+radially** — 14 of 16 adjacent pairs, the worst by more than 20,000 units. Adjacent lanes run at
+different angular speeds and therefore always reach conjunction, so those touches are a normal
+recurring event. They were silently lethal: at closing 25–240 an impact does no damage and logs
+nothing, but the `closing > 25` derail still fired, and a moon knocked out of its exact orbit falls
+into whatever it is near — around a gas giant it was swallowed within seconds. Measured cost before
+the fix: 4 swallowed + 7 absorbed moons per 600s idle soak, one planet left off-rail at −7.1% drift,
+**with no player anywhere**. After: all `moon:absorbed` gone, every moon alive on every seed, zero
+off-rail planets.
 
 **Letting the families overlap is the user's design call** — moons stay far out, and a conjunction
 must not unmake a charted world. The guard is deliberately narrow: both bodies railed, both natural
 (`thrownTimer <= 0`), both planet/moon type, and below `DMG_THRESH`. Player and alien throws keep
 every bit of their impulse, damage and derail, and a genuine celestial crunch above the threshold
-resolves normally. **Returning before the separation/impulse is the point** — a railed body shoved by
+resolves normally.
+
+**THE ALL-PROGRADE SKY IS WHAT KEEPS THAT AFFORDABLE.** The guard is gated on `closing <
+DMG_THRESH`, so how much overlap it can absorb depends entirely on how fast a conjunction closes.
+One planet in six used to be drawn retrograde, and a retrograde lane meets each neighbour at the SUM
+of their angular speeds rather than the difference — several times as many conjunctions, each at
+roughly twice the closing speed, i.e. on the wrong side of the threshold this whole guard lives
+below. `addPlanet` now fixes every sun-anchored planet prograde, which is what let the families be
+widened (`MOON_ZONE_MUL` 1.5 → 1.95 on top of a 1.3x system scale, worst overlap 13,222 → 20,771)
+with **no** moon or planet losses across 600s on all four bench seeds. **Returning before the separation/impulse is the point** — a railed body shoved by
 contact resolution snaps back on its next rail advance and visibly vibrates, so a half-fix that only
 skipped the derail would trade a dead moon for a juddering one.
 

@@ -17,6 +17,7 @@ import * as hud from './hud.js';
 import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
+import * as zone from './zone.js';
 import { lerp, shellModal, seedFrom } from './util.js';
 
 // A run's progression record. config.newProgress builds the roguelite half;
@@ -884,6 +885,7 @@ function resetRun(seed, openCard = true) {
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
+  zone.resetZone();                      // ...and so does the last run's cockpit accent
   regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
   hud.setDeathVisible(false);
@@ -1700,8 +1702,11 @@ function frame(now) {
   const t1 = performance.now();
 
   // The music director runs EVERY frame, frozen or not — menus duck it, and
-  // it needs dtReal for its own smoothing even while the sim holds still.
+  // it needs dtReal for its own smoothing even while the sim holds still. The
+  // locale director rides alongside it for the same reason: its crossfade is
+  // cosmetic easing with no quantized target, so it belongs on the wall clock.
   music.updateMusic(game, dtReal);
+  zone.updateZone(game, dtReal);
 
   render(game);
   hud.updateHud(game);
@@ -1738,6 +1743,7 @@ requestAnimationFrame(frame);
 // Debug/testing hooks: poke at state or step the sim from devtools
 window.game = game;
 window.musicState = music.musicState;   // live mood vector + bed gains
+window.zoneState = zone.zoneState;      // which locale owns the cockpit accent, and why
 window.tick = (seconds) => {
   game.started = true;   // headless soaks bypass the splash and run the sim
   // ...and bypass the spec modal: default to the first spec if none chosen, so
@@ -1759,6 +1765,7 @@ window.tick = (seconds) => {
     perf.steps = 0;   // frame() normally owns this; tick bypasses it, and a whole
     update(dt);       // tick's worth of substeps in the "per frame" slot would lie
     music.updateMusic(game, dt);
+    zone.updateZone(game, dt);   // ...and the locale with it — the pane suspends rAF
   }
   render(game);
   hud.updateHud(game);
