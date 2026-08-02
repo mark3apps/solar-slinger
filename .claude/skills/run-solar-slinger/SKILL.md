@@ -190,19 +190,28 @@ which just teaches you to ignore the tool. Fields are now classed:
 **Measured noise floor: 0–2 fields across three consecutive no-op runs.** If you see more than that
 with no change, something is genuinely moving.
 
-Two fixes were needed at the source to get there, both worth knowing: `performance.now()` is clamped
+Three fixes were needed at the source to get there, all worth knowing: `performance.now()` is clamped
 to ~0.1 ms in Electron, so a single render timed 0.2 vs 0.3 on identical code (+50%) — `perf.js` now
-times a batch of 20 renders per sample; and `combat.js` **freezes its target** (derails it, zeroes its
+times a batch of 20 renders per sample; `combat.js` **freezes its target** (derails it, zeroes its
 velocity) for the measurement, because a railed moving target gave spreads of 3466 vs 4936 on the same
-rung, plus outright misses.
+rung, plus outright misses; and `worldgen.js` **regenerates the world before counting it**, because
+the splash backdrop is a live sim and `waitfor window.game` returns after an unbounded slice of it —
+its `byType.asteroid` measured 8325 / 8324 / 8323 at 0s / 10s / 25s of boot delay, an EXACT field
+going red on unmodified code. The saved `3827467762` baseline had itself been captured 86 asteroids
+into that erosion.
 
 #### Adding a suite
 
 Drop `suites/<name>.js` in — it runs as an async IIFE in the page, returns a JSON-able object, and gets
 `ARGS` from the JSON passed after the path. Register it in the `SUITES` table in `bench.mjs` with its
 seeds. Rules that keep it diffable: **return numbers, not prose**; never return a wall-clock or a
-`Math.random`-derived count without adding it to `VOLATILE`; and **return `null`, not `0`, when a
-measurement did not happen** — a miss and a harmless result must not look alike.
+`Math.random`-derived count without adding it to `VOLATILE`; **return `null`, not `0`, when a
+measurement did not happen** — a miss and a harmless result must not look alike; and **never assume
+the world is untouched at `waitfor window.game`**. The title screen runs the full physics behind it
+(`driftSplash`), for a wall-clock-dependent length of time, and `physics.step` culls dead and escaped
+bodies out of `game.bodies` — so any count of live bodies silently shrinks with how slow the boot was.
+A `sim: false` suite that needs a pristine sky must rebuild it first (`window.freshRun(0, seed)`) and
+read it in the same synchronous turn, the way `worldgen.js` does.
 
 ### Performance scenario matrix
 
