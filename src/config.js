@@ -814,7 +814,7 @@ export const CFG = {
   // search costs every try on every rock, and worldgen runs constantly
   // (freshRun / mechTest).
   FIELD_PACK_SNUG: 12,
-  FIELD_PACK_TRIES: 110,
+  FIELD_PACK_TRIES: 170,
   // RUBBLE. The small rock is not scattered across the pocket any more — it is
   // drawn as a SKIRT around the huge rocks, so gravel banks up against the
   // masonry and the passages stay flyable. A uniform scatter silts every gap
@@ -824,6 +824,64 @@ export const CFG = {
   // passage stays a passage.
   FIELD_RUBBLE_LOOSE: 0.22,
   FIELD_RUBBLE_BAND: [7, 179],   // how far off a host's surface its skirt sits
+  // ---- WHERE THE MASS SITS IN A POCKET (user design call: the really large
+  // clumped-together rocks belong near the HEART, and it should thin out and
+  // shrink toward the edge). Before this, every knob here was flat: the scatter
+  // was area-uniform, the landmark packer drew from the same flat sampler, and
+  // the gravel ladder did not know where it was. A pocket therefore had the
+  // same rock everywhere, and its middle was no more of a place than its rim.
+  //
+  // These are EXPONENTS on the pocket sampler's normalised radius, `q = u^p`.
+  // p = 0.5 is exactly area-uniform (the old behaviour); larger p pulls inward,
+  // with density going as q^(1/p - 2). Counts do NOT change (FIELD_ROCKS,
+  // FIELD_GIANTS and FIELD_MONOLITHS are what they were): this is a
+  // redistribution of the same rock, which is the only way to restate the shape
+  // of a pocket without also re-tuning how much is in it. Measured on The
+  // Grindstones, seed 20260721: rocks per unit area 2.58 / 1.47 / 1.09 / 0.75 /
+  // 0.81 across the five bands from heart to rim, against 0.77 / 1.10 / 0.97 /
+  // 0.88 / 1.10 before — flat, and if anything edge-heavy.
+  FIELD_CORE_POW: 1.15,     // the biggest landmark: hard into the heart
+  FIELD_EDGE_POW: 0.55,     // the smallest landmark: near enough to uniform
+  FIELD_RUBBLE_POW: 0.85,   // loose gravel (the skirt gravel follows its host)
+  // Share of the packer's try budget that keeps the centre bias. The rest go
+  // back to a uniform draw so a rock that cannot fit in a full core is placed
+  // further out instead of being silently dropped — and what gets dropped in a
+  // pocket packed from the middle is precisely the biggest rocks.
+  FIELD_PACK_BIAS_FRAC: 0.45,
+  // Clearance the HEART holds against the masonry, on top of both radii. The
+  // ordinary per-pair gap bottoms out at 4 units, which once the big rocks are
+  // drawn inward welds a ring of monoliths onto the one rock the field is named
+  // for — and it is the chart entry, the AI anchor and the thing you fly in to
+  // reach. Measured before this: a staged shot at a heart lost ~60% of its
+  // damage to whatever was parked in front of it.
+  FIELD_HEART_CLEAR: 240,
+  // ...and the SIZE gradient. A rock's mass ladder is drawn against how far out
+  // it lands: the chunky tier's share falls from core to rim, and the whole
+  // ladder is scaled on top of that. The endpoints are chosen so the pocket's
+  // MEAN gravel mass lands within a couple of percent of what it was — a size
+  // gradient that also changes how much is IN a shoal is two changes wearing
+  // one coat, and the second one is a balance change nobody asked for.
+  //
+  // THE ENDPOINTS ARE SOLVED, NOT PICKED. A taper whose two ends look balanced
+  // is not mass-neutral, because the rock is not spread evenly across it:
+  // gravel sits at a mean normalised distance of 0.74 and 37% of it is at or
+  // past the rim, so a first cut at [1.24, 0.60] quietly took 30% of the
+  // pocket's gravel mass out (mean 2538 -> 1772) and surfaced as a third of the
+  // `giants` census, which counts field rock over 3000 mass. Solved against the
+  // measured distribution instead, these land the mean at ~2512 against 2538.
+  // Re-solve them if FIELD_RUBBLE_POW, FIELD_EDGE_KEEP or the pocket's extents
+  // move — all three change where the rock sits, and therefore what the taper
+  // averages to.
+  //
+  // How much of the heart's density survives at the outline. Applied as a
+  // rejection on where a rock LANDED, which is the only place that catches
+  // skirt gravel (four rocks in five bank against a host and inherit its
+  // position, so biasing the samplers alone leaves the density flat). The count
+  // is unchanged — a rejected draw is retried, so the same rocks end up further
+  // in rather than fewer of them.
+  FIELD_EDGE_KEEP: 0.30,
+  FIELD_CHUNK_CORE: 0.62, FIELD_CHUNK_EDGE: 0.24,
+  FIELD_GRAVEL_TAPER: [1.80, 0.87],   // mass scale at the heart / at the rim
   // Field-rock hp ceiling. Without it FIELD_HP_MUL made a monolith ~34,000 hp
   // — unbreakable, which contradicts the design ("bigger rocks break into
   // smaller pieces and keep the chaos going"). At 5200 a thrown moon-class
