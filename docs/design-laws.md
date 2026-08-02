@@ -189,11 +189,50 @@ code "works."
 - **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
 - **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
   vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and
-  the cockpit frame (`--fr`) plus a soft edge wash take that color — violet when calm, corona amber near
+  the soft edge wash (`#hud::after`, in `--fr`) takes that color — violet when calm, corona amber near
   the sun, ember under threat (danger blends last so it wins a tie). **CHROME ONLY**: hull green, shield
   blue and lives pink stay semantic so the instruments still read at a glance. The `lowhull` / `heat`
   alarm classes override `--fr` outright — an alarm always outranks a mood — and mood is all zeros until
   `game.started`, so the title screen and a calm cruise look exactly as they always did.
+- **NO FRAME AROUND THE VIEWPORT.** The chrome used to include glowing corner arcs — a masked rounded
+  border on `#hud::before`, inset 10px, visible near each corner. It was removed on request: a violet
+  outline tracing the whole screen reads as browser chrome laid over the game, not as a machine you fly.
+  Don't reintroduce a stroke at the screen edge in any form. The mood channel and both alarms survive
+  it intact — the wash carries the mood, and `#fx::after`'s pulsing red/amber vignette carries `lowhull`
+  and `heat` (it always outranked the frame anyway). This is the in-world **no hard edges** law applied
+  to the HUD's own boundary.
+- **The top-right is ONE instrument.** The menu button is an annular-sector tab machined into the
+  radar's bezel (`#menuBtn`), not a square parked under the dial — its box is concentric with `#radar`
+  and clip-path'd to an arc hugging the rim. The geometry is a hand-computed agreement between two
+  files: `render.drawMinimap`'s centre and rim radius, and the polygon in `style.css`. **Move or resize
+  the radar and the tab's polygon has to be regenerated** — nothing derives it at runtime.
+- **THE XP RAIL IS MOUNTED ON THE PILOT CARD, not floating and not inset in it.** It used to be a wide
+  hex pill alone at the top centre of the canopy, disconnected from the ability list it fills toward.
+  It now straddles the card's top edge as its own rim-lit slab with a shadow under it — flush-inset
+  first, which just read as one more row; the straddle plus the shadow is what makes it read as a part
+  bolted on. Its `content-box` + 2px padding is load-bearing: hud.js writes `#xpFill`'s width as a
+  percentage, and it has to resolve against the well inside the rim.
+- **In-flight HUD surfaces are SHEER and SQUARE-CORNERED** (user call). The pilot card and its hover
+  readout are see-through enough to fly over — you should read the sky through the whole card — and
+  their corners are hard. Both were rejected in the other direction first: a chamfered corner plus a
+  near-opaque bed made a solid object parked on the screen instead of a readout printed on the canopy.
+  If text stops reading against a bright limb, fix it with the text's own shadow, never by filling the
+  bed back in. The modal panel kit is a different surface and keeps its octagon chamfers.
+- **Ability icons are MONOCHROME LINE GLYPHS, never emoji.** `⏩` (U+23E9) carries emoji presentation,
+  so the OS painted a filled blue rounded square in a column of hairline symbols. Before adding an
+  icon to the `ABILITIES` catalog, check the codepoint isn't `Emoji_Presentation=Yes` — and look at it
+  rendered, since a few text-default codepoints still come out colored.
+- **Pointing at a loadout row lights it and prints what the ability does** (`hud.abilHover` →
+  `.ab2.hover` + `#abilOut`). The list shows rank pips and an XP hairline but never the one thing you
+  can't infer — the catalog text. The row's own highlight is two parts, the pairing the menu buttons
+  already use: a one-shot sheen that reads as the row lighting up, plus a steady tint that stays while
+  the cursor is on it (the sheen alone left no trace of which row the panel belonged to once it had
+  passed). The hover state is **hit-tested from a window mousemove against cached row rects**, exactly
+  as the achievement toasts are, and there is deliberately no `:hover` in the CSS: the card sits in
+  the bottom-left of the play area, so giving its rows real `pointer-events` would let them swallow
+  the mousedown that starts a tractor grab. **Nothing in the pilot card may ever take the mouse.**
+  Both the highlight and the panel are gated on the same flag as the menu button, so neither can sit
+  under the pick card or a shell modal.
 - **ROGUE PLANETS ARE GONE** (user call: "they're only causing issues"). A wandering 2.5-4.5e5 mass
   under full gravity was a permanent source of sky damage that no player action caused and none could
   prevent: it derailed whatever lane it crossed, ATE moons on the flyby, and — once the outer band

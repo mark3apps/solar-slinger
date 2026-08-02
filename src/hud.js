@@ -11,7 +11,14 @@ let prevScore = 0;         // achievement score — the chip pops on every gain
 let prevSpec = '';         // spec chip identity — restyle only when it changes
 let livesSig = '';         // lives-pip signature — rebuild on change
 let iconSig = '';          // acquired-upgrade chip signature — rebuild on change
-let abilBars = [];         // cached { fill, id, cost } per learned ability — the per-frame XP fills
+let abilBars = [];         // cached { fill, row, id, cost } per learned ability — the per-frame XP fills
+let abilHoverId = null;    // ability row the cursor is on, or null — see abilHover
+let abilHoverRow = null;   // that row's node, held so the .hover class can be lifted off it
+let abilNextEl = null;     // the open readout's live "next rank" line
+let abilOutH = 0;          // its measured height — re-placed per move, measured per row
+let abilTracking = false;  // is the readout's mousemove listener attached?
+let hudGame = null;        // the one game object, for the listeners that run outside updateHud
+let hudLive = false;       // cockpit is live and pointable (syncMenus owns it)
 let pickCb = null;         // click callback for the open upgrade card set
 const lastText = new Map(); // last written string per node — DOM writes happen on change only
 
@@ -40,7 +47,8 @@ export function initHud(game) {
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
-    'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'upList2', 'bottomleft',
+    'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'xpNext', 'upList2', 'bottomleft',
+    'abilOut',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
     'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
@@ -54,6 +62,7 @@ export function initHud(game) {
     'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack', 'btnAchBack', 'btnGameOverAch']) {
     el[id] = document.getElementById(id);
   }
+  hudGame = game;
   el.gametitle = document.querySelector('.gametitle');   // the boot scramble's target (no id)
   el.canvas = document.getElementById('game');           // read ONLY for the perf overlay's backing-store size
   // Tick period on the XP bar = one upgrade pick. The bar spans a whole tier,
@@ -425,6 +434,101 @@ function railHover(e) {
   }
 }
 
+// ---- Hovered-ability readout ----------------------------------------------
+// The loadout list shows an ability's icon, rank pips and XP hairline — every
+// bit of it except WHAT THE ABILITY DOES. Pointing at a row prints the catalog
+// entry beside the card.
+//
+// Hit-tested from a window listener against the cached row rects, the SAME
+// arrangement the achievement toasts use, and for the same reason: the card
+// sits in the bottom-left of the play area, so giving its rows real
+// pointer-events would let them swallow the mousedown that starts a tractor
+// grab. Nothing here ever takes the mouse. The listener is attached only while
+// there are rows to point at.
+function abilTrack(on) {
+  if (on === abilTracking) return;
+  abilTracking = on;
+  if (on) window.addEventListener('mousemove', abilHover);
+  else { window.removeEventListener('mousemove', abilHover); abilHide(); }
+}
+
+function abilHide() {
+  if (abilHoverId === null) return;
+  abilHoverId = null;
+  abilNextEl = null;
+  // The node, not a re-query: after a rank lands the row this pointed at has
+  // already been replaced, and querying for it would find nothing to clean up.
+  if (abilHoverRow) { abilHoverRow.classList.remove('hover'); abilHoverRow = null; }
+  el.abilOut.classList.add('hidden');
+}
+
+function abilHover(e) {
+  // A shell panel, the pick card or the title screen all own the whole screen —
+  // a floating readout under them would be pointing at a card nobody can see.
+  if (!abilBars.length || !hudLive) { abilHide(); return; }
+  // Cheap reject on the list's own rect before touching the per-row ones
+  const host = el.upList2.getBoundingClientRect();
+  let hit = null;
+  if (e.clientX >= host.left && e.clientX <= host.right &&
+      e.clientY >= host.top && e.clientY <= host.bottom) {
+    for (const b of abilBars) {
+      const r = b.row.getBoundingClientRect();
+      if (e.clientY >= r.top && e.clientY <= r.bottom) { hit = { b, r }; break; }
+    }
+  }
+  if (!hit) { abilHide(); return; }
+
+  // Rebuild only when the ROW changes — but re-place on every move regardless.
+  // The card is bottom-anchored and grows upward, so a rank landing (one more
+  // row) or a window resize moves the anchor out from under a held hover; an
+  // early return on "same row" left the panel stranded where the card used to
+  // be, which on a shrunk window meant off the bottom of the screen entirely.
+  if (hit.b.id !== abilHoverId) {
+    const u = abilityById(hit.b.id);
+    if (!u) { abilHide(); return; }
+    // Light the row itself, so the card says which entry the panel is about —
+    // adding the class is also what fires its one-shot sheen (see .ab2.hover).
+    if (abilHoverRow) abilHoverRow.classList.remove('hover');
+    abilHoverRow = hit.b.row;
+    abilHoverRow.classList.add('hover');
+    abilHoverId = hit.b.id;
+    const rank = hudGame.prog.upgrades[u.id] || 0;
+    const maxed = rank >= u.max;
+    el.abilOut.innerHTML =
+      `<span class="aoIc">${u.icon}</span>` +
+      `<span class="aoNm">${esc(u.name)}</span>` +
+      `<span class="aoRk${maxed ? ' max' : ''}">${maxed ? 'MAX' : `RANK ${rank}/${u.max}`}</span>` +
+      `<span class="aoDesc">${esc(u.desc)}</span>` +
+      `<span class="aoNext"></span>`;
+    abilNextEl = el.abilOut.querySelector('.aoNext');
+    abilNextText(hit.b);
+    el.abilOut.classList.remove('hidden');
+    // Measured once per row, not per move: the copy is fixed for as long as the
+    // panel shows this ability, and offsetHeight forces a layout.
+    abilOutH = el.abilOut.offsetHeight;
+  }
+
+  // Anchored to the card's right edge, centred on the NAME LINE — not on the
+  // .ab2 block, whose XP hairline drags its midpoint down between two rows —
+  // then clamped, so a row near the bottom of a tall loadout can't push the
+  // panel off the screen.
+  const card = el.bottomleft.getBoundingClientRect();
+  const nr = hit.b.nameRow.getBoundingClientRect();
+  const mid = nr.top + nr.height / 2;
+  el.abilOut.style.left = `${Math.round(card.right + 14)}px`;
+  el.abilOut.style.top = `${Math.round(Math.max(abilOutH / 2 + 10,
+    Math.min(window.innerHeight - abilOutH / 2 - 10, mid)))}px`;
+}
+
+// The rank track keeps filling while you read it, so the line is live rather
+// than a snapshot taken when the cursor arrived.
+function abilNextText(b) {
+  if (!abilNextEl) return;
+  if (!Number.isFinite(b.cost)) { setText(abilNextEl, 'Fully ranked'); return; }
+  const bank = (hudGame.prog.abilXp || {})[b.id] || 0;
+  setText(abilNextEl, `NEXT RANK ${Math.round(Math.min(1, bank / b.cost) * 100)}%`);
+}
+
 export function achToast(a) {
   if (!el.achRail) return;
   const node = document.createElement('div');
@@ -503,6 +607,12 @@ function syncMenus(game) {
   const pause = game.started && game.paused && !modal;
   const menuBtn = game.started && !game.paused && !modal &&
     !game.choosingUpgrade && !game.gameOver && game.ship.alive;
+  // Same condition = "the cockpit is live and yours to point at". The hovered-
+  // ability readout rides it (recomputed every frame, unlike the class writes
+  // below, which are signature-gated) so a floating panel can't sit under the
+  // pick card or a shell modal.
+  hudLive = menuBtn;
+  if (!hudLive) abilHide();
   const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+menuBtn}${+game.started}`;
   if (sig !== menuSig) {
     menuSig = sig;
@@ -536,9 +646,10 @@ function syncMenus(game) {
     el.menuBtn.classList.toggle('hidden', !menuBtn);
     // The gameplay HUD is meaningless on the title screen — hide it until START.
     el.topleft.classList.toggle('hidden', !game.started);
+    // The XP rail and the tier line live INSIDE the pilot card now, so hiding
+    // the card hides them — they no longer need toggles of their own. (The
+    // hover readout is NOT inside it; the hudLive gate above drops that one.)
     el.bottomleft.classList.toggle('hidden', !game.started);
-    el.xpBar.classList.toggle('hidden', !game.started);
-    el.tierLabel.classList.toggle('hidden', !game.started);
     // Blur the frozen world into a soft backdrop behind the splash (incl. the
     // settings modal opened from it); cleared the instant the game begins.
     document.body.classList.toggle('preGame', !game.started);
@@ -847,6 +958,10 @@ export function updateHud(game) {
   const done = atMax ? (prog.picksThisTier % perTier) : prog.picksThisTier;
   const barFrac = Math.min(1, (done + pickFrac) / span);
   setWidth(el.xpFill, `${barFrac * 100}%`);
+  // The rail's number, in the vitals' label/number grammar. It reads the NEXT
+  // PICK, not the tier: the picks are what the segment dividers mark, and the
+  // next one is the reward actually in reach.
+  setText(el.xpNext, `NEXT ${Math.round(pickFrac * 100)}%`);
   // XP coming in makes the bar spark — every scrap pickup / kill answers back
   if (barFrac > prevXpFrac + 0.0005) flash(el.xpBar, 'gain');
   prevXpFrac = barFrac;
@@ -877,13 +992,24 @@ export function updateHud(game) {
     el.upList2.innerHTML = owned.length
       ? `<div class="ulhead">ABILITIES</div>${rows}`
       : '';
-    // Cache the fills + their current thresholds so the per-frame pass is a
-    // width write and nothing else — no queries, no cost lookups.
-    abilBars = owned.map((u) => ({
-      fill: el.upList2.querySelector(`.ab2[data-ab="${u.id}"] .ui-xpf`),
-      id: u.id,
-      cost: abilityRankCost(u, prog.upgrades[u.id]),
-    }));
+    // Cache the fills, their rows and their current thresholds so the per-frame
+    // pass is a width write and nothing else — no queries, no cost lookups. The
+    // rows are for the hover readout's hit test, which runs off the same cache.
+    abilBars = owned.map((u) => {
+      const row = el.upList2.querySelector(`.ab2[data-ab="${u.id}"]`);
+      return {
+        row,                                    // hit target (row + its XP hairline)
+        nameRow: row.querySelector('.uprow2'),  // what the readout centres on
+        fill: row.querySelector('.ui-xpf'),
+        id: u.id,
+        cost: abilityRankCost(u, prog.upgrades[u.id]),
+      };
+    });
+    // Every cached node the open readout was pointing at just died with the
+    // innerHTML write; drop it and let the next mousemove re-open on the row
+    // that is actually under the cursor now.
+    abilHide();
+    abilTrack(abilBars.length > 0);
   }
   const bank = prog.abilXp || {};
   for (const b of abilBars) {
@@ -893,5 +1019,6 @@ export function updateHud(game) {
       ? Math.max(0, Math.min(1, (bank[b.id] || 0) / b.cost))
       : 1;
     setWidth(b.fill, `${(frac * 100).toFixed(1)}%`);
+    if (b.id === abilHoverId) abilNextText(b);
   }
 }

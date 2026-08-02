@@ -56,49 +56,33 @@ html, body {
    tilts + flight sway) — it was removed on request ("not really working").
    The HUD is flat screen-space; don't reintroduce transforms here. */
 
-/* Cockpit frame: soft glowing corner arcs on the viewport itself — you're
-   flying the machine. A masked rounded border shows only near the corners.
-   --fr is the frame color; alarm states on #hud repaint it (low hull → ember). */
+/* The cockpit frame's glowing CORNER ARCS were removed on request — a rounded
+   violet border tracing the whole viewport read as a browser chrome outline
+   sitting over the game, not as a machine you fly. Don't reintroduce a stroke
+   at the screen edge; the mood channel below carries the same information
+   without drawing an outline around the world.
+   --fr is the chrome color; alarm states on #hud repaint it (low hull → ember). */
 /* --mood / --moodI are written per frame by hud.js from the music director's
-   mood vector (see moodChrome): the frame takes the mood's color and brightens
+   mood vector (see moodChrome): the chrome takes the mood's color and brightens
    with its intensity, so the cockpit warms near the sun and goes ember under
    threat. Both fall back when unset, and mood is zero until the run starts —
    the title screen and a calm cruise look exactly as they did. */
 #hud { --fr: var(--mood, var(--chrome)); }
-#hud::before {
-  content: ''; position: absolute; inset: 10px;
-  opacity: calc(.38 + .3 * var(--moodI, 0));
-  border: 1px solid var(--fr);
-  border-radius: 28px;
-  -webkit-mask:
-    radial-gradient(circle at 0 0,       #000 0 34px, transparent 86px) top left     / 140px 140px no-repeat,
-    radial-gradient(circle at 100% 0,    #000 0 34px, transparent 86px) top right    / 140px 140px no-repeat,
-    radial-gradient(circle at 0 100%,    #000 0 34px, transparent 86px) bottom left  / 140px 140px no-repeat,
-    radial-gradient(circle at 100% 100%, #000 0 34px, transparent 86px) bottom right / 140px 140px no-repeat;
-  mask:
-    radial-gradient(circle at 0 0,       #000 0 34px, transparent 86px) top left     / 140px 140px no-repeat,
-    radial-gradient(circle at 100% 0,    #000 0 34px, transparent 86px) top right    / 140px 140px no-repeat,
-    radial-gradient(circle at 0 100%,    #000 0 34px, transparent 86px) bottom left  / 140px 140px no-repeat,
-    radial-gradient(circle at 100% 100%, #000 0 34px, transparent 86px) bottom right / 140px 140px no-repeat;
-  box-shadow: 0 0 calc(12px + 14px * var(--moodI, 0)) var(--fr);
-}
-/* The mood wash: a wide, soft edge glow in the frame's current color, sitting
+/* The mood wash: a wide, soft edge glow in the chrome's current color, sitting
    BEHIND every instrument (z-index -1 — #hud is fixed, so it can't escape past
    the canvas) and well under the #fx alarm vignettes, which must always
-   out-shout it. Invisible at calm, where --moodI is 0. */
+   out-shout it. Invisible at calm, where --moodI is 0. Now the ONLY mood
+   surface, so it carries a floor of its own once an alarm class is up. */
 #hud::after {
   content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   opacity: calc(.42 * var(--moodI, 0));
   background: radial-gradient(122% 82% at 50% 50%, transparent 56%,
     color-mix(in srgb, var(--fr) 40%, transparent) 100%);
 }
-/* Pre-game there is no cockpit yet — the frame belongs to flying */
-body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
+/* Pre-game there is no cockpit yet — the chrome belongs to flying */
+body.preGame #hud::after { opacity: 0; }
 #hud.lowhull { --fr: #ff5c48; }
-#hud.lowhull::before { opacity: .85; animation: framePulse 1.6s ease-in-out infinite; }
 #hud.heat:not(.lowhull) { --fr: var(--amber); }
-#hud.heat:not(.lowhull)::before { opacity: .6; }
-@keyframes framePulse { 50% { opacity: .35; } }
 
 /* ---------------------------------------------------------------------------
    #fx — the full-screen reaction layer. The world hits back through it:
@@ -274,24 +258,71 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
 }
 
 /* ---------------------------------------------------------------------------
-   Bottom-left: the PILOT CARD — who you are this run. Spec pill, tier, lives,
-   then the ability loadout. Not a box: a luminous violet spine with rows
-   fading off it, angled up onto the canopy from below. Ignores the mouse.
+   Bottom-left: the PILOT CARD — who you are this run. XP rail, the tier it
+   measures, spec + score + lives, then the ability loadout. Not a box: a
+   luminous violet spine with rows fading off it, angled up onto the canopy
+   from below. Ignores the mouse.
+
+   The card is read TOP-DOWN as one object, which is why the XP rail is MOUNTED
+   ON its top edge — it straddles the edge as its own rim-lit slab, casting a
+   shadow onto the card, rather than sitting inside as one more row. The thing
+   it fills toward is the ability list directly beneath it. Every row is
+   left-anchored on the spine and right-anchored on one shared edge, so the
+   lives dots and the rank pips line up under the rail's run instead of
+   trailing off into nothing.
+
+   The slab itself is the panel kit's vocabulary at instrument weight: a
+   chamfered top-right corner, the circuit grid + scanlines, and light spilling
+   down from under the rail — but its outline DISSOLVES toward the bottom right
+   rather than closing, because this sits over live play and a fully framed box
+   up here would read as a modal. The card is drawn on its pseudo-elements so
+   the rail can hang past its edge (a clip-path on the card itself would cut
+   the rail off).
    ------------------------------------------------------------------------ */
 #bottomleft {
   position: absolute; left: 20px; bottom: 18px; z-index: 0;
-  display: flex; flex-direction: column; gap: 7px;
+  display: flex; flex-direction: column;
   width: 320px;
-  padding: 10px 16px 11px 14px;
-  border-left: 3px solid rgba(176, 112, 255, .75);
-  border-radius: 3px 16px 16px 3px;
-  background: linear-gradient(90deg, rgba(12, 6, 26, .76), rgba(12, 6, 26, .36) 55%, transparent);
+  padding: 16px 16px 13px 15px;
   text-shadow: 0 0 6px rgba(176, 112, 255, .5);
   font-size: 13px; letter-spacing: 1px;
 }
+/* The silhouette is drawn by ONE luminous stroke that starts hot on the spine
+   and dissolves as it runs down and right — so the card is bracketed rather
+   than boxed, which is the whole point of it sitting over live play. ::before
+   is that stroke; ::after is the glass laid 1px inside it (the panel kit's
+   rim-then-glass build, at instrument weight).
 
-/* Identity row: spec pill · tier · lives dots, one line */
-#progRow { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+   SQUARE CORNERS, and the bed stays SHEER — both on request. The card had a
+   chamfered top-right and a near-opaque bed; together they made a solid object
+   parked on the screen. The corners are hard now, and you should be able to see
+   the sky through the whole card: it is a readout printed on the canopy, not a
+   panel bolted over it. If text ever stops reading against a bright limb, fix
+   it with the text's own shadow, not by filling the bed back in. */
+#bottomleft::before {
+  content: ''; position: absolute; inset: 0; z-index: -2;
+  background:
+    /* the spine — brightest where the rail lands on it, fading to the foot */
+    linear-gradient(180deg, rgba(224, 190, 255, .95), rgba(150, 84, 240, .58) 50%, rgba(118, 58, 200, .22))
+      left / 3px 100% no-repeat,
+    /* the rest of the outline, dissolving as it goes */
+    linear-gradient(122deg, rgba(214, 172, 255, .6), rgba(176, 112, 255, .22) 42%, rgba(176, 112, 255, .04));
+}
+#bottomleft::after {
+  content: ''; position: absolute; inset: 1px 1px 1px 3px; z-index: -1;
+  background:
+    /* circuit grid + scanlines, barely-there (the panel kit's texture) */
+    repeating-linear-gradient(90deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(176, 112, 255, .035) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(0deg, rgba(216, 180, 255, .022) 0 1px, transparent 1px 3px),
+    /* light spilling down out from under the rail */
+    radial-gradient(115% 58% at 18% 0%, rgba(150, 80, 255, .15), transparent 62%),
+    /* the bed — sheer, and thinning further toward the right */
+    linear-gradient(90deg, rgba(10, 5, 22, .62), rgba(10, 5, 22, .4) 58%, rgba(10, 5, 22, .17));
+}
+
+/* Identity row: spec pill · score · lives dots, one line */
+#progRow { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 /* The chosen specialization wears its own color (ac-* sets --acc) */
 #specLabel {
   --acc: var(--chrome);
@@ -320,18 +351,39 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
 #livesText .lp.on.last { animation: lastLife 1.2s ease-in-out infinite; }
 @keyframes lastLife { 50% { box-shadow: 0 0 3px rgba(255, 92, 122, .4); opacity: .55; } }
 
-/* Acquired upgrades — a detailed list (icon, name, rank dots) */
-#upList2 { display: flex; flex-direction: column; gap: 4px; margin-top: 1px; }
+/* Acquired upgrades — a detailed list (icon, name, rank dots). The section rule
+   runs OUT OF the label rather than over it, and lives on the header rather
+   than on the row above, so an empty loadout leaves no dangling hairline across
+   the bottom of the card. */
+#upList2 { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
 #upList2 .ulhead {
-  font-size: 9px; letter-spacing: 3px; color: rgba(206, 170, 255, .75);
-  margin: 2px 0 1px; padding-top: 8px;
-  border-top: 1px solid rgba(176, 112, 255, .18);
+  display: flex; align-items: center; gap: 9px;
+  font-size: 9px; letter-spacing: 3px; color: rgba(206, 170, 255, .7);
+  margin: 0 0 3px;
   font-family: var(--font-ui); font-weight: 600;
   text-shadow: 0 0 6px rgba(176, 112, 255, .5);
 }
-.uprow2 { display: flex; align-items: center; gap: 7px; font-size: 11px; line-height: 1.35; }
-.uprow2 .ui-ic { width: 15px; text-align: center; color: var(--chrome-soft); text-shadow: 0 0 7px rgba(176, 112, 255, .9); }
-.uprow2 .ui-nm { flex: 1; color: #e8ddff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#upList2 .ulhead::after {
+  content: ''; flex: 1; height: 1px;
+  background: linear-gradient(90deg, rgba(176, 112, 255, .38), rgba(176, 112, 255, 0));
+}
+/* The row bleeds its highlight out into the card's own padding (negative margin
+   cancelled by equal padding, so the text keeps its exact width and the name's
+   ellipsis point doesn't shift on hover). */
+.uprow2 {
+  display: flex; align-items: center; gap: 7px; font-size: 11px; line-height: 1.35;
+  margin: 0 -7px; padding: 0 7px;
+  transition: background-color .16s ease;
+}
+.uprow2 .ui-ic {
+  width: 15px; text-align: center; color: var(--chrome-soft);
+  text-shadow: 0 0 7px rgba(176, 112, 255, .9);
+  transition: color .16s ease, text-shadow .16s ease;
+}
+.uprow2 .ui-nm {
+  flex: 1; color: #e8ddff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: color .16s ease, text-shadow .16s ease;
+}
 .uprow2 .ui-rk { display: inline-flex; gap: 4px; }
 .uprow2 .ui-rk .rp {
   width: 6px; height: 6px; border-radius: 50%;
@@ -344,6 +396,31 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
   box-shadow: 0 0 6px rgba(120, 255, 180, .8);
 }
 
+/* HOVER (hud.abilHover sets .hover — there is no :hover here, because nothing
+   in the pilot card is allowed to take the mouse). Two parts, the same pairing
+   the menu buttons use: a one-shot sheen that reads as the row LIGHTING UP, and
+   a steady tint that stays for as long as the cursor is on it — the sheen alone
+   left no trace of which row the readout belongs to once it had passed. The
+   sheen is a background-position animation on a no-repeat gradient, so it costs
+   one composited layer and ends parked off the row. */
+.ab2 .uprow2 {
+  background:
+    linear-gradient(100deg, transparent 24%, rgba(222, 194, 255, .3) 50%, transparent 76%)
+      170% 0 / 240% 100% no-repeat;
+}
+.ab2.hover .uprow2 {
+  background-color: rgba(176, 112, 255, .14);
+  animation: abilSheen .55s ease-out;
+}
+@keyframes abilSheen {
+  from { background-position: 170% 0; }
+  to   { background-position: -170% 0; }
+}
+.ab2.hover .ui-nm { color: #ffffff; text-shadow: 0 0 10px rgba(206, 170, 255, .85); }
+.ab2.hover .ui-ic { color: #f4ecff; text-shadow: 0 0 11px rgba(176, 112, 255, 1); }
+/* the row's own XP track comes up with it, so the whole entry reads as one */
+.ab2.hover .ui-xp { background: rgba(176, 112, 255, .3); }
+
 /* Per-ability XP track. Ranks are earned automatically (config.growAbilities),
    so every learned ability gets its own hairline bar filling toward its next
    rank — this is the readout for the whole automatic half of progression.
@@ -351,18 +428,22 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
    big #xpBar is the same stick), and green/blue/pink stay semantic for the
    hull / shield / lives instruments. Kept to 2px and seated under the row so a
    dozen of them read as texture under the list, never as twelve more gauges. */
-.ab2 { display: flex; flex-direction: column; gap: 2px; }
+.ab2 { display: flex; flex-direction: column; gap: 3px; }
 .ab2 .ui-xp {
-  height: 2px; margin: 0 0 1px 22px;   /* indented past the icon column */
+  height: 2px; margin-left: 22px;   /* indented past the icon column */
   border-radius: 999px;
   background: rgba(176, 112, 255, .16);
   overflow: hidden;
+  transition: background-color .16s ease;
 }
+/* Dimmer and softer-bloomed than the card's top rail, deliberately: unclipped
+   glow on a dozen 2px lines out-shouted the 10px gauge above them, and the list
+   read as a stack of gauges instead of the texture it is meant to be. */
 .ab2 .ui-xpf {
   display: block; height: 100%; width: 0;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(163, 92, 255, .85), #d9bcff);
-  box-shadow: 0 0 5px rgba(176, 112, 255, .8);
+  background: linear-gradient(90deg, rgba(150, 84, 240, .68), rgba(199, 162, 255, .9));
+  box-shadow: 0 0 4px rgba(176, 112, 255, .4);
   transition: width .18s ease;
 }
 /* Maxed (or a single-unlock ability): nothing left to earn — the bar sits full
@@ -373,63 +454,148 @@ body.preGame #hud::before, body.preGame #hud::after { opacity: 0; }
   box-shadow: none;
 }
 
-/* XP bar: promoted to the top centre of the canopy — the run's throughline.
-   A pointed hex pill with a white-hot violet core, straight from the kit.
-   It spans the WHOLE current tier; the ticks mark each intermediate upgrade
-   pick, and a full bar = the tier-up milestone. The tick period is set inline
-   from hud.js (100 / picks-per-tier-including-the-milestone %) so it tracks
-   the constant. */
+/* XP RAIL — the run's throughline, MOUNTED ACROSS THE TOP of the pilot card.
+   It used to float alone at the top centre of the canopy with nothing around
+   it; here it belongs to the thing it fills toward.
+
+   It has to read as bolted ON the card, not dropped IN it, and three things do
+   that: it STRADDLES the card's top edge (half proud of it), it wears the kit's
+   own luminous rim + chamfered ends so it is visibly a separate machined part,
+   and it drops a shadow onto the card behind it. A flush inset bar just read as
+   one more row.
+
+   It spans the WHOLE current tier: the segment dividers mark each intermediate
+   upgrade pick and a FULL bar is the tier-up milestone. The tick period is set
+   inline from hud.js (100 / picks-per-tier-including-the-milestone %) so it
+   tracks the constant.
+
+   content-box + 2px padding is load-bearing: hud.js writes #xpFill's width as a
+   PERCENTAGE, and it must resolve against the well inside the rim, not the
+   slab's outer edge, or a "full" bar overshoots its own frame. */
 #xpBar {
-  --hx: 13px;
-  position: absolute; top: 16px; left: 50%;
-  width: 440px; height: 17px;
-  padding: 5px 12px;
-  clip-path: var(--clip-hexpill);
-  overflow: hidden;
-  background: linear-gradient(155deg,
-    #f0e2ff, rgba(176, 112, 255, .8) 28%, rgba(176, 112, 255, .8) 72%, #e6d0ff);
-  filter: drop-shadow(0 0 10px rgba(150, 80, 255, .5));
-  transform: translateX(-50%);
+  --ch: 4px;
+  box-sizing: content-box;
+  position: absolute; left: -2px; right: -2px; top: -7px; z-index: 1;
+  height: 10px; padding: 2px;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(150deg,
+    #f2e6ff, rgba(176, 112, 255, .85) 28%, rgba(176, 112, 255, .85) 72%, #e8d6ff);
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .8));
 }
-#xpBar::before {   /* deep-purple glass, inset inside the 2px luminous rim */
+#xpBar::before {   /* the dark well, inset inside the luminous rim */
+  --ch: 3px;
   content: ''; position: absolute; inset: 2px;
-  clip-path: var(--clip-hexpill);
-  background: linear-gradient(165deg, rgba(24, 13, 46, .96), rgba(11, 5, 24, .97));
+  clip-path: var(--clip-oct);
+  background: linear-gradient(0deg, rgba(176, 112, 255, .1), rgba(176, 112, 255, .1)), rgba(9, 4, 20, .97);
 }
-#xpBar.gain { animation: xpGain .4s ease; }
-@keyframes xpGain {
-  0% { filter: brightness(2.4) drop-shadow(0 0 16px rgba(183, 139, 255, .95)); }
-  100% { filter: brightness(1) drop-shadow(0 0 10px rgba(150, 80, 255, .5)); }
-}
-#xpFill {   /* the floating stick: white-hot core, violet bloom */
-  display: block; position: relative; height: 100%; width: 0;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #cfa6ff, #ffffff 36% 64%, #a35cff);
-  box-shadow: 0 0 14px rgba(176, 112, 255, .95), 0 0 3px #ffffff;
+#xpFill {   /* white-hot core, violet bloom — the vitals' sheen band rides it */
+  display: block; position: relative; z-index: 1; height: 100%; width: 0;
+  border-radius: 2px;
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .32) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #f0e2ff, #a35cff 58%, #6d27cc);
+  box-shadow: 0 0 11px rgba(176, 112, 255, .95), inset 0 1px 0 rgba(255, 255, 255, .6);
+  animation: gaugeSheen 4.5s linear infinite;
   transition: width .12s ease;
 }
-#xpBar::after {   /* upgrade-pick thresholds (period set inline from hud.js) —
-                     BRIGHT lines, so they read on the empty well too */
-  content: ''; position: absolute; inset: 3px 11px; pointer-events: none;
+#xpBar::after {   /* upgrade-pick thresholds (period set inline from hud.js).
+                     TWO-TONE on purpose: the bright edge reads against the
+                     empty well, the dark body against the lit fill — a single
+                     colour disappears on one side or the other. */
+  content: ''; position: absolute; inset: 2px; z-index: 2; pointer-events: none;
   background: repeating-linear-gradient(90deg,
-    transparent 0, transparent calc(var(--tick) - 2px),
-    rgba(216, 180, 255, .55) calc(var(--tick) - 2px), rgba(216, 180, 255, .55) var(--tick));
+    transparent 0 calc(var(--tick) - 3px),
+    rgba(9, 4, 20, .7) calc(var(--tick) - 3px) calc(var(--tick) - 1px),
+    rgba(230, 205, 255, .65) calc(var(--tick) - 1px) var(--tick));
+}
+/* The gain flash keeps the mounting shadow in both keyframes — filter replaces,
+   it doesn't stack, so dropping it here would make the rail un-mount for .4s. */
+#xpBar.gain { animation: xpGain .4s ease; }
+@keyframes xpGain {
+  0% { filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .8)) brightness(1.9); }
+  100% { filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .8)) brightness(1); }
 }
 
-/* Tier + ship class: seated right under the XP bar it measures */
-#tierLabel {
-  position: absolute; top: 38px; left: 50%; transform: translateX(-50%);
-  white-space: nowrap;
-  color: #e0d0ff; letter-spacing: 3px; font-size: 10px;
-  text-shadow: 0 0 8px rgba(176, 112, 255, .8), 0 1px 2px rgba(0, 0, 0, .9);
+/* The rail's head — what it measures on the left, how close the next pick is on
+   the right. Same label/number pairing as the vitals' .stathead, just seated
+   UNDER its gauge, since the rail owns the card's top edge. */
+#xpRow {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin: 0 0 9px;
+  font-size: 9px; letter-spacing: 2.4px;
+  text-shadow: 0 0 7px rgba(176, 112, 255, .55), 0 1px 2px rgba(0, 0, 0, .9);
+}
+#tierLabel { white-space: nowrap; color: #e0d0ff; }
+#xpNext {
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+  color: rgba(206, 170, 255, .7);
+}
+
+/* ---------------------------------------------------------------------------
+   Hovered-ability readout — point at a loadout row, read what it does.
+
+   The pilot card's own drawer, so it is built like the card: rim-then-glass,
+   SQUARE corners, and a bed you can see the sky through. hud.js places it
+   against the card's right edge, centred on the row (see abilHover); it never
+   takes the mouse, so it can't swallow a tractor grab in the corner it sits in.
+   ------------------------------------------------------------------------ */
+#abilOut {
+  position: absolute; z-index: 3;
+  transform: translateY(-50%);
+  width: 258px; padding: 2px;
+  pointer-events: none;
+  /* Icon in its own column, name + rank sharing the top line, then the catalog
+     text and the live rank track underneath — the upgrade card's own reading
+     order, so a learned ability looks the way it did when it was offered. */
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: baseline; gap: 3px 9px;
+  background: linear-gradient(150deg,
+    rgba(214, 178, 255, .62), rgba(150, 80, 255, .3) 30%, rgba(150, 80, 255, .3) 70%, rgba(214, 178, 255, .55));
+  filter: drop-shadow(0 3px 9px rgba(0, 0, 0, .6));
+  animation: abilIn .13s ease;
+}
+#abilOut::before {   /* the glass, inside the rim */
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  background:
+    repeating-linear-gradient(0deg, rgba(216, 180, 255, .022) 0 1px, transparent 1px 3px),
+    radial-gradient(120% 80% at 50% -10%, rgba(90, 40, 170, .3), transparent 62%),
+    linear-gradient(165deg, rgba(12, 6, 28, .74), rgba(8, 4, 20, .78));
+}
+@keyframes abilIn { from { opacity: 0; transform: translateY(-50%) translateX(-6px); } }
+.aoIc {
+  grid-row: 1; font-size: 15px; line-height: 1;
+  color: var(--chrome-soft); text-shadow: 0 0 9px rgba(176, 112, 255, .9);
+  margin: 11px 0 0 12px;
+}
+.aoNm {
+  grid-row: 1; margin-top: 11px;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 12.5px; letter-spacing: 1.4px; color: #f2e8ff;
+  text-shadow: 0 0 9px rgba(176, 112, 255, .6);
+}
+.aoRk {
+  grid-row: 1; margin: 11px 13px 0 0;
+  font-size: 9px; letter-spacing: 1.6px; color: rgba(206, 170, 255, .8);
+}
+.aoRk.max { color: var(--green); text-shadow: 0 0 8px rgba(120, 255, 180, .6); }
+.aoDesc {
+  grid-column: 2 / -1; margin-right: 13px;
+  font-size: 11px; line-height: 1.45; letter-spacing: .3px;
+  color: var(--ink-dim);
+}
+.aoNext {
+  grid-column: 2 / -1; margin: 2px 13px 12px 0;
+  font-size: 9px; letter-spacing: 1.8px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(176, 112, 255, .75);
 }
 
 /* Dev-only sim-speed badge (game.timeScale ≠ 1). Amber marks it as helper/
    debug UI — same family as the aiming assists — and it must stay hidden in
-   normal 1x play. Sits BELOW the tier line (the XP bar owns the top edge).
-   .lag = the machine can't hit the requested speed. */
+   normal 1x play. Top centre: the strip the XP bar used to own, and now the
+   only thing up there. .lag = the machine can't hit the requested speed. */
 #speedBadge {
-  position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
   font-size: 11px; letter-spacing: 2px; padding: 3px 12px;
   color: #ffd27a; border: 1px solid rgba(255, 200, 110, .5);
   border-radius: 999px; background: rgba(40, 28, 8, .6);
@@ -884,29 +1050,70 @@ body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
 }
 body.preGame #radar { opacity: 0; }
 
-/* The in-game menu button. Sits just BELOW the radar so the two form one
-   top-right cluster, and rides the same canopy tilt at a hair less depth.
-   The HUD layer it lives in is pointer-events:none, so it re-enables its own. */
+/* The in-game menu button — a control MACHINED INTO THE RADAR'S BEZEL, not a
+   square parked under it. It used to float below the dial as a standalone
+   octagon; docking it on the rim makes the top-right read as one instrument and
+   fills the dead space beside the disc.
+
+   The element is deliberately oversized and CONCENTRIC WITH THE DIAL, then
+   clip-path'd down to an annular sector — that is what lets the tab's edges be
+   true arcs sharing the radar's centre. The geometry all lives in this one box:
+   #radar is 200x200 at top:12/right:12 with its disc centred at (100,100) and
+   the rim chrome ending at r≈99 (render.drawMinimap). This box is 240x240,
+   right- and top-aligned WITH the radar, which puts that same centre at
+   (140,100) here — i.e. 58.33% / 41.67%, the values the polygon is built
+   around. The sector runs r 98→122 over 164°–196°, so its inner arc lands on
+   the rim's own halo ring, due LEFT of the dial: at that bearing the band runs
+   vertically, which is the one place an upright ☰ sits square in it.
+   RETUNE THE POLYGON if the radar's size, position or rim radius moves — the
+   two are only lined up because these numbers agree.
+   clip-path clips hit-testing too, so only the visible tab is clickable; the
+   HUD layer it lives in is pointer-events:none, so it re-enables its own. */
 #menuBtn {
-  --ch: 10px;
-  position: absolute; top: 222px; right: 14px; isolation: isolate;
-  width: 40px; height: 40px; pointer-events: auto;
-  font-size: 16px; line-height: 1; color: var(--chrome-soft);
-  border: none; cursor: pointer;
-  clip-path: var(--clip-oct);
-  background: linear-gradient(120deg, rgba(176, 112, 255, .8), rgba(176, 112, 255, .28) 50%, rgba(176, 112, 255, .65));
+  position: absolute; top: 12px; right: 12px; isolation: isolate;
+  width: 240px; height: 240px; padding: 0;
+  pointer-events: auto; cursor: pointer; border: none;
+  color: var(--chrome-soft);
   text-shadow: 0 0 7px rgba(176, 112, 255, .8);
-  transition: filter .14s ease;
+  background: linear-gradient(150deg,
+    rgba(176, 112, 255, .34), rgba(176, 112, 255, .12) 55%, rgba(176, 112, 255, .3));
+  filter: drop-shadow(0 0 5px rgba(150, 80, 255, .45));
+  transition: filter .14s ease, background .14s ease;
+  clip-path: polygon(
+    9.47% 55.68%, 8.91% 53.57%, 8.45% 51.43%, 8.07% 49.28%, 7.79% 47.12%,
+    7.61% 44.94%, 7.51% 42.76%, 7.51% 40.57%, 7.61% 38.39%, 7.79% 36.22%,
+    8.07% 34.05%, 8.45% 31.90%, 8.91% 29.77%, 9.47% 27.66%, 19.08% 30.41%,
+    18.63% 32.11%, 18.26% 33.82%, 17.96% 35.55%, 17.74% 37.29%, 17.58% 39.04%,
+    17.51% 40.79%, 17.51% 42.54%, 17.58% 44.30%, 17.74% 46.04%, 17.96% 47.78%,
+    18.26% 49.51%, 18.63% 51.23%, 19.08% 52.92%);
 }
+/* The tab's own dark well, one pixel of arc in from the rim — the same
+   rim-then-glass build as every other slab in the kit, just curved. */
 #menuBtn::before {
-  content: ''; position: absolute; inset: 2px; z-index: -1;
-  clip-path: var(--clip-oct);
-  background: rgba(12, 6, 26, .9);
+  content: ''; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(150deg, rgba(14, 7, 30, .92), rgba(9, 4, 22, .94));
+  clip-path: polygon(
+    9.88% 54.65%, 9.39% 52.69%, 8.99% 50.71%, 8.66% 48.72%, 8.42% 46.71%,
+    8.26% 44.70%, 8.18% 42.68%, 8.18% 40.66%, 8.26% 38.64%, 8.42% 36.62%,
+    8.66% 34.62%, 8.99% 32.62%, 9.39% 30.64%, 9.88% 28.68%, 18.25% 30.93%,
+    17.85% 32.55%, 17.51% 34.19%, 17.24% 35.84%, 17.04% 37.50%, 16.91% 39.16%,
+    16.84% 40.83%, 16.84% 42.50%, 16.91% 44.17%, 17.04% 45.84%, 17.24% 47.50%,
+    17.51% 49.15%, 17.85% 50.78%, 18.25% 52.41%);
+}
+/* The ☰ rides the band's midline (r 110 at due left = 30px, 100px in this box),
+   not the element's centre — the element is mostly empty clipped-away space. */
+#menuBtn .mbg {
+  position: absolute; left: 30px; top: 100px; transform: translate(-50%, -50%);
+  font-size: 14px; line-height: 1;
 }
 #menuBtn:hover, #menuBtn:focus-visible {
   outline: none;
-  filter: brightness(1.35) drop-shadow(0 0 10px rgba(150, 80, 255, .6));
+  color: #ffffff;
+  background: linear-gradient(150deg,
+    rgba(200, 150, 255, .6), rgba(176, 112, 255, .28) 55%, rgba(200, 150, 255, .55));
+  filter: drop-shadow(0 0 11px rgba(150, 80, 255, .75));
 }
+#menuBtn:active { filter: brightness(1.3) drop-shadow(0 0 11px rgba(150, 80, 255, .75)); }
 
 /* ---------------------------------------------------------------------------
    Settings: labelled toggle switches + a read-only controls reference
@@ -1161,9 +1368,11 @@ body.preGame #radar { opacity: 0; }
    Under the radar cluster on the right, well clear of #msg (bottom centre):
    an achievement must never be able to cover a hazard warning, or be covered
    by one. Each toast animates itself in and out over its own lifetime; the
-   stack grows DOWNWARD so a new one never shifts the one you're reading. */
+   stack grows DOWNWARD so a new one never shifts the one you're reading.
+   It sits directly under the dial now that the menu button has moved onto the
+   bezel — the old top left a button-shaped hole in the cluster. */
 #achRail {
-  position: absolute; top: 274px; right: 14px; z-index: 3;
+  position: absolute; top: 228px; right: 14px; z-index: 3;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   /* NOT interactive. The rail sits in the middle of the play area, and a toast
      with real pointer-events would swallow the mousedown that starts a tractor
