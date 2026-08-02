@@ -10,9 +10,9 @@
 // whole column moving is a regression in the damage math.
 //
 // EVERY MEASUREMENT HERE IS STAGED, AND A STAGED IMPACT IS ONLY WORTH DIFFING
-// IF IT IS REPEATABLE. Three separate things used to make it not, all of them
-// found by running `bench.mjs diff combat` against unmodified code four times
-// and getting four different answers:
+// IF IT IS REPEATABLE. Five separate things used to make it not, all of them
+// found by running `bench.mjs diff combat` against unmodified code several
+// times and getting a different answer every time:
 //
 //   1. THE TARGET DIED. A rung that killed the target left it dead, step()'s
 //      cull spliced it out of game.bodies a few substeps later, and restoring
@@ -29,23 +29,80 @@
 //      sat in front of the target for rung N+1 and intercepted it, and the
 //      CRATERS from rung N are the collider (surfRadius reads b.scars), so
 //      rung N+1 was fired at a different silhouette than rung N was.
+//   4. THE TARGET'S SPIN PHASE WAS RANDOM. Freezing the target's POSITION was
+//      only half of freezing its geometry. `Body` draws `rot` from Math.random
+//      (entities.js — cosmetic tumble, deliberately not seeded) and physics
+//      integrates it every substep off `spin`, and a shaped collider is traced
+//      in BODY-LOCAL space: physics.shaped() is true for `bigShape` rock and
+//      crystal worlds UNGATED, and surfRadius solves at `ang - b.rot`. So the
+//      shot met a different facet of the same rock on every run — measured
+//      1, 254, 318, 348 on four identical runs against field monolith 4145,
+//      and the full rotation sweep of that one rung runs 0 → 353. Nothing
+//      about the world differed: same body id, same mass, same radius, same
+//      position, ZERO scars. Only the angle it happened to be holding.
+//   5. THE FLIGHT BUDGET WAS A STOPWATCH, not a distance. A flat 30 ticks is
+//      200 units at the slowest rung, but a big rock's cleft sits ~270u INSIDE
+//      its own nominal radius, so the rock was still in open space when the
+//      budget ran out and a clean shot was booked as a miss. Whether it did
+//      was itself a function of the random facet (contact ranged 63u to 190u
+//      from the centre on the same rock), so `misses` flickered too.
 //
-// Fixing all three is what replaced "best of 5, take the max" — which was a
-// way of hoping one attempt out of five was clean — with one clean shot.
+// Fixing all five is what replaced "best of 5, take the max" — which was a way
+// of hoping one attempt out of five was clean — with shots that are clean by
+// construction. Note the distinction 4 forces: repeating an attempt at the SAME
+// angle is the old superstition and buys nothing, but a shaped rock genuinely
+// presents a different surface from every bearing, so the rungs that meet one
+// are measured at four quarter-turns and averaged (see `probe`). That is a
+// sample of real geometry, not a retry.
 const { spawnAsteroid } = await import('/src/world.js');
+const { mulberry32 } = await import('/src/util.js');
 
 const g = window.game;
 window.god(true);
+
+// PIN THE DICE FOR THE WHOLE SUITE. World GENERATION is seeded off `?seed=`,
+// but runtime is deliberately not (see the determinism note in CLAUDE.md), and
+// a staged probe sits downstream of all of it:
+//   - `Body` draws `rot` and `spin` from Math.random even during generation, so
+//     the shaped colliders faced the shot at a random angle (failure 4);
+//   - calve() draws the count and sizes of the crust a blow knocks off AND
+//     bills a big rock's own mass for it, inside the same 1/60 window that
+//     reports the damage (update runs two substeps per tick);
+//   - replenish and AI churn the body list, so the gravity sum the projectile
+//     integrates over is not even the same length run to run — worth ~1 point
+//     on a 219-point rung, arriving through nothing but float ordering.
+// Freezing the geometry (below) fixes the first and is the fix that MATTERS,
+// because it is what makes the number mean something. This makes the rest of
+// the suite bit-exact on top of it, which is what makes it worth diffing.
+// Restored at the end; the game's randomness is deliberate in PLAY, and this
+// only ever covers the harness.
+const realRandom = Math.random;
+Math.random = mulberry32(0x5ca1ab1e);
+
 window.freshRun(0);
 window.tick(1);
+
+const TAU = Math.PI * 2;
 
 // Gap between the projectile's leading edge and the target's nominal surface:
 // far enough out that the rock is unambiguously clear of it on frame one, near
 // enough that the flight is a handful of substeps.
 const STANDOFF = 40;
-// 0.5s at 1/60. Sized for the slowest rung (400 u/s) crossing the standoff plus
-// the deepest crater a world can be carrying.
-const FLIGHT_TICKS = 30;
+// Flight budget in 1/60 ticks, sized off the DISTANCE the rock has to cover at
+// the speed it is covering it — not a flat count (failure 5). Worst case is a
+// surface recessed all the way to the centre, so budget the whole approach plus
+// the target's radius, plus a margin for the substep quantum. A shot fired dead
+// at a frozen target from just outside its surface always connects inside this;
+// anything that doesn't is a real finding, which is what `misses` is for.
+const flightTicks = (target, rock, speed) =>
+  Math.ceil((((rock.x - target.x) + target.radius) / speed) * 60) + 6;
+
+// Does this target's COLLIDER TURN WITH IT? Mirrors physics.shaped(): a big
+// rock's slab/wedge outline and a crystal world's shard polygon are both traced
+// in body-local space and solved at `ang - b.rot`, and a cratered world's scar
+// profile is stored surface-local too. Everything else is the circle it always
+// was, and presents the same silhouette from every bearing.
+const turns = (b) => !!b.bigShape || b.ptype === 'crystal' || (b.scars && b.scars.length > 0);
 
 // A rung that never connects is a FINDING, not a blank. These are reported at
 // the top level so a change that starts causing misses shows up as an EXACT
@@ -54,13 +111,15 @@ const FLIGHT_TICKS = 30;
 let misses = 0;
 const noContact = [];
 
-// Fire one rock of `mass` at `speed` into `target` and return the damage dealt.
-// Uses the real path: a derailed, player-thrown body on a collision course.
-function hit(target, mass, speed, label) {
+// Fire one rock of `mass` at `speed` into `target` AT A PINNED ORIENTATION and
+// return the damage dealt. Uses the real path: a derailed, player-thrown body
+// on a collision course.
+function hit(target, mass, speed, rot, label) {
   const snap = {
     hp: target.hp, mass: target.mass, radius: target.radius, alive: target.alive,
     onRails: target.onRails, rail: target.rail, radiusT: target.radiusT,
-    x: target.x, y: target.y, vx: target.vx, vy: target.vy, rot: target.rot,
+    x: target.x, y: target.y, vx: target.vx, vy: target.vy,
+    rot: target.rot, spin: target.spin,
     // CRATERS ARE THE COLLIDER, NOT DECORATION (THE CRUMBLE — surfRadius reads
     // b.scars, and `shaped` switches the narrow phase on for anything carrying
     // one). Restore them or each rung is fired at the silhouette the rung
@@ -80,6 +139,14 @@ function hit(target, mass, speed, label) {
   // zeroing its velocity makes the impact geometry identical every time.
   target.onRails = false; target.rail = null;
   target.vx = 0; target.vy = 0;
+  // ...AND FREEZE ITS ROTATION, which is the other half of the same sentence
+  // (failure 4). `rot` is a Math.random draw at construction, so a shaped
+  // collider faced the shot at a different angle on every run; `spin` has to go
+  // with it or `rot` walks up to 0.14 rad during the flight, which is a third
+  // of the way to the next facet. Nothing in the collision path reads `spin`
+  // itself — surfRadius reads `rot` and physics integrates it — so zeroing it
+  // removes drift and nothing else. Both are restored below.
+  target.rot = rot; target.spin = 0;
 
   // ARMOUR THE TARGET so the blow can never be its last. This is a damage-per-
   // blow probe — hits-to-kill is arithmetic off maxHp, nothing here needs the
@@ -109,7 +176,11 @@ function hit(target, mass, speed, label) {
   // stopped 100u short. `inertT` is the game's own "fresh fragment flies clear
   // of its siblings" gate (asteroid-vs-asteroid only, so the target still
   // connects whatever class it is) and it decays on its own; it is saved and
-  // put back anyway so nothing leaks into the next rung.
+  // put back anyway so nothing leaks into the next rung. It is set to OUTLAST
+  // THE FLIGHT rather than to a flat second: physics decays it by dt every
+  // substep, so a corridor pinned at 1 quietly reopens partway through a slow
+  // rung's approach.
+  const ticks = flightTicks(target, rock, speed);
   const corridor = (rock.x - target.x) + rock.radius + 120;
   const inert = [];
   for (const b of g.bodies) {
@@ -117,7 +188,7 @@ function hit(target, mass, speed, label) {
     const dx = b.x - target.x, dy = b.y - target.y;
     if (dx * dx + dy * dy > corridor * corridor) continue;
     inert.push([b, b.inertT]);
-    b.inertT = 1;
+    b.inertT = ticks / 60 + 0.5;
   }
 
   // CONTACT IS NOT THE SAME QUESTION AS DAMAGE, and conflating them is what
@@ -134,7 +205,7 @@ function hit(target, mass, speed, label) {
   // destroyed — the same mass dominance that throttles its damage to nothing
   // sends ~155,000 the other way, and no rock this class survives that.
   let struck = false, dealt = null;
-  for (let i = 0; i < FLIGHT_TICKS && !struck && target.alive; i++) {
+  for (let i = 0; i < ticks && !struck && target.alive; i++) {
     window.tick(1 / 60);
     if (target.hp !== ARMOUR) { struck = true; dealt = Math.round(ARMOUR - target.hp); }
     else if (!rock.alive || rock.vx > -speed * 0.5) { struck = true; dealt = 0; }
@@ -146,13 +217,38 @@ function hit(target, mass, speed, label) {
   target.hp = snap.hp; target.mass = snap.mass; target.radius = snap.radius; target.alive = snap.alive;
   target.radiusT = snap.radiusT; target.onRails = snap.onRails; target.rail = snap.rail;
   target.x = snap.x; target.y = snap.y; target.vx = snap.vx; target.vy = snap.vy;
-  target.rot = snap.rot;
+  target.rot = snap.rot; target.spin = snap.spin;
   target.sulfurCd = snap.sulfurCd; target.shardCd = snap.shardCd; target.stripT = snap.stripT;
   // In place, not a reassignment — render and the collider both read b.scars.
   if (target.scars && snap.scars) { target.scars.length = 0; for (const s of snap.scars) target.scars.push(s); }
   // ...and restore the WORLD: the projectile plus everything the impact minted.
   for (const b of g.bodies) if (!preexisting.has(b)) b.alive = false;
   return dealt;
+}
+
+// ONE RUNG, ONE NUMBER — and for a target whose collider turns, that number is
+// the mean of four QUARTER-TURNS rather than one arbitrary facet.
+//
+// Pinning the angle is what makes the row repeatable; averaging is what keeps
+// it MEANINGFUL. A big rock is a slab, and its rotation sweep is not noise
+// around a mean — it is real geometry, running 0 → 353 on one rung, with
+// genuine dead spots where the shot slides into a cleft and lands almost
+// nothing. Freezing one arbitrary facet would make the ladder a fact about
+// whichever bearing happened to be pointing at us, and a later retune of the
+// shape table could silently park that bearing on a dead spot and leave the
+// row reporting 0 forever — failure 1 in a new dress. Four quadrants can't all
+// be dead, so the row keeps signal through any shape change, and it still moves
+// proportionally when the damage MATH moves, which is what it is here to catch.
+// Circles are measured once: every bearing gives the same answer, and paying
+// four flights to learn that is just slower.
+function probe(target, mass, speed, label) {
+  if (!turns(target)) return hit(target, mass, speed, 0, label);
+  const got = [];
+  for (let q = 0; q < 4; q++) {
+    const d = hit(target, mass, speed, (q / 4) * TAU, `${label}@q${q}`);
+    if (d !== null) got.push(d);
+  }
+  return got.length ? Math.round(got.reduce((a, b) => a + b, 0) / got.length) : null;
 }
 
 const find = (fn) => g.bodies.find((b) => b.alive && fn(b)) || null;
@@ -184,9 +280,11 @@ for (const t of targets) {
   window.tick(0.5);
   const row = { target: t.cls, hp: Math.round(t.b.maxHp), mass: Math.round(t.b.mass) };
   for (const r of RUNGS) {
-    // ONE SHOT PER RUNG. The target is frozen, armoured and pristine and the
-    // corridor is clear, so a second attempt would only re-measure the first.
-    const d = hit(t.b, r.mass, r.speed, `${t.cls}/${r.name}`);
+    // ONE SHOT PER ORIENTATION. The target is frozen, armoured and pristine and
+    // the corridor is clear, so a second attempt at the same angle would only
+    // re-measure the first — the only thing worth varying is the facet, which
+    // is what `probe` does.
+    const d = probe(t.b, r.mass, r.speed, `${t.cls}/${r.name}`);
     row[r.name] = d;
     row[`${r.name}_hits`] = d && d > 0 ? Math.ceil(t.b.maxHp / d) : null;
   }
@@ -200,10 +298,11 @@ const gas = find((b) => b.type === 'planet' && b.ptype === 'gas');
 const caps = {
   // A gas giant must survive 6-10 moons however fast they arrive.
   gasSingleHitFraction: gas
-    ? +(((hit(gas, 13000, 1400, 'caps/gas13000@1400') || 0) / gas.maxHp)).toFixed(3) : null,
+    ? +(((probe(gas, 13000, 1400, 'caps/gas13000@1400') || 0) / gas.maxHp)).toFixed(3) : null,
 };
 
 window.god(false);
+Math.random = realRandom;
 
 // `misses` must be 0. It is deliberately an EXACT field: a rung that stops
 // connecting is a regression in reach, geometry or the collision sweep, and it

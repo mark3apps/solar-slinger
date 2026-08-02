@@ -192,7 +192,8 @@ which just teaches you to ignore the tool. Fields are now classed:
 
 - **VOLATILE** (never compared) — particles, aliens, flares, bolts, dropped sim seconds, wall time.
 - **Banded** — timings (35% or 0.12ms), live populations (20% or 40), death tallies (±4), staged-impact
-  rungs (20% or ±3).
+  rungs (2% or ±1 — see below; they used to be 20%/±3, which was wide enough to hide a whole re-tune
+  of the damage curve).
 - **EXACT** — everything else. One moon, one NaN, one off-rail planet is the whole point.
 
 **Measured noise floor: 0–2 fields across three consecutive no-op runs.** If you see more than that
@@ -207,13 +208,16 @@ after an unbounded slice of it — its `byType.asteroid` measured 8325 / 8324 / 
 of boot delay, an EXACT field going red on unmodified code. The saved `3827467762` baseline had
 itself been captured 86 asteroids into that erosion.
 
-##### Why a staged impact needs four separate guards
+##### Why a staged impact needs six separate guards
 
-`combat.js` is the cautionary tale, because it looked fixed after the first one. Four consecutive
-`diff combat` runs on unmodified code gave four different answers, the worst being
-`ladder[planet-rocky].moon13000@900  3529 → 3`. Measured over 8 repeats the old suite had **7
-unstable fields, one spanning 4 → 3531**; the current one has **1, spanning ±1** on two seeds and 16
-repeats. Each guard closes a different hole, and dropping any of them reopens it:
+`combat.js` is the cautionary tale, because it looked fixed after the first one, and again after the
+fourth. Four consecutive `diff combat` runs on unmodified code gave four different answers, the worst
+being `ladder[planet-rocky].moon13000@900  3529 → 3`. Measured over 8 repeats the old suite had **7
+unstable fields, one spanning 4 → 3531**. Guards 1–4 got that down to **1 field spanning ±1** — and
+that survivor was not rounding, it was `ladder[fieldRock].*` still swinging **2 → 345 across ten
+runs**, because guard 1 froze the target's *position* and left its *orientation* free. With all six
+in place: **all 69 fields bit-identical across five consecutive runs.** Each guard closes a different
+hole, and dropping any of them reopens it:
 
 1. **Freeze the target** — derail it and zero its velocity. A railed moving target is hit at a
    different angle every attempt: spreads of 3466 vs 4936 on one rung, plus outright misses.
@@ -230,10 +234,38 @@ repeats. Each guard closes a different hole, and dropping any of them reopens it
 4. **Clear the corridor, and put the world back.** Spall, calved crust and crystal shards from rung N
    intercepted rung N+1 — and rung N's *craters* are the collider (`surfRadius` reads `b.scars`), so
    N+1 was fired at a different silhouette. Restore `scars` and `rot`, and kill everything the shot
-   minted.
+   minted. The corridor's `inertT` must **outlast the flight** — physics decays it by `dt` every
+   substep, so a flat `1` reopens partway through a slow rung's approach.
+5. **Freeze the target's ROTATION too, and measure a turning collider at four quarter-turns.**
+   Freezing position is only half of freezing geometry. `Body` draws `rot` from `Math.random` and
+   physics integrates it off `spin`, while `physics.shaped()` is true **ungated** for `bigShape` rock
+   and crystal worlds — so `surfRadius` solved at `ang - b.rot` and the shot met a different facet of
+   the same rock every run. Field monolith 4145 measured 1 / 254 / 318 / 348 on four identical runs,
+   and its full rotation sweep runs **0 → 353**: same body id, same mass, same radius, same position,
+   zero scars. Pin `rot` *and* `spin`. Then note that a slab genuinely *has* no single answer — so
+   rungs against a turning collider are fired at 0°/90°/180°/270° and averaged, which also stops a
+   later retune of the shape table parking the one measured bearing on a dead spot and leaving the
+   row reporting 0 forever. That is a sample of real geometry, not a retry.
+6. **Budget the flight by DISTANCE, not by a tick count.** A flat 30 ticks is 200 units at the
+   slowest rung, but a big rock's cleft sits ~270u *inside* its own nominal radius, so a clean shot
+   was still in open space when the budget ran out and got booked as a miss. Whether it did was
+   itself a function of the random facet, so `misses` flickered too. Size it off
+   `(approach + target.radius) / speed`.
 
-With all four in place one shot per rung is enough, which is also why the suite went from ~5.5s to
-~1.8s: "best of 5, take the max" was a way of hoping one attempt in five came through clean.
+And, on top of all six, **pin `Math.random` for the suite's own run** (`mulberry32`, restored at the
+end). Runtime randomness is deliberate in play, but a staged probe sits downstream of all of it:
+`calve()` draws the count and sizes of the crust a blow knocks off *and* bills a big rock's own mass
+for it, inside the same 1/60 window that reports the damage — and replenish/AI churn means the
+gravity sum the projectile integrates over is not even the same length run to run, worth ~1 point on
+a 219-point rung through nothing but float ordering. The geometry guards are what make the number
+*mean* something; the RNG pin is what makes it bit-exact.
+
+One shot per *orientation* is then enough — repeating an attempt at the same angle is the old
+superstition and buys nothing. The suite costs ~3.4s (up from ~1.8s: the shaped rows now fire four
+shots per rung), still far below the ~5.5s of "best of 5, take the max", which was only ever a way of
+hoping one attempt in five came through clean. Because the ladder is now bit-exact, its tolerance
+band was tightened from 20%/±3 to **2%/±1** — at the old band a +5% `DMG_BODY` bump moved nearly
+every rung and still diffed green.
 
 #### Adding a suite
 
