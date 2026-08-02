@@ -36,7 +36,11 @@
 // stays with the mood vector (which still drives the wash INTENSITY) and with
 // the alarm classes. Adding a danger zone here would just paint a second red
 // layer under the one #fx already owns.
+//
+// Not a leaf: presence() reads physics' frame registries rather than walking
+// the full body array (see the WORLD channel). config/util stay leaves.
 import { CFG, fieldFrac } from './config.js';
+import { frameReg } from './physics.js';
 import { lerp } from './util.js';
 
 // name is for the debug hook + docs; rgb is the accent, written to the HUD as
@@ -117,7 +121,14 @@ function presence(game) {
   // same formula as music.js's world channel, so the accent and the score agree
   // about what "arriving" means. A giant announces itself from far out; a small
   // moon has to be hugged.
-  for (const b of game.bodies) {
+  //
+  // Over reg.nonField (~380 bodies), NOT game.bodies (~15,600 in a shoal): a
+  // landmark is by definition not shoal rock, and walking the field to reject
+  // all of it one rock at a time is the exact scan the frame registries exist
+  // to kill. Registry rules apply — it is a per-frame snapshot, so b.alive is
+  // still checked, and a body one frame late to it cannot matter to an accent
+  // that takes 1.5s to crossfade.
+  for (const b of frameReg(game).nonField) {
     if (!b.alive || !WORLD_TYPES.has(b.type)) continue;
     const d = Math.hypot(b.x - s.x, b.y - s.y);
     const p = 1 - Math.max(0, d - b.radius) / (b.radius * 5 + 900);

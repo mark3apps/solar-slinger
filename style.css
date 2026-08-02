@@ -65,7 +65,7 @@ html, body {
 /* THE COCKPIT'S ACCENT IS THE LOCALE'S, not one fixed violet.
    --zone-*-rgb are written per frame by hud.js (see zoneChrome) from the locale
    director's crossfaded accent: violet in deep space, gold at a world, ice blue
-   in the corona, acid lime inside a shoal, orchid out at the Oort fringe. Each
+   in the corona, orchid inside a shoal, glacial out at the Oort fringe. Each
    is picked to sit OPPOSITE that region's sky, which is the whole point — the
    old mood tint blended TOWARD it and went amber-on-amber near the star.
    See src/zone.js for the zones and docs/design-laws.md for the law.

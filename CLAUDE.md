@@ -133,7 +133,7 @@ presentation loop.
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
 | [sfx.js](src/sfx.js) | Audio engine: the AudioContext + sfx/music buses. Every sound is a real CC0 recording — see [docs/audio.md](docs/audio.md). |
 | [music.js](src/music.js) | Adaptive music director: 24 CC-BY tracks in six playlists, exactly one playing at a time — see [docs/audio.md](docs/audio.md). |
-| [zone.js](src/zone.js) | Locale director: which of five places the ship is in, and the crossfaded accent colour the cockpit chrome takes there. Same bucket/hysteresis/dwell machine as music.js. Imports only config + util. |
+| [zone.js](src/zone.js) | Locale director: which of five places the ship is in, and the crossfaded accent colour the cockpit chrome takes there. Same bucket/hysteresis/dwell machine as music.js, but its presence scores are pure geometry over the frame registries. |
 | [util.js](src/util.js) | Pure helpers (`lerp`, `mulberry32`, `rand`, `pick`, `TAU`, `shellModal`, `senseBlind`, `crystalShards`). |
 | [devtest.js](src/devtest.js) | The scripted mechanics suite (`window.mechTest`). Lazy-loaded — normal play never imports it. |
 
