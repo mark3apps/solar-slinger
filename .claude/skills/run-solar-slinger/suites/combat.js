@@ -60,7 +60,7 @@ function hit(target, mass, speed, label) {
   const snap = {
     hp: target.hp, mass: target.mass, radius: target.radius, alive: target.alive,
     onRails: target.onRails, rail: target.rail, radiusT: target.radiusT,
-    x: target.x, y: target.y, vx: target.vx, vy: target.vy, rot: target.rot,
+    x: target.x, y: target.y, vx: target.vx, vy: target.vy, rot: target.rot, spin: target.spin,
     // CRATERS ARE THE COLLIDER, NOT DECORATION (THE CRUMBLE — surfRadius reads
     // b.scars, and `shaped` switches the narrow phase on for anything carrying
     // one). Restore them or each rung is fired at the silhouette the rung
@@ -92,6 +92,20 @@ function hit(target, mass, speed, label) {
   const ARMOUR = target.maxHp * 1e6;
   target.hp = ARMOUR;
 
+  // PIN THE TARGET'S ORIENTATION. A shaped target (`bigShape` rock, a crystal
+  // world, a cratered limb) collides against its real silhouette, so the
+  // distance from the muzzle to the SURFACE depends on which way it is facing —
+  // and it is turning (`rot += spin * dt`). The projectile is spawned at a fixed
+  // standoff from the DISC radius, so a different rotation phase means a
+  // different flight, a different closing speed at contact, and a different
+  // number. The phase at any rung depends on how much sim ran before it, which
+  // is why only this row moved: `ladder[fieldRock]` picks a shoal MONOLITH
+  // (bigShape, radius ~333) and measured 152, 262, 314, 352 on identical code.
+  // Zeroing spin as well keeps it still for the flight itself. Both are restored
+  // below with the rest of the snapshot, so nothing leaks into the next rung.
+  target.rot = 0;
+  target.spin = 0;
+
   // A DEDICATED PROJECTILE, spawned through the game's own path so it is a real
   // rock on the real mass/radius curve, with clean hp and no residue. Borrowing
   // a world body meant the measurement depended on which body the array handed
@@ -110,12 +124,28 @@ function hit(target, mass, speed, label) {
   // of its siblings" gate (asteroid-vs-asteroid only, so the target still
   // connects whatever class it is) and it decays on its own; it is saved and
   // put back anyway so nothing leaks into the next rung.
+  // CLEARING THE CORRIDOR IS NOT ENOUGH IN A DENSE FIELD. The corridor is only
+  // ~300 units, but `struck` fires on the FIRST change to target.hp — from
+  // ANY source — and the shoal is a maze of rock that is awake for a full
+  // second across the goto, the settle and the flight. A neighbour drifting in
+  // from off-corridor lands on the target and its damage is then attributed to
+  // the projectile. That is what made `ladder[fieldRock]` nondeterministic:
+  // measured 2, 30, 99, 146, 185, 265, 309, 345 on IDENTICAL code — a ~170x
+  // spread on a row the whole baseline/diff workflow treats as exact.
+  //
+  // So the quiet zone is the target's whole NEIGHBOURHOOD, not the shot line.
+  // Sized so nothing outside it can cross in: the flight is 0.5s and loose
+  // field rock drifts at a few hundred u/s, so a rock 800 units out covers
+  // ~100. Inerting more rock costs one extra walk per rung and cannot change
+  // the measurement — `inertT` is asteroid-vs-asteroid only, and the projectile
+  // is excluded, so the shot connects exactly as it did.
   const corridor = (rock.x - target.x) + rock.radius + 120;
+  const quiet = Math.max(corridor, target.radius * 4 + 800);
   const inert = [];
   for (const b of g.bodies) {
     if (b === target || b === rock || !b.alive || b.type !== 'asteroid') continue;
     const dx = b.x - target.x, dy = b.y - target.y;
-    if (dx * dx + dy * dy > corridor * corridor) continue;
+    if (dx * dx + dy * dy > quiet * quiet) continue;
     inert.push([b, b.inertT]);
     b.inertT = 1;
   }
@@ -146,7 +176,7 @@ function hit(target, mass, speed, label) {
   target.hp = snap.hp; target.mass = snap.mass; target.radius = snap.radius; target.alive = snap.alive;
   target.radiusT = snap.radiusT; target.onRails = snap.onRails; target.rail = snap.rail;
   target.x = snap.x; target.y = snap.y; target.vx = snap.vx; target.vy = snap.vy;
-  target.rot = snap.rot;
+  target.rot = snap.rot; target.spin = snap.spin;
   target.sulfurCd = snap.sulfurCd; target.shardCd = snap.shardCd; target.stripT = snap.stripT;
   // In place, not a reassignment — render and the collider both read b.scars.
   if (target.scars && snap.scars) { target.scars.length = 0; for (const s of snap.scars) target.scars.push(s); }

@@ -2,6 +2,8 @@ import {
   CFG, PROG, TIERS, LIFT_NEVER, addXp, fieldXp, canLift, canStow, liftClass, latchTime,
 } from './config.js';
 import { derail } from './entities.js';
+import * as gravel from './gravel.js';
+import { promoteGravel } from './physics.js';
 import { clamp, angDiff } from './util.js';
 import { bump, best, noteCatch } from './achievements.js';
 import * as sfx from './sfx.js';
@@ -273,6 +275,33 @@ function pickTarget(game) {
     if (dShip > st.range + b.radius) continue;
     if (isOwnShot(b)) { if (dCursor < mineD) { mine = b; mineD = dCursor; } continue; }
     if (dCursor < bestD) { best = b; bestD = dCursor; }
+  }
+  // GRAVEL is scanned last and on the same terms. A grain is a real rock in a
+  // cheaper representation (see gravel.js), so the beam must be able to reach
+  // one — "the crater you see is the crater you can fly into" does not have an
+  // exception for debris the sim happened to store in a typed array.
+  //
+  // PROMOTION HAPPENS HERE AND ONLY HERE, once a grain has actually WON the
+  // pick: it is the single point where the beam has committed to something, so
+  // it is the only place where minting a Body is proportionate. Doing it in the
+  // hover-ring pass instead would promote every grain the cursor swept over.
+  // Own-shot ranking is skipped because a grain is never your own shot — gravel
+  // cannot be thrown without first becoming a Body, at which point it is one.
+  if (gravel.count()) {
+    const gx = gravel.x, gy = gravel.y, gr = gravel.radius, gf = gravel.flags;
+    let gi = -1, gd = bestD;
+    for (let i = 0, n = gravel.top; i < n; i++) {
+      if (!(gf[i] & gravel.FLAG_ALIVE)) continue;
+      const dCursor = Math.hypot(gx[i] - game.aim.x, gy[i] - game.aim.y);
+      if (dCursor >= gd) continue;
+      if (dCursor > gr[i] + st.grabSlack) continue;
+      if (Math.hypot(gx[i] - s.x, gy[i] - s.y) > st.range + gr[i]) continue;
+      gi = i; gd = dCursor;
+    }
+    if (gi >= 0) {
+      const b = promoteGravel(game, gi);
+      if (b) return { best: b, ownThrow: false };
+    }
   }
   return { best: best || mine, ownThrow: !best && !!mine };
 }

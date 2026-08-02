@@ -1,14 +1,15 @@
 import { CFG, PROG, addXp, fieldXp, worldDebris, crustMass, FIELD_LOBE_MAX } from './config.js';
 import {
-  makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
+  Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
-import { spawnAsteroid, markFieldRock } from './world.js';
+import { spawnAsteroid, markFieldRock, asteroidRadius } from './world.js';
 import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
   rockShape, bigRockSurfAt, rockNormalAt,
 } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
+import * as gravel from './gravel.js';
 import * as sfx from './sfx.js';
 
 // ---------- particles / effects ----------
@@ -1176,8 +1177,39 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
       // ran out. Erosion still happens, through the chip path below, which is
       // where it was always metered.
     } else if (hard && !calves && debrisRoom(game) > 0) {
-      const n = Math.min(2 + Math.round(sev * 4), debrisRoom(game));
+      // THE SPRAY IS NOW MOSTLY GRAVEL (CFG.GRAVEL_SPRAY_MUL). `real` is the
+      // yield this impact always had, still minted as full Bodies and still
+      // bounded by the debris budget — grabbable, damaging, carrying gravity-
+      // billiards credit, indistinguishable from before. `want` is that yield
+      // multiplied, and everything past `real` is gravel: it exists, it flies,
+      // it can be grabbed (promotion), and it costs 0.17us a piece against a
+      // Body's 2.03us.
+      //
+      // GRAVEL DOES NOT BILL THE HOST FOR ITS MASS, and this is load-bearing.
+      // `shed` erodes the body it came off, so charging for 10x the pieces would
+      // strip a world ten times faster and hollow it out long before its hp ran
+      // out — the exact failure the calve path documents one branch above ("the
+      // calve deliberately does NOT bill the host for the mass it made").
+      // Erosion is still metered by the `real` pieces and by the chip path, both
+      // untouched, so a world wears at precisely the rate it always did.
+      const real = 2 + Math.round(sev * 4);
+      const want = real * CFG.GRAVEL_SPRAY_MUL;
+      const n = Math.min(real, debrisRoom(game));
+      const spill = want - n;
       let shed = 0;
+      for (let k = 0; k < spill; k++) {
+        const th = Math.random() * TAU;
+        const m = clamp(body.mass * (0.004 + Math.random() * 0.012) * sev, 90, CFG.CHUNK_MAX_MASS);
+        const sp = 80 + Math.random() * 150 + 220 * sev;
+        const rr = surfReach(body) * 1.03 + 14;
+        gravel.spawn(
+          body.x + Math.cos(th) * rr, body.y + Math.sin(th) * rr,
+          body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp,
+          Math.max(1.5, Math.min(gravel.GRAVEL_R_MAX, asteroidRadius(m))), m,
+          (Math.random() * 255) | 0, gravel.tintIndexFor(body.color),
+          massToHp(m), body.ice ? gravel.FLAG_ICE : 0, CFG.CHUNK_INERT);
+        // (no `shed` — see the note above: gravel is free, erosion is not)
+      }
       for (let k = 0; k < n; k++) {
         // first chunks burst from the crater; the rest spray ANYWHERE — a big
         // impact rings the whole body, not just the wound
@@ -1443,6 +1475,77 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
   _g.ax = ax; _g.ay = ay;
   _gp.ax = pax; _gp.ay = pay;
   return _g;
+}
+
+// ---------------------------------------------------------------------------
+// THE ATTRACTOR SHORTLIST — why the gravity loop no longer walks the sky.
+//
+// The influence cutoff above already skips negligible attractors, but
+// gravityAt still VISITS every one of them to decide: ~130 distance tests per
+// loose body per substep to find the handful that pass. Measured standing in a
+// planet system, of 122 attractors only 4.8 clear the cull at halo range and
+// 1.9 out in the open lanes — so ~96% of the work in the hottest loop in the
+// game was iteration spent proving that a body does not matter. With 4,000
+// loose chunks awake that walk measured 14.9ms of a 20.3ms sim frame (73% of
+// sim), and it is the term that makes a big debris cascade unaffordable.
+//
+// So each loose body CACHES the attractors it is inside cull range of, and
+// re-derives that list only every ATT_STALE seconds — staggered, so the
+// rebuilds spread across frames instead of spiking on one.
+//
+// IT IS EXACT, NOT AN APPROXIMATION. Two rules keep it that way:
+//   THE PAD. Body and attractor both keep moving while the list is trusted, so
+//     the build test inflates each cull radius by how far the pair could
+//     possibly close before the next rebuild — the body's own speed plus
+//     ATT_CLOSE_V for the attractor's orbital motion. Anything that could come
+//     into range inside the window is already on the list.
+//   THE CULL STAYS. gravityAt still applies cullR2 to every member, so an
+//     attractor admitted by the pad contributes exactly nothing until it
+//     genuinely qualifies. The shortlist decides what is worth TESTING, never
+//     what counts.
+// A shortlist can therefore only ever differ from the full walk by an
+// attractor whose pull is under GRAV_CULL_A, which the cutoff already declares
+// unobservable. predictPaths needs no mirror for the same reason: it culls on
+// the same constant, so the drawn path and the flown path still agree.
+//
+// INVALIDATION: the attractor SET changes when a world dies, when damage drops
+// a body under ATTRACT_MIN, and on a world regen. step() bumps a generation
+// whenever the attractor count moves, which retires every cached list. Members
+// are re-checked for `alive` inside gravityAt's own loop, so a death mid-window
+// is a skipped term, never a ghost pull.
+// ---------------------------------------------------------------------------
+const ATT_STALE = 0.25;    // seconds a shortlist is trusted before a rebuild
+const ATT_CLOSE_V = 400;   // u/s of attractor motion the pad must cover — the
+                           // fastest sun-anchored lane runs ~300 (r≈1500)
+let attSeq = 0;            // stagger source for objects with no id (scrap)
+// Perf escape hatch, same idiom as render's forceRockPath: A/B the shortlist
+// against the full walk WITHOUT reloading, so both legs measure one identical
+// world state. Demoting attractors instead (the obvious probe) also deletes
+// every consequence of gravity — the collisions it causes, the damage, the
+// population — and attributes all of that to the gravity loop.
+let attForceFull = false;
+export function forceFullGravity(on) { attForceFull = !!on; }
+
+function attShortlist(attractors, b, dt, gen) {
+  if (attForceFull) return attractors;
+  b._attT = (b._attT ?? 0) - dt;
+  const cached = b._att;
+  if (cached && b._attGen === gen && b._attT > 0) return cached;
+  const out = cached || (b._att = []);
+  out.length = 0;
+  const pad = (Math.hypot(b.vx, b.vy) + ATT_CLOSE_V) * ATT_STALE;
+  for (const a of attractors) {
+    if (a === b) continue;
+    if (a.cullR === Infinity) { out.push(a); continue; }   // the sun is never culled
+    const dx = a.x - b.x, dy = a.y - b.y;
+    const lim = a.cullR + pad;
+    if (dx * dx + dy * dy <= lim * lim) out.push(a);
+  }
+  b._attGen = gen;
+  // Stagger the NEXT rebuild off the id, or a cascade's worth of fragments all
+  // born on one frame would come due together on one later frame and spike it.
+  b._attT = ATT_STALE * (0.75 + ((b.id ?? (b._attH ??= attSeq++)) % 32) / 64);
+  return out;
 }
 
 // The star a body is gravitationally anchored to (its own system's sun).
@@ -2041,11 +2144,84 @@ function collideBodies(game, a, b) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE SWEPT PRE-TEST — why a fast rock no longer passes through you.
+//
+// This is a pure OVERLAP test at one instant, so a projectile that crosses the
+// hull between two samples is never seen at all. Measured, 220 randomized
+// trials per cell (impact parameter AND sample phase randomized), fraction of
+// impacts that register against the ship at the fine step:
+//
+//   closing   400    800   1300   1800   2500
+//   1/120     99%    97%    92%    86%    77%
+//
+// So even at 1/120 nearly a quarter of the fastest impacts were being missed —
+// that is the "fast grazes left on the table" the DT_COARSE note in config.js
+// names, and it is a live bug at the default step, not only a coarse-step one.
+//
+// The fix is a segment-vs-disc test on the RELATIVE displacement over the
+// substep: if the closest approach along that segment is inside the contact
+// radius, the pair really did touch, and the body is placed where it touched so
+// the normal, the overlap and the impulse below all read a genuine contact
+// rather than a sample where it is already past.
+//
+// SCOPED DELIBERATELY, and each exclusion matters:
+//   - SHIP AND ALIENS ONLY. Not the ~8,000-body sweep: tunnelling between two
+//     rocks is off-view and cosmetic, and paying a swept test per candidate
+//     pair there would cost far more than the misses are worth.
+//   - `seg2 > rr*rr` gates it to pairs that actually moved further than the
+//     contact radius in one substep. A planet (rr ~700) would need 84,000 u/s
+//     to qualify, so celestials never enter this path and their gas-dive /
+//     star-plunge / crater branches are untouched.
+//   - SHAPED bodies are excluded: their contact radius is bearing-dependent
+//     (a crystal world's shards, a cratered limb), so a single segment-vs-disc
+//     test does not describe them — and they are large, so they never tunnel.
+// Only the BODY is relocated, never the ship: the ship is player-driven and
+// snapping it backwards along its own path is felt immediately, while a
+// projectile stopping at the moment of impact is exactly what a hit looks like.
+// ---------------------------------------------------------------------------
+// Perf/verification escape hatch, same idiom as forceFullGravity: turn the
+// swept test off so the tunnelling table can be re-measured against the plain
+// overlap test in the SAME session. The table in config.js is only meaningful
+// if the harness that produced it can reproduce the old numbers on demand.
+let sweptOff = false;
+export function forceSweptOff(on) { sweptOff = !!on; }
+// Ship-body contacts actually RESOLVED. One increment on a real contact (never
+// on the reject path), so it is free — and it is what makes the tunnelling
+// table in config.js re-runnable on demand, which that comment asks for.
+// Deflection is NOT a usable signal for such a harness: invariant 4 makes a
+// 400-mass rock immovable against a 10-mass ship, so a landed hit barely moves
+// the projectile. Count detections, not momentum.
+export const shipContacts = { n: 0 };
+
+function sweptContact(ax, ay, arad, b, dt) {
+  if (sweptOff) return false;
+  const rr = arad + b.radius;
+  const rvx = (b.vx - _swvx) * dt, rvy = (b.vy - _swvy) * dt;
+  const seg2 = rvx * rvx + rvy * rvy;
+  if (seg2 <= rr * rr) return false;   // did not move far enough to skip the disc
+  const dx = b.x - ax, dy = b.y - ay;
+  const p0x = dx - rvx, p0y = dy - rvy;
+  let t = -(p0x * rvx + p0y * rvy) / seg2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const cx = p0x + rvx * t, cy = p0y + rvy * t;
+  if (cx * cx + cy * cy > rr * rr) return false;
+  b.x = ax + cx; b.y = ay + cy;   // put it where it actually touched
+  return true;
+}
+let _swvx = 0, _swvy = 0;   // the other party's velocity, set by the caller
+
 function collideShipBody(game, s, b, dt) {
   if (b.sinkT > 0) return;   // already under the cloud tops
-  const dx = b.x - s.x, dy = b.y - s.y;
+  let dx = b.x - s.x, dy = b.y - s.y;
   let rr = s.radius + b.radius;
-  const d2 = dx * dx + dy * dy;
+  let d2 = dx * dx + dy * dy;
+  if (d2 > rr * rr && !shaped(b)) {
+    _swvx = s.vx; _swvy = s.vy;
+    if (sweptContact(s.x, s.y, s.radius, b, dt)) {
+      dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
+    }
+  }
   // The ship lands on (and skims along) the real surface — a crystal world's
   // shard polygon, a cratered world's notched limb — not the mean disc. Same
   // radial narrow phase as collideBodies; you can fly down into a crater you
@@ -2056,6 +2232,7 @@ function collideShipBody(game, s, b, dt) {
     rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
   }
   if (d2 > rr * rr) return;
+  shipContacts.n++;
   const d = Math.sqrt(d2) || 0.001;
 
   // Stars have no wall for the SHIP: no bounce, no instant kill — you fly
@@ -2375,16 +2552,24 @@ function updateParry(game, dt) {
   }
 }
 
-function collideAlienBody(game, al, b) {
+function collideAlienBody(game, al, b, dt) {
   // Grabbers never collide with the rock they're fetching. A LURKER is the
   // opposite case: its target is the rock it intends to BODY-CHECK, so this
   // early-out silently cancelled the entire mechanic (measured: 1 shove a
   // minute, all of them incidental hits on other rocks).
   if (b === al.target && al.kind !== 'lurker') return;
   if (b.sinkT > 0) return;   // already under the cloud tops
-  const dx = b.x - al.x, dy = b.y - al.y;
+  let dx = b.x - al.x, dy = b.y - al.y;
   let rr = al.radius + b.radius;
-  const d2 = dx * dx + dy * dy;
+  let d2 = dx * dx + dy * dy;
+  // Same swept pre-test the ship gets (see sweptContact) — an alien is a small
+  // fast target and a lurker's own body-check closes at throw speeds.
+  if (d2 > rr * rr && !shaped(b)) {
+    _swvx = al.vx; _swvy = al.vy;
+    if (sweptContact(al.x, al.y, al.radius, b, dt)) {
+      dx = b.x - al.x; dy = b.y - al.y; d2 = dx * dx + dy * dy;
+    }
+  }
   if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
@@ -2497,6 +2682,11 @@ function collideAlienBody(game, al, b) {
 // ---------- main step ----------
 
 const _sweep = [];       // collision broad-phase scratch (reused every substep)
+// The sweep's SoA side-table (see THE SWEEP SIDE-TABLE in step()). Float64, not
+// Float32: world coordinates run to ~1e5 and the scan's compares must agree
+// with the f64 arithmetic collideBodies does, or a pair could be pruned here
+// and overlapping there.
+let swX = null, swY = null, swR = null, swL = null, swAlive = null;
 const _attractors = [];  // attractor list scratch (reused every substep)
 // Hoisted sort comparator — the sweep sorts every substep; an inline arrow
 // would allocate a fresh closure 120 times a second for nothing.
@@ -2636,8 +2826,161 @@ export function frameReg(game) {
   return reg;
 }
 
+// ---------------------------------------------------------------------------
+// HALO PACKING — a world you left keeps its wounds without keeping its bodies.
+//
+// The LOD already stops SIMULATING an off-view rubble halo: its pieces go
+// dormant and group-advance on their rails once a frame. What they never
+// stopped doing is EXISTING — and existing costs three things that matter at
+// scale: a slot in the per-frame LOD walk, a slot in the collision sweep, and,
+// the expensive one, a slot in `reg.nonField`, which IS the debris budget
+// (CFG.DEBRIS_BUDGET). Work over five worlds and ~130 permanent slots are gone
+// to rubble nobody will look at again, so the budget that is supposed to bound
+// how much chaos is AROUND YOU instead bounds how much damage you have ever
+// done. That is the wrong axis, and it is what stops the budget being raised.
+//
+// So a settled halo whose world is far off-view collapses into a plain record
+// on the host, and re-expands when you come back. What is preserved is exactly
+// what the CRUMBLE law requires: every piece returns with its own id, radius,
+// mass, hp, material and rail phase, so the halo you fly back to is the halo
+// you left — same shapes (the sprite archetype is seeded off b.id), same
+// damage, same places. Nothing is re-randomised.
+//
+// Hysteresis matters: pack and unpack use DIFFERENT radii, or a world sitting
+// exactly on the boundary would pack and unpack every frame, which is strictly
+// worse than never packing at all.
+const HALO_PACK_R = 3.0;     // x wakeR — collapse a settled halo beyond this
+const HALO_UNPACK_R = 2.2;   // x wakeR — and bring it back inside this
+
+function packHalos(game, cx, cy, wakeR) {
+  const packR = wakeR * HALO_PACK_R, packR2 = packR * packR;
+  const unpackR = wakeR * HALO_UNPACK_R, unpackR2 = unpackR * unpackR;
+  const hosts = game._packedHosts || (game._packedHosts = []);
+
+  // UNPACK first, so a world re-entering range is whole before the LOD walk
+  // classifies anything this frame.
+  if (hosts.length) {
+    let w = 0;
+    for (const h of hosts) {
+      const near = h.alive && (h.x - cx) ** 2 + (h.y - cy) ** 2 < unpackR2;
+      if (!near && h.alive) { hosts[w++] = h; continue; }
+      const pack = h.crustPack;
+      h.crustPack = null;
+      if (!pack || !h.alive) continue;   // host died holding a pack: its rubble dies with it
+      for (const p of pack) {
+        // TWO KINDS OF PIECE, and both have to survive the round trip.
+        // A RAILED piece is restored from its rail phase, which keeps turning
+        // while packed exactly as a dormant railed body's group advance would.
+        // A LOOSE one is restored from its HOST-RELATIVE offset and velocity —
+        // which is not an approximation but precisely the existing semantics:
+        // the LOD already freezes loose dormant bodies mid-drift, and they are
+        // off-view by definition, so nobody can see the pause either way.
+        // Loose is the COMMON case, not the exception: updateCrust only settles
+        // a halo onto its rails while `h.nearShip`, so a halo you walked away
+        // from stays loose forever. Requiring onRails here meant packing simply
+        // never fired — measured, 0 of 30 pieces.
+        const c = Math.cos(p.ang), s = Math.sin(p.ang);
+        const b = new Body({
+          type: 'asteroid', mass: p.mass, radius: p.radius,
+          x: p.railed ? h.x + c * p.r : h.x + p.dx,
+          y: p.railed ? h.y + s * p.r : h.y + p.dy,
+          vx: p.railed ? h.vx - s * p.w * p.r : h.vx + p.dvx,
+          vy: p.railed ? h.vy + c * p.w * p.r : h.vy + p.dvy,
+          hp: p.maxHp,
+        });
+        b.id = p.id;                     // the sprite archetype is seeded off it
+        b.chunk = true; b.color = p.color;
+        if (p.ice) b.ice = true;
+        if (p.cored) b.cored = true;
+        b.baseRadius = p.radius; b.baseMass = p.mass;
+        b.maxHp = p.maxHp; b.hp = p.hp;
+        b.attractor = false;             // debris is never an attractor, at any mass
+        b.scars = p.scars;
+        b.crust = h; b.crustT = p.crustT; b.crustFree = p.crustFree;
+        b.parent = h;
+        if (p.railed) {
+          b.onRails = true;
+          b.rail = { parent: h, r: p.r, w: p.w, ang: p.ang, e: 0, rdt: 0 };
+          b.homeR = p.r;
+        } else {
+          b.liveT = p.liveT;
+        }
+        game.bodies.push(b);
+        if (game.bodies._awake) game.bodies._awake.push(b);
+      }
+    }
+    hosts.length = w;
+  }
+
+  // PACK: a host far off-view whose halo has fully settled onto its rails.
+  const list = game.reg && game.reg.crust;
+  if (!list || !list.length) return;
+  const cand = _packCand;
+  cand.clear();
+  for (const b of list) {
+    const h = b.crust;
+    if (!b.alive || !h || !h.alive || h.crustPack) continue;
+    // FIELD ROCK IS NEVER PACKED. A shoal giant calves crust like anything
+    // else, and "a piece of field rock is still field rock" (calveCrust) keeps
+    // b.field on the piece — so those pieces are in reg.crust too. They answer
+    // to the pocket's own LOD and its own ceilings, not to DEBRIS_BUDGET, so
+    // packing them would take rock out of a field's census for no budget gain.
+    if (b.field != null) { cand.set(h, null); continue; }
+    // HELD or THROWN disqualifies the whole host's halo: those are things the
+    // player is acting on right now, and neither the beam nor a shot in flight
+    // may have its subject collapsed out from under it. Everything else — loose,
+    // settling, railed — round-trips exactly (see the unpack note).
+    if (b.heldBy || b.thrownTimer > 0) { cand.set(h, null); continue; }
+    if ((h.x - cx) ** 2 + (h.y - cy) ** 2 < packR2) { cand.set(h, null); continue; }
+    const arr = cand.get(h);
+    if (arr === null) continue;          // already disqualified this host
+    if (arr) arr.push(b); else cand.set(h, [b]);
+  }
+  for (const [h, arr] of cand) {
+    if (!arr || !arr.length) continue;
+    const pack = [];
+    for (const b of arr) {
+      // RAILED TO THE HOST, specifically. A piece that drifted clear of the
+      // halo gets picked up by the ordinary re-rail scan and ends up orbiting
+      // the STAR — measured at rail.r 3,474 against a 258-unit crust band — and
+      // restoring that rail against the host would rebuild it 3,474 units from
+      // the wrong body, teleporting it across the system. Anything not on its
+      // own world's rail is packed as loose instead: position and velocity
+      // round-trip exactly, and the re-rail scan re-acquires it as it always
+      // would. (Such a piece is usually about to be unbound anyway — updateCrust
+      // drops b.crust once it is past 1.8x the band.)
+      const onHostRail = !!b.onRails && b.rail && b.rail.parent === h;
+      pack.push({
+        id: b.id, railed: onHostRail,
+        ang: onHostRail ? b.rail.ang : 0, r: onHostRail ? b.rail.r : 0, w: onHostRail ? b.rail.w : 0,
+        dx: b.x - h.x, dy: b.y - h.y, dvx: b.vx - h.vx, dvy: b.vy - h.vy,
+        radius: b.radius, mass: b.mass, hp: b.hp, maxHp: b.maxHp,
+        color: b.color, ice: !!b.ice, cored: !!b.cored,
+        scars: b.scars, crustT: b.crustT, crustFree: b.crustFree || 0, liveT: b.liveT || 0,
+      });
+      b.alive = false;      // the cull pass lifts it out of game.bodies
+      b._sw = false;        // ...and out of the sweep in the same breath
+      b._att = null;        // ...and drops its attractor shortlist
+      b.crust = null;
+    }
+    h.crustPack = pack;
+    game._packedHosts.push(h);
+  }
+}
+
+const _packCand = new Map();
+
 export function updateFieldLOD(game, dt) {
   const bodies = game.bodies;
+  // HALO PACKING RUNS FIRST — before the registries are cleared below, because
+  // it reads reg.crust to find which world each piece belongs to, and before
+  // the classification walk, so this frame's awake list and registries see the
+  // population that packing/unpacking just settled on.
+  {
+    const sh = game.ship;
+    packHalos(game, sh.alive ? sh.x : game.cam.x, sh.alive ? sh.y : game.cam.y,
+      (game.viewR || 1200) * 2.2 + 600);
+  }
   const awake = bodies._awake || (bodies._awake = []);
   awake.length = 0;
   const reg = game.reg || (game.reg = newReg());
@@ -2652,6 +2995,11 @@ export function updateFieldLOD(game, dt) {
   const cy = s.alive ? s.y : game.cam.y;
   const wakeR = (game.viewR || 1200) * 2.2 + 600;
   const wakeR2 = wakeR * wakeR;
+  // Published so the gravel pass sizes its shared attractor shortlist to exactly
+  // the region this pass keeps awake — one bubble, one definition. Derived here
+  // rather than re-derived there, or a later change to the wake radius would
+  // silently leave gravel reading a stale reach.
+  game.wakeR = wakeR;
   if (flds) {
     for (const f of flds) {
       // Reach must cover the pocket's LONGEST lobe (config.FIELD_LOBE_MAX)
@@ -2728,6 +3076,276 @@ export function updateFieldLOD(game, dt) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE GRAVEL STEP — small debris, simulated out of typed arrays.
+//
+// See gravel.js for what gravel IS and why. This is the physics half: gravity,
+// integration, the boundary, and contact against the things gravel is allowed
+// to hit. It exists as its own pass because that is the entire point — a
+// contiguous loop over Float64Array is the thing that measured 4.2x against the
+// same work over Body objects.
+//
+// ONE SHARED ATTRACTOR SHORTLIST, not one per grain. A Body caches its own
+// (attShortlist), which is right when bodies are few and long-lived; minting
+// thousands of little arrays for debris that lives seconds would hand back the
+// allocation win this store exists to get. Instead the shortlist is built once
+// per substep for the WHOLE BUBBLE: an attractor is admitted if its cull radius
+// reaches the bubble at all, which makes the list a strict SUPERSET of what any
+// single grain inside the bubble would have computed. The per-grain cull test is
+// still applied below, so the answer is identical to the Body path — the shared
+// list only decides what is worth testing, exactly as attShortlist does.
+// ---------------------------------------------------------------------------
+const _gAtt = [];
+function gravelAttractors(attractors, cx, cy, reach) {
+  _gAtt.length = 0;
+  for (const a of attractors) {
+    if (!a.alive) continue;
+    if (a.cullR === Infinity) { _gAtt.push(a); continue; }   // the sun is never culled
+    const lim = a.cullR + reach;
+    const dx = a.x - cx, dy = a.y - cy;
+    if (dx * dx + dy * dy <= lim * lim) _gAtt.push(a);
+  }
+  return _gAtt;
+}
+
+// ---------------------------------------------------------------------------
+// OFF-THREAD DISPATCH. The gravel pass is the one piece of the sim that can
+// leave the main thread: its state is in a SharedArrayBuffer and its update
+// touches no `game` object. `gravelDispatch` posts the work at the TOP of the
+// substep, the main thread then spends the substep on Body physics, and
+// `gravelJoin` collects before anything reads a grain.
+//
+// EVERY WAY THIS CAN FAIL FALLS BACK TO THE MAIN-THREAD PASS, which is the same
+// contract rockgl.js runs on: no SharedArrayBuffer (the host did not send
+// COOP/COEP), Worker construction threw, the worker never reported ready, or the
+// join spun past its bound. `workerDead` latches on the last of those, so a
+// pathological machine degrades once instead of stalling every substep forever.
+let gWorker = null, gReady = false, gPending = false, workerDead = false;
+export function gravelWorkerState() {
+  return { shared: gravel.isShared, started: !!gWorker, ready: gReady, dead: workerDead };
+}
+
+function startGravelWorker() {
+  if (gWorker || workerDead || !gravel.isShared) return;
+  try {
+    gWorker = new Worker(new URL('./gravel-worker.js', import.meta.url), { type: 'module' });
+    gWorker.onmessage = (e) => { if (e.data && e.data.type === 'ready') gReady = true; };
+    gWorker.onerror = () => { workerDead = true; gReady = false; };
+    gWorker.postMessage({
+      type: 'init', buffer: gravel.buffer, layout: gravel.LAYOUT,
+      ctrlBuffer: gravel.ctrlBuffer, paramLen: gravel.params.length,
+      worldR: CFG.WORLD_R, G: CFG.G, gravSoft: CFG.GRAV_SOFT,
+    });
+  } catch (err) {
+    console.warn('Solar Slinger: gravel worker unavailable —', err);
+    workerDead = true; gWorker = null;
+  }
+}
+
+// Fill the shared parameter block with this substep's shortlist and wake the
+// worker. Returns false if the caller must do the pass inline instead.
+function gravelDispatch(game, dt, attractors) {
+  if (!gReady || workerDead || !gravel.count()) return false;
+  const s = game.ship;
+  const cx = s.alive ? s.x : game.cam.x;
+  const cy = s.alive ? s.y : game.cam.y;
+  const reach = game.wakeR || ((game.viewR || 1200) * 2.2 + 600);
+  const att = gravelAttractors(attractors, cx, cy, reach);
+  const n = Math.min(att.length, gravel.MAX_ATTRACTORS);
+  const p = gravel.params;
+  p[0] = dt;
+  for (let k = 0, o = 1; k < n; k++, o += 4) {
+    const a = att[k];
+    p[o] = a.x; p[o + 1] = a.y; p[o + 2] = a.mass;
+    p[o + 3] = a.cullR === Infinity ? Infinity : a.cullR2;
+  }
+  Atomics.store(gravel.ctrl, 1, gravel.top);
+  Atomics.store(gravel.ctrl, 2, n);
+  Atomics.store(gravel.ctrl, 0, gravel.CTRL_WORK);
+  Atomics.notify(gravel.ctrl, 0);
+  gPending = true;
+  return true;
+}
+
+// Collect. SPINS rather than blocking — Atomics.wait throws on the main thread
+// by design. The spin is normally zero iterations (gravel is ~2ms of work
+// against ~25ms of Body physics in the same substep); the bound exists so a
+// wedged worker degrades to the inline path instead of freezing the game.
+const JOIN_SPIN_MAX = 2e7;
+function gravelJoin() {
+  if (!gPending) return true;
+  gPending = false;
+  for (let i = 0; i < JOIN_SPIN_MAX; i++) {
+    if (Atomics.load(gravel.ctrl, 0) === gravel.CTRL_DONE) {
+      Atomics.store(gravel.ctrl, 0, gravel.CTRL_IDLE);
+      return true;
+    }
+  }
+  console.warn('Solar Slinger: gravel worker stalled — falling back to the main thread');
+  workerDead = true;
+  Atomics.store(gravel.ctrl, 0, gravel.CTRL_IDLE);
+  return false;   // the grains did not advance this substep; the caller redoes it
+}
+
+function stepGravel(game, dt, attractors) {
+  if (!gravel.count()) return;
+  const s = game.ship;
+  const cx = s.alive ? s.x : game.cam.x;
+  const cy = s.alive ? s.y : game.cam.y;
+  const reach = game.wakeR || ((game.viewR || 1200) * 2.2 + 600);
+  const att = gravelAttractors(attractors, cx, cy, reach);
+  const n = att.length;
+  const gx = gravel.x, gy = gravel.y, gvx = gravel.vx, gvy = gravel.vy;
+  const gflags = gravel.flags, top = gravel.top;
+  for (let i = 0; i < top; i++) {
+    if (!(gflags[i] & gravel.FLAG_ALIVE)) continue;
+    const px = gx[i], py = gy[i];
+    let ax = 0, ay = 0;
+    for (let k = 0; k < n; k++) {
+      const a = att[k];
+      const dx = a.x - px, dy = a.y - py;
+      const d2 = dx * dx + dy * dy + SOFT2;
+      if (d2 > a.cullR2) continue;   // the same per-body cutoff gravityAt applies
+      const inv = (CFG.G * a.mass) / (d2 * Math.sqrt(d2));
+      ax += dx * inv; ay += dy * inv;
+    }
+    // Gravel is never star-anchored, so the world edge applies to all of it —
+    // the same rule loose Body debris follows.
+    const bnd = boundaryAccel(px, py);
+    if (bnd) { ax += bnd.ax; ay += bnd.ay; }
+    gvx[i] += ax * dt; gvy[i] += ay * dt;
+  }
+  gravel.integrate(dt);
+}
+
+// Gravel contact. Gravel is anonymous rock, so it answers to a deliberately
+// SHORTER list of interactions than a Body does — and every omission below is a
+// design decision, not an oversight:
+//   - THE SHIP and ALIENS: kept, because those are what the player aims at and
+//     what aims at the player. A grain that ghosted through the hull would be
+//     the one failure nobody would forgive.
+//   - CELESTIALS: kept, so debris still lands on worlds and gets swallowed by
+//     giants rather than raining through them.
+//   - GRAVEL vs GRAVEL: deliberately DROPPED. Two anonymous grains grinding is
+//     invisible at their size and it is the O(n²) term that makes a cascade
+//     expensive. This IS a feel change and it is the honest cost of the tier:
+//     it reads as a permanent CFG.CHUNK_INERT between grains. Anything the
+//     player would actually watch collide is a Body by construction (promotion
+//     on beam reach, and the size threshold that keeps slabs out of gravel).
+//   - DAMAGE TO CELESTIALS: dropped. A grain carries ~90-200 mass against a
+//     planet's 1e5+; mass dominance already throttled its damage to nothing,
+//     and letting thousands of them each run damageBody would reinstate the
+//     cascade the debris budget exists to bound.
+function collideGravel(game, dt) {
+  if (!gravel.count()) return;
+  const s = game.ship;
+  const gx = gravel.x, gy = gravel.y, gvx = gravel.vx, gvy = gravel.vy;
+  const gr = gravel.radius, gflags = gravel.flags, top = gravel.top;
+  const aliens = game.aliens;
+  const reg = game.reg;
+  for (let i = 0; i < top; i++) {
+    if (!(gflags[i] & gravel.FLAG_ALIVE)) continue;
+    const px = gx[i], py = gy[i], r = gr[i];
+    // --- ship ---------------------------------------------------------------
+    if (s.alive) {
+      const rr = s.radius + r;
+      const dx = px - s.x, dy = py - s.y;
+      if (dx * dx + dy * dy < rr * rr) {
+        const d = Math.hypot(dx, dy) || 0.001;
+        const nx = dx / d, ny = dy / d;
+        const closing = (gvx[i] - s.vx) * -nx + (gvy[i] - s.vy) * -ny;
+        if (closing > CFG.DMG_THRESH_THROWN) {
+          // Capped hard: a cascade can put hundreds of grains through the hull
+          // in a second, and an uncapped per-grain bite would make standing in
+          // your own debris cloud instantly lethal in a way no single visible
+          // event explains.
+          damageShip(game, Math.min(12, closing * 0.02 * (gravel.mass[i] / 400)),
+            'Shredded by flying debris.', Math.atan2(-dy, -dx));
+        }
+        // The grain bounces; the ship takes the capped kick invariant 5 sets.
+        gvx[i] += nx * 60; gvy[i] += ny * 60;
+        const kick = Math.min(200, closing * 0.05);
+        s.vx -= nx * kick; s.vy -= ny * kick;
+        continue;
+      }
+    }
+    // --- aliens -------------------------------------------------------------
+    for (let k = 0; k < aliens.length; k++) {
+      const al = aliens[k];
+      if (!al.alive) continue;
+      const rr = al.radius + r;
+      const dx = px - al.x, dy = py - al.y;
+      if (dx * dx + dy * dy < rr * rr) {
+        const d = Math.hypot(dx, dy) || 0.001;
+        gvx[i] += (dx / d) * 60; gvy[i] += (dy / d) * 60;
+        break;
+      }
+    }
+    // --- celestials ---------------------------------------------------------
+    // The registry, not a scan: `planets` and the star are a few dozen entries
+    // that change only when one dies, and walking every body per grain would be
+    // the O(bodies x gravel) term this tier exists to delete.
+    if (reg) {
+      const stars = reg.stars;
+      for (let k = 0; k < stars.length; k++) {
+        const b = stars[k];
+        const rr = b.radius + r;
+        if ((px - b.x) ** 2 + (py - b.y) ** 2 < rr * rr) { gravel.kill(i); break; }
+      }
+      if (!(gflags[i] & gravel.FLAG_ALIVE)) continue;
+      const pl = reg.planets;
+      for (let k = 0; k < pl.length; k++) {
+        const b = pl[k];
+        if (!b.nearShip) continue;   // off-view impacts are unobservable (the LOD trade)
+        const rr = b.radius + r;
+        const dx = px - b.x, dy = py - b.y;
+        if (dx * dx + dy * dy < rr * rr) {
+          if (b.ptype === 'gas') { gravel.kill(i); break; }   // it swallows
+          const d = Math.hypot(dx, dy) || 0.001;
+          const nx = dx / d, ny = dy / d;
+          // Sit it on the surface and reflect: a grain is far too light to move
+          // a world (invariant 4), so the world is simply a wall.
+          gx[i] = b.x + nx * rr; gy[i] = b.y + ny * rr;
+          const vn = gvx[i] * nx + gvy[i] * ny;
+          if (vn < 0) { gvx[i] -= 2 * vn * nx * 0.4; gvy[i] -= 2 * vn * ny * 0.4; }
+          break;
+        }
+      }
+    }
+  }
+}
+
+// PROMOTION — a grain becomes a real Body the moment it stops being anonymous.
+//
+// This is the contract that lets gravel be cheap at all. "A world under fire
+// comes apart and the pieces stay; the crater you SEE is the crater you can fly
+// into" is a design law, and rubble the player could never grab would break it.
+// So gravel is not a different KIND of rock — it is the same rock in a cheaper
+// representation, and the representation ends the instant the beam reaches for
+// it. Everything the store carries transfers: position, velocity, spin, mass,
+// hp, material and the remaining inert window.
+//
+// Called from tractor.pickTarget, which is the one place that decides the beam
+// has chosen something. Deliberately NOT called from the hover-ring code: that
+// runs every frame over everything under the cursor, and promoting on hover
+// would mint a Body for every grain the player sweeps past.
+export function promoteGravel(game, i) {
+  if (!gravel.alive(i)) return null;
+  const b = spawnAsteroid(game.bodies, gravel.x[i], gravel.y[i],
+    gravel.vx[i], gravel.vy[i], gravel.mass[i]);
+  b.radius = b.baseRadius = gravel.radius[i];
+  b.color = gravel.PALETTE[gravel.tint[i]] || gravel.PALETTE[0];
+  b.chunk = true;                     // it draws as the shard it already was
+  b.rot = gravel.rot[i]; b.spin = gravel.spin[i];
+  b.hp = b.maxHp = gravel.hp[i];
+  b.inertT = gravel.inertT[i];        // a fresh fragment stays inert across the change
+  if (gravel.flags[i] & gravel.FLAG_ICE) b.ice = true;
+  if (gravel.flags[i] & gravel.FLAG_CORED) b.cored = true;
+  b.attractor = false;                // debris is never an attractor, at any mass
+  gravel.kill(i);
+  return b;
+}
+
 export function step(game, dt) {
   const bodies = game.bodies;
   // THE AWAKE LIST (built once per frame by updateFieldLOD): every per-substep
@@ -2759,10 +3377,34 @@ export function step(game, dt) {
     if (!b.attractor) continue;
     // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
     // are never culled — the sun is the structural anchor of every orbit.
-    if (b.type === 'star') { b.cullR2 = Infinity; b.cullShip2 = Infinity; }
-    else { b.cullR2 = b.mass * GRAV_CULL_K; b.cullShip2 = b.mass * SHIP_CULL_K; }
+    // cullR is the linear form, which only the shortlist builder wants (it
+    // compares against a PADDED radius, and padding a squared one costs the
+    // sqrt anyway) — 130 sqrts a substep against the walk it removes.
+    if (b.type === 'star') { b.cullR2 = Infinity; b.cullShip2 = Infinity; b.cullR = Infinity; }
+    else {
+      b.cullR2 = b.mass * GRAV_CULL_K; b.cullShip2 = b.mass * SHIP_CULL_K;
+      b.cullR = Math.sqrt(b.cullR2);
+    }
     attractors.push(b);
   }
+
+  // Attractor-set generation (see attShortlist): a change in the count means a
+  // world died, damage dropped something under ATTRACT_MIN, or the world was
+  // regenerated — any of which retires every cached shortlist.
+  if (attractors.length !== game._attN) {
+    game._attN = attractors.length;
+    game._attGen = (game._attGen ?? 0) + 1;
+  }
+  const attGen = game._attGen;
+
+  // GRAVEL GOES OUT FIRST, and that ordering is the entire point of the worker.
+  // Posted here, at the top of the substep, it runs on another core while this
+  // thread does the rails scan, both gravity phases, the integrate and the
+  // collision sweep — so its cost overlaps rather than adds. Joined below,
+  // before anything reads a grain. With no worker this is a no-op and
+  // stepGravel runs inline in the same slot it always did.
+  startGravelWorker();
+  const gravelOffThread = gravelDispatch(game, dt, attractors);
 
   // Rails maintenance: heavy wanderers (rogues, thrown giants) wake nearby
   // railed bodies into live physics; long-quiet live bodies snap back onto
@@ -2939,8 +3581,13 @@ export function step(game, dt) {
       if (bnd0) { b.ax += bnd0.ax; b.ay += bnd0.ay; }
       continue;
     }
+    // Celestials keep the FULL weighted walk (invariant 2's symmetric pairs are
+    // defined over every attractor, and there are only ~130 of them). Loose
+    // rock, chunks and installations — the population a cascade multiplies —
+    // read the cached shortlist instead.
     const weighted = b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet;
-    const g = weighted ? gravityOnBody(attractors, b) : gravityAt(attractors, b.x, b.y);
+    const g = weighted ? gravityOnBody(attractors, b)
+      : gravityAt(attShortlist(attractors, b, dt, attGen), b.x, b.y);
     b.ax = g.ax + b.extAx; b.ay = g.ay + b.extAy;
 
     // INSTALLATIONS (stations, nests, fortified moons) don't wander when
@@ -3221,7 +3868,7 @@ export function step(game, dt) {
 
   for (const al of game.aliens) {
     if (!al.alive) continue;
-    const g = gravityAt(attractors, al.x, al.y);
+    const g = gravityAt(attShortlist(attractors, al, dt, attGen), al.x, al.y);
     al.ax = g.ax + al.thrustX; al.ay = g.ay + al.thrustY;
   }
 
@@ -3247,7 +3894,7 @@ export function step(game, dt) {
       const desVx = (dx / dd) * spd + s.vx, desVy = (dy / dd) * spd + s.vy;
       d.ax = (desVx - d.vx) * 4; d.ay = (desVy - d.vy) * 4;
     } else {
-      const g = gravityAt(attractors, d.x, d.y);
+      const g = gravityAt(attShortlist(attractors, d, dt, attGen), d.x, d.y);
       d.ax = g.ax * 0.4; d.ay = g.ay * 0.4;
       if (ironMoons) {
         // Spring toward the nearest iron moon's pooling ring (radius + 50) so
@@ -3469,18 +4116,29 @@ export function step(game, dt) {
   // sits at its pinned spot for this substep's pair tests (which skip it).
   updateParry(game, dt);
 
-  // Collisions: body-body via sweep-and-prune on x. The sweep list is
-  // PERSISTENT across substeps: bodies barely move in 1/120s, so feeding
-  // Timsort last substep's order makes the sort near-linear — rebuilding
-  // from the master array every substep (grouped by creation, effectively
-  // random in x) made the sort the single most expensive line in step() at
-  // high body counts. Membership is tracked with b._sw: the compact pass
-  // drops dead bodies, the append pass admits newcomers (spawns/spall), and
-  // the cull pass at the bottom of step() clears _sw on anything it removes
-  // from the world. A world REGEN reuses the same bodies array
-  // (world.generateWorld does bodies.length = 0), which this can't see —
-  // the aliveCount cross-check catches it exactly: stale entries make the
-  // sweep strictly longer than the live population, forcing a hard rebuild.
+  // Collisions: body-body via sweep-and-prune on x. The sweep list is PERSISTENT across substeps: bodies barely
+  // move in 1/120s, so feeding Timsort last substep's order makes the sort
+  // near-linear — rebuilding from the master array every substep (grouped by
+  // creation, effectively random in x) made the sort the single most expensive
+  // line in step() at high body counts; it is now measured at 0.0ms even with
+  // thousands of bodies awake, so the sort is NOT a place to look for time.
+  // Membership is tracked with b._sw: the compact pass drops dead bodies, the
+  // append pass admits newcomers (spawns/spall), and the cull pass at the
+  // bottom of step() clears _sw on anything it removes from the world. A world
+  // REGEN reuses the same bodies array (world.generateWorld does
+  // bodies.length = 0), which this can't see — the aliveCount cross-check
+  // catches it exactly: stale entries make the sweep strictly longer than the
+  // live population, forcing a hard rebuild.
+  //
+  // A UNIFORM GRID WAS TRIED HERE AND REVERTED — see docs/physics-invariants.md
+  // ("The broad phase: why it is still sweep-and-prune"). Short version: it cut
+  // candidate pairs 3.6x on a clumped cascade and still measured 0.977x on
+  // time, because this sweep walks a contiguous, x-sorted, temporally coherent
+  // array and a grid pointer-chases. Fewer candidates, same wall clock. Do not
+  // re-derive that experiment without reading the note first.
+  //
+  // WHAT DID WORK is the SoA side-table below: the pairs were never the
+  // problem, the POINTER CHASING was. See THE SWEEP SIDE-TABLE.
   const sweep = _sweep;
   {
     let w = 0;
@@ -3494,15 +4152,71 @@ export function step(game, dt) {
     }
   }
   sweep.sort(_byLeftEdge);
-  for (let i = 0; i < sweep.length; i++) {
-    const a = sweep[i];
-    if (!a.alive) continue;
-    for (let j = i + 1; j < sweep.length; j++) {
-      const b = sweep[j];
-      if (b.x - b._bp > a.x + a._bp) break;
-      if (!b.alive) continue;
-      if (Math.abs(a.y - b.y) > a._bp + b._bp) continue;
-      collideBodies(game, a, b);
+
+  // ---------------------------------------------------------------------------
+  // THE SWEEP SIDE-TABLE (structure-of-arrays for the scan)
+  //
+  // The scan below visits ~15,700 candidate pairs a frame in a shoal cascade and
+  // each visit is five property loads and three compares — work that should cost
+  // 2-3ns. Measured: 44.8ns. That ~15-20x gap is not arithmetic and it is not
+  // the language; it is CACHE MISSES. A Body carries ~50 fields, and two bodies
+  // adjacent in the x-sorted sweep are nowhere near each other in the heap, so
+  // every visit drags in a cache line to read three floats off a cold object.
+  //
+  // (For scale, the same profile puts an actual COLLISION at 261ns — a visit
+  // that does almost nothing was costing a sixth of real contact resolution.)
+  //
+  // So the four fields the scan reads are copied into parallel typed arrays
+  // once, in sweep order, and the scan touches nothing else. One scattered read
+  // per body replaces ~19 of them, and the inner loop then walks contiguous
+  // memory where one cache line serves 16 entries. This is also the reason the
+  // uniform grid failed: it cut the pair COUNT but every grid visit chases the
+  // same cold pointers, so it hit the identical 45ns wall.
+  //
+  // SEMANTICS ARE PRESERVED EXACTLY, and that is what the write-back is for.
+  // collideBodies separates bodies and can kill them, and the original loop
+  // re-read `a.x`, `b.x`, `b.y` and `b.alive` FRESH on every iteration — so a
+  // body shoved by an earlier contact was seen at its new position by later
+  // tests in the same scan. The table therefore has to be written back after
+  // every collision that lands, including the left edge (`swL`), or the break
+  // test would run against stale extents. Deliberately NOT "fixed" to a clean
+  // snapshot: the sim is tuned against this behaviour and the stability suites
+  // detect the difference.
+  // `_bp` is stamped once per substep at the top of step(), so swR alone is
+  // stable for the whole scan and never needs writing back.
+  // ---------------------------------------------------------------------------
+  {
+    const n = sweep.length;
+    if (!swX || swX.length < n) {
+      const cap = Math.max(n, 1024);
+      swX = new Float64Array(cap); swY = new Float64Array(cap);
+      swR = new Float64Array(cap); swL = new Float64Array(cap);
+      swAlive = new Uint8Array(cap);
+    }
+    for (let i = 0; i < n; i++) {
+      const b = sweep[i];
+      const x = b.x, r = b._bp;
+      swX[i] = x; swY[i] = b.y; swR[i] = r; swL[i] = x - r;
+      swAlive[i] = b.alive ? 1 : 0;
+    }
+    for (let i = 0; i < n; i++) {
+      if (!swAlive[i]) continue;
+      const ar = swR[i];
+      for (let j = i + 1; j < n; j++) {
+        const rr = ar + swR[j];
+        if (swL[j] > swX[i] + ar) break;
+        if (!swAlive[j]) continue;
+        const dy = swY[i] - swY[j];
+        if (dy > rr || dy < -rr) continue;
+        const a = sweep[i], b = sweep[j];
+        collideBodies(game, a, b);
+        // Write back — see the note above. Only runs on a real candidate hit
+        // (~594 a frame), so it costs nothing against the ~15,700 visits.
+        swX[i] = a.x; swY[i] = a.y; swL[i] = a.x - ar;
+        swX[j] = b.x; swY[j] = b.y; swL[j] = b.x - swR[j];
+        if (!a.alive) swAlive[i] = 0;
+        if (!b.alive) swAlive[j] = 0;
+      }
     }
   }
 
@@ -3512,7 +4226,7 @@ export function step(game, dt) {
   for (const b of live) {
     if (!b.alive || b.dormant) continue;   // ship and hunters are inside the wake bubble by definition
     if (s.alive) collideShipBody(game, s, b, dt);
-    if (aliens.length) for (const al of aliens) if (al.alive) collideAlienBody(game, al, b);
+    if (aliens.length) for (const al of aliens) if (al.alive) collideAlienBody(game, al, b, dt);
   }
 
   // Alien-ship ramming
@@ -3718,6 +4432,14 @@ export function step(game, dt) {
     parts.length = w;
   }
 
+  // JOIN before anything reads a grain. `gravelJoin` returns false only when it
+  // gave up on a stalled worker, in which case the grains have not advanced at
+  // all this substep and the inline pass has to run so no motion is lost.
+  if (gravelOffThread) { if (!gravelJoin()) stepGravel(game, dt, attractors); }
+  else stepGravel(game, dt, attractors);
+
+  collideGravel(game, dt);
+
   // Cull dead / escaped bodies (in place, squared distance). THROTTLED to
   // every 4th substep: this is the one remaining full-array pass in step(),
   // and a dead body lingering in the array a few substeps is harmless —
@@ -3726,6 +4448,14 @@ export function step(game, dt) {
   // invalidate it.
   game._cullTick = (game._cullTick || 0) + 1;
   if ((game._cullTick & 3) === 0) {
+    // Gravel rides the same throttle as the Body cull, and the same leash rule:
+    // loose rubble that has drifted clear of the player is scenery nobody will
+    // look at again (CFG.DEBRIS_LEASH / world.replenishWorld).
+    if (gravel.count()) {
+      const gs = game.ship;
+      gravel.cull(gs.x, gs.y,
+        (game.viewR || 1200) * CFG.DEBRIS_LEASH + CFG.LEASH_PAD, CFG.WORLD_R * 1.35);
+    }
     const cullR2 = (CFG.WORLD_R * 1.35) ** 2;
     let w = 0;
     for (const b of bodies) {

@@ -50,7 +50,20 @@ app.whenReady().then(() => {
     if (!file.startsWith(ROOT + path.sep) && file !== path.join(ROOT, 'index.html')) {
       return new Response('forbidden', { status: 403 });
     }
-    return net.fetch(pathToFileURL(file).toString());
+    // CROSS-ORIGIN ISOLATION. COOP/COEP is the precondition for
+    // SharedArrayBuffer — without them the constructor does not exist and the
+    // gravel sim silently stays on the main thread. `serve.py` sends exactly
+    // the same pair; both hosts have to agree, or the game is fast in the
+    // browser and slow in the shipped app for no visible reason. Everything
+    // here is same-origin under app://, so require-corp costs nothing.
+    // The headers must be attached to the RESPONSE, not set once on the
+    // session: app:// is a custom scheme and nothing else populates them.
+    return net.fetch(pathToFileURL(file).toString()).then((res) => {
+      const headers = new Headers(res.headers);
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+      headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    });
   });
 
   // Auto-update (electron/updater.js): a no-op in dev; on packaged builds

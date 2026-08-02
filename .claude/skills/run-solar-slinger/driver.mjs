@@ -215,7 +215,16 @@ app.whenReady().then(async () => {
     if (rel === '/' || rel === '') rel = '/index.html';
     const file = path.normalize(path.join(ROOT, rel));
     if (!file.startsWith(ROOT + path.sep)) return new Response('forbidden', { status: 403 });
-    return net.fetch(pathToFileURL(file).toString());
+    // COOP/COEP, matching electron/main.js and serve.py. The driver has to send
+    // them too or SharedArrayBuffer is missing HERE and only here — every
+    // headless measurement would then quietly time the main-thread fallback
+    // while the real game runs the worker.
+    return net.fetch(pathToFileURL(file).toString()).then((res) => {
+      const headers = new Headers(res.headers);
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+      headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    });
   });
 
   const win = new BrowserWindow({

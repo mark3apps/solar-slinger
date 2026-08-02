@@ -2,8 +2,10 @@
 
 A top-down 2D gravity-sandbox space game. Fly a ship through a single-sun system where every body
 moves under N-body gravity, grab things with a tractor beam, and fling them.
-**Vanilla JS + HTML5 canvas, ES modules, no build step, no runtime dependencies.** A thin desktop
+**Vanilla JS + HTML5 canvas, ES modules, no build step by default.** A thin desktop
 layer (Electron + release CI) rides alongside; everything under `src/` stays packaging-agnostic.
+Dependencies are **allowed but not free** — see [Dependencies](#dependencies) for the bar one has to
+clear and what must never change.
 
 ## Read before you edit
 
@@ -95,8 +97,9 @@ python3 serve.py
 ```
 
 Serves `http://127.0.0.1:8642` (or `preview_start` with name `solar-slinger` — never Bash for the
-server). Edit a `.js`, reload, see it live: no build, no bundler, no `npm install` needed for the
-game itself.
+server). Edit a `.js`, reload, see it live. **Keep it that way**: the edit-reload loop is the reason
+this project is fast to work on, so a dependency that forces a bundle step between editing and seeing
+it is a real cost, not a detail (see [Dependencies](#dependencies)).
 
 Two setup traps that cost real time:
 
@@ -126,6 +129,7 @@ presentation loop.
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems, shoal lurkers), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields. Rides `dtReal`, never the fixed step. |
 | [achievements.js](src/achievements.js) | The run's scoreboard: the ~400-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
+| [gravel.js](src/gravel.js) | The SoA store for small, anonymous debris — typed arrays, stable slot handles, contiguous integrate. A grain PROMOTES to a real `Body` the moment the beam reaches it. Imports nothing. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates bulk rock draws to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks. |
 | [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~1900 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
 | [minimap-worker.js](src/minimap-worker.js) | The radar's dense-field dot layer, baked off-thread to an ImageBitmap. Its sweep math MIRRORS `drawMinimap`'s — retune both together. |
@@ -204,6 +208,16 @@ Also there: **rails** (circular vs elliptical are different objects; never re-ra
 `game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
 interiors, the orbit rubber band, fog of war, and the frame-relative trajectory forecast.
 
+Plus the three scaling rules that make a big debris cascade affordable:
+
+- **The gravity loop reads a cached ATTRACTOR SHORTLIST**, not the whole sky — of 122 attractors only
+  ~5 ever clear the influence cull. Exact, not approximate (the pad + the cull both stay).
+- **The broad phase is sweep-and-prune and stays that way.** A uniform grid was built, measured
+  (3.6x fewer candidate pairs, 0.977x wall clock) and reverted — read the note before re-deriving it.
+  The lever for a cascade is FEWER BODIES, not a different search.
+- **A world you left keeps its wounds, not its bodies** (`packHalos`): an off-view rubble halo
+  collapses to a record on its host and returns piece-for-piece, freeing debris-budget slots.
+
 ### Gameplay + visual design laws → [docs/design-laws.md](docs/design-laws.md)
 
 - **Flinging has no recoil**; the tractor tug reaction stays capped.
@@ -233,6 +247,10 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
   its family keeps its own momentum instead of being welded to the beam.
 - **Throws never steer** — a rock flies exactly at the cursor *from its own held position*, never
   from the ship. Aim assist is informational only.
+- **THE CRUMBLE LAYER DRAWS INSTANCED** — a chunk under 14 drawn units is a sprite from the SHARD
+  atlas family, baked NEUTRAL and tinted per instance to its world's material (four atlas rows cover
+  every world in the sky). A wounded chunk keeps the vector sprite: the GL layer composites after the
+  body loop, so a crack web drawn inline would land underneath it.
 - **Dashed lines are reserved for helper/aiming UI.** Real objects use solid strokes; always reset
   `setLineDash([])`.
 - **The ship shield is a calm, steady rim glow** — no dashes, no idle motion; motion is for events
@@ -306,6 +324,45 @@ and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing
 
 `game.nanEvents` must be 0. Any tripwire firing is a real upstream bug to root-cause, even though
 the tripwire contained it.
+
+## Dependencies
+
+This project shipped with a blanket "no runtime dependencies" rule. That rule is **lifted** — but the
+things it was protecting are not, so a dependency has to clear a bar.
+
+**What is still absolute** (these were never about dependencies, they just rode along with the ban):
+
+- **`src/` stays host-agnostic.** Never `require`/`import` Electron or Node APIs from `src/`, never
+  assume an origin, absolute path or `file://`. If it wouldn't work over `serve.py`, it's wrong. A
+  dependency that only resolves under a bundler's Node-style resolution breaks this.
+- **ES modules with explicit `.js` extensions**, named exports only. A CommonJS-only package cannot be
+  imported by the browser directly and drags in a build step for everyone.
+- **Every capability is fallible.** `rockgl.js` is the pattern: WebGL2 missing, context lost, shader
+  failed — latch dead and fall back to the path that always worked. A dependency that has no fallback
+  becomes a hard requirement on somebody's machine.
+- **Determinism.** World generation is seeded and the soaks must stay bit-repeatable per machine. A
+  dependency in the sim path must not introduce its own RNG, its own time source, or platform-varying
+  float behaviour.
+
+**The bar.** Before adding one, answer these in the PR/commit message:
+
+1. **Does it beat hand-rolling for THIS workload?** Measure, don't assume. Real example: `bitECS`
+   benchmarks 14x over an OOP baseline but ~2x *slower* than a hand-tuned SoA loop — so for one hot
+   loop, hand-rolled wins; for SoA across the whole body model, the library wins on plumbing.
+2. **Does it survive the edit-reload loop?** Ships ESM, importable straight from `src/` without a
+   bundler = free. Needs a build = it must be worth a build step for the whole project.
+3. **Does it survive packaging?** It has to work under `app://` in Electron and be a real
+   `dependency` (not `devDependency`) if `src/` imports it — see [docs/packaging.md](docs/packaging.md).
+4. **What happens when it's absent or broken?** Name the fallback.
+
+**Precedent so far:** `electron-updater` is the shell's one runtime dependency and nothing under
+`src/` may import it. Everything else is a devDependency.
+
+**Where dependencies have been considered and rejected**, so the reasoning isn't re-derived: a
+general 2D physics engine (Rapier2d, Box2D-wasm) is the wrong shape for this sim — rails, hierarchical
+gravity weighting, mass-dominance damage, the crumble and the tractor model don't exist in a
+general rigid-body solver, and the nine physics invariants *are* the game. See
+[docs/physics-invariants.md](docs/physics-invariants.md).
 
 ## Desktop packaging
 

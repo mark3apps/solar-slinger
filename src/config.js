@@ -19,14 +19,30 @@ export const CFG = {
   // collision tests, so it is the deal you strike only when the alternative is
   // a 15 fps death spiral.
   DT_COARSE: 1 / 60,
-  // ...and it is DISARMED until the collision narrow phase can survive it.
+  // ...and it was DISARMED until the collision narrow phase could survive it.
+  // IT IS NOW RE-ARMED — physics.sweptContact is the pre-test this asked for.
   // MEASURED, 220 randomized trials per cell (impact parameter AND sample phase
   // both randomized — a fixed start distance measures one lucky alignment, not
   // the expected rate), fraction of impacts that register against the ship:
   //
-  //   closing   400    800   1300   1800   2500
-  //   1/120     99%    97%    92%    86%    77%
-  //   1/60      79%    90%    70%    52%    38%
+  //   closing            400    800   1300   1800   2500
+  //   1/120 overlap      99%    97%    92%    86%    77%
+  //   1/60  overlap      79%    90%    70%    52%    38%
+  //   1/120 SWEPT       100%   100%   100%   100%   100%
+  //   1/60  SWEPT       100%   100%   100%   100%   100%
+  //
+  // The swept step is now strictly better than the old FINE step was: 1/60 with
+  // the pre-test detects everything 1/120 without it was missing. That is what
+  // lifted the disarm — see THE SWEPT PRE-TEST in physics.js.
+  //
+  // RE-MEASURING IT: count DETECTIONS (physics.shipContacts), never deflection.
+  // Invariant 4 makes a 400-mass rock immovable against a 10-mass ship, so a
+  // landed hit barely moves the projectile and a deflection-based harness reads
+  // ~0% everywhere. Park the test ship well INSIDE WORLD_R too: outside it the
+  // boundary force is ~37,750 u/s² and shoves the ship hard enough that any
+  // ship-velocity signal reads 100% on every trial.
+  //
+  // The history below is why it was disarmed in the first place; keep it.
   //
   // At ALIEN_THROW (430) that is 97% -> 77%: about one alien throw in five
   // passes straight THROUGH the ship. collideShipBody is a pure overlap test
@@ -45,11 +61,11 @@ export const CFG = {
   // slow motion below 40 fps. So the trade is slow-motion vs. missed hits, and
   // missed hits lose.
   //
-  // TO RE-ARM: add a swept segment-vs-disc pre-test to collideShipBody and
+  // DONE: the swept segment-vs-disc pre-test landed in collideShipBody and
   // collideAlienBody (ship + aliens only — a handful of entities, NOT the
-  // ~8000-body sweep, where tunnelling is off-view and cosmetic), re-run the
-  // table above, then flip this to true. It should also lift the 1/120 row.
-  PACE_COARSE_ENABLED: false,
+  // ~8000-body sweep, where tunnelling is off-view and cosmetic), the table was
+  // re-run, and it did lift the 1/120 row as predicted. Hence true.
+  PACE_COARSE_ENABLED: true,
   // HARD CAP on substeps per frame — the guard that actually breaks the spiral,
   // independent of which step is live. Past the cap the backlog is DROPPED
   // (honest time dilation) instead of compounding into the next frame. 3 is
@@ -412,6 +428,28 @@ export const CFG = {
   // this frame — the per-event caps below are what actually bound a single
   // burst, the budget bounds the accumulation.
   DEBRIS_BUDGET: 1500,
+
+  // THE GRAVEL MULTIPLIER — what the debris budget stopped having to bound.
+  //
+  // A hit's wreckage yield was written against DEBRIS_BUDGET, because every
+  // piece was a full Body and a Body is expensive. Measured, 6,000 pieces in one
+  // place: 13.12ms of sim as Bodies against 1.96ms as gravel, and 3.55ms of draw
+  // against 0.15ms — 11.9x on sim, 16.8x on the frame, 2.03us a piece down to
+  // 0.17us. At that price the yield no longer has to answer to the budget at
+  // all; only the part of it that stays REAL does.
+  //
+  // So an impact now sprays this multiple of what it used to. The first
+  // debrisRoom pieces are minted as Bodies exactly as before — grabbable,
+  // damaging, carrying gravity-billiards credit, indistinguishable from today —
+  // and the rest are gravel, which promotes to a Body the moment the beam
+  // reaches for one (physics.promoteGravel). The budget goes back to bounding
+  // what the SIM carries; it no longer bounds what the player is allowed to see.
+  //
+  // Deliberately a MULTIPLIER on the existing yield rather than a new absolute:
+  // the shape of a spray (how it scales with severity, where the first pieces
+  // come out of the crater) is tuned, and this must not reshape it — only make
+  // more of it.
+  GRAVEL_SPRAY_MUL: 10,
 
   // ---- CRUST DEBRIS: the crumble layer -----------------------------------
   // A world under fire CALVES. Every wounding hit knocks real pieces of the

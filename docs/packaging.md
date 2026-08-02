@@ -25,9 +25,14 @@ about it — this is a hard rule.
 - **npm scripts** ([package.json](../package.json)): `npm run serve` (= `python3 serve.py`),
   `npm start` (run the Electron shell locally), `npm run dist` (build installers into `dist/`),
   `npm run changelog` (preview the pending release notes — needs `GH_TOKEN`).
-  Electron + electron-builder are **devDependencies** — dev/build only. `electron-updater` is the
-  one real `dependency` (it ships inside the packaged app), and it belongs to the SHELL — the
-  GAME still has zero runtime dependencies, and nothing under `src/` may ever import it.
+  Electron + electron-builder are **devDependencies** — dev/build only. `electron-updater` is a real
+  `dependency` (it ships inside the packaged app) and it belongs to the SHELL — nothing under `src/`
+  may ever import it.
+  **Anything `src/` imports must also be a real `dependency`, not a devDependency**, or it will be
+  missing from the packaged app and the game will fail to boot on a user's machine while working
+  perfectly in dev. It must also resolve over the `app://` scheme — a package that only resolves via
+  Node-style bare-specifier lookup needs an import map or a bundle step. The game's dependency policy
+  and the bar a new one has to clear live in [CLAUDE.md](../CLAUDE.md#dependencies).
 - `ELECTRON_START_URL` points the shell at the live dev server (`http://localhost:8642`) instead of
   `app://` for hot-ish iteration.
 - **Auto-update** ([electron/updater.js](../electron/updater.js)) — a no-op in dev (`app.isPackaged`

@@ -2,6 +2,7 @@ import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX, canLift, canStow, liftClass,
 } from './config.js';
 import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
+import * as gravel from './gravel.js';
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
@@ -580,6 +581,106 @@ function archJag(arch, bk) {
   return j;
 }
 
+// ---------------------------------------------------------------------------
+// SHARD SILHOUETTE ARCHETYPES — the same quantization, for the CHUNK family.
+//
+// A piece of a world (b.chunk) draws a different sprite from belt rock — split
+// faces, a surviving crust strip, fault lines — and drawBody's `b.chunk` branch
+// sits AHEAD of the asteroid one, so chunks never reached blitRock and the
+// whole instanced path did not apply to them. That is exactly backwards for
+// what the crumble produces: a cascade's output is chunks, in their thousands,
+// and measured at 2000 on screen `rockPathStats().rocksLastFrame` reported 1.
+//
+// So chunks get their own archetype family. The cut is at 14 drawn units, which
+// is where drawChunkSprite's SLAB layers (the lit facet wedge, the second fault
+// line) switch on: above it a piece is big, rare, and something the player flies
+// right up to, so it keeps a unique silhouette exactly as big rock does. Below
+// it the sprite is four flat paths that bake perfectly. CHUNK_SPLIT_R (15) means
+// a cascade terminates in pieces under that cut by construction, so the bulk of
+// what a crumbling world produces lands inside the bucketed range.
+//
+// THE ARCHETYPE IS b.shard, not a parallel table — the same law the rock family
+// runs on. drawBodyDamage's scar edge sampler reads `b.chunk ? b.shard : b.jag`
+// to put a crater rim ON the drawn edge, so a shape that existed only inside
+// the sprite would float every scar off the silhouette.
+// ---------------------------------------------------------------------------
+const SHARD_BUCKET_MAX = [3.5, 6, 9.5, 14];
+const SHARD_BUCKET_R = [2.6, 4.8, 7.8, 11.8];
+// The shard family gets its OWN sheet geometry, and that is the whole reason it
+// can afford a tier the rock family cannot. Rocks need 24 archetypes x 20 rows
+// (bucket x colour) — at a 32px bake radius that sheet is 12MB and blows
+// ATLAS_BUDGET on its own. Shards are 12 archetypes x FOUR rows, because the
+// tint removed the colour dimension entirely: 1.2MB at the same tier.
+//
+// AND THE SIZE CAP IS DIFFERENT IN KIND HERE. The rock cap (SPRITE_TIERS ends
+// at 16) is a 2D-BLIT economic rule — past ~25px a rotated, filtered drawImage
+// costs more raster than filling a small polygon. Instanced GL has no such
+// crossover: 2,000 quads are one draw call whatever their size, and the raster
+// is the GPU's. Measured at the game's own zoom (1.79), real crust debris sits
+// at a P50 drawn radius of ~19px — right past the rock cap — so capping shards
+// there would have rejected essentially the entire crumble layer, which is the
+// exact population this whole path exists for. Hence tiers up to 32, GL only.
+const SHARD_ARCHS = 12;
+const SHARD_ROWS = SHARD_BUCKET_MAX.length;
+const SHARD_TIERS = [8, 16, 32];
+const shardArchs = [];   // arch -> { pts, crustAt, facetAt, faultAt }
+
+function shardBucket(r) {
+  for (let i = 0; i < SHARD_BUCKET_MAX.length; i++) if (r <= SHARD_BUCKET_MAX[i]) return i;
+  return -1;
+}
+
+// SHARED, never mutated (see archJag). Vertex count and jag depth do not vary
+// with radius inside the bucketed range — drawChunkSprite's own `R > 26` step is
+// far above the cut — so ONE archetype set serves every shard bucket, and the
+// bucket only picks the representative R for the size-dependent line widths.
+function shardArch(arch) {
+  let s = shardArchs[arch];
+  if (!s) {
+    const rng = mulberry32(arch * 3163 + 41);
+    const n = 6 + Math.floor(rng() * 4);
+    const pts = [];
+    for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);   // sharper than a tumbled rock
+    s = {
+      pts,
+      crustAt: Math.floor(rng() * n),
+      facetAt: Math.floor(rng() * n),
+      faultAt: [Math.floor(rng() * n), Math.floor(rng() * n)],
+    };
+    shardArchs[arch] = s;
+  }
+  return s;
+}
+
+// Give a chunk its silhouette: the shared archetype inside the bucketed range,
+// a unique per-id shape above it. ONE choke point, so the sprite, the bake and
+// the scar sampler can never disagree about what shape a chunk is.
+function chunkShape(b) {
+  const R = b.radius;
+  if (b.shard && b.shardR === R) return;
+  const bk = shardBucket(R);
+  if (bk >= 0) {
+    const s = shardArch(b.id % SHARD_ARCHS);
+    b.shard = s.pts; b.shardR = R;
+    b.crustAt = s.crustAt; b.facetAt = s.facetAt; b.faultAt = s.faultAt;
+    return;
+  }
+  const rng = mulberry32(b.id * 3163 + 41);
+  // Vertex count scales with SIZE. Six flat sides were authored for the
+  // ~10-unit spray chunk; a crust slab is drawn as a fraction of the world it
+  // came off (CFG.CRUST_R_*), so it arrives at 40-110 units where six sides
+  // read as a paper cut-out. The array stays a plain list of radial factors
+  // indexed by angle — the scar edge sampler in drawBodyDamage reads it that
+  // way (vertex i lives at local angle i/n·TAU), so the contract can't change.
+  const n = (R > 26 ? 8 : 6) + Math.floor(rng() * 4);
+  const pts = [];
+  for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);
+  b.shard = pts; b.shardR = R;
+  b.crustAt = Math.floor(rng() * n);   // which run of edges keeps the old surface
+  b.facetAt = Math.floor(rng() * n);   // which face catches the light
+  b.faultAt = [Math.floor(rng() * n), Math.floor(rng() * n)];
+}
+
 // Asteroids are jagged polygons, not discs — and the bigger the rock, the
 // craggier the silhouette (pebbles stay nearly round, boulders are gnarled).
 // The vertex offsets are cached on the body and regenerated if the radius
@@ -812,14 +913,83 @@ function publishSheet(sh, bake, now) {
   if (bake) sh.ver++;
 }
 
-function rockRow(tier, bk, color, now) {
-  const key = tier + '|' + bk + '|' + color;
+// Bake one SHARD row: every chunk archetype at one bucket, NEUTRAL — white
+// base, black knock-down, white crust strip — so the per-instance tint in the
+// GL shader multiplies it to whatever material that piece of world is made of.
+//
+// WHY NEUTRAL AND NOT A ROW PER COLOUR. Rock colours are a small fixed set
+// (belt grey, boulder rust, cored, ice, junk), so bucket x colour fits one
+// sheet. Chunk colour is the HOST WORLD'S OWN FACE (config.worldDebris returns
+// hostColor for every solid archetype) — 21 worlds plus the ice/lava/crystal
+// overrides is ~30 colours, which at four buckets is 120 rows, several sheets,
+// and straight past ATLAS_BUDGET on the tier-16 cells alone. Baked neutral it
+// is FOUR rows, total, for the entire crumble layer on every world in the sky.
+//
+// The multiply reproduces the sprite exactly, because every layer in the sub-14
+// shard is already a scale of one colour: the face is `colour` knocked down by
+// 34% black, the crust strip is `colour` at full, the fault line is 30% black
+// over both. White x 0.66 x tint IS colour x 0.66. (The `R > 14` slab layers —
+// the pale facet wedge — would NOT survive a multiply, which is a second reason
+// the bucket cut sits exactly where those layers switch on.)
+function bakeShardRow(c, sh, row, bk) {
+  const px = sh.px, cell = sh.cell;
+  const R = SHARD_BUCKET_R[bk];
+  for (let arch = 0; arch < SHARD_ARCHS; arch++) {
+    const s = shardArch(arch);
+    const pts = s.pts, n = pts.length;
+    const vx = (i) => Math.cos((((i % n) + n) % n / n) * TAU) * pts[((i % n) + n) % n];
+    const vy = (i) => Math.sin((((i % n) + n) % n / n) * TAU) * pts[((i % n) + n) % n];
+    c.save();
+    c.translate(arch * cell + cell / 2, row * cell + cell / 2);
+    c.scale(px, px);   // cell space == body-radius space (see bakeRow)
+    const shard = () => {
+      c.beginPath();
+      c.moveTo(vx(0), vy(0));
+      for (let i = 1; i < n; i++) c.lineTo(vx(i), vy(i));
+      c.closePath();
+    };
+    c.fillStyle = '#fff';
+    shard(); c.fill();
+    c.fillStyle = 'rgba(0, 0, 0, 0.34)';   // fracture faces: the colour knocked down
+    shard(); c.fill();
+    c.save();
+    shard(); c.clip();
+    c.strokeStyle = '#fff';                // surviving crust along one edge run
+    c.lineWidth = 0.42;
+    c.lineCap = 'butt';
+    c.beginPath();
+    c.moveTo(vx(s.crustAt), vy(s.crustAt));
+    c.lineTo(vx(s.crustAt + 1), vy(s.crustAt + 1));
+    c.lineTo(vx(s.crustAt + 2), vy(s.crustAt + 2));
+    c.stroke();
+    c.strokeStyle = 'rgba(0, 0, 0, 0.3)';  // the fracture that freed it
+    // The vector path floors this at 0.8 WORLD units, so in radius-normalized
+    // space the floor is size-dependent — which is the one thing that still
+    // varies across the buckets, and the only reason shards have buckets at all.
+    c.lineWidth = Math.max(0.8 / R, 0.08);
+    c.beginPath();
+    c.moveTo(vx(s.crustAt) * 0.55, vy(s.crustAt) * 0.55);
+    c.lineTo(vx(s.crustAt + Math.floor(n / 2)) * 0.85, vy(s.crustAt + Math.floor(n / 2)) * 0.85);
+    c.stroke();
+    c.restore();
+    c.restore();
+  }
+}
+
+// Claim a row on the open sheet for (tier, cols x rows) and bake into it. The
+// GEOMETRY is part of the sheet's identity, not a constant: the rock family is
+// 24 archetypes x 20 rows and the shard family is 12 x 4, and mixing them onto
+// one sheet would force the smaller family to pay the larger one's width at
+// every tier (see the SHARD_ARCHS note). Same-geometry callers still share.
+function atlasRow(key, tier, cols, rows, bake, now) {
   let r = atlasRows.get(key);
   if (r) return r;
-  // The open sheet is looked up PER TIER: a shared "most recent sheet" spawns a
-  // fresh one every time the zoom crosses a tier boundary and back.
-  let sh = openSheet.get(tier);
-  if (!sh || sh.next >= ATLAS_ROWS) {
+  // The open sheet is looked up PER TIER AND GEOMETRY: a shared "most recent
+  // sheet" spawns a fresh one every time the zoom crosses a tier boundary and
+  // back, and a shared-across-geometry one would mis-size every other row.
+  const shKey = tier + 'x' + cols + 'x' + rows;
+  let sh = openSheet.get(shKey);
+  if (!sh || sh.next >= rows) {
     // Rows are (bucket x colour) and rock colours are a small fixed set, so in
     // practice one sheet per tier covers a run. A world that keeps minting new
     // ones would otherwise grow the atlas without limit: past the budget the
@@ -835,18 +1005,49 @@ function rockRow(tier, bk, color, now) {
       rockGLResetTextures();
     }
     const cell = Math.round(2 * tier * SPRITE_EXT);
-    sh = { cv: null, px: tier, cell, w: ROCK_ARCHS * cell, h: ATLAS_ROWS * cell, next: 0, used: 0, ver: 0 };
+    sh = { cv: null, px: tier, cell, w: cols * cell, h: rows * cell, next: 0, used: 0, ver: 0 };
     atlasSheets.push(sh);
-    openSheet.set(tier, sh);
+    openSheet.set(shKey, sh);
   }
   const row = sh.next++;
-  publishSheet(sh, (c) => bakeRow(c, sh, row, bk, color), now);
+  publishSheet(sh, (c) => bake(c, sh, row), now);
   // ext: the cell's half-width measured in body radii. Rounding `cell` to a
   // whole pixel moves it off SPRITE_EXT, and blitting at the nominal extent
   // would scale every rock by up to half a texel.
   r = { sh, cell: sh.cell, sy: row * sh.cell, ext: sh.cell / (2 * sh.px) };
   atlasRows.set(key, r);
   return r;
+}
+
+function rockRow(tier, bk, color, now) {
+  return atlasRow(tier + '|' + bk + '|' + color, tier, ROCK_ARCHS, ATLAS_ROWS,
+    (c, sh, row) => bakeRow(c, sh, row, bk, color), now);
+}
+
+// Shards carry no colour in the key — the tint supplies it (see bakeShardRow).
+function shardRow(tier, bk, now) {
+  return atlasRow(tier + '|S' + bk, tier, SHARD_ARCHS, SHARD_ROWS,
+    (c, sh, row) => bakeShardRow(c, sh, row, bk), now);
+}
+
+// '#rgb'/'#rrggbb' -> the 0..1 triple the GL tint wants, memoized. Chunk colour
+// is a small set per run (one per world material), so this settles immediately.
+const tintCache = new Map();
+function tintOf(color) {
+  let t = tintCache.get(color);
+  if (t) return t;
+  let r = 1, g = 1, b = 1;
+  if (typeof color === 'string' && color[0] === '#') {
+    const h = color.slice(1);
+    if (h.length === 3) {
+      r = parseInt(h[0] + h[0], 16) / 255; g = parseInt(h[1] + h[1], 16) / 255; b = parseInt(h[2] + h[2], 16) / 255;
+    } else if (h.length >= 6) {
+      r = parseInt(h.slice(0, 2), 16) / 255; g = parseInt(h.slice(2, 4), 16) / 255; b = parseInt(h.slice(4, 6), 16) / 255;
+    }
+  }
+  t = [r, g, b];
+  tintCache.set(color, t);
+  return t;
 }
 
 // Atlas occupancy, for perf work — the sheet count and what they cost in
@@ -932,6 +1133,81 @@ function blitRock(game, b) {
   ctx.drawImage(r.sh.cv, (b.id % ROCK_ARCHS) * r.cell, r.sy, r.cell, r.cell, -w / 2, -w / 2, w, w);
   ctx.setTransform(k, 0, 0, k, wt.e, wt.f);
   return true;
+}
+
+// Queue a chunk on the instanced path, or return false to let the caller draw
+// the full vector sprite. GL-ONLY: the neutral bake needs the shader's tint to
+// become its world's material, and Canvas2D has no cheap multiply-blit — so a
+// machine without WebGL2 keeps exactly the sprite it has today, which is the
+// same "every entry point is fallible" contract rockgl.js already runs on.
+function blitChunk(game, b) {
+  if (b.cored || b.heldBy) return false;   // glint / hold rings draw ON TOP (see rockNeedsOverlay)
+  // A rock going under a gas giant fades out on ctx.globalAlpha, and an
+  // instance carries no alpha of its own — it would stay solid all the way down.
+  if (b.sinkT > 0) return false;
+  const bk = shardBucket(b.radius);
+  if (bk < 0) return false;                // slab: unique silhouette + the R>14 layers
+  // A WOUNDED CHUNK KEEPS THE VECTOR SPRITE. The GL layer composites after the
+  // whole body loop, so a crack web drawn in drawBody would end up UNDERNEATH
+  // the sprite it marks — the same z-order rule rockNeedsOverlay enforces for
+  // rocks. A size gate ("the wound is sub-pixel, skip it") was tried and
+  // rejected: it makes the crack web POP INTO EXISTENCE as you fly closer and
+  // the piece crosses back to vectors, and a wound on debris is a real signal —
+  // it is how you read what you have already hit. Fresh crust is unwounded, so
+  // the population this path exists for is covered either way.
+  if (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length))) return false;
+  const drawnPx = b.radius * game.cam.zoom * dpr;
+  let tier = 0;
+  const need = drawnPx * SPRITE_HEAD;
+  for (const t of SHARD_TIERS) if (t >= need) { tier = t; break; }
+  if (!tier) return false;                 // drawn too big: vectors (the size cap)
+  // Counted BEFORE the glOn test, or the path could never switch itself on: a
+  // frame showing nothing but chunks would report zero blit-eligible rocks,
+  // leave glOn false next frame, and reject every chunk again forever.
+  frameRockN++;
+  if (!glOn) return false;
+  chunkShape(b);
+  const r = shardRow(tier, bk, wt.now);
+  const t = tintOf(b.color);
+  rockGLPush(r.sh, b.x, b.y, b.rot, b.radius * r.ext,
+    ((b.id % SHARD_ARCHS) * r.cell) / r.sh.w, r.sy / r.sh.h, t[0], t[1], t[2]);
+  return true;
+}
+
+// The store's palette, pre-parsed to tint triples once. Parsing '#rrggbb' per
+// grain per frame is exactly the kind of work this tier exists to delete.
+const gravelTints = gravel.PALETTE.map((c) => tintOf(c));
+
+// Queue every live grain into the instanced batch. No per-grain culling test
+// beyond the screen box: at this size the test IS most of the cost, and the
+// batch is one draw call whatever survives.
+function drawGravel(game) {
+  if (!glOn || !gravel.count()) return;
+  const zoom = game.cam.zoom;
+  // The frame's own view box (worldTransform computes it once), padded by the
+  // biggest a grain can be — never a second, hand-rolled screen rectangle.
+  const x0 = view.x0 - 40, x1 = view.x1 + 40, y0 = view.y0 - 40, y1 = view.y1 + 40;
+  const gx = gravel.x, gy = gravel.y, gr = gravel.radius, grot = gravel.rot;
+  const garch = gravel.arch, gtint = gravel.tint, gflags = gravel.flags;
+  const top = gravel.top;
+  for (let i = 0; i < top; i++) {
+    if (!(gflags[i] & gravel.FLAG_ALIVE)) continue;
+    const px = gx[i], py = gy[i];
+    if (px < x0 || px > x1 || py < y0 || py > y1) continue;
+    const r = gr[i];
+    const bk = shardBucket(r);
+    if (bk < 0) continue;   // too big to be gravel at all — should never happen
+    const drawnPx = r * zoom * dpr;
+    let tier = 0;
+    const need = drawnPx * SPRITE_HEAD;
+    for (const t of SHARD_TIERS) if (t >= need) { tier = t; break; }
+    if (!tier) continue;    // drawn huge: a grain this close should have promoted
+    const row = shardRow(tier, bk, wt.now);
+    const t = gravelTints[gtint[i]] || gravelTints[0];
+    frameRockN++;
+    rockGLPush(row.sh, px, py, grot[i], r * row.ext,
+      ((garch[i] % SHARD_ARCHS) * row.cell) / row.sh.w, row.sy / row.sh.h, t[0], t[1], t[2]);
+  }
 }
 
 // Draw an asteroid's body. Returns true when the crater pits are already on
@@ -1588,7 +1864,11 @@ function drawBody(game, b) {
   } else if (b.pod) {
     drawPodSprite(game, b);
   } else if (b.chunk) {
-    drawChunkSprite(b);
+    // Instanced when it can be (small, unwounded-at-this-zoom, GL live); the
+    // full vector sprite otherwise. blitChunk returns false for cored pieces,
+    // so the glint below still lands on a sprite that was actually drawn here.
+
+    if (!blitChunk(game, b)) drawChunkSprite(b);
     // Cored chunks carry the reward, so they must carry the tell. config
     // worldDebris stamps `cored` on a crystal world's rubble (~22% of it) and
     // entities' chunk material application sets b.cored from it, so both a
@@ -2566,22 +2846,7 @@ function crackPaths(b, R, dR, prog) {
 // and cached like the asteroid jag.
 function drawChunkSprite(b) {
   const R = b.radius;
-  if (!b.shard || b.shardR !== R) {
-    const rng = mulberry32(b.id * 3163 + 41);
-    // Vertex count scales with SIZE. Six flat sides were authored for the
-    // ~10-unit spray chunk; a crust slab is drawn as a fraction of the world it
-    // came off (CFG.CRUST_R_*), so it arrives at 40-110 units where six sides
-    // read as a paper cut-out. The array stays a plain list of radial factors
-    // indexed by angle — the scar edge sampler in drawBodyDamage reads it that
-    // way (vertex i lives at local angle i/n·TAU), so the contract can't change.
-    const n = (R > 26 ? 8 : 6) + Math.floor(rng() * 4);
-    const pts = [];
-    for (let i = 0; i < n; i++) pts.push(0.55 + rng() * 0.65);   // sharper than a tumbled rock
-    b.shard = pts; b.shardR = R;
-    b.crustAt = Math.floor(rng() * n);   // which run of edges keeps the old surface
-    b.facetAt = Math.floor(rng() * n);   // which face catches the light
-    b.faultAt = [Math.floor(rng() * n), Math.floor(rng() * n)];
-  }
+  chunkShape(b);   // shared archetype under the bucket cut, unique above it
   const n = b.shard.length;
   const vx = (i) => Math.cos((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
   const vy = (i) => Math.sin((i / n) * TAU) * R * b.shard[((i % n) + n) % n];
@@ -5586,6 +5851,12 @@ export function render(game) {
   for (const b of (game.bodies._awake || game.bodies)) {
     if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
   }
+  // GRAVEL draws into the SAME instanced batch as the rocks, right before the
+  // flush. It is the whole reason the tier is affordable to LOOK at: thousands
+  // of grains cost one more draw call, not one blit each — the shard family and
+  // its per-instance tint (Pitch 2) already do exactly this job, so gravel gets
+  // the win for free by reusing them rather than growing a second path.
+  drawGravel(game);
   // THE INSTANCED ROCK LAYER lands here — one composite for what would have
   // been ~1900 individual blits. It sits above the bodies drawn in the loop,
   // which is where plain rock already was: the shoals are seeded LAST in
