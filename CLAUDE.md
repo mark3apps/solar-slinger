@@ -71,7 +71,7 @@ Skills wrap the recurring procedures; subagents audit a diff against the rules i
 
 | Skill | For |
 |---|---|
-| `balance-test` | long-horizon sky stability — `window.soak` against the 21-planet/48-moon baseline |
+| `balance-test` | long-horizon sky stability — `window.soak` against the 17-planet/59-moon baseline |
 | `mechanics-test` | fast "did I break the game loop?" — the fixed-seed `window.mechTest` suite |
 | `playtest` | **the default way to drive the game** — Browser pane: park the ship, force the event, screenshot it |
 | `run-solar-slinger` | clean-machine setup + scripted/unattended runs (Electron driver, nothing visible) |
@@ -171,9 +171,10 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
   optional `snd`: `sfxAlarm` = the ship is in danger NOW, `sfxWarnLow` = hostile contact / bad news,
   `sfxChime` = discovery / opportunity, `sfxLife` = triumph. Keep new events on that grammar.
 - **Determinism:** world *generation* uses a seeded `mulberry32`, but the seed is **random per run**
-  — pin one with `?seed=` for a repeatable world. The 20-planet/48-moon `layout` table in world.js
+  — pin one with `?seed=` for a repeatable world. The 15-planet/58-moon `layout` table in world.js
   is FIXED, so the seed varies placement, masses and features, never the structural counts: the
-  balance baseline holds on any seed. Runtime spawns/spall/AI intentionally use `Math.random`.
+  balance baseline holds on any seed. (It censuses as **17 planets / 59 moons** — the layout's 15
+  plus the crystal binary's companion and The Wanderer's Star, and the ring shepherd moonlet.) Runtime spawns/spall/AI intentionally use `Math.random`.
   Procedural sprite geometry is seeded off `b.id` and cached.
 ### Canvas discipline
 
@@ -194,7 +195,8 @@ changing anything it touches.**
 3. Ambient collisions below a closing-speed threshold do no damage; comparable-mass hits are capped.
 4. >20× mass ratio → the heavy body is immovable; natural celestial impulse is damped, thrown is not.
 5. Ship bounce kick is hard-capped at 200.
-6. `WORLD_R` exceeds every system's outermost reach; star-anchored bodies are exempt from the boundary force.
+6. `WORLD_R` exceeds every system's outermost reach — enforced by construction in `world.moonZone`,
+   not by arithmetic redone by hand; star-anchored bodies are exempt from the boundary force.
 7. Chunk shedding is gated, or it cascades — and every fragment system answers to one debris budget.
    7b. A split must not chain (no credit propagation, `chainOk`, `CHUNK_INERT`).
 8. A planet is its own durability class (flat `PLANET_HP_BASE` + gentle slope, not the mass curve).
@@ -254,6 +256,20 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
   later.
 - **World scale:** `PLANET_R_MUL`/`MOON_R_MUL` grow radii only — masses are untouched, and the
   multiplier is a *ceiling* capped by neighbouring lane clearance.
+- **System scale:** `CFG.SYS_R_MUL` spreads the sky. **Every sun-anchored radius in world.js goes
+  through `SR()`** — lanes, belts, graveyard, Vesper's ellipse, the shoals, the landmark lookups —
+  because the *relationships* between those numbers are what the content is built on. It moves
+  distance only: sky speed is `sqrt(G*sunMass/r)`, so spreading the sky slows every orbit rather
+  than keeping it (the sun's mass is the speed knob, and it is deliberately not recompensated).
+- **A PLANET SYSTEM IS RARE, AND IT IS AN EVENT** — fewer worlds, each with a bigger entourage.
+  Cuts come off the DUPLICATED archetypes only, never a unique ptype and never a landmark host
+  (`PTYPE_COUNT` and "strip every gas giant" both count them). Moon counts and `MOON_ZONE_MUL` move
+  TOGETHER, which is what leaves `spawnMoon`'s slot width — every sibling-clearance margin — intact.
+- **THE SKY TURNS ONE WAY** — every planet is prograde around the sun (`addPlanet`). A retrograde
+  lane meets its neighbours at the SUM of their angular speeds instead of the difference, so
+  conjunctions come round far more often and arrive above `DMG_THRESH`, where the railed-conjunction
+  pass-through no longer protects the overlapping moon families. The rng draw it replaced is KEPT
+  and discarded — never buy a constant with the seeded stream.
 - **A planet system is alive while you are in it**; loose debris is on a leash; a world you are not
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
@@ -292,7 +308,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 
 | Hook | Use |
 |---|---|
-| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "21/21", moons: "48/48", deaths, impacts, nanEvents, …}`. |
+| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "17/17", moons: "59/59", deaths, impacts, nanEvents, …}`. |
 | `window.mechTest()` | Fixed-seed scripted mechanics suite, ~1.5s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |

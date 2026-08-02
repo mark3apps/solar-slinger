@@ -98,7 +98,7 @@ Still correct, and the right choice when you want to *watch* what a soak found. 
 window.soak(600, { idle: true });   // 10 idle sim-minutes
 ```
 
-Returns `{ simSeconds, wallMs, planets: "21/21", moons: "48/48", ship, lives, tier, deaths: [...],
+Returns `{ simSeconds, wallMs, planets: "17/17", moons: "59/59", ship, lives, tier, deaths: [...],
 impacts, nanEvents }`. `idle: true` removes the ship first (no life spent). Note its `moons` figure is
 a live census, and its `deaths` are formatted strings — see the caveats below. Chunk long runs
 (`2 x 300s`) to stay inside the pane's ~30s console eval budget.
@@ -114,11 +114,11 @@ a live census, and its `deaths` are formatted strings — see the caveats below.
    normal play. Opening the page with `?dev=1` adds hotkeys: `-` halve, `=` double, `0` reset. Note picks
    still freeze the sim at speed — `game.autoUpgrade = true` if that stalls a long watch.
 
-## Pass criteria (baseline re-measured 2026-08 after the railed-conjunction fix,
-## on the one-sun world: 21 planets, 48 moons — the 21 includes The Wanderer's Star
-## (the expedition layer's dark dwarf, which counts as a planet in the census and
-## must survive like one) and the three outer-band worlds added with the WORLD_R
-## 46000 growth)
+## Pass criteria (baseline re-measured 2026-08 after the rarer/wider planet-system
+## pass, on the one-sun world: 17 planets, 59 moons — the 17 is the layout's 15
+## worlds plus the crystal binary's companion and The Wanderer's Star (the
+## expedition layer's dark dwarf, which counts as a planet in the census and must
+## survive like one); the 59 is the layout's 58 plus the ring shepherd moonlet)
 
 **Measured baseline — 4 seeds x `suites/stability.js {seconds:600, strip:true}`, idle, all four identical
 except where noted.** Every field below held on 20260721 / 3827467762 / 111222333 / 987654321:
@@ -126,12 +126,13 @@ except where noted.** Every field below held on 20260721 / 3827467762 / 11122233
 | Field | Pass | Why it is the bar |
 |---|---|---|
 | `nanEvents` | **0** | any firing is a real upstream bug; the tripwire only contained it |
-| `planetsAlive` | **21/21** | planets are permanent — losing one is never variance |
+| `planetsAlive` | **17/17** | planets are permanent — losing one is never variance |
 | `planetsOffRail` | **0** | alive-but-off-rail is a deorbit in progress the census cannot see |
-| `worstPlanetDriftPct` | **< 1%** | measured 0 / 0 / 0 / 0.03 across the four seeds |
-| `moonsAlive` | **48/48** | genuinely holds now — see the history note below |
-| `moon:absorbed` | **0** | was 1/5/7/7 before the fix; a return means the conjunction guard regressed |
-| `moon:swallowed by a gas giant` | **<= ~4 per 600s** | 1 / 2 / 3 / 4 measured; a jump means a new loose-moon source |
+| `worstPlanetDriftPct` | **< 1%** | measured 0 / 0 / 0 / 0 across the four seeds |
+| `moonsAlive` | **59/59**, and equal to `moonsAtStart` | genuinely holds now — see the history note below |
+| `nonAsteroidDeaths` | **`{}`** — empty on all four seeds | any entry at all is the signal; the per-cause bars below are what a REGRESSION would look like |
+| `moon:absorbed` | **0** | was 1/5/7/7 before the conjunction fix; a return means that guard regressed |
+| `moon:swallowed by a gas giant` | **0**, and never more than ~4 per 600s | a jump means a new loose-moon source |
 
 **Judge across seeds, not within one.** One outlier seed = investigate that seed. All four moving
 together = a real regression. Run the sweep before AND after a change; the numbers above are the
@@ -147,8 +148,10 @@ healthy one, which is why `nonAsteroidDeaths` (cumulative, cause-classified) is 
 signal and the count is only corroboration.
 
 The cause was found and fixed: neighbouring planets' moon families overlap radially by design
-(`moonZone` reaches to `hill * 1.5` so systems stay wide — 16 of 20 adjacent pairs overlapped on seed
-3827467762, several by >8000u), adjacent lanes always reach conjunction, and a sub-`DMG_THRESH` brush
+(`moonZone` reached to `hill * 1.5` then, `hill * CFG.MOON_ZONE_MUL` now, so systems stay wide — 16 of
+20 adjacent pairs overlapped on seed 3827467762, several by >8000u; the rarer/wider pass since took
+that to 14 of 16 and a worst overlap of 20,771, which the all-prograde sky is what pays for),
+adjacent lanes always reach conjunction, and a sub-`DMG_THRESH` brush
 at closing 70-185 did no damage and logged nothing yet still tripped the `closing > 25` derail in
 `collideBodies` — knocking a moon out of its exact orbit and, near a gas giant, into the cloud tops.
 Two railed natural celestials now pass through each other below `DMG_THRESH`. **If `moon:absorbed`

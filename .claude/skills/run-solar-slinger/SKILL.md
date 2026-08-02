@@ -99,7 +99,7 @@ eval (()=>{const r=window.soak(600,{idle:true});return {seed:game.worldSeed,plan
 ' | npx electron .claude/skills/run-solar-slinger/driver.mjs --url 'app://game/index.html?seed=20260721'
 ```
 
-→ `{"seed":20260721,"planets":"21/21","moons":"48/48","nan":0}` in ~50s wall for 600 sim-seconds.
+→ `{"seed":20260721,"planets":"17/17","moons":"59/59","nan":0}` in ~50s wall for 600 sim-seconds.
 
 ### Multi-seed stability sweep — the fast balance check
 
@@ -442,9 +442,11 @@ product, not a test surface — it gives you no programmatic handle.
   bad surprise on a developer's own machine.
 - **The Electron CSP security warning in `console` output is dev-mode noise** — it does not appear in
   packaged builds. Pipe through `grep -v 'Security Warning'`.
-- **Moon survival is seed-dependent.** Seed `20260721` holds 48/48; seed `3827467762` reproducibly ends
-  at 43/48 (45/48 by 300s), losing four moons to `swallowed by a gas giant` before any player input.
-  Judge a soak against the same seed you compared before, and see Troubleshooting.
+- **Moon survival used to be seed-dependent** — seed `3827467762` reproducibly ended a 600s idle soak
+  at 43/48, losing four moons to `swallowed by a gas giant` before any player input. The
+  railed-conjunction pass-through fixed that and the all-prograde sky has kept it fixed: all four
+  bench seeds now end at 59/59 with `nonAsteroidDeaths` empty. Still judge a soak against the same
+  seed you compared before, and see Troubleshooting.
 - **Cleaning up: match precisely.** `pkill -f Electron` also matches Claude Desktop, VS Code and Docker
   Desktop helper processes. Use `pkill -f "Solar system.*Electron"` or kill the PID you started.
 

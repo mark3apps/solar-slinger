@@ -1,5 +1,26 @@
+// SYSTEM SCALE — how far apart the sky is spread. Every sun-anchored radius
+// world.js authors (the layout lanes, the belts, the graveyard, Vesper's
+// ellipse, the dense fields, the landmark lookups, the ship's own spawn) is a
+// SHAPE that gets multiplied by this, and CFG.WORLD_R rides it too so the
+// boundary and the Oort cloud stay in the same relation to the outermost lane.
+// It lives OUTSIDE the CFG literal only because WORLD_R has to be computed
+// from it and an object literal cannot read its own siblings — treat it as a
+// member of the WORLD SCALE family documented at PLANET_R_MUL below.
+//
+// It is a DISTANCE knob, not a speed one: sun-anchored orbital speed is
+// sqrt(G*sunMass/r), so spreading the sky 1.3x without touching the sun's mass
+// slows every orbit by 1/sqrt(1.3) (~12%) and lengthens every period by
+// 1.3^1.5 (~48%). That is the intent — a planet system you have to travel to
+// is more of an event — and it moves the sky AWAY from the ambient-damage
+// thresholds (invariant 3) rather than toward them, so the calmer sky is free.
+// If flight ever needs its old cruise back, raise the sun's mass by the same
+// factor (world.js) — sky speed and this constant are the pair, and the
+// camera-zoom note in docs/physics-invariants.md applies to that knob alone.
+const SYS = 1.3;
+
 // All gameplay tuning lives here.
 export const CFG = {
+  SYS_R_MUL: SYS,
   G: 8,                    // gravitational constant (gameplay-tuned)
   // FIXED PHYSICS SUBSTEP — the FINE step, and the reference every invariant in
   // CLAUDE.md was tuned at. Everything headless (window.tick / soak / mechTest)
@@ -12,7 +33,9 @@ export const CFG = {
   // a genuine positive feedback loop (measured in a dense shoal: sim 2.5ms at
   // 1 substep, 7.1ms at 6, against a 1.7ms draw — the sim overtook the draw 4x
   // over). Halving the substep rate halves that cost directly. Verified against
-  // the 20-sim-minute idle soak (seed 20260721): 21/21 planets, 48/48 moons,
+  // the 20-sim-minute idle soak (seed 20260721): every planet and moon of the
+  // then-current sky (21/21 and 48/48; it is 17/59 since the rarer/wider
+  // planet-system pass, and the finding is about the STEP, not the counts),
   // zero loose planets, zero NaN — the same fingerprint as 1/120, because the
   // celestials ride precomputed rails and never integrate at all. It is NOT the
   // default anyway: a coarser step doubles how far a fast body moves between
@@ -94,11 +117,15 @@ export const CFG = {
   // moons), or the boundary force quietly deorbits the outer planets.
   // Beyond it lies the Oort cloud, which grinds the ship down.
   // 46000 = the old 42000 grown 20% by AREA (42000 x sqrt(1.2)) — the extra
-  // room is the OUTER BAND (~37k-46k): three new planet lanes (world.js
-  // layout, stopping at 42600 — the rogue spawn ring needs clearance above
-  // the outermost lane), the dark star's 39500 lane, and the Farshoal dense
-  // field riding the frost fringe at 44300.
-  WORLD_R: 46000,
+  // room is the OUTER BAND: the outer planet lanes (world.js layout, stopping
+  // at an authored 40800), the dark star's authored 39500 lane, and the
+  // Farshoal dense field riding the frost fringe at an authored 44300.
+  // x SYS multiplies with the lanes so all four of those relationships — and
+  // the Oort warning band the Farshoal deliberately brushes — survive a
+  // change to the system scale. The outermost MOON reach is no longer left to
+  // arithmetic done by hand here: world.moonZone clamps a family by what this
+  // radius actually leaves, which is what makes invariant 6 structural.
+  WORLD_R: 46000 * SYS,
   // WORLD SCALE — planets and moons are built at these multiples of the radii
   // authored in world.js (the layout table, and spawnMoon's own 18-34 range).
   // SIZE ONLY: THE MASSES ARE UNTOUCHED, deliberately. Radius is inert to every
@@ -114,6 +141,25 @@ export const CFG = {
   // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
   PLANET_R_MUL: 3,
   MOON_R_MUL: 2,
+  // How far out a planet holds moons, as a multiple of its HILL radius
+  // (world.moonZone). Rails hold a moon on its orbit regardless of the sun's
+  // tide, so the zone deliberately reaches past raw Hill stability — this is
+  // the "wide, majestic moon systems" knob, and 1.95 is the authored 1.5 taken
+  // 30% wider so a family spreads further than the system scale alone would
+  // give it. It pairs with the moon COUNTS in the layout table: both moved by
+  // the same 1.3, which leaves spawnMoon's per-moon slot width — and with it
+  // every sibling-clearance margin the no-crossing rule depends on —
+  // unchanged. Move one without the other and you are re-tuning how tightly
+  // packed a family is, not how wide it is.
+  // Hill goes with orbitR x cbrt(mass), so this widens the BIGGEST worlds most
+  // in absolute terms, which is the point: a gas giant's family should read as
+  // a system you fly through, not a bracelet.
+  MOON_ZONE_MUL: 1.95,
+  // Eccentricity ceiling for an elliptical moon rail (spawnMoon's eCap). Read
+  // by moonZone as well, to turn a zone into the apoapsis it can actually
+  // reach — the two MUST agree or the boundary clamp under-counts the reach it
+  // is there to bound.
+  MOON_E_MAX: 0.34,
   // ...but a lane only holds so much world, which is why the multiplier above
   // is a CEILING ("up to 3x") rather than a flat scale. Two planets on
   // adjacent rails run at different angular speeds and so ALWAYS reach
@@ -1588,8 +1634,12 @@ export const PROG = {
   // it vanishes and a fresh pocket fades in ELSEWHERE, so the healing supply
   // constantly relocates and you're always flying on to the next one.
   GLOW_POCKETS: 48,        // active pockets kept scattered across the system
-  GLOW_RMIN: 4200,         // orbital band they scatter through — just above the graveyard ring
-  GLOW_RMAX: 31000,        // ...out to the far ice belt
+  // Orbital band the pockets scatter through — just above the graveyard ring,
+  // out to the far ice belt. Both are sun-anchored radii, so both ride SYSTEM
+  // SCALE with the lanes they are described against: without it, spreading the
+  // sky leaves the healing supply bunched in the inner third of it.
+  GLOW_RMIN: 4200 * SYS,
+  GLOW_RMAX: 31000 * SYS,
   GLOW_SPREAD: 480,        // field radius — WIDE, so you sweep the ship through it (and it's easy to spot)
   GLOW_MOTES: 9,           // motes in a fresh pocket (more, to keep the wide field dense enough to scoop)
   GLOW_R: 6,               // pop gap beyond the hull — the mote flies ALL the way in and pops AT the ship

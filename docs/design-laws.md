@@ -166,10 +166,33 @@ code "works."
 - **Dashed lines are reserved for helper/aiming UI** (throw line, beam ring, orbit rings, lead markers,
   prediction paths). Real objects use solid strokes. Always reset `ctx.setLineDash([])` after a dashed draw.
 - **The world is 20% larger by AREA than it first shipped** (`WORLD_R` 42000 → 46000 = ×√1.2).
-  The growth was taken entirely as an OUTER BAND (~37k–46k, above the last planet at 36800) rather
-  than by rescaling the orbit layout — moving every lane would re-tune sky speed, heat margins, and
-  the graveyard clearance for nothing. The band holds three planet lanes (38300 / 40800 /
-  42600), the dark star's 39500 lane, and The Farshoal dense field on the frost fringe at 44300. Planet lanes stop at 42600, leaving the fringe to the Farshoal.
+  That growth was taken entirely as an OUTER BAND (above the last planet at an authored 36800) rather
+  than by rescaling the orbit layout. The band holds the outer planet lanes (authored 38300 / 40800),
+  the dark star's authored 39500 lane, and The Farshoal dense field on the frost fringe at an
+  authored 44300.
+- **SYSTEM SCALE: the whole sky is then SPREAD by `CFG.SYS_R_MUL`** (1.3 — user call: "make the solar
+  system 30% larger"), `WORLD_R` included, so the boundary, the Oort warning band the Farshoal
+  deliberately brushes, and every lane keep their relationship. Three rules:
+  - **Every sun-anchored radius in world.js goes through `SR()`** — the layout lanes, the three
+    belts, the graveyard ring, Vesper's perihelion AND semi-major axis, the ghost, the carved stone,
+    the barge lane, the dark star, the four shoals, the ship's own spawn, and the
+    `planetAtOrbit(...)` landmark lookups. What is load-bearing is the RELATIONSHIPS between those
+    numbers — the shoals ride the gaps between lanes, the graveyard sits below the innermost world
+    and inside the flare zone, Vesper's perihelion sits above the graveyard, the dark star threads
+    two outer lanes. One radius left unscaled does not throw; it silently moves that piece of content
+    into a lane it was designed to avoid. The lookups scale INSIDE `planetAtOrbit` for the same
+    reason: a missed multiplier there returns `undefined`, and the world simply ships without its
+    landmark, its shepherd or its siege.
+  - **It moves DISTANCE, not speed.** Sun-anchored orbital speed is `sqrt(G*sunMass/r)`, so spreading
+    the sky 1.3x slows every orbit ~12% and lengthens every period ~48%; the sun's mass is the speed
+    knob and is deliberately NOT recompensated (see the sky-speed/camera-zoom pairing in
+    physics-invariants.md — that note governs the MASS, not this constant). The slower sky moves
+    AWAY from the ambient-damage thresholds rather than toward them, so `DMG_THRESH` was left alone:
+    the calmer sky is exactly what the rarer, wider systems wanted.
+  - **Bigger lanes hold bigger worlds.** `PLANET_LANE_GAP` clamps each grown disc by what its
+    neighbours leave free, so widening the lanes un-clamps the worlds that were losing the most to
+    it — the amber giant goes 1148 → 1560 (the full `PLANET_R_MUL`), the violet giant 1058 → 1290.
+    That is the second half of "bigger", and it came for free with the spacing.
 - **WORLD SCALE: worlds are built BIGGER THAN THEY ARE AUTHORED** — `CFG.PLANET_R_MUL` (3) and
   `CFG.MOON_R_MUL` (2) multiply the radii in world.js's layout table and `spawnMoon`'s own range,
   so planets and moons read as genuinely massive (user call: "we just want these things to be able
@@ -392,11 +415,39 @@ code "works."
   existed — gravitationally CAPTURED light outer worlds and dragged them into the sun, taking every
   lane it crossed on the way down. Three separate guards were written against that one body type (the
   spawn-ring radius, an entry-speed floor, and the planet fiat re-rail in physics) before deleting it
-  turned out to be the honest fix; idle skies went from losing planets to holding 21/21 with zero
-  loose worlds. `type: 'rogue'` is still supported everywhere — render, minimap, weighted gravity, the
-  re-rail disturber list, `scrapValue`, `noteKill` — so the concept can return if it earns its keep.
-  **Nothing spawns one.** Don't "restore" the spawner without solving the capture problem first, and
-  note the two rogue achievement rows were retired with it (an unearnable row is worse than a short list).
+  turned out to be the honest fix; idle skies went from losing planets to holding every world with
+  zero loose ones. `type: 'rogue'` is still supported everywhere — render, minimap, weighted gravity,
+  the re-rail disturber list, `scrapValue`, `noteKill` — so the concept can return if it earns its
+  keep. **Nothing spawns one.** Don't "restore" the spawner without solving the capture problem first,
+  and note the two rogue achievement rows were retired with it (an unearnable row is worse than a
+  short list). The clearance rule that once sized the outermost planet lane was the rogue SPAWN RING,
+  so it stopped binding when they went — which is why the layout's outer lane could later move.
+- **A PLANET SYSTEM IS RARE, AND ARRIVING AT ONE IS AN EVENT** (user call: "make a planet system
+  rarer, bigger and more of an event"). The layout table holds FEWER worlds and gives each survivor a
+  bigger entourage: 19 authored planets → 15 (~80%), moon counts up ~30%, so the sky censuses 17
+  planets / 59 moons where it held 21 / 48. Three rules keep that from costing anything:
+  - **Cuts come off the DUPLICATES ONLY** — one of the two lava worlds and three of the six ice
+    worlds. Never a unique archetype and never a landmark host, because both are load-bearing beyond
+    flavour: "destroy one of every archetype" counts `PTYPE_COUNT` distinct ptypes and "strip every
+    gas giant" wants three, and the storm/crater/geyser/forge/shepherd hosts and the Bastion siege
+    are all found by lane (`planetAtOrbit`). A cut that takes a host doesn't error — the world just
+    ships without that content.
+  - **Moon COUNT and `MOON_ZONE_MUL` move TOGETHER**, both by the same factor. `spawnMoon` divides
+    the zone into one slot per moon, so scaling one without the other silently re-tunes how tightly
+    packed a family is — and the slot width IS the sibling-clearance margin the no-crossing rule
+    (`exCap`) depends on. Moving both leaves every margin exactly where it was.
+  - **Wider families are only safe because the sky turns one way** — see the all-prograde rule below.
+- **THE SKY TURNS ONE WAY** (user call: "planets orbit in the same direction… less worry about
+  planets and systems ramming into each other"). `addPlanet` fixes every sun-anchored planet
+  prograde; one in six used to be drawn retrograde. This is not cosmetic. Moon families deliberately
+  overlap radially, and the railed-conjunction pass-through that makes that safe is gated on
+  `closing < DMG_THRESH` — a retrograde lane meets each neighbour at the SUM of their angular speeds
+  instead of the difference, so its conjunctions come round several times more often AND arrive at
+  roughly twice the closing speed, on the wrong side of that gate. Deleting the class of event beat
+  guarding it, and it is what paid for the wider families above. Moons keep their ~15% retrograde
+  variety — a retrograde MOON stays inside its own slot and meets nothing. **The rng draw the
+  constant replaced is kept and discarded**: every angle, mass and feature below it comes out of the
+  same seeded stream, so removing a draw would reshuffle the entire sky.
 - **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
   free. Nests and the dense fields' **shoal-lurker broods** are the *only* alien sources — there is no
   global wave spawner; a destroyed nest quiets its region forever, and a field's brood is a FINITE
