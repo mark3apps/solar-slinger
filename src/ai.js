@@ -331,7 +331,18 @@ function updateAlien(game, al, dt) {
     case 'carry': {
       const r = al.target;
       if (!r || !r.alive || r.heldBy !== al) { al.target = null; al.state = 'seek'; break; }
-      if (!s.alive) { r.heldBy = null; al.target = null; al.state = 'seek'; break; }
+      // Ship died mid-haul: DROP the rock, and zero the carry accel with it.
+      // extAx/extAy is not rebuilt from scratch each frame — physics adds it to
+      // b.ax every substep until somebody clears it — so a release that let it
+      // stand left the rock under a permanent ~800 u/s^2 phantom thrust with no
+      // holder and no `thrownBy` leash. It reached belt-shredding speed in
+      // seconds, every single time the player died to a loaded grabber. Every
+      // other release path (killAlien, the throw, the territory/cloak drops,
+      // the tractor) clears it here; this one is the same law.
+      if (!s.alive) {
+        r.heldBy = null; r.extAx = 0; r.extAy = 0;
+        al.target = null; al.state = 'seek'; break;
+      }
 
       // Haul the rock along at a fixed offset (simplified alien tractor)
       const hx = al.x + Math.cos(al.angle) * (al.radius + r.radius + 26);

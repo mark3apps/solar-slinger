@@ -125,7 +125,7 @@ presentation loop.
 | [tractor.js](src/tractor.js) | Grab / hold / fling, the aim lead-marker solver, the orbit shield. |
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems, shoal lurkers), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields. Rides `dtReal`, never the fixed step. |
-| [achievements.js](src/achievements.js) | The run's scoreboard: the ~385-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
+| [achievements.js](src/achievements.js) | The run's scoreboard: the ~400-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates bulk rock draws to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks. |
 | [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~1900 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
 | [minimap-worker.js](src/minimap-worker.js) | The radar's dense-field dot layer, baked off-thread to an ImageBitmap. Its sweep math MIRRORS `drawMinimap`'s — retune both together. |

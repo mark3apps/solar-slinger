@@ -543,6 +543,11 @@ export const CFG = {
   // the separating velocity, split the overshoot by mass. Against a moon the
   // ship is the one that moves.
   TETHER_MAX_MUL: 1.3,
+  // …and it RUBBER BANDS into that limit rather than hitting it as a wall. The
+  // give is a fraction of the max taken from INSIDE it: the band starts biting
+  // at (1 - this) x max and is fully taut at max, so the stated ceiling stays
+  // literally true and the last fifth of it is spent easing you to a stop.
+  TETHER_STRETCH: 0.16,
 
   // THE WINCH CREDITS THE WIND-UP BUT MUST NEVER FINISH IT (user design rule:
   // full power always takes longer than the winch). The winch seconds carry
@@ -588,7 +593,9 @@ export const CFG = {
   ALIEN_THROW: 430,
   ALIEN_CONTACT_DMG: 24,
   ALIEN_FIRST_WAVE: 55,    // seconds of peace at the start
-  ALIEN_WAVE_EVERY: 42,
+  // (No ALIEN_WAVE_EVERY. Timed waves are gone — nests and shoal-lurker broods
+  // are the only alien sources now, per the sparse-enemy design law, so only
+  // the opening grace period above survives from the old spawner.)
   ALIEN_SCRAP: 28,
   ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
   ALIEN_BURST: 4,          // a nest can scramble up to this many at once

@@ -2,7 +2,7 @@ import {
   CFG, PROG, TIERS, LIFT_NEVER, addXp, fieldXp, canLift, canStow, liftClass, latchTime,
 } from './config.js';
 import { derail } from './entities.js';
-import { clamp, angDiff, TAU } from './util.js';
+import { clamp, angDiff } from './util.js';
 import { bump, best, noteCatch } from './achievements.js';
 import * as sfx from './sfx.js';
 
@@ -214,6 +214,25 @@ export function pushLaunchFx(game, b, vx, vy, charged) {
   if (game.launchFx.length > CFG.LAUNCH_FX_MAX) game.launchFx.shift();
 }
 
+// EVERY PATH THAT TAKES A ROCK OUT OF THE BEAM CLEARS WHAT THE BEAM WROTE ON
+// IT. That law already covered `extAx/extAy` (a hold accel left behind is a
+// permanent phantom thrust — physics adds it every substep until somebody
+// zeroes it); the wind-up added two more pieces of per-hold state to it:
+//   b.holdT   — flingSpeedFor keys the throw wind-up off `holdT != null`, so a
+//               rock that kept it would come back to the beam already charged
+//   the CHARGE readout — a stale READY paints a near-white beam on a rock that
+//               is not charged, or on nothing at all
+// Physics owns three of those paths (shatter, vaporize, the ship-death block)
+// and none of them can go through releaseHeld, so they call this instead.
+// It matters MORE since the tether became unbreakable at full power: springHeld's
+// own auto-drop no longer fires on distance, so it cannot mop up a stranded rock.
+export function clearHoldState(game, b) {
+  if (b) { b.holdT = null; b.extAx = 0; b.extAy = 0; }
+  // The readout describes the rock that just left. springHeld rebuilds it on
+  // the next substep for whatever is still in hand.
+  game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false;
+}
+
 export const throwLocked = (b) => b.throwLock > 0;
 export const isOwnShot = (b) => b.thrownBy === 'player' && b.thrownTimer > 0;
 
@@ -423,19 +442,19 @@ export function releaseHeld(game, fling) {
   game.held2 = null;
   b.heldBy = null;
   b.extAx = 0; b.extAy = 0;
-  // The charge readout belongs to the rock that just left; springHeld rebuilds
-  // it next substep for whatever is still in hand. Cleared unconditionally so a
-  // hot beam can never outlive the throw it was describing — but remembered
-  // first, because the launch flash below is sized on it.
+  // Remembered BEFORE anything is cleared — the launch flash is sized on it.
   const wasCharged = game.heldCharged;
-  game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false;
   if (!game.held) sfx.setBeam(false);
-  if (!b.alive) return;
+  if (!b.alive) { clearHoldState(game, b); return; }
   if (fling) {
-    const v = computeFlingVelocity(game, b);   // reads b.primed AND b.holdT — clear only after
+    // ORDER IS LOAD-BEARING: computeFlingVelocity reads b.primed AND b.holdT —
+    // holdT IS the wind-up, and flingSpeedFor treats a null one as "not in the
+    // beam", i.e. full power. Clearing before this line hands every throw the
+    // full-power multiplier and quietly undoes the whole wind-up.
+    const v = computeFlingVelocity(game, b);
     b.vx = v.vx; b.vy = v.vy;
     pushLaunchFx(game, b, v.vx, v.vy, wasCharged);   // muzzle flash
-    b.holdT = null;   // out of the beam: the wind-up no longer applies (beamGrip)
+    clearHoldState(game, b);   // …only now
     // ACHIEVEMENTS: the release point is the sniper measuring stick (shatter
     // reads it back), and the prime flag is carried onto the throw so the kill
     // can credit the counterpunch that set it up.
@@ -460,7 +479,7 @@ export function releaseHeld(game, fling) {
     sfx.sfxFling();
   } else {
     b.primed = false;   // a gentle drop wastes the Dead Stop prime — no banking it
-    b.holdT = null;     // …and the wind-up with it: a drop is not a place to park a charge
+    clearHoldState(game, b);   // …and the wind-up with it: a drop is no place to park a charge
     bump(game, 'drops');
     sfx.sfxDrop();
   }
@@ -560,22 +579,39 @@ function springHeld(game, b, dt, slot) {
   // NOT a violation of the no-recoil law: that law is about the RELEASE — a
   // throw must never shove the ship. Being dragged by something you are still
   // holding is the opposite, and it is the point.
+  // IT IS A RUBBER BAND, NOT A WALL (user design call). Arresting everything at
+  // one exact radius jolted — you were free, then instantly you were not. So the
+  // give lives INSIDE the stated limit rather than beyond it: the band starts to
+  // bite at `soft` (CFG.TETHER_STRETCH back from the ceiling) and is fully taut
+  // at `maxL`, which keeps "max length ~1.3x the beam ring" literally true while
+  // the last stretch of it is spent easing you to a stop.
+  //
+  // `grab` — the fraction of the separating velocity the band takes this substep
+  // — ramps QUADRATICALLY across that stretch. At first contact it takes almost
+  // nothing (no jolt); deep in the stretch it takes essentially all of it. The
+  // hard positional clamp at maxL then only ever catches the residue, so in
+  // practice it does nothing at all.
   if (atFull) {
     const maxL = st.range * CFG.TETHER_MAX_MUL + b.radius;
+    const soft = maxL * (1 - CFG.TETHER_STRETCH);
     const dx = b.x - s.x, dy = b.y - s.y;
     const d = Math.hypot(dx, dy);
-    if (d > maxL && d > 0) {
+    if (d > soft && d > 0) {
       const nx = dx / d, ny = dy / d;
       const ms = Math.max(1, s.mass), mb = Math.max(1, b.mass);
-      const over = d - maxL;
-      // Heavier body moves less: the ship takes mb/(ms+mb) of the correction.
-      s.x += nx * over * (mb / (ms + mb)); s.y += ny * over * (mb / (ms + mb));
-      b.x -= nx * over * (ms / (ms + mb)); b.y -= ny * over * (ms / (ms + mb));
+      const t = clamp((d - soft) / (maxL - soft), 0, 1);
+      const grab = t * t;
       const sep = (b.vx - s.vx) * nx + (b.vy - s.vy) * ny;
       if (sep > 0) {                       // only while they are pulling APART
-        const j = sep / (1 / ms + 1 / mb);
+        const j = (grab * sep) / (1 / ms + 1 / mb);
         s.vx += (j / ms) * nx; s.vy += (j / ms) * ny;
         b.vx -= (j / mb) * nx; b.vy -= (j / mb) * ny;
+      }
+      if (d > maxL) {
+        // The backstop. Heavier body moves less: the ship takes mb/(ms+mb).
+        const over = d - maxL;
+        s.x += nx * over * (mb / (ms + mb)); s.y += ny * over * (mb / (ms + mb));
+        b.x -= nx * over * (ms / (ms + mb)); b.y -= ny * over * (ms / (ms + mb));
       }
     }
   }
@@ -586,7 +622,7 @@ function dropSlot(game, slot) {
   if (slot === 0) { releaseHeld(game, false); return; }   // drops held, promotes held2
   const b = game.held2;
   game.held2 = null;
-  if (b) { b.heldBy = null; b.extAx = 0; b.extAy = 0; b.holdT = null; }
+  if (b) { b.heldBy = null; clearHoldState(game, b); }
 }
 
 // ---------- orbit shield ----------

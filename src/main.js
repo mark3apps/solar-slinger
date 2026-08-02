@@ -1,6 +1,6 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
-  addXp, owesPick, xpForPick, pickIsMilestone, tierChoices,
+  addXp, owesPick, pickIsMilestone, tierChoices,
   consumePickCost, applyAbility, applySpec, applyTierUp, canStow,
 } from './config.js';
 import { Ship } from './entities.js';
@@ -266,6 +266,7 @@ function regenWorld(seed) {
   game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
   game.orbit.length = 0; game.pickups.length = 0;
   game.held = null; game.held2 = null;
+  sfx.setBeam(false);   // the hum is edge-triggered — a reset must drop it too
   game.worldSeed = seed ?? pickSeed();
   generateWorld(game, game.worldSeed);   // clears game.bodies itself, then respawns the ship
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
@@ -850,6 +851,7 @@ function resetRun(seed, openCard = true) {
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
   game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
   game.orbit.length = 0; game.held = null; game.held2 = null; game.pickups.length = 0;
+  sfx.setBeam(false);   // the hum is edge-triggered — a reset must drop it too
   game.gameOver = false; game.deathShown = false; game.deathCause = '';
   game.lastTier = 0; game.alienKills = 0; game.lifeTimer = PROG.LIFE_RESPAWN;
   game.burnerFuel = 1; game.burnerOn = false;

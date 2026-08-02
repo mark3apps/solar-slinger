@@ -3,7 +3,7 @@ import {
   makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
 import { spawnAsteroid, markFieldRock } from './world.js';
-import { computeFlingVelocity } from './tractor.js';
+import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
 } from './util.js';
@@ -503,7 +503,18 @@ function updateGasVents(game, dt) {
   const reg = game.reg;
   if (!reg) return;
   for (const p of reg.planets) {
-    if (!p.alive || p.ptype !== 'gas' || !p.nearShip) continue;
+    // THE THROES OWN THE VENTING, same as they already own the damage
+    // (damageBody: "a gas giant already coming apart takes no more damage").
+    // updateGasStrip also decrements p.ventT, and both run every substep --
+    // and during the throes this loop does NOT skip the giant, because ptype
+    // is still 'gas' and p.alive is still true until completeGasStrip, while
+    // beginGasStrip's p.hp = 1 puts dmg01 at ~1, well past GAS_VENT. So the
+    // timer drained at 2x and the two loops alternated firing gasErupt with
+    // different scales and different reset intervals: roughly double the
+    // ejecta across the 5s collapse, all of it charged to the ONE shared
+    // debris budget (invariant 7), plus double the shake and sfxBoom. This
+    // loop is nearShip-gated, so it fired precisely when it was being watched.
+    if (!p.alive || p.ptype !== 'gas' || !p.nearShip || p.stripT > 0) continue;
     const dmg01 = 1 - p.hp / p.maxHp;
     if (dmg01 <= CFG.GAS_VENT) { p.ventT = 0; continue; }
     const v = (dmg01 - CFG.GAS_VENT) / (1 - CFG.GAS_VENT);
@@ -676,7 +687,20 @@ export function shatter(game, body, credit = null) {
   // the killing blow (stamped in collideBodies) — the moon-shot and sniper rows
   // are the only reason it exists.
   noteKill(game, body, credit, body.hitBy);
-  if (body.heldBy === 'player' && game.held === body) game.held = null;
+  // The rock in the beam shattered. Two things go with the pointer, and both
+  // are releaseHeld's law — this path just has to obey it too:
+  //   PROMOTE. Twin Grip's flanking rock moves up into the primary slot. Left
+  //   in held2 with held null it is unthrowable and unstowable — releaseHeld
+  //   and addToOrbit both read game.held and bail — so the player ends up
+  //   holding a rock the beam will not let go of until they grab another.
+  //   THE HUM. setBeam is edge-triggered off releaseHeld/addToOrbit, so
+  //   without this it kept running with nothing held.
+  if (body.heldBy === 'player' && game.held === body) {
+    game.held = game.held2 || null;
+    game.held2 = null;
+    if (!game.held) sfx.setBeam(false);
+    clearHoldState(game, body);   // …and the wind-up/charge state with it
+  }
 
   // FIELD GIANT: cracking one sprays a cascade of smaller FIELD rock — the
   // chaos engine of a shoal. The shards inherit the whole material through
@@ -1166,7 +1190,14 @@ function vaporize(game, body) {
     bump(game, 'sunFed');
     if (body.mass >= 3500) bump(game, 'sunFedBig');
   }
-  if (body.heldBy === 'player' && game.held === body) game.held = null;
+  // Fed to the sun straight out of the beam — same promotion and same hum
+  // drop as a shatter, for the same reasons.
+  if (body.heldBy === 'player' && game.held === body) {
+    game.held = game.held2 || null;
+    game.held2 = null;
+    if (!game.held) sfx.setBeam(false);
+    clearHoldState(game, body);   // …and the wind-up/charge state with it
+  }
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
 }
@@ -1234,8 +1265,23 @@ export function damageShip(game, dmg, cause, hitAng) {
   }
   if (s.hull <= 0) {
     s.alive = false;
+    // DROP THE BEAM PROPERLY. Nulling game.held alone orphaned the rock: the
+    // tractor stopped updating it, but nothing cleared the state the tractor
+    // had written on it, and springHeld's own auto-drop can never reach it
+    // (it walks game.held, which is already null). So the rock kept BOTH the
+    // last hold accel — extAx/extAy is not rebuilt per frame, physics adds it
+    // to b.ax every substep until somebody zeroes it, leaving a permanent
+    // phantom thrust — and `heldBy = 'player'`, which pins it out of the
+    // dormancy check (`b.heldBy` forces awake) for the rest of the run. One
+    // leaked body and one drifting rock per death-while-carrying.
+    for (const b of [game.held, game.held2]) {
+      if (!b) continue;
+      if (b.heldBy === 'player') b.heldBy = null;
+      clearHoldState(game, b);   // extAx/extAy, the wind-up timer, the readout
+    }
     game.held = null;
     game.held2 = null;   // Twin Grip: drop the second rock too
+    sfx.setBeam(false);  // ...and kill the hum: only releaseHeld/addToOrbit do it otherwise
     game.deathCause = cause;
     addParticles(game, s.x, s.y, s.vx * 0.3, s.vy * 0.3, 60, '#9fd6ff', 280, 1.6, 4);
     sfx.sfxShipDeath();
@@ -1460,6 +1506,48 @@ function collideBodies(game, a, b) {
     return;
   }
 
+  const nx = dx / d, ny = dy / d;
+  const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
+  const closing = -(rvx * nx + rvy * ny);
+
+  // TWO RAILED CELESTIALS BRUSHING AT CONJUNCTION PASS THROUGH EACH OTHER.
+  // Moon families deliberately reach past Hill stability (world.js moonZone,
+  // maxR = hill * 1.5) so systems stay wide, which means NEIGHBOURING planets'
+  // families overlap radially — measured on seed 3827467762, 16 of 20 adjacent
+  // pairs do, several by >8000u. Adjacent lanes run at different angular speeds
+  // and therefore ALWAYS reach conjunction, so these touches are a normal,
+  // recurring event and not drama. They were silently lethal: at closing
+  // 25-240 an impact does NO damage and logs NOTHING (see the sub-DMG_THRESH
+  // note below), but the `closing > 25` derail below still fired, and a moon
+  // knocked out of its exact orbit falls into whatever it is near — around a
+  // gas giant it was SWALLOWED within seconds. Every loss traced this way was a
+  // brush at closing 70-185: 4 swallowed + 7 absorbed moons per 600s idle soak,
+  // with no player anywhere. Letting them overlap is the user's design call —
+  // moons stay far out, and a conjunction must not unmake a charted world.
+  //
+  // Deliberately narrow. It needs BOTH bodies railed (a rail is an exact,
+  // deterministic orbit — nothing here is reacting to it) and BOTH natural
+  // (`thrownTimer <= 0`), so player and alien throws keep every bit of their
+  // impulse, damage and derail. Above DMG_THRESH the collision is real again
+  // and resolves normally, so a genuine celestial crunch still happens.
+  // Returning BEFORE the separation/impulse below is the point: a railed body
+  // shoved by contact resolution snaps back on its next rail advance and
+  // visibly vibrates, so a half-fix that only skipped the derail would trade a
+  // dead moon for a juddering one.
+  //
+  // IT MUST ALSO SIT ABOVE THE GAS-GIANT SWALLOW. The swallow gate tests only
+  // `rock.type !== 'planet'` — no rail, no thrownTimer, no celestial test — so
+  // while this guard lived ~90 lines further down, a railed natural moon whose
+  // lane crossed a railed giant's cloud tops at conjunction was eaten outright
+  // (sinkT set, alive = false ~0.55s later) and never reached the guard at all.
+  // That is the exact outcome the rationale above exists to prevent, by the one
+  // route it did not cover. A THROWN moon is derailed, so "a thrown moon goes
+  // in" is untouched, and above DMG_THRESH a real crunch still swallows.
+  if (a.onRails && b.onRails && closing < CFG.DMG_THRESH &&
+      a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
+      (a.type === 'planet' || a.type === 'moon') &&
+      (b.type === 'planet' || b.type === 'moon')) return;
+
   // A GAS GIANT SWALLOWS (CFG.GAS_* — "it swallows"). There is no surface to
   // bounce off, so loose rock reaching the cloud tops sinks and is gone. This
   // replaces the old behaviour, where a thrown rock rebounded off a ball of
@@ -1545,39 +1633,6 @@ function collideBodies(game, a, b) {
       return;
     }
   }
-
-  const nx = dx / d, ny = dy / d;
-  const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
-  const closing = -(rvx * nx + rvy * ny);
-
-  // TWO RAILED CELESTIALS BRUSHING AT CONJUNCTION PASS THROUGH EACH OTHER.
-  // Moon families deliberately reach past Hill stability (world.js moonZone,
-  // maxR = hill * 1.5) so systems stay wide, which means NEIGHBOURING planets'
-  // families overlap radially — measured on seed 3827467762, 16 of 20 adjacent
-  // pairs do, several by >8000u. Adjacent lanes run at different angular speeds
-  // and therefore ALWAYS reach conjunction, so these touches are a normal,
-  // recurring event and not drama. They were silently lethal: at closing
-  // 25-240 an impact does NO damage and logs NOTHING (see the sub-DMG_THRESH
-  // note below), but the `closing > 25` derail below still fired, and a moon
-  // knocked out of its exact orbit falls into whatever it is near — around a
-  // gas giant it was SWALLOWED within seconds. Every loss traced this way was a
-  // brush at closing 70-185: 4 swallowed + 7 absorbed moons per 600s idle soak,
-  // with no player anywhere. Letting them overlap is the user's design call —
-  // moons stay far out, and a conjunction must not unmake a charted world.
-  //
-  // Deliberately narrow. It needs BOTH bodies railed (a rail is an exact,
-  // deterministic orbit — nothing here is reacting to it) and BOTH natural
-  // (`thrownTimer <= 0`), so player and alien throws keep every bit of their
-  // impulse, damage and derail. Above DMG_THRESH the collision is real again
-  // and resolves normally, so a genuine celestial crunch still happens.
-  // Returning BEFORE the separation/impulse below is the point: a railed body
-  // shoved by contact resolution snaps back on its next rail advance and
-  // visibly vibrates, so a half-fix that only skipped the derail would trade a
-  // dead moon for a juddering one.
-  if (a.onRails && b.onRails && closing < CFG.DMG_THRESH &&
-      a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
-      (a.type === 'planet' || a.type === 'moon') &&
-      (b.type === 'planet' || b.type === 'moon')) return;
 
   // ICE QUENCHES EMBER: any icy rock (ring chunk, geyser pop, comet) landing
   // on an infested planet smothers its reefs — thrown ice hits harder.
