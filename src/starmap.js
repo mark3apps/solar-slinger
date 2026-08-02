@@ -34,7 +34,7 @@
 // boiling mark reads as a rendering bug rather than as uncertainty. It also has
 // to be the same offset the flight guidance uses, or the chart and the radar
 // would disagree about where you are being sent.
-import { CFG, fieldLobe, PTYPE_LABELS } from './config.js';
+import { CFG, PTYPE_LABELS } from './config.js';
 import { TAU, clamp } from './util.js';
 import { frameReg } from './physics.js';
 
@@ -224,8 +224,16 @@ export function isContact(b) {
 // instead of glance at.
 export function contactLevel(game, b) {
   if (b.hidden) return 'null';
-  if (b.chartKey && game.charted && game.charted[b.chartKey]) return 'charted';
-  return 'unknown';
+  if (b.chartKey) return game.charted && game.charted[b.chartKey] ? 'charted' : 'unknown';
+  // NO CHART KEY MEANS NO NAMEPLATE TO READ, so finding it IS knowing it.
+  // world.js only keys the things the survey counts — worlds, moons, stations
+  // and the named landmarks. An alien nest, a comet and the interstellar
+  // visitor carry no key and never will, so a rule of "charted or nothing"
+  // left them permanently `unknown`; plottable() drops non-world unknowns, and
+  // the three of them fell off the chart entirely (along with the branches in
+  // contactLabel and contactClass that name them). They have nothing to learn
+  // by flying closer, so the fog scan finding them is the whole of it.
+  return b.seen ? 'charted' : 'unknown';
 }
 
 // Do we have a sensor FIX on this body — i.e. is its plotted position the truth
@@ -304,7 +312,15 @@ export function ghostOff(game, b, out = _off) {
 // Where the chart DRAWS a body — true position once identified, the guess until
 // then. Everything that points at a contact (the chart, the route, the radar's
 // waypoint marker) goes through this one function, so they can never disagree.
-export function contactPos(game, b, out = { x: 0, y: 0 }) {
+// Writes into `out`, and the DEFAULT is a shared scratch — this runs once per
+// contact per frame inside the draw, and a fresh object literal per call is the
+// per-point allocation the projection note above exists to avoid. It is a
+// separate buffer from ghostOff's `_off`, which this function reads on the way
+// through: one object serving both would alias and the offset would be
+// overwritten before it was added. Callers must copy anything they keep; the
+// three that exist read x/y immediately or pass their own `out`.
+const _pos = { x: 0, y: 0 };
+export function contactPos(game, b, out = _pos) {
   const o = ghostOff(game, b, _off);
   out.x = b.x + o.x; out.y = b.y + o.y;
   return out;
@@ -324,9 +340,16 @@ export function contactLabel(game, b) {
   const lvl = contactLevel(game, b);
   // Plain words. This said "UNCHARTED RETURN" — a "return" is radar jargon for
   // an echo, which is precise, wrong for a CHART (a chart carries plots, not
-  // returns), and meaningless to anyone who has not worked a radar. It is also
-  // only ever a world now (see plottable), so it can just say so.
-  if (lvl === 'unknown') return 'UNEXPLORED WORLD';
+  // returns), and meaningless to anyone who has not worked a radar.
+  //
+  // Only a WORLD may call itself one. plottable() means nothing else can be
+  // unknown AND on the chart today, so the else branch is belt-and-braces —
+  // but a flat "UNEXPLORED WORLD" for every unknown had an uncharted station
+  // announcing itself as a planet the moment anything widened that predicate,
+  // and a label that lies is worse than a vague one.
+  if (lvl === 'unknown') {
+    return b.type === 'planet' || b.type === 'rogue' ? 'UNEXPLORED WORLD' : 'UNEXPLORED';
+  }
   if (b.name) return b.name.toUpperCase();
   if (b.type === 'nest') return 'ALIEN NEST';
   if (b.type === 'station') return 'DERELICT STATION';
