@@ -1,11 +1,26 @@
-// AREA: worldgen — static structure of a freshly generated sky. No simulation,
-// so this is the fastest suite there is (boot + one tick).
+// AREA: worldgen — static structure of a freshly generated sky.
 //
-// Everything here is a number that should be STABLE for a given seed. If a
-// worldgen change moves one, the diff shows exactly which structure shifted.
+// RUNS NO SIMULATION AT ALL, and must stay that way — this is the fastest
+// suite there is (boot only, ~1s) and bench.mjs treats every field it returns
+// as EXACT, with no tolerance band.
+//
+// DO NOT ADD A TICK. An earlier cut opened with `window.tick(0.1)`, which is
+// not the no-op it looks like: tick's loop is `for (t = 0; t < seconds;
+// t += 1/60)`, so 0.1s is SIX real `update()` calls — spawns, AI, replenish
+// timers, damage — and `window.tick` also sets `game.started = true`. That
+// contradicts the suite's own contract and is exactly the kind of thing that
+// turns an EXACT-diffed suite into a source of phantom changes. (Verified
+// removable: output is byte-identical with and without it, and identical
+// across three consecutive runs either way.)
+//
+// THE INVARIANT THAT KEEPS THIS TRUE: every metric below is time-INVARIANT —
+// rail parameters (a/e/r/w), radii, masses, and counts of generated content.
+// Nothing reads a live position in a way that drifts as bodies advance, which
+// is why the sky having already been advanced by the splash backdrop before
+// the script runs cannot move a number. If you add a metric, keep it that way
+// or it will diff against itself.
 
 const g = window.game;
-window.tick(0.1);
 const star = g.homeStar;
 const alive = g.bodies.filter((b) => b.alive);
 const peri = (b) => (b.rail ? (b.rail.e > 0 ? b.rail.a * (1 - b.rail.e) : b.rail.r) : 0);
@@ -20,9 +35,18 @@ for (const b of alive) if (b.ptype) byPtype[b.ptype] = (byPtype[b.ptype] || 0) +
 // ---- planet lanes ---------------------------------------------------------
 // PLANET_LANE_GAP caps each grown disc by what its neighbours leave free, so
 // no two planet SURFACES should come within 400 units at conjunction.
+// Lane comes from the RAIL PARAMETER, not from hypot(position). A circular
+// rail's radius is constant, but `r * cos(ang)` / `r * sin(ang)` recombined
+// through hypot() carries float noise that varies WITH THE ANGLE — so a
+// position-derived lane wobbles in its last bits as the sky turns. That was
+// enough to flip `minSurfaceGap.at` between Pell->Sable and Nerev->Tantal
+// across runs, because several pairs tie at exactly CFG.PLANET_LANE_GAP (400)
+// and the tie-break landed differently. Reading rail.r is bit-identical
+// forever, which is what an EXACT-diffed field requires.
+const laneOf = (b) => (b.rail ? (b.rail.e > 0 ? b.rail.a : b.rail.r) : Math.hypot(b.x - star.x, b.y - star.y));
 const planets = alive.filter((b) => b.type === 'planet' && b.parent === star)
-  .map((p) => ({ p, lane: Math.hypot(p.x - star.x, p.y - star.y) }))
-  .sort((a, b) => a.lane - b.lane);
+  .map((p) => ({ p, lane: laneOf(p) }))
+  .sort((a, b) => a.lane - b.lane || (a.p.name < b.p.name ? -1 : 1));
 
 let minSurfaceGap = Infinity, minSurfacePair = null;
 for (let i = 0; i < planets.length - 1; i++) {
