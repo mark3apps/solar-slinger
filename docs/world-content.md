@@ -1,0 +1,445 @@
+# World content — discovery layer, expedition, dense fields, the LOD, planet archetypes
+
+> Deep reference. Read before editing `world.js` generation, the dense fields, the field LOD /
+> awake list / frame registries in `physics.js`, `ai.js` lurkers, `glow.js`, or any planet
+> archetype mechanic.
+
+## The discovery layer
+
+Combat-free exploration content, deliberately sparse and all seeded to fixed spots (landmarks you can
+give directions by). Rules that keep it from breaking the invariants above:
+
+- **Comet Vesper** free-flies an eccentric orbit (peri ~3900 — deliberately above the graveyard ring,
+  which otherwise collision-random-walks it into the sun — apo ~20100) and must NEVER be railed —
+  rails are circular-only. It is an **honorary celestial**: weighted gravity (`majorComet` in the
+  Phase-1 `weighted` check + predictPaths mirrors) and ×0.25 natural impulses, because full planet
+  gravity/impulses killed it every ~15 min in soaks. If chaos still claims it, `replenishWorld`
+  respawns it in ~4 min. `cometT = Infinity` deliberately survives the ambient-comet expiry
+  (`Infinity - dt` stays `Infinity`). Its anti-sunward tail is render-only.
+- The **shepherd** station-keeps (it's in the physics `install` set) and respawns ~5 min after an
+  AMBIENT death only — a player kill scatters the ring permanently. Both are deliberate: ring decay
+  must always trace back to a player choice.
+- **The interstellar visitor** carries `noBoundary` — the one flag exempting a non-star-anchored body
+  from the world-edge force (`physics.js`), because that force would capture its hyperbolic pass. It's
+  cleared the moment the player catches it. Don't put `noBoundary` on anything else without a reason
+  this strong.
+- **THE SOLAR WAVE** (`CFG.STORM_*`) — system-wide weather with a telegraph, a bite, a counterplay
+  and a payday. The sun CHARGES visibly for `STORM_CHARGE` seconds, then fires a shock front sweeping
+  out at `STORM_SPEED` trailing a `STORM_TAIL`-deep **plasma sheath**. **The sheath is the whole
+  mechanic**: the front alone is a 1400u ring that crosses any radius in ~1.5s — too brief to notice,
+  which is exactly what the storm used to be (decorative). The sheath takes ~10s to pass, so being
+  caught out in one is a situation you answer. Force-wise NOTHING CHANGED: it still pushes SCRAP
+  DEBRIS ONLY, never bodies, celestials, or rails — a wave touching those is an invariant-3-style
+  regression. What it does instead lands on the ship, on scrap, and on sensors:
+  - **Caught EXPOSED** (in the sheath, no world between you and the sun): `STORM_DPS` directionless
+    hull damage (no `hitAng` — no facing dodges a wave, so a partial shield soaks only its coverage
+    share, and the continuous damage means the regen delay never elapses mid-wave), engines derated
+    to `STORM_THRUST`, and **sensors scrambled** for `STORM_ION` seconds past the last exposure —
+    the trajectory forecast and lead markers go dark and the radar drops/smears its returns.
+    Measured at tier 0: ~55 hull on a BRAWLER (27%), ~63 on HAULER/SCOUT (53%). Kept FLAT, not
+    hull-scaled, like every other environmental hazard, and under the gas cloud tops (9 dps).
+  - **SHELTER is the counterplay** (`main.shelterBody`, `STORM_SHADOW_*`): the sun is pinned at the
+    origin, so a world's lee is just the cylinder running anti-sunward from it. Render CUTS that lee
+    out of the plasma with an even-odd clip — the shadow isn't painted on, the plasma simply isn't
+    there — and the drawn lee is deliberately NARROWER/SHORTER than the mechanical one, so anywhere
+    that LOOKS sheltered is sheltered (the dust-halo safe-direction rule). Its outline is re-stroked
+    soft afterwards: a clip cuts with a knife, and a hard in-world edge is against the house style.
+  - **The payoff**: a live wave BLINDS ALIEN SENSES system-wide for its whole ~56s passage (the
+    window to move), it IONIZES the scrap it sweeps (`PROG.ION_SCRAP_MUL`, drawn charged blue), and
+    riding it out exposed pays `PROG.XP_STORM_RIDE`/sec, **capped per wave** at `STORM_RIDE_MAX` —
+    the front outruns any ship but you can still ride it outward, and an uncapped per-second payout
+    would reward exactly that (the same rate-independence argument as the fields' `xpLeft`).
+  - **Ionization must never touch FIELD scrap.** A shoal chunk's XP was already priced against the
+    pocket budget by `fieldXp` at DROP time, so `dropScrap` stamps `d.field` and the pickup multiplier
+    skips it — otherwise the field farm launders itself back through the weather.
+  - **main.js owns `stormExposed`/`stormBlind`/`stormIonT`/`stormShelter`**, resolved once per frame
+    in `updateStorm` before both consumers (`updateAliens` and the substeps); physics/render/ai only
+    READ them — the same owner-split as the afterburner tank and `game.burnerOn`. `driftSplash` clears
+    them (a wave left standing when you back out to the menu would cook the parked ship forever), and
+    `resetRun` clears the geometry with them.
+  - **Render sizes STRUCTURE in wave units and TEXTURE off `view.r`.** A gameplay view is ~900u wide
+    against a 9200u sheath, so anything sized in wave units is bigger than the screen and collapses to
+    a flat wash — the first cut's 220u filaments drew as screen-filling columns. Streaks/motes scale
+    with the view, fade at BOTH tips (a hard leading tip reads as architecture, not plasma), and
+    stay saturated (low-alpha additive near-white over black is just grey). ~0.4ms while it crosses
+    the view, nothing at all otherwise.
+  - `window.storm('charge'|'here'|'off')` fires one on demand instead of waiting out `STORM_EVERY`.
+- **Survey/CHART**: flying into a world's nameplate zone charts it (`replenishWorld` scan) and pays
+  `PROG.XP_SURVEY`. That zone is widened by the SCOUT **Recon Drone** ability (`st.recon`), which charts
+  worlds from far outside it. Forecast horizon (`st.predictBoost`) and sensor/minimap reach
+  (`st.sensorMul`) come from the SCOUT **Nav Plotter** and **Deep Array** abilities, not from a passive
+  survey track.
+- **Echo logs** are strings on bodies (`b.echo`), announced once on first grab via `game.echoMsg`.
+- **The expedition layer** (all seeded content appends AFTER `seedGlowPockets` in `generateWorld` —
+  any rng draw earlier reshuffles the whole sky and breaks mechTest T1; the guard comment in world.js
+  marks the spot):
+  - **Deliveries** (`world.updateDeliveries`, per-frame): the shared "fling/tow an object into a
+    target's catch radius" verb (`CFG.DELIVER_R`). Consumption is a HANDOVER (`alive = false`, no
+    shatter/scrap); **railed bodies are never cargo** (legit deliveries are always loose — without
+    that gate a planet's railed junk satellites self-deliver to the barge at lane conjunction), and
+    every handler carries a **re-entry guard** (the loop visits bodies pushed mid-sweep, and the
+    barge's ice payment spawns inside its own catch radius — unguarded, an ice-for-ice trade is a
+    runaway).
+  - **CHART EVERYTHING**: every world/moon/station/named landmark carries a `b.chartKey`;
+    `game.charted` records KEYS (respawned landmarks stay charted — spawn fns set their own keys).
+    The total is recomputed live each scan (a destroyed uncharted body drops out — no 100% softlock).
+    100% fires **MASTER CHART** (`prog.masterChart` → sensorMul ×1.25 + predictBoost in shipStats).
+    Moons/POIs pay less than worlds and halve the Recon Drone reach.
+  - **The Herald resolves**: deliver any graveyard wreck (`b.wreck`) → `gh.awake` — XP, a life pod,
+    the ping turns friendly, and the fog scan sees ×1.5 farther within 6000u (MIRRORED in the
+    minimap sensor bubble — keep in sync).
+  - **The Tinker Barge** (`spawnTinker`): the system's ONE friendly NPC — a railed, station-keeping
+    trader at r≈12000 with a rotating want (crystal/ice/wreck/junk — junk EXCLUDES the carved
+    stone/visitor/wrecks or it eats landmarks). **Wants come from a LOCAL census** (user design
+    rule — the barge only asks for things close by; a cross-system haul is a chore, not a trade):
+    `pickTinkerWant` counts supply within `CFG.TINKER_WANT_R` (cored rocks count toward crystal),
+    offers only plentiful wants (fallback: whatever there's most of), and a want whose local supply
+    dries up re-rolls on a ~8s census — but NEVER while the player is holding a match (no re-rolling
+    out from under a delivery in progress). The wreck want thus only appears if wrecks were hauled
+    near the lane. Not grabbable (`b.tinker` in tryGrab); mass 1900 DELIBERATELY under `ATTRACT_MIN`
+    (installations are never attractors); player kill permanent, ambient death respawns (~300s) —
+    the shepherd's rule.
+  - **The Uncharted Star**: `b.hidden` = sensor-null (fog + chart scans both skip it) — only feeding
+    the Relay Station (the `ei === 0` echo station; its log IS the breadcrumb) a core crystal reveals
+    the dark dwarf on the outermost rail (r≈39500). Type `'planet'` ON PURPOSE (star bypasses minimap
+    fog; a custom type wouldn't re-rail after a rogue disturbance); NO `noBoundary`. Charting it:
+    `XP_SURVEY_STAR` + permanent `prog.maxLivesBonus` +1 — **all lives-cap reads go through
+    `config.maxLives(prog)`**, never raw `PROG.MAX_LIVES`.
+  - **Mayday pods**: rare ambient rescues (t>180s, one at a time) — a real loose body (hp override 60)
+    drifting sunward or nest-ward with an air timer; dock it at ANY station. The pod SPRITE is a
+    real spacecraft (capsule + charred shield + orange rescue paint + beacon mast strobing faster
+    as air runs out) — never a flat UI token. While the rescue is live the minimap runs a full
+    mission display: blinking POD-tagged cross (hidden while the pod rides the player's beam), a
+    guide line from ship to the nearest station, and a pulsing DOCK-tagged ring (prefer a SEEN
+    dock; an unseen fallback is a bearing only — the station blip itself stays fogged, never a map
+    reveal). Loss = a silent somber message, no penalty. Aliens grabbing the pod is intended drama
+    (the helper refuses alien-held deliveries).
+  - **Moons with jobs**: **iron** = debris-only magnet pooling scrap at a surface halo (the
+    storm-shove law — never bodies/rails; ship magnet always wins); **sulfur** = player-credited
+    smash (`earnsScrap`, >8 dmg, not the killing blow, 30s cd ticked in the always-running pre-pass)
+    fountains capped loose rock; **dust** = `game.dustCloak` stealth (computed once per frame in
+    `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
+    battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
+    never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
+    **`updateAliens` OWNS `game.dustCloak` and is the only writer; every GATE asks
+    `util.senseBlind(game)` instead**, because a live solar wave hides the ship too
+    (`game.stormBlind`). render.js's hunting-eye mirror uses the same leaf helper — the two must
+    never disagree about whether the ship is visible, and render must not import ai.
+- The **ring shepherd**, **Forge Moon**, **graveyard wrecks**, **ghost ship** (station-type, `parent:
+  null` so it gets no station-keeping), and **carved stone** are ordinary railed bodies — the fortify
+  pass must keep skipping volcanic/shepherd moons.
+
+## Early-game interactables, the dense fields, the LOD, and planet archetypes
+
+- **Early-game interactables** (give the belt more to do than smash-the-same-rock; all lean on the
+  existing throw/grab/collision loop, no new subsystems):
+  - **Cored rocks** (`b.cored`, ~13% of belt/field rocks over 250 mass, world.js `maybeCore`): cracking
+    the shell with a PLAYER smash frees a dense `b.core` crystal — heavy salvage (3.5x scrap, fat beam
+    catch). Ambient shatters don't reveal it (earnsScrap gate). A purple glint marks cored rocks.
+  - **Salvage caches** (`b.cache`, world.js `spawnCache`, ~5% of local-field spawns): light grabbable
+    canisters that BURST into scrap + ice ammo when the player cracks them (physics.shatter).
+  - **Gravity billiards** (physics.js): throw-kills chained within `game.comboT` (2.6s) rack up
+    `game.combo`; a heavy rock plowing through light ones, or a knocked rock (credit propagated — ASTEROIDS
+    ONLY, never moons/planets) killing the next, keeps it going. 2+ shouts a multiplier + bonus scrap.
+  - **Ice-moon geysers** (world.js): ice-type moons vent catchable ammo like the far ice planets, but
+    close-in and faster — an early harvesting loop.
+  - **Dense asteroid fields** (`world.seedDenseFields`, `CFG.FIELD_*`): four VAST rock shoals at
+    fixed radii — three in the planet-lane gaps (10400 / 23000 / 33500 — The Shoal, The Grindstones,
+    The Hushfield) and one on the outer band's frost fringe (44300, The Farshoal). Each is ~1900 rocks
+    across a roughly 5900 x 4400 pocket (mean nearest-neighbour spacing ~58u — the density the
+    user signed off on; SIZE and COUNT are separate knobs and must move together, or you are
+    re-tuning the feel rather than the size). **The pocket is close to ROUND on purpose** (`FIELD_LEN` /
+    `FIELD_SPREAD`, physical units converted to an angle per radius — an angular width turned the
+    outer field into a dilute 11,000u arc): the design goal is that you fly in and GET LOST, and a
+    long lane-shaped smear never does that no matter how big it is — against a ~450u view radius the
+    far side is a dozen screens away in every direction.
+    **But round is not RECTANGULAR** — `FIELD_LEN`/`FIELD_SPREAD` are the EXTENTS of an organic
+    outline, not a box to scatter inside. A uniform draw across those extents read as an obvious
+    SQUARE of rocks (the eye finds the four corners instantly and the shoal stops being a place).
+    The boundary is a lobed blob: three low harmonics per field (`f.lobe`, seeded at worldgen,
+    evaluated by `config.fieldLobe`, ceiling `FIELD_LOBE_MAX`) bulge and pinch it ~0.6-1.4x, so no
+    two shoals share a silhouette. `world.fieldPoint` is the ONE sampler — seed pass and reknit both
+    — and it draws directions AGAINST the lobe radius (bulges stay as dense as pinches), places
+    ~7% of rocks past the outline as a ragged fringe (a shoal that stops dead at its boundary is
+    the hard in-world edge the design law forbids), and converts the flat pocket frame back to
+    sun-polar with the chord-bow correction (`tan²/2r`) so the rocks sit where `fieldFrac` says
+    they do. **The HEART is placed at the pocket CENTRE, never a scatter draw** — its rail angle IS
+    `f.ang`, so an off-centre heart drags the whole containment frame with it (measured before the
+    fix: 40% of a shoal's own rocks fell outside `fieldFrac <= 1`, i.e. outside its own leash, wake
+    and entry announce).
+    **The whole shoal shares ONE `rail.w`** (the id-hashed ±4% jitter is overridden per rock, at seed,
+    at reknit, AND in the physics re-rail scan): a pocket with mixed angular speeds shears apart and
+    same-radius rocks grind each other, so a rigid pocket is what keeps a field a field. Each field's
+    HEART is a named, chartable giant; the AI anchor (`game.fields`, ai.js `updateFields`) reads the
+    heart's rail angle directly (splash frames advance rails but not the AI, so deriving from the rail
+    keeps the anchor glued to the rocks), falling back to its own clock at the shared `w` if the heart
+    is stolen or killed. Pockets slowly REKNIT toward seeded density off-view (`replenishWorld`;
+    the census counts the POCKET, not strays).
+  - **FIELD ROCK is its own material** — never treat it as belt rock (`world.markFieldRock` stamps
+    every one, including shards minted by `physics.shatter`, or the pocket launders itself back into
+    gravel):
+    - **No gravity in either direction.** It doesn't FEEL gravity (skipped in physics Phase 1, so a
+      knocked rock drifts and caroms in a straight line instead of falling into an orbit) and it never
+      EXERTS any — `attractor` is forced false at any mass, GIANTS INCLUDED. A heavy attractor parked
+      in a pocket built for knocking rocks together would quietly turn the shoal into its own solar
+      system. It is also the only reason 2000+ of them are affordable: the hot loop is
+      O(bodies x attractors), and field rock adds to neither side of it.
+    - **Near-elastic bounce**: field-vs-field uses the FLAT `FIELD_BOUNCE` (0.92), not a multiplier
+      on the world's deadened `RESTITUTION` (scaling it still thudded). Kept under 1 — at e >= 1
+      every hit ADDS energy and the pocket boils itself apart. Field rocks are also EXEMPT from the
+      gentle-contact absorb rule against each other: a pocket that ate every soft touch with a 15x
+      mass ratio digested itself around its own giants.
+    - **Tough against its own kind, DANGEROUS TO YOU** (`FIELD_SHIP_DMG` 2.5, the mirror of
+      `FIELD_TOUGH` below, applied in `collideShipBody`). The pockets are meant to be **high risk /
+      high reward** and were reading as pure reward, because a rigid pocket is SAFE: match its orbit
+      and every rock is nearly stationary relative to you, so the `closing > 25` gate left a farmer
+      sitting inside 1900 rocks barely scratched. The multiplier rides `closing`, so it weights the
+      danger toward LOOSE, stirred-up rock — the mess you made — while ambient jostling stays minor.
+      Hull does not self-heal, so that attrition is the real price of working a shoal.
+      **Field rock also keeps the BASE mass-saturation knee at every tier**, which mattered far more
+      than the multiplier: the knee normally grows with tier (`1500 × (1 + tier×1.2)`) so a
+      dreadnought shrugs off pebbles, and that made the shoals get SAFER the stronger you got — a
+      median field rock at 300 closing went 31% of hull at tier 0, 7% at tier 3, **4% at tier 5**,
+      i.e. harmless at exactly the tier you farm them. Flat knee ⇒ the same absolute bite at every
+      tier, so a bigger hull endures more of a shoal without ever becoming immune to one. A big ship
+      in a dense field is a big target.
+      **`FIELD_SHIP_DMG` is deliberately NOT applied to alien-thrown rock** — a lurker shove already
+      carries its own `thrown` multiplier and its own speed/mass tuning, and the two stacked put a
+      single body-check on the 45%-per-hit cap at every tier (a two-shot kill from an ambush, with
+      three hunting). Keeping them separate is also what lets the shoal and its predator be tuned
+      independently instead of through each other.
+    - **Tough against its own kind** (`FIELD_TOUGH` 0.08 damage scale, `FIELD_HP_MUL` 6 hp): hits
+      send rocks flying, they don't erase them. The damp covers EVERY field-vs-field impact —
+      including lurker body-checks and chain caroms, which are 'thrown' and at full damage vaporized
+      their targets instead of billiarding them. Only a player's own live throw punches at full
+      strength — smashing field rock deliberately still works and still pays. In a 30s soak melee,
+      40 kicked rocks cascaded into ~1160 loose rocks caroming with only 5 deaths out of 2200.
+      **"A player's own live throw" means YOUR throw and at most `FIELD_CHAIN_MAX` links past it** —
+      see the billiards depth cap in the design laws. Unbounded, the propagated `thrownBy = 'player'`
+      mark defeated this damp across the whole pocket, which is also why the shoal did NOT survive
+      being knocked around "indefinitely" as this rule intends.
+    - **GIANTS** (`FIELD_GIANTS` per pocket) shatter into a spray of smaller field rock, and shards
+      over 3000 mass are giants themselves — a bounded cascade, not an unbounded chain. This is the
+      shoal's chaos engine. The shard budget must stay ABOVE the world's steady-state body count or
+      the cascade silently never fires. Above them sit **MONOLITHS** (`FIELD_MONOLITHS` + the named
+      heart, `FIELD_MONOLITH_MASS` 3e5-4.8e5): twice the drawn RADIUS of the biggest giant (8x the
+      mass — radius goes with cbrt), the rocks you steer by from across the pocket. Field-rock hp is
+      capped at `FIELD_HP_CAP` (5200) precisely so a monolith stays breakable by a thrown moon-class
+      mass — FIELD_HP_MUL alone made one ~34k hp, i.e. unbreakable, contradicting the calving design.
+      A thrown monolith IS a rail disturber (mass > 5e4) — that's existing thrown-giant drama.
+    - Field rock is why the view-local spawner's global asteroid cap is 9800 (was 380) and the world
+      runs ~8000 bodies. Headless `tick` calls at this scale can exceed a 30s console eval budget:
+      run soaks in chunks.
+  - **THE FIELD LOD** (`physics.updateFieldLOD`, called once per FRAME from main.update AND
+    driftSplash — never per substep) is what makes those bodies affordable: **full physics is a
+    LOCAL privilege.** Every field rock is classified AWAKE (its field is the one the ship is at,
+    and it sits inside a wake bubble of ~2.2x viewR around the ship) or DORMANT (the far side of
+    your own field, and every field you are not in). Dormant rocks are skipped by the collision
+    sweep, both gravity phases, the per-substep rails pass, the ship/alien collision loops and the
+    NaN tripwire; railed dormants are group-advanced once per frame with exact trig — the pocket is
+    RIGID (shared `w`), so the whole shoal travels as one and the minimap stays truthful — while
+    LOOSE dormants freeze mid-drift (off-view by definition; they resume on wake). Held/thrown/
+    parry-frozen rocks are ALWAYS awake (a throw must never freeze mid-flight), and dormant
+    advancement drives the same `rail.ang` the substep path reads with `rl.rdt = 0` invalidating
+    the incremental rotor, so waking is seamless (measured: no displacement pops crossing the wake
+    seam at speed). The LOD is advanced by `simSteps * CFG.DT` — the exact sim time the substep
+    loop consumed — so dormant pockets never drift off the sim clock. **The chaos you see is always
+    the chaos near you — that's the design, not a shortcut** (a thrown rock CAN pass through a
+    dormant zone uncollided; it's off-view and the trade is deliberate).
+    **THE FRAME REGISTRIES (`game.reg`) ride the same walk.** The awake list fixed the
+    per-substep loops; a second family of scans survived it — "find every body of kind X",
+    asked against the FULL array over and over (physics' iron-moon and terran shortlists ran
+    per SUBSTEP; ai's `avoidStars` walked every body to find the one star, once per alien per
+    frame; world's local/asteroid census ran two full reduces; render asked half a dozen more).
+    Measured: with the ship parked in open space — an identical 381 awake bodies either way —
+    DOUBLING the world's total body count still cost 1.7x the frame, and that gap was entirely
+    work proportional to bodies already ruled out. So `updateFieldLOD` classifies as it goes
+    (`stars`/`planets`/`terrans`/`ironMoons`/`stations`/`forts`/`cloakers`/`locals`/`decay`/
+    `nonField`, plus asteroid and moon counts) and every scan reads the answer.
+    `nonField` is the renderer's set: ~380 of ~7,900, and the landmark passes (approach plates,
+    planet colour wash, minimap blips) were rejecting every shoal rock one at a time to reach it.
+    Three rules: a registry is a per-frame SNAPSHOT so consumers still check `b.alive`; it holds
+    REFERENCES so `generateWorld` nulls it beside `_awake`; and it may be one frame stale for
+    newcomers (`physics.frameReg` covers the cold start with a one-off walk).
+    Three follow-on optimizations ride the same classification:
+    - **THE AWAKE LIST** (`game.bodies._awake`, built in the same LOD pass): every per-substep loop
+      in `step()` iterates it instead of the full array — walking ~8000 bodies 10-15x per frame just
+      to skip dormants measured ~1.4ms (~40% of sim). It holds REFERENCES (compaction-proof), lives
+      ON the bodies array so `generateWorld`'s clear invalidates it (`bodies._awake = null`; step()
+      falls back to the full array while null), and `spawnAsteroid` registers spawns eagerly; any
+      creation site that bypasses it self-heals at the next frame's rebuild (one frame of stasis).
+      The dead/escaped cull is the one remaining full-array pass, throttled to every 4th substep.
+    - **The renderer skips dormant bodies outright**: dormancy requires >2.2x viewR + 600 from the
+      camera and the screen edge is at 1.0x viewR, so a dormant rock CANNOT be on screen. Teleports
+      (Slipstream warp, dev goto) reclassify the LOD immediately (`updateFieldLOD(game, 0)`) or the
+      arrival would render empty for one frame.
+    - **The minimap dot layer is cached**: ~1900 in-range rocks x (hypot+atan2+fillRect) per frame
+      bakes into an offscreen canvas at ~15Hz (rebaked on origin jumps, fog flips, or the sim clock
+      rewinding = resetRun) and composites as one drawImage; the sweep line stays live.
+    Measured at ~8000 bodies, in-field: sim 3.6 -> 2.3ms, draw 2.2 -> 1.6ms, locked 120 fps.
+  - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
+    BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
+    one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at
+    once); it picks a rock roughly between itself and the ship,
+    swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
+    launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
+    counter (orbit shield blocks it for XP, Deflector parries it, Dead Stop primes on the catch). Three
+    rules are load-bearing and each fixed a real failure:
+    - **Ambient rock contact does it NO harm.** A predator that died to its own habitat suicided on the
+      nearest rock within seconds of spawning. A PLAYER-thrown rock still hurts it — that's the counterplay.
+    - **It takes a MINIMUM number of hits, and hp is not what does that** (`LURKER_HIT_CAP` 0.34 of
+      `LURKER_HP`, capped in `collideAlienBody`). Rock damage is QUADRATIC in closing speed and linear
+      in mass, spanning three orders of magnitude (a 200-mass lob at 400 closing does 139; a 1400-mass
+      rock at 1000 does 7422), so NO hp value is tunable across that range — every one is either
+      one-shot by a real throw or immortal to a weak one. Raising `LURKER_HP` 34 → 90 alone changed
+      literally nothing: both were one-shot by all nine sample throws. The per-hit cap (same idiom as
+      invariant 3's comparable-rock cap) makes it cost ≥3 solid hits, which is what lets the predator
+      live long enough to line up the rocks that are the actual threat. Lurkers only — grabbers and
+      golems keep their existing feel.
+    - **Only a committed `charge` shoves.** At shoal density a lurker brushes rocks constantly just
+      manoeuvring; letting brushes shove burnt every cooldown on a random rock flung a random way
+      (measured: 1 shove/min, none landing within 1300u).
+    - **`collideAlienBody`'s "never collide with your own ammo" early-out must skip lurkers** — for a
+      lurker the target IS the rock it means to hit, and that one line silently cancelled the whole mechanic.
+    - **Only rocks under `LURKER_SHOVE_MASS` are shovable, in the AI pick AND the physics gate.**
+      Without the physics half, a charge that clipped a giant on the way in "threw" it at ~40u/s and
+      burnt the cooldown on a shot that visibly did nothing.
+    The shot is *helped*: it only sets up from close in (`LURKER_SHOVE_R`) and the launched rock keeps
+    steering toward the lead point briefly (`LURKER_GUIDE_*`) so a busy pocket deflecting it off a
+    neighbour doesn't turn every shot into a graze. `LURKER_SHOVE` sits ABOVE `ALIEN_THROW` on
+    purpose — the body-check is the lurker's whole attack, and at the old 420 the rock crawled over
+    and the guidance window was doing all the work. Lurkers respect the dust shroud, and their
+    containment is the POCKET FOOTPRINT itself via **`config.fieldFrac`** — the ONE shared
+    lobed-outline test (ai.js leash + wake, render.js hunting-eye mirror, world.js entry announce all
+    use it, so they can never disagree about where a field ends). A circular territory wide enough
+    to cover the lane's long axis overshot the short axis 2x and lurkers visibly hunted empty space;
+    now they engage while the ship is inside ~1.15 of the footprint, turn back at 1.3, and ambushes
+    only spring with the ship actually IN the rocks (frac < ~1).
+  - **Glow pockets** (`game.glowPockets`, glow.js): sparse WIDE FIELDS of small bioluminescent motes that
+    ride the belt's prograde orbit (a circular rail, `w` matched to the flow at their radius), scattered
+    thin across the mid system — a field (`GLOW_SPREAD`) is wide enough that you SWEEP the ship through it,
+    scooping several in a pass, and its green region-halo makes it easy to spot. Motes are SLIGHTLY
+    MAGNETIC — near the ship (`GLOW_MAGNET`) they home in and POP a hair before the hull touches
+    (`GLOW_*` tuning in config.js) for a little hull + XP. **The only roaming mid-life
+    hull heal** (see the split-health law above — hull-raising picks also heal their gain). No in-place refill — a drained pocket vanishes and a
+    fresh full one fades in ELSEWHERE (never within view), so `game.glowPockets` holds a steady
+    `PROG.GLOW_POCKETS` and the healing supply constantly relocates. Seeded deterministically off the
+    world rng in `world.seedGlowPockets`; collected on dtReal in `glow.updateGlow` (a proximity test like
+    the life pods, NOT the fixed step); drawn additively in `drawGlow` (a green region-halo + motes,
+    healing-green palette). Never touches bodies/rails/velocities — purely additive to the sim.
+- **Planet archetypes each carry ONE mechanic, every one built on an existing battle-tested shape**
+  (nine ptypes: lava/rocky/gas/ice + terran/ocean/desert/shroud/crystal; the world.js PTYPE comment
+  is the source of truth; gas giants also carry a render-only `gasKind` — amber/azure/violet looks,
+  physics keys on ptype `'gas'` alone):
+  - **GAS — A GAS GIANT IS NOT MADE OF ROCK** (`CFG.GAS_*`), and until this pass it took damage
+    as though it were: a thrown rock BOUNCED off the cloud tops, the hit drew the solid-world
+    crack web (stone fissures across a ball of hydrogen), and killing one sprayed rock fragments
+    and left a hole in the sky. Four rules replace that, all the same idea — the atmosphere IS the
+    body:
+    - **It SWALLOWS.** Anything that reaches the cloud tops sinks and is gone (physics
+      `collideBodies`): no bounce, because there is nothing to bounce off. It applies to MOONS as
+      well as rock — scoping it to `type === 'asteroid'` left a thrown moon on the ordinary
+      contact path, where the giant's mass dominance shattered it against the clouds, so the most
+      dramatic thing you can throw at a gas giant exploded on it instead of going in. A PLANET is
+      the deliberate exception (two worlds meeting is the top of invariant 8's ladder, and neither
+      body should silently vanish); held rock and the orbit wall are exempt, since the ship dives
+      these on purpose and stripping its cargo on the way in is an unannounced second penalty.
+    - **The impact is an EVENT you can see.** A swallowed body takes `GAS_SINK` to go under —
+      ploughing on, slowing, fading as the clouds close over it — and stamps a surface-local entry
+      wound on `b.gasHits` that `render.drawGasWound` plays out in four beats: compression FLASH,
+      PLUME, a SHOCK RING running out through the bands, and a dark PUNCH-HOLE that swirls shut
+      over `GAS_HIT_FADE`. A rock blinking out against a wall of cloud was the least interesting
+      thing that could happen and told the player nothing.
+    - **WHAT GOES IN COMES BACK OUT** (`physics.gasErupt`). Reaching depth erupts a column back up
+      the throat it made. The ejecta are launched to ORBIT, not away: surface escape here is only
+      ~80, so a first cut at 90-700 threw everything clear of the world in a second — a firework,
+      gone before the player could reach it. The band straddles escape instead, and what is
+      captured settles into the giant's halo through the ordinary crust assist, so a giant you keep
+      hitting wears a ring built from what you fed it and what it threw back. `gasEjecta` stops the
+      fountain feeding itself; the halo binding is capped at `CRUST_PER_HOST` (surplus stays loose
+      and goes home on the leash) or one dying giant fills the whole debris budget by itself.
+    - **A FAILING GIANT VENTS ON ITS OWN.** Past `GAS_VENT` it geysers on a timer that tightens as
+      it fails (`physics.updateGasVents`, near-ship only) — the world coming apart without the
+      player's help, and the payoff the venting streamers promise.
+    - **NO SINGLE IMPACT STRIPS ONE** (`GAS_HIT_CAP`). Collision damage is quadratic in closing
+      speed and a late-game sling throws a moon ~3x faster than a mid one; measured, a heavy moon
+      at full tier-5 fling computed 2.7x the giant's ENTIRE hp in one hit, so **two moons ended the
+      biggest thing in the sky**. Same idiom as invariant 3's comparable-mass cap and
+      `LURKER_HIT_CAP`: bound one blow, and the number of blows stops depending on how hard the
+      player happens to be able to throw. Six to ten moons either way.
+    - **Damage never resizes a body on the frame of the hit.** `damageBody` sets a radius TARGET
+      (`b.radiusT`) and the integrate loop eases the live radius to it, so a world sags rather than
+      popping a size smaller. Collisions read the live radius, so the felt size follows the drawn
+      one the whole way down.
+    - **Damage reads as WEATHER.** No cracks, no craters (`canWear` already excluded gas): storms
+      instead, and past 40% damage their eyes GLOW — you are seeing down through a hole in the
+      cloud deck to the hot interior, the same escalation ember fissures give a solid world. Past
+      `GAS_VENT` the limb streams atmosphere away. Without this a wounded giant just looked like a
+      giant with weather on it.
+    - **It is STRIPPED, not shattered — and the strip is a SCENE.** At zero hp `damageBody` diverts
+      into `beginGasStrip`: `GAS_STRIP_TIME` (5s) of death throes you can watch and fly through —
+      venting from everywhere at once on a tightening timer, the envelope collapsing inward across
+      the WHOLE window (the throes drive the radius directly; handing it to the chip easing
+      collapsed it in the first 1.5s and left the world sitting at core size for the rest), and the
+      hot core burning brighter through the thinning cloud with tearing seams opening across it.
+      Then the atmosphere goes in one shell. It replaced an instant pop from giant to core, which
+      was the most abrupt death in the game attached to the biggest thing in it.
+      **The body is never killed and replaced — it BECOMES the core in place** (`completeGasStrip`:
+      ptype, mass, radius, colour, hp). That is what keeps its rail, its lane, its chart entry and
+      its whole family of moons attached with no hand-over pass; a satellite never learns its
+      primary changed. It is then RAILED BY FIAT onto its lane, because `damageBody` derails on
+      every chip so a giant reaches its own death already free-flying, and the generic re-rail scan
+      will not accept a path that far from circular — measured, a stripped core wandered from its
+      20,200 lane out past 35,000 and kept going. Kill credit is banked at the START of the throes,
+      where the player earned it. Killing a gas giant TRANSFORMS it, which is also why the planet
+      count holds. Mass dominance is softened for gas impacts (`GAS_DOM_EXP`) — dominance models a
+      RIGID body shrugging off a light one, and a gas giant is not rigid.
+      **Read the collision CREDIT before clearing the thrown state** — `collisionCredit` keys off
+      `thrownBy`/`thrownTimer`, and clearing them first made every kill a gas giant ever took read
+      as ambient: no kill credit, no XP, and Giant Slayer could never land however many moons you
+      fed it.
+    - **The halo it caught becomes a second, WIDER ring.** At completion every crust piece bound to
+      the giant is railed where it stands and unbound (`completeGasStrip`) — orbiting at ~1.2 of
+      the OLD radius, four times the core it just became. Without it the crust assist read the band
+      off the *core's* radius, judged the whole ring far outside it, unbound everything, and the
+      leash swept away the ring the player spent the fight building.
+    - **The core comes out MOLTEN** (`b.molten`, `GAS_CORE_COOL`): red-hot and boiling, cooling to
+      ordinary rock over ~75s (`physics.coolColor` lerps the body colour, `render.drawMoltenCrust`
+      adds convection cells and a heat halo). Deliberately NOT ptype `'lava'` — that would hand a
+      freshly killed giant the lava archetype's heat aura and magma artillery as a parting gift.
+  - **World-breaking achievements** (13 rows): the planet ladder (five planets, ten worlds, kill a
+    planet WITH a planet, kill one with a slab off another, four archetypes, all nine) and the gas
+    ladder (feed one, feed fifteen, feed a whole MOON, make one vent, strip two, strip all three,
+    then kill the core one left behind). `noteKill` classifies them; the archetype rows keep a
+    bitmask plus an incrementally-maintained count so the predicates stay plain compares (no loop,
+    no allocation in the sweep). All count from zero, so none can be a frame-one freebie —
+    re-checked against `freshRun` for all three specs.
+  - **TERRAN — atmosphere burn-up** (`CFG.ATMO_*`, physics.step, the corona-heat shape): loose
+    free-flying asteroids under `ATMO_MAX_MASS` burn inside 1.5x radius — railed bodies (the world's
+    own junk satellites live in the shell; damage would derail them), held rocks, and
+    premium/quest objects (core/cache/pod/carved/visitor/wreck) are exempt, the SHIP never burns,
+    and heavyweights punch through BY DESIGN: bombarding a terran world takes a real rock.
+    Render streak rides `b.reentryT/reentryAng` (stamped in physics, decays in the integrate loop).
+  - **OCEAN — waterspouts** (world.js hazard loop): the cryo-geyser branch with a sea-green cast —
+    railed `iceOf` pellets, same caps, so it can never flood the belt.
+  - **DESERT — dune skimming** pays `PROG.XP_SKIM_DUNE` (2x); hull cost UNCHANGED — the banded-moon
+    law (bonus XP never discounts the grind).
+  - **SHROUD — cloud cloak**: feeds the SAME `game.dustCloak` flag as dust moons (ai.js), halo
+    `CFG.SHROUD_HALO` (1.7x; render haze drawn wider at 2.1x — no hard mechanic edge). Fortified
+    shrouds don't cloak (a permanently cloaked siege is a free win).
+  - **CRYSTAL — the one NON-CIRCULAR collider in the sim.** `util.crystalShards(id)` is the single
+    source of the jagged shard polygon for BOTH render (traceCrystal) and physics — keep them on one
+    table or the drawn surface and the felt surface diverge. Physics: `surfRadius` radial narrow
+    phase in collideBodies/collideShipBody/collideAlienBody, `b._bp` broad-phase reach (the sweep
+    must see the tallest spike, 1.32r max = `util.CRYSTAL_REACH`), predictPaths mirrors both hit
+    tests, and ALL surface spawn offsets (chunk spray, shards) go through `surfReach` so nothing is
+    born inside a spike (invariant 7's feedback loop). A hard player smash also rings loose a `core`
+    shard (`damageBody`, floor dmg > 3 — planet mass dominance keeps throws under the moon-tuned 8).
+    Render: lit sunward limb + per-shard sheens keyed to sun alignment; the hitbox IS the drawn shape.
+  - **Each archetype carries achievements too** (11 rows + a secret): the discovery rows ride the
+    existing one-shot `tut` flags (`atmo` / `dune` / `shroudCloak`) or a counter fed from
+    `ACH_EVENT_STATS` (`spoutWarn`→`spouts`, `shardWarn`→`shards`) rather than instrumenting the sim
+    twice; only the terran burn needed a real `bump` (`atmoBurns`), because its warn flag is
+    tut-gated to one message and cannot count. `noteKill` classifies terran/crystal deaths
+    (`kTerran` / `kCrystal`) alongside the existing ice/lava/gas buckets.
+

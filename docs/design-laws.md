@@ -1,0 +1,261 @@
+# Design laws (gameplay + visual)
+
+> Deep reference. These are deliberate rules the user has set, not accidents — violating one is a
+> regression even if the code "works". The `physics-reviewer` and `visual-language-reviewer`
+> subagents audit changes against this file.
+
+These are deliberate rules the user has set, not accidents. Violating them is a regression even if the
+code "works."
+
+- **Flinging has no recoil** that pushes the ship back. The tractor tug reaction is capped at 150 so the
+  ship stays flyable, but throws must never shove the ship. (`tractor.js:197`)
+- **Throws never steer and the game never bends the release angle** — a rock flies exactly at the cursor,
+  *from its own held position* (~70u out), not from the ship. The aim assist is informational only: lead
+  markers (✕) show where the cursor must be at release. Solving from the ship offsets the ✕ and every shot
+  misses — this was a real bug. (`tractor.js:26`)
+- **Dashed lines are reserved for helper/aiming UI** (throw line, beam ring, orbit rings, lead markers,
+  prediction paths). Real objects use solid strokes. Always reset `ctx.setLineDash([])` after a dashed draw.
+- **The world is 20% larger by AREA than it first shipped** (`WORLD_R` 42000 → 46000 = ×√1.2).
+  The growth was taken entirely as an OUTER BAND (~37k–46k, above the last planet at 36800) rather
+  than by rescaling the orbit layout — moving every lane would re-tune sky speed, heat margins, and
+  the graveyard clearance for nothing. The band holds three planet lanes (38300 / 40800 /
+  42600), the dark star's 39500 lane, and The Farshoal dense field on the frost fringe at 44300. Planet lanes stop at 42600, leaving the fringe to the Farshoal.
+- **WORLD SCALE: worlds are built BIGGER THAN THEY ARE AUTHORED** — `CFG.PLANET_R_MUL` (3) and
+  `CFG.MOON_R_MUL` (2) multiply the radii in world.js's layout table and `spawnMoon`'s own range,
+  so planets and moons read as genuinely massive (user call: "we just want these things to be able
+  to be massive"). Three rules hold it together:
+  - **SIZE ONLY — THE MASSES ARE UNTOUCHED, and that is not an oversight.** Radius is inert to every
+    invariant above (rails are circular and mass-driven, gravity is `GM/r²`, hp is `massToHp` and
+    `PLANET_HP_*`), while mass is load-bearing for all of them: holding DENSITY at 3x radius needs
+    27x mass, which puts the amber giant at 1.75e7 — heavier than the sun (1.42e7). So the worlds got
+    big, not heavy, and two consequences are real and intended. Surface gravity falls as `1/mul²`,
+    and the LONG ARMS (`SHIP_WELL_START`) are measured in BODY RADII, so a giant's well reaches out
+    proportionally rather than absolutely — a gas giant is now something you fly ALONG, not something
+    that snatches you. `PLANET_GRAV_SHIP` is the knob if the big worlds should grab as hard as they look.
+  - **`PLANET_R_MUL` is a CEILING, not a scale — hence "up to 3x".** Adjacent rails run at different
+    angular speeds and therefore ALWAYS reach conjunction, so `generateWorld` caps each grown disc by
+    what its NEIGHBOUR LANES leave free (`CFG.PLANET_LANE_GAP`, 400 of clear space between surfaces)
+    and splits a contested boundary in PROPORTION to the two desired radii, so the giant stays the
+    giant. Worlds land at 2.21x–3x; at a flat 3x the amber giant (520 → 1560) overlapped the shroud
+    world inside it by 175 on every pass and the violet giant met the desert world exactly. Widening
+    the LANES instead is the expensive fix — lane radii set sky speed, heat margins and the graveyard
+    clearance, so moving them re-tunes the game to make one planet bigger. The pass is pure arithmetic
+    over the layout, NO rng draw, so the seeded stream and every angle in the sky are untouched.
+  - **Every "covers both bodies' radii" clearance rides `MOON_R_MUL`**, or the crossing-orbit bug
+    (see `spawnMoon`'s exCap rationale) walks straight back in: the sibling-slot margin, `moonZone`'s
+    inner floor, AND the separate copy in `replenishWorld`'s moon re-accretion — two 84-radius moons
+    need 168 of separation where the authored constants guarantee 90. Stations and nests orbit at
+    `2.6r`/`3.4r`, which grows faster than the moon band's floor, so an **installation-lane sweep** in
+    `generateWorld` nudges them outward clear of every sibling moon (they always shared that band; the
+    scale-up just ended the luck). The binary pair's separation and the companion's station orbit are
+    likewise derived from the radii, floored at their authored values so an unscaled world is
+    bit-identical. Adding a new railed satellite means checking it against this set.
+- **THE CRUMBLE: a world under fire COMES APART, and the pieces stay** (user design law: *the debris
+  should come directly from the planet as it splits*). Four rules, all in `CFG.CRUST_*`:
+  - **The crater is cut OUT of the silhouette, never painted on.** `render.worldSil` rebuilds a
+    wounded world's outline as a notched polygon and `traceSurface` is the ONE path every fill and
+    clip goes through (body fill, surface detail, terminator, eclipse, the crack web), so the
+    starfield shows through the wound and everything on the surface simply ends at its edge. The
+    old scar drew an opaque space-coloured blob at the rim, fading in — the user's words, *"a bad
+    black thing that shows up"*; several overlapping ones merged into one flat void. Crystal worlds
+    keep `traceCrystal` (a fractured silhouette already; notches fight it).
+  - **THE CRATER YOU SEE IS THE CRATER YOU CAN FLY INTO.** `util.scarSurfaceAt` is the ONE profile,
+    read by `render.worldSil` for the picture and by `physics.surfRadius` for the COLLIDER — the
+    same law crystal worlds run on, where `util.crystalShards` feeds render and physics alike. Cut
+    the silhouette without the collider and rocks stop dead in mid-air across a crater's mouth
+    (the user's words: *"things run into the air"*). The narrow phase is radial and gated by
+    `shaped()`, mirrored in **both** `predictPaths` hit tests so the forecast can't disagree with
+    the sim about where a surface is; `surfReach` (spawn clearance) is unchanged, since craters
+    only cut inward. Rocks are excluded in render AND physics — they collide as circles and draw
+    as their own jag — so `traceSurface` and `surfRadius` must keep making the same exclusions.
+    **The RESOLUTION has to use the narrow phase's `rr` too, never the raw radii.** All three
+    contact resolvers recomputed `overlap` as `a.radius + b.radius - d`, which on a shaped surface
+    is off by the whole depth of the feature: flying into a crater ejected the ship to the world's
+    nominal circle in one step — a teleport to a border that is not where the surface is. (The
+    same bug sat in the crystal path from the day shard colliders landed, ejecting the ship to the
+    mean disc instead of the facet it touched.) Verified: a ship pushed under a crater floor now
+    comes to rest ON that floor, and one parked inside the crater is not ejected at all.
+  - **The whole layer is NEAR-SHIP** (`b.nearShip`, set in `updateFieldLOD` against the same wake
+    bubble the field LOD uses, measured to the SURFACE so a giant counts as near at its limb). The
+    cratered narrow phase, the halo settle (`updateCrust`) and CALVING all skip a world nobody is
+    at: it collides as the circle it used to be and spends no debris budget on rubble nobody
+    watched break off. The crater itself still lands off-view — a cheap array push, and it is the
+    world's record of the wound, so a planet left under bombardment shows the wear on your return.
+    Crystal worlds are deliberately NOT gated: their spikes reach outside the radius, so dropping
+    to the disc would make the collider smaller than the body. Straight application of the field
+    LOD's law — *the chaos you see is always the chaos near you*.
+  - **A hit calves REAL PIECES into a halo that persists.** `physics.calveCrust` puts a slab in the
+    mouth of the crater it just made — centred one slab-radius off the surface, so it appears to
+    lift out of the hole rather than appear beside it — and the crater is SIZED FROM THE SLAB, so
+    the notch in the rim always matches the piece floating in it. Both scales shed: a light hit
+    flakes a crumb, a hard one takes a slab plus a shower. Fresh pieces fly free for `CRUST_FREE`
+    (the tumble), then `physics.updateCrust` eases them onto the host's halo and rails them.
+    **That rail snap is allowed ON SCREEN**, unlike the general re-rail scan — that law exists
+    because the generic snap discards a flung rock's radial velocity ("it stopped mid-flight"),
+    and this one only fires once the assist has already brought the piece within a few percent of
+    the state it snaps to. The halo is RIGID (`entities.chunkHaloW`, one rate per world, shared
+    with the worldgen belt) — the dense-field pocket law, for the same reason: mixed rates grind,
+    and a railed body shoved by contact resolution snaps back next advance and visibly vibrates.
+  - **A world's halo holds its BIGGEST pieces, its scar list its WORST wounds.** Both were plain
+    caps at first and both filled with whatever landed first, so forty pebble chips crowded out the
+    thrown MOON — the moment the feature exists for showed the least. A newcomer that outsizes the
+    smallest piece grinds it to dust and takes the slot; a smaller one only gets in if something
+    can retire OFF-SCREEN, so a long bombardment keeps turning over with nothing winking out under
+    the player's nose. Anything that GRABS a piece unbinds it for good (`tractor.tryGrab`), and the
+    assist never touches a body in flight — *throws never steer* outranks it.
+  - **SIZE IS DECOUPLED FROM MASS, but MASS THEN FOLLOWS SIZE.** A piece is drawn as a fraction of
+    its host (the same law that made worlds 3x their authored radius) because the mass-derived
+    radius draws a 3,200-mass chunk at 10 units beside a 705-unit world. But every gate in the game
+    — the beam's tier caps above all — is a MASS test, so leaving the two unrelated made a
+    130-unit slab of planet weigh a pebble and every gravity tool picked it up like one.
+    `config.crustMass` maps drawn radius to mass against `TIERS.caps`: a crumb is tier-0 ammo, a
+    slab needs tier 2-3, and the 45,000 ceiling stays under the 5e4 rail-disturber threshold. The
+    calve deliberately does NOT bill the host for that mass (a four-piece calve mints ~90,000,
+    half a mid planet — subtracting it visibly deflated the world); erosion stays on the chip path.
+    Crust is never an `attractor`, at any mass — the dense-field rock rule, for both its reasons.
+- **A PLANET SYSTEM IS ALIVE WHILE YOU ARE IN IT.** Non-field bodies used to be awake
+  unconditionally — fine at ~380 of them, wrong once the debris belts and the crumble layer put
+  ~850 in the sky, every one paying the full per-substep bill from the far side of the system. The
+  rubble that MAKES a system (its belt, junk probes, ring chunks, trojans) is inert railed scenery,
+  so past the wake bubble it group-advances once a FRAME on its rail and sleeps otherwise, exactly
+  as a dormant shoal does — ~680 of ~850 asleep in an idle sky. It wakes on the same bubble with a
+  seamless hand-off (measured: 1.28 units on the waking frame against 1.27 steady — no pop).
+  Three exclusions, each load-bearing: **attractors** (gravity must stay exact — this is why
+  planets, moons and the star are never dormant), **elliptical rails** (the group advance is the
+  circular path only; a Kepler rail read as a circle is NaN on its first step — see the rails
+  section), and **installations**, which station-keep under thrust and must never wander.
+- **Loose debris is on a LEASH** (`CFG.DEBRIS_LEASH` / `THROW_LEASH` / `LEASH_PAD`, culled in
+  `replenishWorld`). The crumble mints real rubble every time a world is hit, and without a leash
+  every lane the player ever fought in stays littered forever, paying the broad phase and holding
+  debris budget for rock nobody will look at again. Railed bodies are exempt — they ARE the system
+  and cost nothing dormant — as is anything the expedition layer owns (cores, caches, pods, the
+  carved stone, the visitor, wrecks, comets) and crust still settling into a halo. Something the
+  PLAYER threw carries `b.slung` (stamped at every launch site: both fling paths and the parry
+  riposte) and gets a leash roughly twice as long, because `thrownBy` clears a second after launch
+  and a rock vanishing out from under a shot in flight would be the cull deciding for the player.
+  Both radii sit far outside any view, so nothing can ever be seen to vanish — that is the
+  constraint the numbers are chosen against, not a nicety.
+- **A world you are not at slowly WEATHERS** (`CFG.PLANET_WEAR_*`, `replenishWorld`), so a lane you
+  come back to after a long detour has picked up meteor pitting instead of being pristine exactly
+  as you left it. Deliberately NOT routed through `damageBody`: that derails on any chip (a
+  weathering planet must never come off its rail), sheds mass, calves crust and can shatter. This
+  only costs hp and leaves small craters, and it **stops dead at `PLANET_WEAR_FLOOR`** (50% of
+  maxHp) — invariant 8's whole point is that killing a world is a feat the PLAYER performs, so the
+  sky must never be able to fall apart on its own. The per-world rate is HASHED OFF THE BODY ID,
+  never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
+  fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
+  a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+- **Damage detail is sized against a FIXED reference radius, not the body** (`DETAIL_R` 260 in
+  render's `drawBodyDamage`). Crack widths, crack lengths, the ember fissure glow and a crater's
+  fracture rays were all authored as fractions of R when nothing drew bigger than ~250 units; at
+  `PLANET_R_MUL` 3 a plain fraction scales the DAMAGE with the world, and a 686-unit planet drew
+  12-unit fissures running 450 units across its face — canyons gouged in the surface, not cracking.
+  A crack does not get wider or longer because the planet is bigger. Bodies at or under the
+  reference are bit-identical; everything above shares one absolute look. Anchoring stays real-R
+  (cracks start at the true rim, craters sit on the true limb) — only the detail's scale is clamped.
+- **Every planet wears a belt of its own rubble** (`world.seedDebrisBelts`, appended after
+  `seedDenseFields` per the expedition-layer rng rule). Counts scale with the world's radius, the
+  material comes from `config.worldDebris` — the same table `calveCrust` reads, so what already
+  orbits a world and what breaks off it are visibly one substance — and the ice and lava worlds,
+  which shipped with no orbiting rock at all, now carry belts. Three placement rules: the band is
+  the WIDEST CLEAR ANNULUS in the shell, not merely everything under the innermost moon (Calyx
+  keeps a 59-unit moon 70 units off its cloud tops, which under the simpler rule left the
+  most-visited world in the game beltless while the gap just outside that moon was wide open);
+  it must clear every lane already railed around that world (moons ride ELLIPSES, so read
+  `a * (1 - e)`, not the `rail.r` a circular rail carries — reading `r` NaN'd the band bound, slipped
+  past a `<=` guard, and spawned hundreds of bodies at NaN coordinates); and pieces go in evenly
+  spaced angular SLOTS, because a uniform scatter at this piece size overlaps at spawn and the
+  gentle-contact absorb rule eats half the belt before the world finishes loading.
+- **The world edge has no drawn boundary — the Oort cloud is weather, not UI.** No stroke at `WORLD_R`,
+  and no shared edge of ANY kind at one exact radius: even a soft constant glow starting at a single
+  radius reads as a hard line (the user rejected both). The grind radius is legible from natural cues
+  only — aurora-curtain feet weaving through the warning band, dust density smoothstepping up across it,
+  early flurries, and the frost vignette + OORT warnings (`render.js drawOort`/`drawOortDust`). More
+  generally: in-world transitions are organic/stochastic, never geometric.
+- **The ship shield is a calm, steady volumetric rim glow — no dashes, no idle motion.** Motion is reserved
+  for *events* (recharge sweep, absorb ripple). **Shield down draws nothing at all** — a naked hull is the
+  indicator; the blinking `SHLD` HUD label carries the alarm. (`render.js:609`, `:619`)
+- **A ringed giant's band is drawn in TWO PASSES, half behind the world and half in front**
+  (`render.js drawRing`, called once from each side of the planet's disc in `drawBody`). One
+  full-ellipse pass ahead of the planet put the WHOLE ring behind it — the disc occluded the near arc
+  every frame, so the ring read as a decal on the backdrop instead of a body wearing a ring. The split
+  is taken in the ellipse's OWN parameter space (`t` in `[0, π]` = the near arc, since the
+  pre-rotation offset is `(rx·cos t, ry·sin t)` and canvas y grows toward the viewer), so it follows
+  the band's slow tilt for free and the near half rotates WITH the ring rather than snapping sides as
+  the tilt sweeps past an axis. The two arcs share their endpoints out past the limb and are stroked
+  identically, so they meet seamlessly — and they must never overlap: at `globalAlpha` 0.4 a
+  double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
+  terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
+- **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
+- **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
+  vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and
+  the cockpit frame (`--fr`) plus a soft edge wash take that color — violet when calm, corona amber near
+  the sun, ember under threat (danger blends last so it wins a tie). **CHROME ONLY**: hull green, shield
+  blue and lives pink stay semantic so the instruments still read at a glance. The `lowhull` / `heat`
+  alarm classes override `--fr` outright — an alarm always outranks a mood — and mood is all zeros until
+  `game.started`, so the title screen and a calm cruise look exactly as they always did.
+- **ROGUE PLANETS ARE GONE** (user call: "they're only causing issues"). A wandering 2.5-4.5e5 mass
+  under full gravity was a permanent source of sky damage that no player action caused and none could
+  prevent: it derailed whatever lane it crossed, ATE moons on the flyby, and — once the outer band
+  existed — gravitationally CAPTURED light outer worlds and dragged them into the sun, taking every
+  lane it crossed on the way down. Three separate guards were written against that one body type (the
+  spawn-ring radius, an entry-speed floor, and the planet fiat re-rail in physics) before deleting it
+  turned out to be the honest fix; idle skies went from losing planets to holding 21/21 with zero
+  loose worlds. `type: 'rogue'` is still supported everywhere — render, minimap, weighted gravity, the
+  re-rail disturber list, `scrapValue`, `noteKill` — so the concept can return if it earns its keep.
+  **Nothing spawns one.** Don't "restore" the spawner without solving the capture problem first, and
+  note the two rogue achievement rows were retired with it (an unearnable row is worse than a short list).
+- **Enemy density is deliberately sparse** ("too many enemies, not enough normal worlds"): most planets are
+  free. Nests and the dense fields' **shoal-lurker broods** are the *only* alien sources — there is no
+  global wave spawner; a destroyed nest quiets its region forever, and a field's brood is a FINITE
+  per-run budget (`FIELD_BROOD`) — kill the last of it and that field is quiet for the run (same rule:
+  consequence traces to a player choice). Aliens are territorial (grabbers leashed to `ALIEN_TERRITORY`
+  of their nest; lurkers to `FIELD_TERRITORY` of their field anchor — they never leave the shoal).
+- **The shield is an ABILITY, not base — and its SHAPE is spec DNA:** you start with NO shield — the
+  whole health pool is hull, which does NOT self-heal (it mends ONLY by collecting glow-pocket motes,
+  below, and otherwise resets to full on respawn — with ONE sanctioned exception: any pick that
+  RAISES hullMax heals the gain +20%, `main.healOnHullGain`, so a hull upgrade never just widens an
+  empty bar). A `shield`-channel ability UNLOCKS the regenerating
+  shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
+  quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
+  - **BRAWLER (War Plating)** — a THIN, FAST-RE-FORMING FRONT PLATE (12%→26% of the pool) covering
+    **35% of bearings** (`shieldArc` = 0.35π, ±63° off the nose), with the quickest cycle in the game
+    (regen ×1.5, regenDelay ×0.35 — ~1.75s and the nose is covered again). **Its identity is the
+    CYCLE, not the capacity.** (History: it was 38%→65% of the pool, which made it simply the best
+    shield in the game — converting most of a brawler's health into a regenerating layer meant the
+    front-arc drawback never cost anything, because the pool never ran out while you faced the right
+    way. And the arc was a clean π/2, i.e. 50%, which covered everything ahead of the beam — "front
+    arc only" was barely a drawback in practice. 35% is a genuinely narrow nose plate: you have to
+    point at what is hurting you.) A directional hit from behind (`hitAng` in `physics.damageShip`)
+    skips the shield entirely — the tail is bare, so facing the threat matters. **Directionless
+    damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) can't be dodged by
+    aiming, so it is SPLIT by coverage: the shield soaks `arc / π` and the rest goes straight to hull.
+    Soaking all of it made the front-arc drawback free in exactly the places it should bite. Full-wrap
+    shields are unaffected (share 1). **Anything asserting that share must DERIVE it from
+    `st.shieldArc`** (devtest T6 does) — a hardcoded half re-breaks every time the angle is tuned.
+    Render clips every shield visual to the covered wedge — the bare tail must READ.
+  - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. Both shields are thin now, so
+    the CYCLE is what separates them: the brawler's is smaller and returns nearly twice as fast, the
+    scout's is a touch slower back but covers every angle.
+  - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
+    Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
+  The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
+
+
+## Ship hull art
+
+The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
+draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull fraction) in the
+ship's local frame, nose along +x, per the `SHIP_TIERS` spec table. Ring assemblies rotate in
+world space in the orbit shield's spin direction (+angle). Damage scars are seeded per
+(tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. The shield
+bubble wraps `shipVisualR(tier, r)` (the drawn art's reach = `r / SHIP_HIT_FRAC`), not the
+collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
+footprint on every tier: `shipStats` reads it from `SHIP_RADIUS[tier]` (config.js), derived as
+`SHIP_HIT_FRAC × footprint`, where the FOOTPRINT grows by an equal RATIO each tier (perceptual
+evenness). render.js normalizes the art to the footprint (`u = r / (SHIP_HIT_FRAC × reach)`),
+so tuning the fraction moves only the hitbox, never the drawn size. (History: the hitbox used
+to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
+match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with `SHIP_TIERS` proportions;
+the derivation rules live in the config.js comments.

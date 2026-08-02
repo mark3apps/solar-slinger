@@ -20,29 +20,88 @@ generation is seeded, so the starting layout is identical every run.
 
 ## Workflow
 
-1. **Start the preview** (do not use Bash for the server):
-   `preview_start` with `{ name: "solar-slinger" }`. It serves on `http://127.0.0.1:8642` via the no-cache
-   `serve.py`. If it's already running, reload so the latest modules load.
+**Default to the fast path.** A one-seed `window.soak(600)` in the Browser pane costs ~50s wall and
+answers about one world. The driver sweep below costs ~19s and answers about four — see
+"Why the fast path" for the measurements and the equivalence proof.
 
-2. **Run the soak.** One `javascript_tool` call:
+### Fastest path — the bench runner with a baseline diff
 
-   ```js
-   window.soak(600, { idle: true });   // 10 idle sim-minutes — the cleanest stability signal
-   ```
+If you want to know **what your change did** rather than what the numbers are, use the runner: it
+snapshots a baseline, re-runs, and prints only what moved (noise floor 0–2 fields).
 
-   It returns `{ simSeconds, wallMs, planets: "21/21", moons: "48/48", ship, lives, tier,
-   deaths: [...], impacts, nanEvents }`. `idle: true` removes the ship first (no life is spent);
-   omit it to soak with the ship alive and interacting. For a longer soak, call `soak` twice
-   (`2 × 300s`) rather than one huge call, and combine the results yourself — each call re-arms
-   the logs, so tallies are per-call.
+```bash
+B=.claude/skills/run-solar-slinger/bench.mjs
+node $B save            # before the change
+node $B diff stability  # after — prints only what moved
+```
 
-   For **before/after comparisons**, reload between runs (generation is seeded, so both runs start
-   from the identical world) and diff the two summaries — planet/moon fractions, death list shape,
-   impact count.
+Full suite list, tolerances and how to read a diff: the `run-solar-slinger` skill.
 
-   If you need custom instrumentation between chunks (or `soak` isn't loaded because you're on an old
-   build), fall back to the raw primitive: arm `game.collisionLog = [] / game.deathLog = []`, census
-   `game.bodies` by type, `window.tick(600)`, re-census.
+### Fast path — multi-seed sweep (raw numbers)
+
+```bash
+S=.claude/skills/run-solar-slinger
+for s in 20260721 3827467762 111222333 987654321; do
+ ( printf "waitfor window.game 45000\nscript $S/suites/stability.js {\"seconds\":600,\"strip\":true}\n" \
+   | npx electron $S/driver.mjs --url "app://game/index.html?seed=$s" 2>/dev/null | tail -1 ) &
+done; wait
+```
+
+Measured 2026-08: **4 seeds x 600 sim-seconds in 18.9s wall (127x realtime, 450% CPU).** Each line is
+one seed's verdict:
+
+```json
+{"seed":20260721,"wallMs":10303,"xRealtime":58.2,"planetsAlive":21,"planetsOffRail":0,
+ "worstPlanetDriftPct":{"name":"Aster","pct":0},"moonsAlive":48,"moonsAtStart":48,
+ "nonAsteroidDeaths":{"moon:absorbed":1,"moon:swallowed by a gas giant":1},"firstWorldLossAt":128}
+```
+
+Read them in this order — most load-bearing first:
+
+| Field | Judge |
+|---|---|
+| `nanEvents` | **must be 0 on every seed.** Any firing is a real upstream bug, even though the tripwire contained it |
+| `planetsOffRail` | **must be 0.** A planet alive but off-rail is a deorbit in progress the alive-count cannot see |
+| `worstPlanetDriftPct` | healthy seeds read 0 to -0.03%. Anything past ~1% wants explaining |
+| `planetsAlive` | 21 on every seed, hard |
+| `nonAsteroidDeaths` | **cumulative and cause-classified** — compare the SHAPE across seeds, not one number |
+| `firstWorldLossAt` | dropping sharply vs a baseline sweep = something got more fragile |
+| `moonsAlive` vs `moonsAtStart` | a trend, NOT a pass/fail — see the moon caveat in the criteria below |
+
+**Judge across seeds, not within one.** A single seed cannot separate a regression from a fragile
+layout; that is the whole reason the sweep is cheap now. One outlier seed = investigate that seed.
+All four moving together = a real regression.
+
+`strip:true` removes dormant FIELD ROCK before running (~7,600 of ~8,400 bodies). Use `strip:false`
+when the dense fields themselves are what you changed.
+
+### Why the fast path (measured, not assumed)
+
+- **Only 138 of 8,404 bodies are awake in an idle soak, yet the 7,600 dormant field rocks cost ~78%
+  of the runtime** in pure LOD classification + dormant rail advance. They are gravity-free in both
+  directions and can never touch a planet, so they cannot affect the sky verdict.
+- **Equivalence proved, same seed, 300 sim-seconds:** stripped 4,516ms vs intact 23,373ms (5.2x), and
+  every verdict field identical — planets 21/0 off-rail, moons 48/48, `{moon:absorbed:1}`,
+  `firstWorldLossAt` 128. Re-run that A/B if you ever doubt the strip.
+- **Parallelism is near-linear** (each process is single-threaded): 4 concurrent seeds cost 18.9s
+  versus ~11s for one alone.
+- **Never use `window.speed(20)` to hurry a soak.** That is the live rAF path — it renders every frame
+  under a per-frame wall budget and is strictly SLOWER than `tick`. It is for *watching* a failure,
+  never for reaching one.
+
+### Slow path — single seed in the Browser pane
+
+Still correct, and the right choice when you want to *watch* what a soak found. `preview_start` with
+`{ name: "solar-slinger" }`, then one `javascript_tool` call:
+
+```js
+window.soak(600, { idle: true });   // 10 idle sim-minutes
+```
+
+Returns `{ simSeconds, wallMs, planets: "21/21", moons: "48/48", ship, lives, tier, deaths: [...],
+impacts, nanEvents }`. `idle: true` removes the ship first (no life spent). Note its `moons` figure is
+a live census, and its `deaths` are formatted strings — see the caveats below. Chunk long runs
+(`2 x 300s`) to stay inside the pane's ~30s console eval budget.
 
 3. **Read the result and judge against the pass criteria below.**
 
@@ -55,19 +114,52 @@ generation is seeded, so the starting layout is identical every run.
    normal play. Opening the page with `?dev=1` adds hotkeys: `-` halve, `=` double, `0` reset. Note picks
    still freeze the sim at speed — `game.autoUpgrade = true` if that stalls a long watch.
 
-## Pass criteria (baseline re-measured 2026-07 on the one-sun world: 21 planets, 48 moons —
-## the 21 includes The Wanderer's Star (the expedition layer's dark dwarf, which counts as a
-## planet in the census and must survive like one) and the three outer-band worlds added with
-## the WORLD_R 46000 growth)
+## Pass criteria (baseline re-measured 2026-08 after the railed-conjunction fix,
+## on the one-sun world: 21 planets, 48 moons — the 21 includes The Wanderer's Star
+## (the expedition layer's dark dwarf, which counts as a planet in the census and
+## must survive like one) and the three outer-band worlds added with the WORLD_R
+## 46000 growth)
 
-- **Idle-sky stability (the cleanest signal):** `soak(600, {idle: true})` — **21/21 planets AND
-  48/48 moons must survive, with ZERO loose planets and zero NaN.** Baseline re-measured 2026-07
-  after rogue planets were removed: idle runs to t≈1020 hold 21/21 and 48/48 with only a couple of
-  ambient non-asteroid deaths (replenished within ~60s). The bar is genuinely strict now — rogues
-  were the one thing that damaged the sky unprompted, so **any planet loss, or a planet still
-  `onRails === false` at the end, is a regression, not variance.** Older fingerprints in this file's
-  history (seeded rogues dying at t≈570, Quorra's moon at t≈447) belong to a world that no longer
-  exists; ignore them.
+**Measured baseline — 4 seeds x `suites/stability.js {seconds:600, strip:true}`, idle, all four identical
+except where noted.** Every field below held on 20260721 / 3827467762 / 111222333 / 987654321:
+
+| Field | Pass | Why it is the bar |
+|---|---|---|
+| `nanEvents` | **0** | any firing is a real upstream bug; the tripwire only contained it |
+| `planetsAlive` | **21/21** | planets are permanent — losing one is never variance |
+| `planetsOffRail` | **0** | alive-but-off-rail is a deorbit in progress the census cannot see |
+| `worstPlanetDriftPct` | **< 1%** | measured 0 / 0 / 0 / 0.03 across the four seeds |
+| `moonsAlive` | **48/48** | genuinely holds now — see the history note below |
+| `moon:absorbed` | **0** | was 1/5/7/7 before the fix; a return means the conjunction guard regressed |
+| `moon:swallowed by a gas giant` | **<= ~4 per 600s** | 1 / 2 / 3 / 4 measured; a jump means a new loose-moon source |
+
+**Judge across seeds, not within one.** One outlier seed = investigate that seed. All four moving
+together = a real regression. Run the sweep before AND after a change; the numbers above are the
+"after" of a known-good branch, not a universal constant.
+
+### History — why `moonsAlive` was NOT trustworthy before 2026-08
+
+`moonsAlive` is a **live census with re-accretion** (`replenishWorld` rebuilds moons), so it was a
+wobbling snapshot rather than a loss count and could read a perfect 48/48 while nine moons had died.
+Pre-fix measurements, same four seeds, no `src/` change: 48/48 with `absorbed 1, swallowed 1`;
+48/48 with **`absorbed 5, swallowed 4`**; 43/48; 43/48. The census could pass a broken sky and fail a
+healthy one, which is why `nonAsteroidDeaths` (cumulative, cause-classified) is now the primary
+signal and the count is only corroboration.
+
+The cause was found and fixed: neighbouring planets' moon families overlap radially by design
+(`moonZone` reaches to `hill * 1.5` so systems stay wide — 16 of 20 adjacent pairs overlapped on seed
+3827467762, several by >8000u), adjacent lanes always reach conjunction, and a sub-`DMG_THRESH` brush
+at closing 70-185 did no damage and logged nothing yet still tripped the `closing > 25` derail in
+`collideBodies` — knocking a moon out of its exact orbit and, near a gas giant, into the cloud tops.
+Two railed natural celestials now pass through each other below `DMG_THRESH`. **If `moon:absorbed`
+ever returns, that guard is the first place to look.**
+
+### Known remaining edge
+
+A moon brushing a **station** can still derail (measured: one event in 700s on seed 987654321, closing
+138). Stations were deliberately left out of the conjunction guard — they station-keep under thrust
+and carry their own "must never wander" rules, so lumping them in is a separate decision.
+
   - The Tantal sibling-slot eccentricity clamp in world.js `spawnMoon`/`addPlanet` is still
     load-bearing: **repeatable same-time same-mass moon absorptions in the first ~5 minutes mean that
     clamp has regressed.**
@@ -93,9 +185,14 @@ generation is seeded, so the starting layout is identical every run.
 
 ## Interpreting deaths
 
-`deaths` entries render from `deathLog` `{t, how, type, mass}` where
-`how ∈ {shattered, "vaporized by star", absorbed}`. Map failures back to invariants in
-[CLAUDE.md](../../../CLAUDE.md) and the comments in [physics.js](../../../src/physics.js):
+`soak().deaths` is an array of **pre-formatted strings** — `"moon swallowed by a gas giant @70s
+(m=12245)"` — rendered from the raw `game.deathLog` records `{t, how, type, mass}`. Filter them with
+`.startsWith('moon')` / `!d.startsWith('asteroid')`; `d.type` is undefined on the formatted strings
+and a `d.type !== 'asteroid'` filter silently matches everything. Read `game.deathLog` directly when
+you need the fields. Observed `how` values: `shattered`, `absorbed`, `vaporized by star`,
+`swallowed by a gas giant`. Map failures back to invariants in
+[docs/physics-invariants.md](../../../docs/physics-invariants.md) and the comments in
+[physics.js](../../../src/physics.js):
 
 | Symptom | Likely broken invariant |
 |---|---|
