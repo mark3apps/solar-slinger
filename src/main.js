@@ -13,6 +13,10 @@ import {
   newAchState, updateAchievements, bump, best, noteDeath, ACH_EVENT_STATS,
 } from './achievements.js';
 import { initRender, render, setRenderScale } from './render.js';
+import {
+  chart, chartReset, chartPick, chartZoomAt, chartPanTo, chartDragEnd, chartEase, newRoute,
+  addWaypoint, removeWaypoint, clearRoute, updateRoute,
+} from './starmap.js';
 import * as hud from './hud.js';
 import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
@@ -39,6 +43,11 @@ const game = {
   controlsOpen: false,     // the control schematic — same shell rules (util.shellModal)
   creditsOpen: false,      // the credits panel  — same shell rules
   achievementsOpen: false, // the run's achievement log — same shell rules
+  mapOpen: false,          // the sun-centred system chart — same shell rules (starmap.js)
+  route: newRoute(),       // the plotted journey: an ordered list of stops the chart
+                           //   sets and the radar flies you along. Run state, so
+                           //   resetRun clears it; the chart's VIEW is not, and lives
+                           //   on starmap.chart instead.
   musicVol: 0.85,          // volume sliders (persisted; zero = mute, there are no
   sfxVol: 0.5,             //   toggles) — music high / SFX low by default: quiet
                            //   ambient tracks vs hot sample packs
@@ -408,6 +417,14 @@ initInput(canvas, {
     if (game.achievementsOpen) { closeShellPanel(); return; }
     openAchievements();
   },
+  // M: the system chart. Same context-sensitivity as the achievement log —
+  // it toggles, it never opens over an upgrade card, and a chart of a system
+  // you haven't been dropped into yet says nothing.
+  onMap: () => {
+    if (game.choosingUpgrade || !game.started) return;
+    if (game.mapOpen) { closeShellPanel(); return; }
+    openMap();
+  },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
   onUpgradePick: (i) => applyPick(i),
   // DASH JETS (scout): tap A / D -> dart hard to the ship's left/right with
@@ -481,6 +498,7 @@ function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false
 function closeShell() {
   game.settingsOpen = false; game.controlsOpen = false;
   game.creditsOpen = false; game.achievementsOpen = false;
+  game.mapOpen = false;
 }
 function openSettings() { closeShell(); game.settingsOpen = true; bump(game, 'openSettings'); sfx.sfxMenuOpen(); }
 function openControls() { closeShell(); game.controlsOpen = true; bump(game, 'openCtrl'); sfx.sfxMenuOpen(); }
@@ -498,6 +516,17 @@ function openAchievements() {
   // out. (The toast still waits for the unfreeze; that part reads fine.)
   updateAchievements(game, 0);
   game.achievementsOpen = true;
+  sfx.sfxMenuOpen();
+}
+// THE SYSTEM CHART. Always opens on the same view — sun-centred, whole system
+// in frame (starmap.chartReset). That is the chart's one fixed promise, and a
+// panel that reopened wherever the last session left it would break it: you
+// would come back to an unlabelled patch of dark with no way to tell where.
+// The route is deliberately NOT reset with it — a journey outlives the panel.
+function openMap() {
+  closeShell();
+  chartReset(true);   // instant: the chart OPENS on the sun, it does not fly there
+  game.mapOpen = true;
   sfx.sfxMenuOpen();
 }
 // Settings is the only one that owns persisted state, so it's the only one that saves.
@@ -670,7 +699,13 @@ hud.initMenus({
   onOpenControls: ui(openControls),
   onOpenCredits: ui(openCredits),
   onOpenAchievements: ui(openAchievements),
+  onOpenMap: ui(openMap),
   onCloseShell: ui(closeShellPanel),
+  onClearRoute: ui(() => clearRoute(game)),
+  onCentreChart: ui(chartReset),
+  // (not wrapped in ui(): that wrapper takes no arguments, and this one needs
+  // the row's index — so it does the click itself, like onRenderScale)
+  onRemoveWaypoint: (i) => { sfx.initAudio(); sfx.sfxUiClick(); removeWaypoint(game, i); },
   onExit: exitGame,
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
   onToggleFps: ui(() => { game.showFps = !game.showFps; saveSettings(); }),
@@ -709,6 +744,51 @@ hud.initMenus({
   onMusicVol: (v) => { sfx.initAudio(); game.musicVol = v; music.setMusicVolume(v); saveSettings(); },
   onSfxVol: (v) => { sfx.initAudio(); game.sfxVol = v; sfx.setSfxVolume(v); saveSettings(); },
   onSfxPreview: () => sfx.sfxUiClick(),
+});
+
+// ---- The chart's pointer: pan, zoom, and the one click that plots a journey.
+//
+// A DRAG IS NOT A CLICK. Pressing to pan and releasing over a contact must not
+// also drop a stop on it — starmap tracks whether the press actually moved
+// (chart.dragged, with a 3px slop so a twitchy click still counts as a click)
+// and the release only plots when it did not. Without that, panning across a
+// crowded inner system litters the route with stops you never asked for.
+hud.initChartInput({
+  onDown: (sx, sy) => {
+    chart.drag = { sx, sy, cx: chart.cx, cy: chart.cy };
+    chart.dragged = false;
+  },
+  onMove: (sx, sy) => {
+    const { vw, vh } = view.getView();
+    chart.flash = null;   // the frozen sim has no clock — the next move IS the timer
+    if (chart.drag) chartPanTo(sx, sy, vw, vh);
+    // The hover is resolved on MOVE and cached, never per frame in the draw:
+    // it costs a walk of the contact registry, and the picture behind it is
+    // frozen anyway (the chart is a shell modal), so nothing can change under
+    // a stationary cursor.
+    chart.hover = chartPick(game, sx, sy, vw, vh);
+  },
+  onUp: (sx, sy) => {
+    if (chartDragEnd()) return;   // it was a pan, not a click — and it coasts on
+    const { vw, vh } = view.getView();
+    const pick = chartPick(game, sx, sy, vw, vh);
+    chart.hover = pick;
+    sfx.initAudio();
+    if (pick.kind === 'waypoint') { removeWaypoint(game, pick.i); sfx.sfxUiClick(); return; }
+    const r = addWaypoint(game, pick);
+    // A refusal has to SAY something, or a full route reads as a dead panel.
+    if (r === 'added') { sfx.sfxChime(); return; }
+    sfx.sfxWarnLow();
+    chart.flash = r === 'full'
+      ? `JOURNEY FULL — ${game.route.length} stops is the limit. Remove one to add another.`
+      : 'THAT STOP IS ALREADY ON YOUR JOURNEY.';
+  },
+  onLeave: () => { chart.hover = null; },
+  onWheel: (sx, sy, dy) => {
+    const { vw, vh } = view.getView();
+    chartZoomAt(sx, sy, dy < 0 ? 1.18 : 1 / 1.18, vw, vh);
+    chart.hover = chartPick(game, sx, sy, vw, vh);
+  },
 });
 
 // Apply the chosen card (spec / milestone ability / between-tier ability), then
@@ -885,6 +965,11 @@ function resetRun(seed, openCard = true) {
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
+  // ...and so does the journey: every stop pins to a body in the world that is
+  // about to be thrown away, so a route carried across would be eight stops
+  // pointing at bodies from a system that no longer exists.
+  game.route.length = 0;
+  chartReset(true);                      // instant — there is nothing to glide away from
   zone.resetZone();                      // ...and so does the last run's cockpit accent
   regenWorld(seed);            // rebuilds bodies (cleared first) + spawn, calls respawnShip
   game.st = shipStats(game.prog);
@@ -1027,6 +1112,16 @@ const EVENT_MSGS = [
     repeat: [(v) => `AURORA over ${v}.`, 3] },
   { flag: 'eclipseName', snd: sfx.sfxChime,
     first: [(v) => `MOONSHADOW — a lunar eclipse is sweeping across ${v}.`, 5] },
+  // ---- the plotted journey (starmap.js). Chime on the two that mean progress,
+  // warnLow on the one that means the sky took a stop away from you.
+  { flag: 'wpReachedName', snd: sfx.sfxChime,
+    first: [(v) => `WAYPOINT REACHED: ${v}.`, 4] },
+  { flag: 'routeDoneName', snd: sfx.sfxLife,
+    first: [(v) => `JOURNEY COMPLETE: ${v} was your last stop.`, 5] },
+  { flag: 'wpResolvedName', snd: sfx.sfxChime,
+    first: [(v) => `SENSOR FIX — stop ${v} on your journey has resolved. The chart has its true position now.`, 4.5] },
+  { flag: 'wpLostWarn', snd: sfx.sfxWarnLow,
+    first: ['A stop on your journey is gone — the chart holds its last position.', 5] },
   { flag: 'surveyMsg', snd: sfx.sfxChime, first: [(v) => v, 4.5] },
   { flag: 'echoMsg', snd: sfx.sfxChime, first: [(v) => v, 7.5] },
   { flag: 'masterChartWarn', snd: sfx.sfxLife,
@@ -1298,6 +1393,13 @@ function update(dtReal) {
     // simSteps * dt, never simSteps * CFG.DT: on the coarse step those differ
     // by 2x, and ~7000 dormant rocks would silently drift off the sim clock.
     if (simSteps) updateFieldLOD(game, simSteps * dt);
+
+    // The plotted journey: track the stops onto their moving bodies, collapse a
+    // guess into a fix once the scan resolves it, and pop the head on arrival.
+    // Once per frame AFTER the substeps, never inside them — arrival is a
+    // generous proximity test against a 1,500-unit ring, so running it 2-6x a
+    // frame would buy nothing and cost a hypot per stop each time.
+    updateRoute(game);
 
     const s = game.ship;
 
@@ -1707,6 +1809,10 @@ function frame(now) {
   // cosmetic easing with no quantized target, so it belongs on the wall clock.
   music.updateMusic(game, dtReal);
   zone.updateZone(game, dtReal);
+  // ...and the chart's view easing, for exactly the same reason: it is cosmetic
+  // motion with no quantized target, and the sim it sits over is frozen, so
+  // game.time is not a clock it could use even if it wanted one.
+  if (game.mapOpen) chartEase(dtReal);
 
   render(game);
   hud.updateHud(game);

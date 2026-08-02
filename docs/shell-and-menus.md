@@ -1,4 +1,4 @@
-# The front-end shell — splash, pause, settings, controls, credits, achievements
+# The front-end shell — splash, pause, settings, controls, credits, achievements, the chart
 
 > Deep reference. Read before editing the menu state machine in `main.js`, the DOM routing in
 > `hud.js`, the boot animation, the world-seed flow, the perf overlay or the render-scale ladder.
@@ -6,9 +6,9 @@
 
 The game boots to a **splash screen**, not straight into play — flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), and the four **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
-`achievementsOpen`.
-Those four are separate flags (each is its own panel) but every gate treats them alike, so they're asked
+`paused` (pause menu), and the five **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
+`achievementsOpen` / `mapOpen`.
+Those five are separate flags (each is its own panel) but every gate treats them alike, so they're asked
 about through one leaf helper — **`util.shellModal(game)`** — which main, hud, music and render all use.
 They're mutually exclusive: each fully REPLACES the panel it opened over, so `openX` clears the others
 rather than stacking (a panel peeking out around another's edges looks broken). That replacement rule
@@ -131,6 +131,25 @@ re-arms it for a fresh run.
   while `timeScale !== 1` (fast-forward burns a sim budget, not a pixel one) and for the first
   seconds after boot. Defeatable via **Auto quality**, because a 100% setting silently running at 50%
   reads as a broken setting rather than as a ceiling.
+- **THE SYSTEM CHART** (`mapOpen`, **M** or the ◎ tab on the radar bezel) is the fifth shell modal and
+  the only one that is **full-bleed** rather than a centred `.panel`: it IS the screen while it is up,
+  because the sky it draws needs every pixel (a 440px octagon would make picking one moon out of a
+  family impossible). Three consequences follow from being full-bleed, and each was a real fix:
+  it **hides `#hud` outright** while it is open (the other panels leave the cockpit showing around
+  them, which is right — but a radar on top of the chart is two instruments claiming one corner);
+  its **close control is an X in the top-right corner**, not a BACK button in a tray, because there
+  is no panel edge to sit one against; and its refusals go to **its own readout strip**, never
+  `hud.message`, since `#msg` is deliberately hidden under a modal.
+  Its canvas `#starmap` stays at **native dpr** for the same reason the radar does — downscale the
+  picture, not the instruments — and is sized lazily inside `render.drawStarMap`, so nothing is
+  allocated until the panel is first opened. It **always opens sun-centred at the fit scale**
+  (`chartReset(true)`); the journey it plots is run state on `game.route` and outlives the panel,
+  while the VIEW lives on `starmap.chart` and does not (it means nothing to a soak, and a death
+  should not move it). Model, paint and chrome are split the same way every other panel is:
+  `starmap.js` owns the projection, the knowledge ladder and the route; `render.drawStarMap` paints;
+  `hud.refreshChart` mirrors state into the DOM (header stats and readout every frame, the journey
+  rail only on a change signature — it is `innerHTML`, and rebuilding it per frame would also blow
+  away the row under the cursor). The laws it obeys are in design-laws.md.
 - **EXIT** calls `window.close()` — quits the Electron window; a harmless no-op in a plain browser tab.
 - `window.tick` sets `started = true` so headless soaks bypass the splash.
 

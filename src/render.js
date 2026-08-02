@@ -1,7 +1,12 @@
 import {
-  CFG, PROG, SHIP_HIT_FRAC, fieldFrac, FIELD_LOBE_MAX, canLift, canStow, liftClass,
+  CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
+  canLift, canStow, liftClass,
 } from './config.js';
 import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
+import {
+  chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
+  hasFix, ghostUnc, fieldOff, waypointPos, waypointLabel, arriveR,
+} from './starmap.js';
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
@@ -3129,12 +3134,6 @@ function drawFort(game, b) {
   }
 }
 
-const PTYPE_LABELS = {
-  lava: 'LAVA WORLD', rocky: 'ROCKY WORLD', gas: 'GAS GIANT', ice: 'ICE WORLD',
-  terran: 'TERRAN WORLD', ocean: 'OCEAN WORLD', desert: 'DESERT WORLD',
-  shroud: 'SHROUDED WORLD', crystal: 'CRYSTAL WORLD',
-};
-
 // Approach indicator: nearing a planet (or rogue) fades in its name plate and
 // a soft ring marking its domain, so you always know what you're flying into.
 function drawApproach(game) {
@@ -5125,6 +5124,50 @@ function drawMinimap(game) {
     }
   }
 
+  // THE JOURNEY, on the dial. The chart is where a route is PLOTTED; the radar
+  // is where it is FLOWN, so the dial has to carry it without the panel open.
+  // The whole path is drawn faint and the NEXT stop is the loud one — the same
+  // "one live marker, the rest is context" shape as the rescue display above.
+  //
+  // A stop past the dial's reach PINS TO THE RIM (like the Wanderer's Star and
+  // the dock): a bearing you can fly is the entire point, and a marker that
+  // simply vanishes at 7,800 units would drop the route exactly when you are
+  // furthest from it and need it most. It rides the radial warp everywhere
+  // inside that, so its range on the dial is honest.
+  if (game.route && game.route.length) {
+    const legs = [{ x: cx, y: cy }];
+    for (const wp of game.route) {
+      const p = waypointPos(game, wp);
+      const dx = p.x - fx, dy = p.y - fy;
+      const d = Math.hypot(dx, dy) || 1;
+      const rr = Math.min(radarR(d), r - 9);
+      legs.push({ x: cx + (dx / d) * rr, y: cy + (dy / d) * rr, pinned: radarR(d) > r - 9 });
+    }
+    ctx.setLineDash([3, 4]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(${INK}, 0.34)`;
+    ctx.beginPath();
+    ctx.moveTo(legs[0].x, legs[0].y);
+    for (let i = 1; i < legs.length; i++) ctx.lineTo(legs[i].x, legs[i].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (let i = legs.length - 1; i >= 1; i--) {   // next stop drawn LAST = on top
+      const p = legs[i];
+      const next = i === 1;
+      const d = next ? 4.5 : 3;
+      if (next) {
+        const k = (game.time * 0.9) % 1;
+        ctx.strokeStyle = `rgba(${INK_HOT}, ${0.1 + 0.4 * k})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 12 - 8 * k, 0, TAU); ctx.stroke();
+      }
+      ctx.fillStyle = `rgba(${next ? INK_HOT : INK}, ${next ? 0.95 : 0.6})`;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - d); ctx.lineTo(p.x + d, p.y); ctx.lineTo(p.x, p.y + d); ctx.lineTo(p.x - d, p.y);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+
   // The ship: a heading chevron at the radar's heart, with a locator ping
   if (game.ship.alive) {
     const ping = (game.time % 2.4) / 2.4;
@@ -5181,6 +5224,896 @@ function drawMinimap(game) {
     ctx.lineTo(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1));
     ctx.stroke();
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE SYSTEM CHART. starmap.js owns the model — the projection, the knowledge
+// ladder, the route; this paints it. Its own canvas at NATIVE dpr, for exactly
+// the reason the radar has one: the chart is an instrument made of hairlines
+// and 2px marks, and render scale must soften the picture, never the readouts.
+//
+// The whole thing is drawn only while the panel is open, and the panel is a
+// shell modal, so the sim behind it is frozen: this is the one draw in the file
+// that can spend freely. It still culls, because a chart at zoom 60 has most of
+// the system off screen and there is no reason to path it.
+//
+// CHART INK is the chrome family, and deliberately not any instrument's colour
+// (hull green, shield cyan, lives rose, alarm ember, the gold score and lead
+// ✕). A route is a UI CONSTRUCT — a thing you decided, not a thing that is out
+// there — and painting a plan in an instrument's colour would make a journey
+// read as a warning.
+const INK = '198, 170, 255';
+const INK_HOT = '236, 222, 255';
+let mapCanvas = null, mctx = null;
+
+// The chart's own star dust: seeded ONCE, at module load, so the field behind
+// the system is the same sky every time the panel opens. Re-rolling it per
+// frame would be static hissing over an instrument; re-rolling it per open
+// would quietly say the stars had moved.
+const chartDust = (() => {
+  const rng = mulberry32(90210);
+  const out = [];
+  for (let i = 0; i < 260; i++) {
+    out.push({
+      x: rng() * 22, y: rng() * 14,
+      b: 0.05 + rng() * rng() * 0.4,
+      s: rng() < 0.86 ? 1 : 1.8,
+    });
+  }
+  return out;
+})();
+
+// Class colours MIRROR the radar's blip palette on purpose: a moon must not be
+// one colour on the dial and another on the chart, or the two instruments stop
+// being the same machine. A planet keeps its own colour, which is what makes a
+// charted sky read as a sky rather than as a legend.
+function contactColor(b) {
+  if (b.tinker) return '#ffcf8a';
+  if (b.ghost) return '#8ea0b8';
+  if (b.type === 'planet' || b.type === 'rogue') return b.dark ? '#b89aff' : b.color;
+  if (b.type === 'moon') return '#9fb6cc';
+  if (b.type === 'nest') return '#7ec95f';
+  if (b.type === 'station') return '#c9d6e4';
+  if (b.visitor) return '#ffd9a8';
+  if (b.comet) return '#8fe8ff';
+  return '#aab6c8';
+}
+
+// '#rrggbb' -> 'r, g, b', memoised. The chart builds a radial gradient per
+// contact per frame and every stop needs that colour at its own alpha — a fresh
+// parseInt triple for each of ~85 marks is pure repeat work over a palette of
+// maybe a dozen colours.
+const rgbCache = new Map();
+function hexRgb(hex) {
+  let v = rgbCache.get(hex);
+  if (v === undefined) {
+    v = `${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}`;
+    rgbCache.set(hex, v);
+  }
+  return v;
+}
+
+// Does this contact print its OWN name on the chart? Worlds always; the smaller
+// landmarks only once the chart is zoomed in enough to have room for the words
+// (at the fit scale a RELAY STATION plate lands straight on top of the world it
+// orbits); moons never — they are icons, and their host names them.
+//
+// One predicate, because the ROUTE reads it too: a stop pinned to a body that
+// is already labelled must not print the same word a second time three pixels
+// below it.
+const POI_LABEL_ZOOM = 2.5;
+// Zoom at which a charted world's moon lanes START to appear (they fade in over
+// the next 5). Deliberately well past the zoom that makes the moons themselves
+// legible: the moons say "this world has a household", which is worth knowing
+// from a distance; the lanes say "and here is each one's orbit", which is only
+// worth drawing once they read as separate rings.
+const MOON_LANE_ZOOM = 4;
+function labelsItself(game, b) {
+  if (contactLevel(game, b) !== 'charted') return false;
+  if (b.type === 'planet' || b.type === 'rogue') return true;
+  if (b.type === 'moon') return false;
+  return chart.zoom >= POI_LABEL_ZOOM;
+}
+
+// The 1-2-5 ladder: the nearest round number at or above `target`. Both the
+// range rings and the scale bar go through it, so the bar always measures a
+// whole number of rings — a fixed 10k step would be a wall of rings at the fit
+// scale and none at all once you are inside one planet's family, and a bar that
+// disagreed with the rings would make the chart lie to itself.
+function niceStep(target) {
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.max(1, target))));
+  const n = Math.max(1, target) / mag;
+  return mag * (n <= 1.5 ? 1 : n <= 3.5 ? 2 : n <= 7.5 ? 5 : 10);
+}
+
+export function drawStarMap(game) {
+  if (!mapCanvas) mapCanvas = document.getElementById('starmap');
+  if (!mapCanvas) return;
+  if (!mctx) mctx = mapCanvas.getContext('2d');
+  const ctx = mctx;   // shadow the module ctx for this function's scope, like the radar
+  // Sized here rather than in resize(): the chart is a full-window backing
+  // store and there is no reason to hold one before the panel has ever been
+  // opened. Rounded on both sides for the same reason the dot cache is — a
+  // fractional dpr makes an un-rounded compare true every frame.
+  const pxW = Math.max(1, Math.round(vw * rdpr)), pxH = Math.max(1, Math.round(vh * rdpr));
+  if (mapCanvas.width !== pxW || mapCanvas.height !== pxH) {
+    mapCanvas.width = pxW; mapCanvas.height = pxH;
+  }
+  ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+  ctx.clearRect(0, 0, vw, vh);
+
+  const s = chartScale(vw, vh);
+  const toX = (wx) => vw / 2 + (wx - chart.cx) * s;
+  const toY = (wy) => vh / 2 + (wy - chart.cy) * s;
+  const sunX = toX(0), sunY = toY(0);
+  const scrR = Math.hypot(vw, vh) / 2;          // screen "radius" for ring culling
+  const sunD = Math.hypot(sunX - vw / 2, sunY - vh / 2);
+  const zc = game.zone ? game.zone.rgb : [176, 112, 255];
+  const acc = (a) => `rgba(${zc[0]}, ${zc[1]}, ${zc[2]}, ${a})`;
+
+  // ---- THE BED. Not a black rectangle: a lit instrument with space behind it.
+  // Four layers, cheapest first — the panel is a shell modal so the sim under
+  // it is frozen and this is the one draw in the file that can spend freely.
+  ctx.fillStyle = '#04050e';
+  ctx.fillRect(0, 0, vw, vh);
+  // 1. Star dust, parallaxed with the view. Seeded once and reused, so the
+  //    field is the SAME sky every time the chart opens rather than static
+  //    hissing over the top of it. It rides the pan at a fraction of the rate,
+  //    which is what makes the chart feel like a window rather than a page.
+  {
+    const par = 0.06;
+    const ox = -chart.cx * s * par, oy = -chart.cy * s * par;
+    const cell = 190;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const d of chartDust) {
+      let x = (d.x * cell + ox) % (vw + cell); if (x < 0) x += vw + cell;
+      let y = (d.y * cell + oy) % (vh + cell); if (y < 0) y += vh + cell;
+      ctx.fillStyle = `rgba(198, 206, 255, ${d.b})`;
+      ctx.fillRect(x - cell / 2, y - cell / 2, d.s, d.s);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  // 2. The star's light pooling through the whole inner system.
+  {
+    const g = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, Math.max(80, CHART_R * s * 0.62));
+    g.addColorStop(0, 'rgba(255, 186, 90, 0.2)');
+    g.addColorStop(0.35, 'rgba(150, 90, 200, 0.09)');
+    g.addColorStop(1, 'transparent');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, vw, vh);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  // 3. Scanlines — the panel kit's own texture, so the chart reads as the same
+  //    machine as every slab of chrome sitting on it.
+  ctx.fillStyle = 'rgba(180, 150, 255, 0.022)';
+  for (let y = 0; y < vh; y += 3) ctx.fillRect(0, y, vw, 1);
+  // 4. Vignette: the glass is lit from the middle, and the corners fall away.
+  {
+    const g = ctx.createRadialGradient(vw / 2, vh / 2, Math.min(vw, vh) * 0.3,
+      vw / 2, vh / 2, Math.hypot(vw, vh) * 0.62);
+    g.addColorStop(0, 'transparent');
+    g.addColorStop(1, 'rgba(2, 2, 8, 0.75)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, vw, vh);
+  }
+
+  // ---- Range rings from the star, dashed (helper-UI grammar) with their range
+  // printed on the ring itself. This is what makes the chart a chart: "how far
+  // out is that?" is the question a system map exists to answer.
+  const spanW = Math.min(vw, vh) / s;
+  // FEW rings (user call). ~2-3 out from the star across the view: they are
+  // there to give the eye a sense of scale, not to divide the system into
+  // bands — at one ring per 10% of the span the chart was a target, and the
+  // system inside it stopped being the thing you were looking at.
+  const step = niceStep(spanW / 5);
+  ctx.lineWidth = 1;
+  ctx.font = '500 10px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  for (let r = step; r <= CHART_R * 1.25; r += step) {
+    const rp = r * s;
+    if (rp < 26 || rp - sunD > scrR || sunD - rp > scrR) continue;
+    ctx.strokeStyle = acc(0.17);
+    ctx.setLineDash([2, 6]);
+    ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    // Label up-and-right of the star, where the ring is least likely to be
+    // crossing a busy lane of marks.
+    const lx = sunX + rp * 0.707, ly = sunY - rp * 0.707;
+    if (lx > -40 && lx < vw + 40 && ly > 0 && ly < vh) {
+      ctx.fillStyle = acc(0.5);
+      ctx.fillText(r >= 1000 ? `${(r / 1000).toFixed(r >= 10000 ? 0 : 1)}k` : `${r | 0}`, lx + 5, ly - 4);
+    }
+  }
+
+  // ---- The world edge: the Oort wall's icy band with the kill line at its
+  // foot. Same reading as the dial and as the sky itself.
+  {
+    const rp = CFG.WORLD_R * s;
+    if (rp - sunD < scrR && sunD - rp < scrR) {
+      ctx.strokeStyle = 'rgba(150, 200, 255, 0.13)';
+      ctx.lineWidth = Math.max(6, 240 * s);
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp + 240 * s, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 130, 120, 0.42)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  }
+
+  // ---- A live solar wave. The chart is where you can actually SEE which side
+  // of the system a front has reached, which the ship-centred dial cannot say.
+  if (game.storm) {
+    const rp = game.storm.r * s;
+    if (rp - sunD < scrR) {
+      ctx.strokeStyle = 'rgba(255, 170, 90, 0.14)';
+      ctx.lineWidth = Math.max(3, CFG.STORM_TAIL * s);
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp - CFG.STORM_TAIL * s * 0.5, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255, 214, 130, 0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  }
+
+  const reg = frameReg(game);
+
+  // ---- Orbit lanes, for CHARTED bodies only. A lane is knowledge: you learn
+  // where a world goes by reading its plate, not by catching a glimpse of it.
+  // Skipped below a few pixels across — a moon's lane at the fit scale is a dot
+  // on a dot, and drawing 59 of them is how a chart turns into a smudge.
+  // `zk` is the chart's LOD knob — 0 at the fit scale, 1 by zoom 4. The contact
+  // marks below ride it: small contacts grow into real marks as you close in
+  // rather than smearing the inner system at the width where the chart's job is
+  // to show the system's SHAPE, not its contents.
+  const zk = clamp((chart.zoom - 1) / 3, 0, 1);
+  // A MOON'S LANE HAS ITS OWN, LATER THRESHOLD (user call). It rides `mk`, not
+  // `zk`: a family's lanes are only worth drawing once they are separate rings
+  // rather than a smudge around the disc, and that is several zoom steps past
+  // the point where the moons themselves become legible pips.
+  const mk = clamp((chart.zoom - MOON_LANE_ZOOM) / 5, 0, 1);
+  ctx.lineWidth = 1.2;
+  ctx.globalCompositeOperation = 'lighter';
+  for (const b of reg.nonField) {
+    if (!isContact(b) || contactLevel(game, b) !== 'charted') continue;
+    const rail = b.rail;
+    const p = rail && rail.parent;
+    if (!p || !p.alive) continue;
+    const moon = b.type === 'moon';
+    if (moon && mk <= 0.01) continue;
+    // A LANE IS BRIGHTEST WHERE THE BODY IS, and fades away around the ring.
+    // Drawn flat it was a hoop of equal weight everywhere, which says "this
+    // whole circle is equally the subject" — the body is the subject, and the
+    // lane is context that should thin out the further it gets from it.
+    //
+    // One conic gradient centred on the parent, its start angle pinned to the
+    // body's own bearing, so the falloff is symmetric and costs one stroke
+    // rather than forty short ones. createConicGradient is feature-checked for
+    // the same host-agnostic reason drawMinimap checks it: `src/` may never
+    // assume a capability, and a flat stroke is a perfectly honest fallback.
+    const peak = moon ? 0.34 * mk : 0.42;
+    if (ctx.createConicGradient) {
+      const cg = ctx.createConicGradient(Math.atan2(b.y - p.y, b.x - p.x), toX(p.x), toY(p.y));
+      cg.addColorStop(0, acc(peak));
+      cg.addColorStop(0.1, acc(peak * 0.42));
+      cg.addColorStop(0.42, acc(peak * 0.06));
+      cg.addColorStop(0.58, acc(peak * 0.06));
+      cg.addColorStop(0.9, acc(peak * 0.42));
+      cg.addColorStop(1, acc(peak));
+      ctx.strokeStyle = cg;
+    } else {
+      ctx.strokeStyle = acc(peak * 0.4);
+    }
+    if (rail.a !== undefined) {
+      // Elliptical rail: the focus is the parent, so the ellipse's centre sits
+      // a*e back along the apsidal line (see entities.keplerStep's frame).
+      const ap = rail.a * s;
+      if (ap < 8) continue;
+      const ox = -rail.a * rail.e;
+      ctx.save();
+      ctx.translate(toX(p.x + ox * rail.ca), toY(p.y + ox * rail.sa));
+      ctx.rotate(Math.atan2(rail.sa, rail.ca));
+      ctx.beginPath(); ctx.ellipse(0, 0, ap, rail.smin * s, 0, 0, TAU); ctx.stroke();
+      ctx.restore();
+    } else {
+      const rp = rail.r * s;
+      if (rp < 5) continue;
+      ctx.beginPath(); ctx.arc(toX(p.x), toY(p.y), rp, 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.lineWidth = 1;
+
+  // ---- Dense fields. A shoal is a REGION, not a point, and it has no edge —
+  // so it is stippled, never outlined. Same law the dial's dot layer obeys: a
+  // boundary ring would claim a hard edge the pocket does not have. The stipple
+  // is seeded off the field's lane radius, so a given shoal has the same grain
+  // every time you open the chart.
+  for (const f of game.fields || []) {
+    const off = fieldOff(f);
+    const fx = f.x + off.x, fy = f.y + off.y;
+    const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
+    const reach = CFG.FIELD_LEN * FIELD_LOBE_MAX * s;
+    const px = toX(fx), py = toY(fy);
+    if (px + reach < 0 || px - reach > vw || py + reach < 0 || py - reach > vh) continue;
+    // A soft bloom under the grain, so a shoal reads as a THING at the fit
+    // scale rather than as speckle you have to hunt for. Tan for one you have
+    // found, cold and dimmer for one that is still a guess — the same
+    // charted/unexplored split every contact obeys.
+    ctx.globalCompositeOperation = 'lighter';
+    const bg2 = ctx.createRadialGradient(px, py, 0, px, py, reach);
+    bg2.addColorStop(0, f.seen ? 'rgba(214, 178, 120, 0.2)' : 'rgba(150, 162, 200, 0.12)');
+    bg2.addColorStop(1, 'transparent');
+    ctx.fillStyle = bg2;
+    ctx.beginPath(); ctx.arc(px, py, reach, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    const rng = mulberry32(Math.round(f.r));
+    const n = f.seen ? 90 : 34;
+    ctx.fillStyle = f.seen ? 'rgba(226, 202, 158, 0.62)' : 'rgba(164, 176, 210, 0.3)';
+    for (let i = 0; i < n; i++) {
+      // Rejection-free placement: draw a bearing, then a radius inside the
+      // lobe at that bearing (sqrt keeps the scatter even rather than
+      // clustering at the heart).
+      const th = rng() * TAU;
+      const q = Math.sqrt(rng()) * fieldLobe(f, th);
+      const tan = Math.cos(th) * q * CFG.FIELD_LEN, rad = Math.sin(th) * q * CFG.FIELD_SPREAD;
+      const wx = fx + rad * ca - tan * sa, wy = fy + rad * sa + tan * ca;
+      const sz = f.seen ? 1.6 : 1.2;
+      ctx.fillRect(toX(wx) - sz / 2, toY(wy) - sz / 2, sz, sz);
+    }
+    if (f.seen && reach > 30) {
+      ctx.font = '600 9.5px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
+      ctx.fillStyle = 'rgba(232, 214, 178, 0.72)';
+      ctx.fillText(f.name.toUpperCase(), px, py - reach * 0.42);
+      ctx.shadowBlur = 0;
+      ctx.textAlign = 'left';
+    }
+  }
+
+  // ---- The star, at its true size. It is the one thing on this chart that is
+  // never in doubt, and it is what the whole view is centred on.
+  {
+    const sun = reg.stars.find((b) => b.alive);
+    if (sun) {
+      const rp = Math.max(3.5, sun.radius * s);
+      // Two additive coronae — a wide soft one and a tight hot one — plus a
+      // white core. It is the brightest thing on the chart because it is the
+      // brightest thing in the system, and every range ring is measured from it.
+      ctx.globalCompositeOperation = 'lighter';
+      for (const [k, a0, a1] of [[7.5, 0.3, 0.05], [2.6, 0.85, 0.3]]) {
+        const g = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, rp * k);
+        g.addColorStop(0, `rgba(255, 216, 140, ${a0})`);
+        g.addColorStop(0.35, `rgba(255, 172, 70, ${a1})`);
+        g.addColorStop(1, 'transparent');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(sunX, sunY, rp * k, 0, TAU); ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(255, 246, 214, 0.98)';
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.fill();
+    }
+  }
+
+  // ---- CONTACTS, by the knowledge ladder (starmap.contactLevel).
+  let marks = 0;
+  ctx.textAlign = 'center';
+  for (const b of reg.nonField) {
+    if (!isContact(b) || !plottable(game, b)) continue;
+    const lvl = contactLevel(game, b);
+    marks++;
+    const p = contactPos(game, b);
+    const x = toX(p.x), y = toY(p.y);
+    if (x < -60 || x > vw + 60 || y < -60 || y > vh + 60) continue;
+
+    if (lvl === 'unknown') {
+      // UNEXPLORED, drawn as unexplored: a soft cold bloom with the error circle
+      // around it once that circle is big enough to read. No class colour, no
+      // size, no name — everything the chart does not know, it does not say.
+      // (Zooming in does not sharpen a guess; the widening ring is the honest
+      // reason why.) Only WORLDS reach here — see starmap.plottable.
+      // A sensor fix does not make a world EXPLORED — the mark stays exactly
+      // this mark — but it does mean the position is the truth, so the bloom
+      // tightens onto it and the error circle goes away. That is the only thing
+      // the fix changes here; there is no third mark to learn.
+      const fix = hasFix(game, b);
+      const unc = fix ? 0 : ghostUnc(b) * s;
+      const rr = fix ? Math.max(6, b.radius * s * 2.2) : clamp(unc, 5, 26);
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(x, y, 0, x, y, rr);
+      g.addColorStop(0, 'rgba(184, 198, 232, 0.62)');
+      g.addColorStop(0.3, 'rgba(150, 162, 206, 0.16)');
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      // The error circle is DETAIL, so it waits for the zoom that can use it —
+      // at the fit scale it is a second ring around every unexplored world and
+      // the chart turns into a page of circles.
+      if (unc > 30) {
+        ctx.strokeStyle = 'rgba(168, 182, 220, 0.24)';
+        ctx.setLineDash([2, 6]);
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, Math.min(unc, 240), 0, TAU); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      continue;
+    }
+
+    const col = contactColor(b);
+    const rgb = hexRgb(col);
+    const drawn = b.radius * s;
+    const big = b.type === 'planet' || b.type === 'rogue';
+    // A SMALL CONTACT IS SMALL UNTIL YOU CLOSE IN. Drawn at a flat 2px with a
+    // wide halo, fifty-odd moons and installations made the inner system one
+    // continuous smear at the fit scale — the very zoom where the chart's job
+    // is to show you the shape of the system, not its contents. They grow into
+    // real marks on the same `zk` ramp the moon lanes arrive on.
+    const rr = big ? Math.max(3.2, drawn) : Math.max(1.3 + 1.1 * zk, drawn);
+
+    // THE BLOOM, additive, under the mark. This is most of what makes the chart
+    // read as a lit instrument rather than a diagram: a body is a light source.
+    // TIGHT, though — a wide soft halo on every contact is a fog bank, not a
+    // glow. Small radius, hot core, fast falloff.
+    ctx.globalCompositeOperation = 'lighter';
+    const halo = rr * (big ? 3.8 : 2.7);
+    const hg = ctx.createRadialGradient(x, y, 0, x, y, halo);
+    hg.addColorStop(0, `rgba(${rgb}, ${big ? 1 : 0.9})`);
+    hg.addColorStop(0.3, `rgba(${rgb}, ${big ? 0.34 : 0.26})`);
+    hg.addColorStop(1, 'transparent');
+    ctx.fillStyle = hg;
+    ctx.beginPath(); ctx.arc(x, y, halo, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // CHARTED: a clean lit disc. NO OUTLINE — it carried a white rim, and on a
+    // world drawn at any real size that reads as a thick ring bolted round the
+    // planet rather than as a light. The bloom already separates it from the
+    // bed; a stroke on top of a glow is one edge too many.
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, TAU); ctx.fill();
+    // ...and a hot core over it, additive: a charted world is a LIGHT on this
+    // chart, and a flat fill of its own colour is the one thing that reads as
+    // paint rather than as something switched on.
+    ctx.globalCompositeOperation = 'lighter';
+    const cg2 = ctx.createRadialGradient(x, y, 0, x, y, rr);
+    cg2.addColorStop(0, `rgba(255, 255, 255, ${big ? 0.42 : 0.3})`);
+    cg2.addColorStop(0.55, `rgba(${rgb}, 0.3)`);
+    cg2.addColorStop(1, 'transparent');
+    ctx.fillStyle = cg2;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    if (b.ring && drawn > 3) {           // a ringed giant wears its band on the chart too
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = Math.max(1, drawn * 0.22);
+      ctx.beginPath(); ctx.ellipse(x, y, drawn * 1.9, drawn * 0.6, 0.4, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
+    }
+    if (b.fort) {                        // a Bastion fort: the same blue box as the dial
+      ctx.strokeStyle = '#78c8ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - rr - 2.5, y - rr - 2.5, (rr + 2.5) * 2, (rr + 2.5) * 2);
+    }
+    // NAMES: worlds and landmarks only. MOONS ARE ICONS — they carry no
+    // individual names in this game, so a zoomed-in family printed the same
+    // MOON OF OSSIA four times in a ring around a disc already labelled OSSIA.
+    // Their host names them; the readout strip names them on demand.
+    if (labelsItself(game, b)) {
+      ctx.font = `600 ${big ? 11 : 9.5}px system-ui, sans-serif`;
+      ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
+      ctx.fillStyle = big ? 'rgba(232, 238, 255, 0.92)' : 'rgba(198, 212, 234, 0.72)';
+      ctx.fillText(contactLabel(game, b), x, y - rr - 6);
+      ctx.shadowBlur = 0;
+    }
+  }
+  ctx.textAlign = 'left';
+  chart.marks = marks;
+
+  drawChartRoute(game, ctx, s, toX, toY);
+
+  // ---- The ship: a heading chevron, ringed so it is findable on a chart this
+  // wide. Drawn last of the marks — where you are outranks everything.
+  if (game.ship.alive || game.started) {
+    const sx = toX(game.ship.x), sy = toY(game.ship.y);
+    const pulse = (game.time % 2) / 2;
+    ctx.globalCompositeOperation = 'lighter';
+    const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, 26);
+    sg.addColorStop(0, 'rgba(226, 240, 255, 0.55)');
+    sg.addColorStop(1, 'transparent');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(sx, sy, 26, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.45 * (1 - pulse)})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(sx, sy, 5 + pulse * 13, 0, TAU); ctx.stroke();
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(game.ship.angle);
+    ctx.shadowBlur = 7; ctx.shadowColor = '#ffffff';
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(7, 0); ctx.lineTo(-4.5, 4.5); ctx.lineTo(-1.8, 0); ctx.lineTo(-4.5, -4.5);
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // ---- Hover bracket. The READOUT is in the DOM footer (the same
+  // query-the-console idiom as the CONTROLS schematic and the achievement
+  // list); all the canvas owes it is a mark saying "this one".
+  const hov = chart.hover;
+  if (hov && hov.kind !== 'point') {
+    const hx = toX(hov.x), hy = toY(hov.y);
+    const rr = hov.kind === 'field' ? Math.max(16, CFG.FIELD_LEN * 0.6 * s)
+      : Math.max(9, (hov.b ? hov.b.radius * s : 9) + 5);
+    ctx.strokeStyle = `rgba(${INK_HOT}, 0.85)`;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let q = 0; q < 4; q++) {
+      const a0 = q * Math.PI / 2 + 0.34;
+      ctx.moveTo(hx + Math.cos(a0) * rr, hy + Math.sin(a0) * rr);
+      ctx.arc(hx, hy, rr, a0, a0 + 0.55);
+    }
+    ctx.stroke();
+  }
+
+  // ---- Scale bar. A map without one is a picture.
+  // Sits in a row with the RECENTRE button (style.css `.mapreset`, 28px at
+  // left:20 / bottom:96) — both read the VIEW rather than the system, so they
+  // share a line. Move one and move the other.
+  {
+    const unit = niceStep(150 / s);   // the same ladder the rings use — see niceStep
+    const barW = unit * s;
+    const bx = 58, by = vh - 102;
+    ctx.strokeStyle = acc(0.5);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by); ctx.lineTo(bx + barW, by); ctx.lineTo(bx + barW, by - 4);
+    ctx.stroke();
+    ctx.font = '500 10px system-ui, sans-serif';
+    ctx.fillStyle = acc(0.62);
+    ctx.fillText(unit >= 1000 ? `${(unit / 1000).toFixed(unit >= 10000 ? 0 : 1)}k units` : `${unit | 0} units`, bx, by - 8);
+  }
+
+  drawChartPortrait(game);
+}
+
+// ---------------------------------------------------------------------------
+// THE PORTRAIT — the little live picture in the chart's readout strip.
+//
+// It answers "do we have imagery of this place?" without saying the words: a
+// CHARTED world turns under its own banded weather with its moons going round,
+// and an UNEXPLORED one gets sensor static. That is the knowledge ladder again,
+// on a third channel after the mark and the name — and the one channel a player
+// reads without having to learn a key first.
+//
+// It runs on `chart.t`, the panel's own clock (chartEase advances it): the sim
+// behind a shell modal is frozen, so `game.time` cannot animate anything here.
+// Everything procedural is seeded off `b.id`, like every other generated
+// geometry in this file, so a world's face is ITS face every time you point at
+// it rather than a fresh scribble.
+const PORTRAIT = 76;
+let portCanvas = null, pctx = null;
+function drawChartPortrait(game) {
+  if (!portCanvas) portCanvas = document.getElementById('mapPortrait');
+  if (!portCanvas) return;
+  if (!pctx) pctx = portCanvas.getContext('2d');
+  const ctx = pctx;
+  const px = Math.max(1, Math.round(PORTRAIT * rdpr));
+  if (portCanvas.width !== px) portCanvas.width = portCanvas.height = px;
+  ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+  ctx.clearRect(0, 0, PORTRAIT, PORTRAIT);
+  const cx = PORTRAIT / 2, cy = PORTRAIT / 2, R = PORTRAIT / 2 - 3;
+  const t = chart.t;
+  const zc = game.zone ? game.zone.rgb : [176, 112, 255];
+  const acc = (a) => `rgba(${zc[0]}, ${zc[1]}, ${zc[2]}, ${a})`;
+  const hov = chart.hover;
+
+  // The instrument's own well + frame, whatever is in it.
+  ctx.fillStyle = 'rgba(6, 4, 16, 0.92)';
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R - 1, 0, TAU); ctx.clip();
+
+  const body = hov && hov.kind === 'body' ? hov.b
+    : hov && hov.kind === 'waypoint' ? (game.route[hov.i] && game.route[hov.i].b) : null;
+  const field = hov && hov.kind === 'field' ? hov.field
+    : hov && hov.kind === 'waypoint' ? (game.route[hov.i] && game.route[hov.i].field) : null;
+
+  if (body && contactLevel(game, body) === 'charted') {
+    portraitBody(ctx, game, body, cx, cy, t);
+  } else if (field && field.seen) {
+    portraitShoal(ctx, field, cx, cy, t);
+  } else if (body || field) {
+    portraitStatic(ctx, cx, cy, R, t);          // no imagery — we have not been
+  } else {
+    portraitIdle(ctx, cx, cy, R, t, acc);       // nothing under the cursor
+  }
+  ctx.restore();
+
+  // Frame: a bright rim with quarter ticks, so it reads as a viewport rather
+  // than as a hole cut in the panel.
+  ctx.strokeStyle = acc(0.55);
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = acc(0.16);
+  ctx.beginPath(); ctx.arc(cx, cy, R + 1.5, 0, TAU); ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2 + Math.PI / 4;
+    ctx.strokeStyle = acc(0.6);
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * (R - 4), cy + Math.sin(a) * (R - 4));
+    ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+    ctx.stroke();
+  }
+}
+
+// A charted body's face: a lit sphere with banded weather turning under a fixed
+// star, its ring if it has one, and its family going round outside it.
+function portraitBody(ctx, game, b, cx, cy, t) {
+  const col = b.type === 'moon' ? '#9fb6cc' : contactColor(b);
+  const rgb = hexRgb(col);
+  const moon = b.type === 'moon';
+  const small = b.type === 'station' || b.type === 'nest' || b.tinker || b.ghost ||
+    b.visitor || b.comet;
+  const R = small ? 12 : moon ? 15 : 20;
+  const rng = mulberry32(b.id * 2654435761 >>> 0);
+
+  // The disc, then its bands scrolling under the terminator. Clipped to the
+  // sphere so the bands cannot spill past the limb.
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.clip();
+  ctx.fillStyle = col;
+  ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+  if (!small) {
+    const bands = 3 + Math.floor(rng() * 3);
+    for (let i = 0; i < bands; i++) {
+      const w = R * (0.16 + rng() * 0.3);
+      const drift = (rng() - 0.5) * 0.16;
+      const y = cy - R + ((rng() * 2 * R + t * 3 * (0.4 + drift)) % (R * 2.4)) - R * 0.2;
+      ctx.fillStyle = rng() < 0.5 ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.16)';
+      ctx.fillRect(cx - R, y, R * 2, w);
+    }
+  }
+  // Terminator: one fixed light, from the upper left, exactly as the world view
+  // lights its bodies.
+  const sh = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R);
+  sh.addColorStop(0, 'rgba(255, 248, 230, 0.28)');
+  sh.addColorStop(0.4, 'transparent');
+  sh.addColorStop(0.72, 'rgba(0, 0, 8, 0.5)');
+  sh.addColorStop(1, 'rgba(0, 0, 8, 0.82)');
+  ctx.fillStyle = sh;
+  ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+  ctx.restore();
+
+  // Atmosphere bloom on the lit limb
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(cx, cy, R * 0.8, cx, cy, R * 1.5);
+  g.addColorStop(0, `rgba(${rgb}, 0.3)`);
+  g.addColorStop(1, 'transparent');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(cx, cy, R * 1.5, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (b.ring) {
+    ctx.strokeStyle = `rgba(${rgb}, 0.75)`;
+    ctx.lineWidth = 2.5;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-0.42);
+    ctx.beginPath(); ctx.ellipse(0, 0, R * 1.75, R * 0.42, 0, 0, TAU); ctx.stroke();
+    ctx.restore();
+  }
+  if (b.fort) {   // the Bastion box, same blue it wears everywhere else
+    ctx.strokeStyle = 'rgba(120, 200, 255, 0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - R - 5, cy - R - 5, (R + 5) * 2, (R + 5) * 2);
+  }
+
+  // The household, going round. Count only — their real orbits are on the chart
+  // itself; this is a portrait, and it says "this world has four moons".
+  if (!moon && !small) {
+    let n = 0;
+    for (const m of game.bodies) {
+      if (m.alive && m.type === 'moon' && m.parent === b && plottable(game, m)) n++;
+      if (n >= 5) break;
+    }
+    for (let i = 0; i < n; i++) {
+      const rr = R + 7 + i * 3.2;
+      const a = t * (0.5 - i * 0.06) + i * 2.3;
+      ctx.fillStyle = 'rgba(200, 214, 235, 0.9)';
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.42, 1.6, 0, TAU);
+      ctx.fill();
+    }
+  }
+}
+
+// A shoal: its rock, tumbling slowly. Same tan the chart and the dial use.
+function portraitShoal(ctx, f, cx, cy, t) {
+  const rng = mulberry32(Math.round(f.r));
+  ctx.fillStyle = 'rgba(226, 202, 158, 0.85)';
+  for (let i = 0; i < 46; i++) {
+    const a = rng() * TAU + t * 0.12;
+    const d = Math.sqrt(rng()) * 27;
+    const sz = 1 + rng() * 2.2;
+    ctx.globalAlpha = 0.35 + rng() * 0.6;
+    ctx.fillRect(cx + Math.cos(a) * d - sz / 2, cy + Math.sin(a) * d * 0.7 - sz / 2, sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// NO IMAGERY. Rolling scan bars and speckle over an empty well — the same
+// vocabulary the ion wash uses on the radar, which is where a player has
+// already learned that this pattern means "the instrument has nothing".
+function portraitStatic(ctx, cx, cy, R, t) {
+  ctx.fillStyle = 'rgba(150, 162, 200, 0.1)';
+  for (let i = 0; i < 4; i++) {
+    const y = ((t * (14 + i * 9) + i * 23) % (R * 2 + 14)) - 7;
+    ctx.fillRect(cx - R, cy - R + y, R * 2, 2 + (i % 2));
+  }
+  const rng = mulberry32(Math.floor(t * 9) + 1);
+  ctx.fillStyle = 'rgba(180, 192, 226, 0.5)';
+  for (let i = 0; i < 34; i++) {
+    ctx.fillRect(cx - R + rng() * R * 2, cy - R + rng() * R * 2, 1.4, 1.4);
+  }
+  ctx.font = '700 9px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(196, 208, 240, 0.75)';
+  ctx.fillText('NO', cx, cy - 1);
+  ctx.fillText('IMAGERY', cx, cy + 9);
+  ctx.textAlign = 'left';
+}
+
+// Nothing under the cursor: a slow reticle, idling.
+function portraitIdle(ctx, cx, cy, R, t, acc) {
+  ctx.strokeStyle = acc(0.3);
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 2; i++) {
+    ctx.beginPath(); ctx.arc(cx, cy, R * (i / 3.2), 0, TAU); ctx.stroke();
+  }
+  const a = t * 0.6;
+  ctx.strokeStyle = acc(0.65);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+  ctx.stroke();
+  ctx.fillStyle = acc(0.8);
+  ctx.beginPath(); ctx.arc(cx, cy, 1.6, 0, TAU); ctx.fill();
+}
+
+// The plotted journey, on the chart. Ship → stop → stop, dashed the whole way
+// (it is a plan, not a thing that exists), with the NEXT stop lit and carrying
+// the arrival ring that says how close counts.
+function drawChartRoute(game, ctx, s, toX, toY) {
+  const route = game.route;
+  if (!route || !route.length) return;
+  const pts = [];
+  if (game.ship.alive) pts.push({ x: toX(game.ship.x), y: toY(game.ship.y) });
+  for (const wp of route) {
+    const p = waypointPos(game, wp);
+    pts.push({ x: toX(p.x), y: toY(p.y), wp });
+  }
+  // Two passes: a wide additive bloom along the whole leg, then the dashed line
+  // itself on top. The bloom is what keeps a route legible where it crosses the
+  // lit inner system, and it makes the plan read as something switched ON.
+  const legPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  };
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(${INK}, 0.12)`;
+  ctx.lineWidth = 7;
+  legPath(); ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.setLineDash([6, 6]);
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = `rgba(${INK}, 0.7)`;
+  legPath(); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.textAlign = 'center';
+  for (let i = 0; i < route.length; i++) {
+    const p = pts[pts.length - route.length + i];
+    const next = i === 0;
+    const a = next ? 1 : 0.72;
+    if (next) {
+      const rr = arriveR(route[i]) * s;
+      if (rr > 5) {
+        ctx.strokeStyle = `rgba(${INK}, 0.3)`;
+        ctx.setLineDash([3, 5]);
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, TAU); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const k = (game.time * 0.9) % 1;    // converging pulse — the same "go here"
+      ctx.strokeStyle = `rgba(${INK_HOT}, ${0.12 + 0.42 * k})`;   // grammar as the rescue dock
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 20 - 12 * k, 0, TAU); ctx.stroke();
+    }
+    // The node: a diamond, which nothing else on this chart is — a mark you put
+    // there must never be mistakable for a mark that was already there. Lit
+    // from underneath like every other mark, brightest on the one you are
+    // flying to.
+    ctx.globalCompositeOperation = 'lighter';
+    const ng = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, next ? 26 : 17);
+    ng.addColorStop(0, `rgba(${INK}, ${next ? 0.62 : 0.34})`);
+    ng.addColorStop(1, 'transparent');
+    ctx.fillStyle = ng;
+    ctx.beginPath(); ctx.arc(p.x, p.y, next ? 26 : 17, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(${next ? INK_HOT : INK}, ${a})`;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 7); ctx.lineTo(p.x + 7, p.y); ctx.lineTo(p.x, p.y + 7); ctx.lineTo(p.x - 7, p.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#120a24';
+    ctx.font = '700 8px system-ui, sans-serif';
+    ctx.fillText(String(i + 1), p.x, p.y + 3);
+    // ...and its name, UNLESS the contact under it already printed it — see
+    // labelsItself. The numbered diamond is what says "this is a stop"; the
+    // word underneath is only there for the stops that would otherwise be
+    // anonymous (a moon, an unexplored world, a point in open space).
+    if (!(route[i].b && labelsItself(game, route[i].b))) {
+      ctx.font = '600 10px system-ui, sans-serif';
+      ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
+      ctx.fillStyle = `rgba(${INK_HOT}, ${a * 0.95})`;
+      ctx.fillText(waypointLabel(game, route[i]), p.x, p.y + 21);
+      ctx.shadowBlur = 0;
+    }
+  }
+  ctx.textAlign = 'left';
+}
+
+// The next stop, in the WORLD — the arrival ring you actually fly through, with
+// the marker and its name at the centre. A route plotted on the chart has to be
+// flyable without the panel open, and the radar alone leaves the last thousand
+// units to guesswork.
+//
+// TWO CULLS, and they are not the same cull. The RING is arrival-sized (a
+// planet's is ~1,200 units against a view about 760 across, so it is routinely
+// bigger than the screen) — it is drawn whenever the ring could CROSS the view,
+// which is what makes it sweep in from the edge as you close and read as a
+// boundary you pass through. The MARKER is a point, so it is drawn only when
+// that point is in frame. Culling both on the centre — the first version —
+// meant the ring only ever appeared once you were already inside it, i.e. after
+// the stop had popped: the whole thing was dead code that nothing errored on.
+//
+// Helper UI: dashed, and every width and radius divided by zoom so it holds its
+// size on screen.
+function drawRouteWorld(game) {
+  const route = game.route;
+  if (!route || !route.length || !game.ship.alive) return;
+  const wp = route[0];
+  const p = waypointPos(game, wp);
+  const z = game.cam.zoom;
+  const rr = Math.max(arriveR(wp), 40 / z);
+  const d2 = (p.x - view.cx) ** 2 + (p.y - view.cy) ** 2;
+  if (d2 > (view.r + rr) ** 2) return;            // the ring cannot reach the view at all
+  const pulse = 0.55 + 0.45 * Math.sin(game.time * 3);
+  ctx.strokeStyle = `rgba(${INK}, ${0.22 + 0.2 * pulse})`;
+  ctx.lineWidth = 2 / z;
+  ctx.setLineDash([10 / z, 9 / z]);
+  ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, TAU); ctx.stroke();
+  ctx.setLineDash([]);
+  if (p.x < view.x0 - 60 || p.x > view.x1 + 60 || p.y < view.y0 - 60 || p.y > view.y1 + 60) return;
+  // The diamond, at the plotted point itself — for an uncharted return that is
+  // the GUESS, exactly as the chart drew it. The guidance is never sharper than
+  // the chart that made it.
+  const d = 11 / z;
+  ctx.fillStyle = `rgba(${INK_HOT}, ${0.5 + 0.35 * pulse})`;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y - d); ctx.lineTo(p.x + d, p.y); ctx.lineTo(p.x, p.y + d); ctx.lineTo(p.x - d, p.y);
+  ctx.closePath(); ctx.fill();
+  const fs = 13 / z;
+  ctx.font = `600 ${fs}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = `rgba(${INK_HOT}, 0.8)`;
+  ctx.fillText(waypointLabel(game, wp), p.x, p.y + d + fs * 1.3);
+  ctx.textAlign = 'left';
 }
 
 // ---------------------------------------------------------------------------
@@ -5597,6 +6530,7 @@ export function render(game) {
   }
   drawGlow(game);
   drawApproach(game);
+  drawRouteWorld(game);
   drawDeflectable(game);
   drawParry(game);
 
@@ -5873,6 +6807,12 @@ export function render(game) {
   }
 
   if (game.started) drawMinimap(game);   // no HUD on the splash — just the backdrop
+  // The chart, on its own canvas above everything. Only while its panel is up —
+  // and the panel is a shell modal, so the world under it is frozen. The world
+  // pass above still runs and is then covered: the chart's bed is opaque, so
+  // there is nothing to see through it, and an early-out here would be a
+  // special case in the one function every other draw hangs off.
+  if (game.mapOpen) drawStarMap(game);
 
   // Screen-space overlays
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
