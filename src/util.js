@@ -629,8 +629,20 @@ export function rockSurfAt(shape, th) {
 // polygon EDGE the contact lands on, not the direction from the centre. Built
 // in rockShape; see the note there for why the difference matters.
 // Returns the normal's angle in the body frame; callers add b.rot.
+//
+// FLOOR, NOT ROUND, and the indexing contract is the whole reason: `nlx[i]` is
+// the normal of the edge from sample i to sample i+1, so a bearing lies on edge
+// FLOOR(u) for its entire span. Rounding hands the second half of every edge
+// its NEIGHBOUR's normal — which is nearly harmless along a smooth stretch and
+// badly wrong exactly where the outline turns, i.e. at the facet corners the
+// shape exists to have. Measured across 400 shapes before the fix: the two
+// selectors disagreed by a mean of 1.8 degrees, by more than 5 degrees on 9.4%
+// of bearings, and by up to 134 degrees at a corner — a contact resolving
+// against the wrong face. (Caught in review by Copilot on PR #67. It was
+// inherited from when this table was sampled at bearings rather than built per
+// edge, where a half-cell slip only moved a discontinuity by 0.7 degrees.)
 export function rockNormalAt(shape, th) {
-  const i = ((Math.round((th / TAU) * LUT_N) % LUT_N) + LUT_N) % LUT_N;
+  const i = ((Math.floor((th / TAU) * LUT_N) % LUT_N) + LUT_N) % LUT_N;
   return Math.atan2(shape.nly[i], shape.nlx[i]);
 }
 
