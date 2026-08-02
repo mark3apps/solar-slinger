@@ -109,12 +109,22 @@ for (let i = 0; i < planets.length - 1; i++) {
 // The three field laws, asserted structurally: census near CFG.FIELD_ROCKS,
 // never an attractor at ANY mass, and ONE shared rail.w (a pocket with mixed
 // angular speeds shears itself apart).
-// This is the one block that reads live x/y — a rock is "in" a pocket by
-// distance to it. That is only stable because the regen above means x/y are
-// still the GENERATION positions; on a sky that has been advanced, rocks near
-// the 6000 cut drift across it and the census wobbles on its own.
+// MEMBERSHIP IS STRUCTURAL, NEVER GEOMETRIC. This read used to be
+// `Math.hypot(b.x - f.x, b.y - f.y) < 6000`, which broke the suite's own
+// time-invariance contract above: f.x/f.y are written ONLY by ai.updateFields,
+// and updateAliens is deliberately excluded from the splash backdrop — but
+// driftSplash does call step(), so the shoals advance on their rails while the
+// anchor stays frozen at its worldgen value. The census radius was therefore
+// measured from a point drifting away from the pocket at ~100u/s, with the
+// outermost rocks already sitting at ~5.4-5.6k against the 6,000 cutoff. It
+// never showed red only because bench.mjs bands these fields at 20%/abs-40.
+// world.markFieldRock stamps b.field = fi (world.js), physics.shatter carries
+// it onto every shard, and ai.js already selects a pocket's rocks this way.
+// The regen above independently pins x/y to their generation values, but do
+// NOT let that tempt anyone back to a distance test: these two guards cover
+// different failure modes, and the anchor drift is the one a regen can't fix.
 const fields = (g.fields || []).map((f, i) => {
-  const rocks = gen.filter((b) => b.fieldRock && Math.hypot(b.x - f.x, b.y - f.y) < 6000);
+  const rocks = gen.filter((b) => b.fieldRock && b.field === i);
   const railed = rocks.filter((b) => b.onRails && b.rail);
   return {
     i,

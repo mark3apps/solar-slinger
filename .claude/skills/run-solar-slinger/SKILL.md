@@ -211,7 +211,11 @@ the world is untouched at `waitfor window.game`**. The title screen runs the ful
 (`driftSplash`), for a wall-clock-dependent length of time, and `physics.step` culls dead and escaped
 bodies out of `game.bodies` — so any count of live bodies silently shrinks with how slow the boot was.
 A `sim: false` suite that needs a pristine sky must rebuild it first (`window.freshRun(0, seed)`) and
-read it in the same synchronous turn, the way `worldgen.js` does.
+read it in the same synchronous turn, the way `worldgen.js` does. Note that the backdrop runs a
+*partial* update — `step()` yes, `updateAliens` no — so it also leaves AI-written state (field
+anchors, nest timers) frozen at its worldgen value while everything on rails moves away from it.
+**Select structurally, not geometrically**: prefer a stamped id (`b.field === i`) over a distance
+test, which a regen alone would not have saved.
 
 ### Performance scenario matrix
 
