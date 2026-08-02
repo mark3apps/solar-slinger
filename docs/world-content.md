@@ -358,6 +358,67 @@ give directions by). Rules that keep it from breaking the invariants above:
       hitting wears a ring built from what you fed it and what it threw back. `gasEjecta` stops the
       fountain feeding itself; the halo binding is capped at `CRUST_PER_HOST` (surplus stays loose
       and goes home on the leash) or one dying giant fills the whole debris budget by itself.
+    - **AN ERUPTION THROWS BOULDERS, NOT DUST** (`CFG.GAS_EJECTA` / `GAS_EJECTA_R` /
+      `GAS_STRIP_EJECTA`, user design law). The column shipped as 3-15 pieces sized 1.2-4.2% of the
+      giant's radius, which MEASURED as: one solid impact = 15 pieces at a median 17.6 units against
+      a **1,148-unit** world; the geyser drip = 87 pieces per 30s flung out to 3.6x the radius; a
+      full collapse = 96 pieces peaking at 102 live. A 17-unit crumb beside a world that size is
+      sub-visible — it is *under* `CRUST_R_MIN`, the crumb floor of the crumble system that mints
+      every other piece of a broken world — so the loudest thing in the game read as a puff of grit,
+      and one dying giant spent ~100 of the 1,500 `DEBRIS_BUDGET` slots (of which ordinary play
+      already holds ~950) on rock nobody could see. Four rules, one idea — **the column is objects,
+      not texture**:
+      - **A third the pieces at double the radius**, landing about the same total ejected MASS.
+        Measured after: impact 15 -> **5** at a median 39.3; drip 87 -> **~25**. Count and size both
+        ride `scale`, so a pebble still puffs and a moon still fountains — the ladder is intact, it
+        just starts from a real rock instead of from grit. Ejecta are correspondingly HEAVIER to
+        lift (a solid impact now throws boulder-class rock rather than tier-0 ammunition); a giant
+        is a mid-game target and its halo is worth coming back for.
+      - **The COLLAPSE is the exception and keeps a big yield** — measured 47 pieces minted and ~55
+        gas ejecta left in the scene, against 96 before and ~26 if it merely inherited the
+        per-eruption rule. Killing the biggest thing in the sky is allowed the biggest debris event
+        in the game; what was wrong before was the SIZE, not the quantity. The throes run a hotter
+        `scale` than a geyser (0.4 -> 1.0), which is what makes a collapse's pieces the big ones,
+        but the COUNT is just the ordinary formula — the cadence already tightens as the world
+        fails, so nothing needs to multiply it. Minted and surviving differ by ~15%: ejecta launch
+        from the CURRENT surface while the throes collapse that surface inward, and escape velocity
+        climbs as the radius falls, so the late column increasingly falls short of escape and rains
+        back in to be quietly eaten.
+      - **`beginGasStrip` MUST zero `ventT`.** The throes share that timer with the instability
+        geysers, and a giant always reaches its death having been past `GAS_VENT` for a while — so
+        `updateGasVents` has just armed it on ITS cadence, which is `GAS_VENT_EVERY`-based and runs
+        up to ~4 SECONDS. `updateGasStrip` only decrements the same field, so the collapse inherited
+        that leftover and **spent its first half completely silent**: measured, the ejecta ledger
+        sat at 0 from `stripT` 4.7 down to 2.6 and only then began minting — no eruptions, no shake,
+        no boom, on the one scene in the game that is supposed to be venting from everywhere at once
+        for five seconds. It hid well, because the second half still delivered a plausible pile of
+        rock; it surfaced only from watching the ledger tick during a playtest. Note the shape of
+        this bug — a stalled first half reads as "not throwing enough" and invites inflating a count
+        to compensate, which buries it instead of fixing it.
+      - **A column, not a fan.** The +/-33 degree spread, fired at a random bearing every time
+        through the throes, painted the sky around the world evenly — the opposite of "it blew a
+        hole and the hole threw this out". Half that arc, and a speed band narrow enough that the
+        scale term cannot push the whole thing past escape on a big hit (the old one did, so the
+        eruptions throwing the most material were exactly the ones throwing it away). Drip spread
+        measured 3.6x radius -> **1.2x**.
+      - **The collapse answers to a hard TOTAL**, not to a cadence. `GAS_STRIP_EJECTA` is a
+        per-collapse ledger (`b.stripEj`, reset in `beginGasStrip`); the piece count was previously
+        an emergent product of two tunings with nothing bounding it. Out of budget still *erupts* —
+        cloud, shock, shake and sound all fire, it just mints no rock. Same idiom as
+        `CRUST_PER_HOST` / `CRUST_DEATH`: bound it by construction, not by hoping a cadence holds.
+        The ceiling sits deliberately ABOVE the tuned yield so it stays a backstop rather than the
+        mechanism — a cap that binds every time would truncate the tail, and the tail is the most
+        violent part of the collapse, so the last and loudest vents would be the ones minting
+        nothing.
+      - **GAS EJECTA ARE TERMINAL — they puff, they never split** (the `!body.gasEjecta` guard on
+        `shatter`'s `CHUNK_SPLIT_R` branch). Load-bearing and non-obvious: making the pieces bigger
+        put **20 of 24 over `CHUNK_SPLIT_R`** where the old crumbs mostly sat under it, so every
+        piece would now go two split levels (48 -> ~24 -> ~12) instead of one, and a player working
+        through a collapse's 26 pieces could mint ~1,270 bodies out of them — the hundred pebbles
+        this whole rule exists to delete, handed back one shot later. A crust slab splits because it
+        is a piece of a crust that BROKE and is still breaking; ejecta are what an eruption already
+        tore apart, so their fragmentation event has happened. Verified: killing ejecta yields **0**
+        new chunks. Splitting stays the crumble's job.
     - **A FAILING GIANT VENTS ON ITS OWN.** Past `GAS_VENT` it geysers on a timer that tightens as
       it fails (`physics.updateGasVents`, near-ship only) — the world coming apart without the
       player's help, and the payoff the venting streamers promise.

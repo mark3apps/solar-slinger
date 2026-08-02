@@ -244,6 +244,14 @@ interiors, the orbit rubber band, fog of war, and the frame-relative trajectory 
   stroke at an exact radius. In-world transitions are organic, never geometric.
 - **THE CRUMBLE:** a world under fire comes apart and the pieces stay; the crater you *see* is the
   crater you can fly into (one profile feeds render, physics and both predict mirrors).
+- **AN ERUPTION THROWS BOULDERS, NOT DUST** — a hit gas giant must shoot stuff *out*, but as a few
+  big pieces up one throat, never a hundred pebbles across half the sky (`CFG.GAS_EJECTA` /
+  `GAS_EJECTA_R`, a tight cone and a speed band that still straddles escape). The **collapse is the
+  exception** — killing a giant is allowed the biggest debris event in the game (~55 pieces), under
+  a hard per-collapse ceiling (`GAS_STRIP_EJECTA`); what was wrong was the SIZE, not the quantity,
+  and `beginGasStrip` must zero `ventT` or the throes run their first half silent. And **gas ejecta
+  are terminal** — they puff, they never split, or the pebble cloud comes straight back one shot
+  later.
 - **World scale:** `PLANET_R_MUL`/`MOON_R_MUL` grow radii only — masses are untouched, and the
   multiplier is a *ceiling* capped by neighbouring lane clearance.
 - **A planet system is alive while you are in it**; loose debris is on a leash; a world you are not

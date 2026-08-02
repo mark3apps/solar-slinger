@@ -440,10 +440,18 @@ function updateCrust(game, dt) {
 // only ~80, so the slow half arcs up and rains back in (and is quietly eaten,
 // no second eruption) while the fast half clears the world entirely and becomes
 // ammunition. `gasEjecta` is what stops the fountain feeding itself forever.
-function gasErupt(game, giant, ang, scale) {
-  if (!giant || !giant.alive) return;
+//
+// FEW AND BIG, NOT MANY AND SMALL (CFG.GAS_EJECTA / GAS_EJECTA_R). A column is
+// boulders coming off a world, not grit: see the config note for the measured
+// numbers the old 3-15-pieces-at-1.2%-of-R shipped with. Returns how many it
+// actually made, so a caller running the throes can hold a total.
+function gasErupt(game, giant, ang, scale, cap = Infinity) {
+  if (!giant || !giant.alive) return 0;
   const R = giant.radius;
-  const n = Math.min(Math.round(3 + scale * 12), debrisRoom(game));
+  const [nBase, nMul] = CFG.GAS_EJECTA;
+  // Out of budget still ERUPTS — cloud, shock, shake and sound all fire, it just
+  // mints no rock. The spectacle is the point; the bodies are the cost.
+  const n = Math.max(0, Math.min(Math.round(nBase + scale * nMul), debrisRoom(game), cap));
   // How much of this column the halo can actually keep. A failing giant vents
   // every few seconds forever, and binding every piece would let ONE dying
   // world fill the entire debris budget with its own ejecta and starve every
@@ -453,8 +461,13 @@ function gasErupt(game, giant, ang, scale) {
   const list = game.reg && game.reg.crust;
   let keep = CFG.CRUST_PER_HOST;
   if (list) for (const q of list) if (q.crust === giant && q.alive) keep--;
+  const [rFloor, rMul] = CFG.GAS_EJECTA_R;
   for (let i = 0; i < n; i++) {
-    const th = ang + (Math.random() - 0.5) * 1.15;
+    // A COLUMN, NOT A FAN. The spread was +/-33 degrees, which at 3-15 pieces an
+    // eruption and a random bearing every time through the throes painted the
+    // whole sky around the world evenly — the opposite of "it blew a hole and
+    // the hole threw this out". Half that arc reads as a throat.
+    const th = ang + (Math.random() - 0.5) * 0.58;
     // LAUNCHED TO ORBIT, NOT AWAY. Surface escape velocity here is only ~80, so
     // the first cut's 90-700 threw everything clear of the world in a second —
     // a firework, and the ejecta were gone before you could reach them. This
@@ -462,8 +475,13 @@ function gasErupt(game, giant, ang, scale) {
     // gets out. What is captured then SETTLES INTO THE GIANT'S HALO through the
     // ordinary crust assist, so a gas giant you keep hitting slowly wears a ring
     // built out of what you fed it and what it threw back.
-    const sp = 52 + Math.random() * 78 + 34 * scale;
-    const cr = R * (0.012 + 0.03 * Math.random() * scale);
+    // KEEP IT STRADDLING AT EVERY SCALE. The old band ran 52-164 and the scale
+    // term pushed the whole thing past escape on a big hit, so the eruptions
+    // that threw the most material were exactly the ones that threw it away —
+    // measured out to 5.3x the giant's radius. Narrower, and the scale term
+    // small enough that roughly half is still captured at the top of the range.
+    const sp = 54 + Math.random() * 42 + 14 * scale;
+    const cr = R * (rFloor + rMul * scale) * (0.8 + Math.random() * 0.5);
     const f = spawnAsteroid(game.bodies,
       giant.x + Math.cos(th) * (R + cr + 10), giant.y + Math.sin(th) * (R + cr + 10),
       giant.vx + Math.cos(th) * sp, giant.vy + Math.sin(th) * sp, crustMass(cr));
@@ -490,6 +508,7 @@ function gasErupt(game, giant, ang, scale) {
   if (hits.length > 7) hits.shift();
   addShake(game, Math.min(9, 2 + scale * 8));
   sfx.sfxBoom(1 + scale * 1.8, sfx.distVol(game, giant.x, giant.y));
+  return n;
 }
 
 // INSTABILITY GEYSERS. A gas giant that has been hurt badly enough stops
@@ -543,6 +562,16 @@ function beginGasStrip(game, body, credit) {
   if (body.stripT > 0) return;
   body.stripT = CFG.GAS_STRIP_TIME;
   body.stripFor = CFG.GAS_STRIP_TIME;
+  body.stripEj = 0;                  // the collapse's own ejecta ledger (CFG.GAS_STRIP_EJECTA)
+  // THE THROES START VENTING IMMEDIATELY. `ventT` is shared with the instability
+  // geysers, and a giant always arrives here having been past GAS_VENT for a
+  // while — so updateGasVents has just armed that timer on ITS cadence, which is
+  // GAS_VENT_EVERY-based and runs up to ~4 SECONDS. updateGasStrip only
+  // decrements the same field, so the collapse inherited that leftover and spent
+  // its first half silent: measured, the ledger sat at 0 from stripT 4.7 down to
+  // 2.6 and only then began minting. A five-second death scene that vents from
+  // everywhere at once cannot open with two and a half seconds of nothing.
+  body.ventT = 0;
   body.hp = 1;                       // stays alive through the throes
   body.radiusT = undefined;          // the throes drive the radius, not the chip easing
   if (game.deathLog) {
@@ -592,11 +621,21 @@ function updateGasStrip(game, dt) {
     // sags and then gives way.
     p.radius = p.baseRadius * (1 - Math.pow(k, 1.6) * (1 - CFG.GAS_CORE));
     p._sil = null;
-    // Vents accelerate as it fails — the world tearing itself open.
+    // Vents accelerate as it fails — the world tearing itself open. At the old
+    // 3-15 pieces an eruption this cadence MEASURED 96 fragments off one
+    // collapse, peaking at 102 live: a tenth of the whole debris budget spent in
+    // a five-second window on rock too small to see. The fix is the SIZE rule
+    // (CFG.GAS_EJECTA), not fewer eruptions — killing a giant is the biggest
+    // event in the game and keeps the biggest debris yield (~14 vents of 3-5
+    // real boulders, 47 minted). `scale` runs hotter here than a geyser's, which
+    // is what makes a collapse's pieces the big ones; the COUNT is just the
+    // ordinary formula, because the cadence already tightens as the world fails.
+    // Ceiling on the total is CFG.GAS_STRIP_EJECTA — a backstop, not the shape.
     p.ventT = (p.ventT ?? 0) - dt;
     if (p.ventT <= 0) {
-      p.ventT = 0.55 - 0.3 * k;
-      gasErupt(game, p, Math.random() * TAU, 0.3 + k * 0.5);
+      p.ventT = 0.55 - 0.25 * k;
+      p.stripEj += gasErupt(game, p, Math.random() * TAU, 0.4 + k * 0.6,
+        CFG.GAS_STRIP_EJECTA - p.stripEj);
     }
     // A rumble that builds rather than one bang at the end.
     if (Math.floor(was * 4) !== Math.floor(p.stripT * 4)) addShake(game, 3 + k * 7);
@@ -812,7 +851,17 @@ export function shatter(game, body, credit = null) {
       );
       f.color = body.color;   // wreckage reads as pieces of the world it was
     }
-  } else if (body.chunk && body.radius >= CFG.CHUNK_SPLIT_R) {
+    // ...EXCEPT GAS EJECTA, WHICH ARE TERMINAL — they puff, they never split. A
+    // crust slab splits because it is a piece of a crust that BROKE and is still
+    // breaking; ejecta are what an eruption already tore apart and blew clear,
+    // so their fragmentation event has happened. Without the exemption the "few
+    // and big" rule (CFG.GAS_EJECTA) quietly undoes itself on the back end: the
+    // new pieces ALL clear CHUNK_SPLIT_R where the old crumbs mostly sat under
+    // it, so every one now goes two levels (48 -> ~24 -> ~12) instead of one,
+    // and a player working through the 26 pieces of a collapse could mint ~1,270
+    // bodies out of them — the hundred pebbles this whole rule exists to delete,
+    // handed back one shot later. Splitting stays the crumble's job.
+  } else if (body.chunk && body.radius >= CFG.CHUNK_SPLIT_R && !body.gasEjecta) {
     // A BIG PIECE OF A WORLD BREAKS LIKE THE WORLD DID (CFG.CHUNK_SPLIT_*).
     // Crust is drawn as a fraction of its parent planet, so the biggest slabs
     // run 100+ units across, and one of those bursting into a puff of dust

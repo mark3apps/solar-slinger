@@ -248,6 +248,47 @@ export const CFG = {
   GAS_HIT_FADE: 3.2,       // seconds an entry wound takes to swirl closed
   GAS_VENT: 0.62,          // damage fraction past which the atmosphere visibly bleeds off
   GAS_VENT_EVERY: 5.5,     // base seconds between instability geysers (faster as it fails)
+  // AN ERUPTION THROWS BOULDERS, NOT DUST (user design law: *it should shoot
+  // stuff out — not a hundred pebbles across half the sky*). The column shipped
+  // as 3-15 pieces per eruption sized 1.2-4.2% of the giant's radius, which
+  // MEASURED as: one solid impact = 15 pieces at a median 17.6 units against a
+  // 1,148-unit world, the geyser drip = 87 pieces per 30s, and a full collapse =
+  // 96 pieces peaking at 102 live and flung out to 5.3x the giant's radius. A
+  // 17-unit crumb beside a world that size is sub-visible — it is under
+  // CRUST_R_MIN, the crumb floor of the crumble system that mints every other
+  // piece of a broken world — so the loudest thing in the game read as a puff of
+  // grit, and one dying giant spent ~100 of the 1,500 DEBRIS_BUDGET slots (of
+  // which ordinary play already holds ~950) on rocks nobody could see.
+  // So: roughly a THIRD the pieces at roughly DOUBLE the radius, which lands
+  // about the same total ejected MASS in objects that read as pieces of a world
+  // and are worth flying over to grab. Count and size both ride `scale` (the
+  // impactor, or how far gone the giant is), so a pebble still puffs and a moon
+  // still fountains — the ladder is intact, it just starts from a real rock.
+  GAS_EJECTA: [1, 4],      // pieces per eruption: base + this x scale
+  GAS_EJECTA_R: [0.019, 0.020],  // piece radius, x the giant's radius: floor + this x scale
+  // ...and the COLLAPSE answers to a hard total, not just a per-eruption count.
+  // The throes fire on a tightening timer, so the piece count was an emergent
+  // product of two tunings and nothing bounded it; this is the ceiling that
+  // makes the whole system safe to build on (same idiom as CRUST_PER_HOST and
+  // CRUST_DEATH — bound it by construction, not by hoping the cadence holds).
+  // KILLING A GIANT IS THE EXCEPTION, and gets to be the biggest debris event in
+  // the game: measured, the throes mint 47 pieces and leave ~55 gas ejecta in the
+  // scene (user call — 26 was too austere for the death of the biggest thing in
+  // the sky). What was wrong with the old 96 was the SIZE of the pieces, not the
+  // quantity. The yield needs no multiplier of its own: it falls out of the
+  // ordinary eruption count run across the FULL five seconds, which is only true
+  // because beginGasStrip zeroes `ventT` — see the note there, and do not tune
+  // this number without reading it, because a stalled first half is exactly the
+  // kind of bug that gets "fixed" by inflating a count instead.
+  // Minted and surviving differ by ~15%: ejecta launch from the CURRENT surface,
+  // the throes collapse that surface inward the whole time, and escape velocity
+  // climbs as the radius falls (v_esc = sqrt(2GM/r)), so the late column
+  // increasingly falls short of escape and rains back in to be quietly eaten.
+  // The ceiling sits deliberately above both so it stays a backstop rather than
+  // the mechanism — a cap that binds every time would truncate the tail, and the
+  // tail is the most violent part of the collapse, so the last and loudest vents
+  // would be the ones minting no rock.
+  GAS_STRIP_EJECTA: 70,    // most pieces ONE death-throe collapse may ever throw
   // THE STRIP IS A SCENE, NOT A SWAP. At zero hp the giant does not pop into
   // a core: it enters death throes for GAS_STRIP_TIME seconds — venting from
   // everywhere at once, its envelope visibly collapsing inward, the hot core
