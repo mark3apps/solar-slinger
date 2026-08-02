@@ -77,6 +77,16 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
    those are what a player is aiming at and a slab ghosting through a planet reads as broken. The
    inert window also stops a death cloud, which is born inside the volume the world occupied, from
    resolving its own overlap by eating itself on frame one.
+   **GAS EJECTA ARE EXEMPT FROM SPLITTING ENTIRELY** (`!body.gasEjecta` on the `CHUNK_SPLIT_R`
+   branch). A gas giant's column is deliberately FEW AND BIG (`CFG.GAS_EJECTA`, see the eruption
+   rules in [world-content.md](world-content.md)), which puts essentially every piece over the split
+   threshold — measured 20 of 24 — so without the exemption a collapse's ~55 surviving pieces could
+   be worked into thousands of bodies, reinstating the pebble cloud that sizing rule exists to
+   delete. This matters MORE now that a collapse is deliberately allowed a big yield
+   (~55 pieces, see world-content.md): the exemption is what makes that yield safe to grant. The
+   collapse also carries its own hard ceiling on top of the shared budget (`GAS_STRIP_EJECTA`, the
+   `b.stripEj` ledger), because its cadence tightens as the world fails and nothing else bounded the
+   total; the ceiling is set above the tuned yield so it stays a backstop, not the mechanism.
 8. **A PLANET IS ITS OWN DURABILITY CLASS** (user design law: *killing a planet should feel like a
    feat*). Planet hp is a big flat `CFG.PLANET_HP_BASE` plus a gentle `PLANET_HP_MUL × massToHp`
    slope — deliberately NOT the mass-scaled curve every other body uses. Mass dominance already
