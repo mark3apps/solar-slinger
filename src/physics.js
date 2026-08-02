@@ -669,7 +669,14 @@ export function shatter(game, body, credit = null) {
   // the killing blow (stamped in collideBodies) — the moon-shot and sniper rows
   // are the only reason it exists.
   noteKill(game, body, credit, body.hitBy);
-  if (body.heldBy === 'player' && game.held === body) game.held = null;
+  // The rock in the beam shattered. Dropping the pointer is not dropping the
+  // BEAM: setBeam is edge-triggered off releaseHeld/addToOrbit, so without
+  // this the hum kept running with nothing held (Twin Grip's other slot, if
+  // it still has a rock, legitimately keeps it on).
+  if (body.heldBy === 'player' && game.held === body) {
+    game.held = null;
+    if (!game.held2) sfx.setBeam(false);
+  }
 
   // FIELD GIANT: cracking one sprays a cascade of smaller FIELD rock — the
   // chaos engine of a shoal. The shards inherit the whole material through
@@ -1159,7 +1166,11 @@ function vaporize(game, body) {
     bump(game, 'sunFed');
     if (body.mass >= 3500) bump(game, 'sunFedBig');
   }
-  if (body.heldBy === 'player' && game.held === body) game.held = null;
+  // Fed to the sun straight out of the beam — same hum drop as a shatter.
+  if (body.heldBy === 'player' && game.held === body) {
+    game.held = null;
+    if (!game.held2) sfx.setBeam(false);
+  }
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
 }
@@ -1227,8 +1238,23 @@ export function damageShip(game, dmg, cause, hitAng) {
   }
   if (s.hull <= 0) {
     s.alive = false;
+    // DROP THE BEAM PROPERLY. Nulling game.held alone orphaned the rock: the
+    // tractor stopped updating it, but nothing cleared the state the tractor
+    // had written on it, and springHeld's own auto-drop can never reach it
+    // (it walks game.held, which is already null). So the rock kept BOTH the
+    // last hold accel — extAx/extAy is not rebuilt per frame, physics adds it
+    // to b.ax every substep until somebody zeroes it, leaving a permanent
+    // phantom thrust — and `heldBy = 'player'`, which pins it out of the
+    // dormancy check (`b.heldBy` forces awake) for the rest of the run. One
+    // leaked body and one drifting rock per death-while-carrying.
+    for (const b of [game.held, game.held2]) {
+      if (!b) continue;
+      if (b.heldBy === 'player') b.heldBy = null;
+      b.extAx = 0; b.extAy = 0;
+    }
     game.held = null;
     game.held2 = null;   // Twin Grip: drop the second rock too
+    sfx.setBeam(false);  // ...and kill the hum: only releaseHeld/addToOrbit do it otherwise
     game.deathCause = cause;
     addParticles(game, s.x, s.y, s.vx * 0.3, s.vy * 0.3, 60, '#9fd6ff', 280, 1.6, 4);
     sfx.sfxShipDeath();

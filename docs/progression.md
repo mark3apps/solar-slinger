@@ -216,7 +216,7 @@
   Dash Jets (dart left/right), tap **F** = Slipstream. All no-op unless the ability is owned and off
   cooldown (Afterburner: unless the tank can light), and are gated behind `menuBlocking()` like every
   other player input.
-- **ACHIEVEMENTS are a THIRD track, and they FEED the other two.** ~385 rows in
+- **ACHIEVEMENTS are a THIRD track, and they FEED the other two.** ~400 rows in
   [achievements.js](../src/achievements.js) grant **points** (`prog.ach.score`), and those points also
   **pay XP** — `pts × PROG.XP_PER_ACH_POINT` (0.6), banked in `main.drainAchievements`, never in
   achievements.js `award` (the sweep stays a pure read; the drain is where the game reacts). So a
@@ -244,7 +244,7 @@
     splice out, so the sweep shrinks as the run goes. **No loops, no allocation inside a predicate** —
     anything that needs scanning is computed once into the shared context `c` (the ONE loop the
     sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it at seven).
-    Measured at 0.02 ms per sweep across all 380 rows — 0.1% of a 60 fps frame.
+    Measured at 0.02 ms per sweep across the whole catalog — 0.1% of a 60 fps frame.
   - **Adding one is a catalog row.** Only reach for a new `bump` if nothing already records the event.
     Several discovery rows ride the existing `EVENT_MSGS` one-shot flags through `ACH_EVENT_STATS`
     (main's drain feeds them) rather than instrumenting world.js a second time; the heat/oort/gas/skim/

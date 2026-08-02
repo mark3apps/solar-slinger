@@ -1,5 +1,5 @@
 import { CFG } from './config.js';
-import { TAU } from './util.js';
+import { TAU, CRYSTAL_REACH } from './util.js';
 
 let NEXT_ID = 1;
 
@@ -105,7 +105,13 @@ export function makeChunk(b, R, mat) {
 // it came off does. Cached on the host.
 export function chunkHaloW(host) {
   if (host.haloW === undefined) {
-    const reach = host.ptype === 'crystal' ? host.radius * 1.32 : host.radius;
+    // Crystal worlds measure from the SPIKE reach, never the mean disc — the
+    // same law (and the same shared constant) world.seedDebrisBelts uses to
+    // float a crystal world's junk ring clear of the turning spikes. Read from
+    // util.CRYSTAL_REACH, never copied: a hard-coded 1.32 here would silently
+    // stop tracking the spikes the first time they are retuned, and the halo
+    // would settle down inside them.
+    const reach = host.ptype === 'crystal' ? host.radius * CRYSTAL_REACH : host.radius;
     const r = reach * (CFG.CRUST_BAND_LO + CFG.CRUST_BAND_HI) * 0.5;
     const vC = Math.sqrt((CFG.G * host.mass * r * r) / Math.pow(r * r + CFG.GRAV_SOFT ** 2, 1.5));
     host.haloW = (vC / r) * (host.spin < 0 ? -1 : 1);

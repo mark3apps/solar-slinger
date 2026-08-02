@@ -1,4 +1,4 @@
-import { PROG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
+import { SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor } from './config.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';

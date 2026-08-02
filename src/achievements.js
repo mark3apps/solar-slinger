@@ -517,10 +517,11 @@ export const ACHIEVEMENTS = [
     (g, s) => s.aliensAtOnce >= 4),
   A('swarm8', 'peril', PTS.tricky, 'Badly Outnumbered', 'Have eight aliens on you at once.',
     (g, s) => s.aliensAtOnce >= 8),
-  A('rogueSeen', 'peril', PTS.normal, 'Incoming', 'Get a rogue-planet sensor alert.',
-    (g, s) => s.rogues >= 1),
-  A('rogueSeen5', 'peril', PTS.tricky, 'Bad Neighbourhood', 'Get five rogue-planet alerts.',
-    (g, s) => s.rogues >= 5),
+  // (No rogue-planet rows. Rogue planets were removed entirely — see the note
+  // in world.generateWorld — so nothing ever raised the sensor alert these two
+  // counted, `s.rogues` had no writer, and both sat in the panel permanently
+  // unearnable, holding the run's point ceiling out of reach. `type: 'rogue'`
+  // stays supported everywhere; if the concept ever comes back, so can they.)
 
   // ---- EXPLORATION ------------------------------------------------------
   A('field1', 'explore', PTS.easy, 'Thick Sky', 'Fly into a dense asteroid field.',
@@ -811,7 +812,9 @@ export const ACHIEVEMENTS = [
   A('ptypes4', 'combat', PTS.brutal, 'Varied Diet',
     'Destroy four different kinds of world.', (g, s) => (s.kPtypeCount || 0) >= 4),
   A('ptypesAll', 'insane', PTS.insane, 'Comparative Anatomy',
-    'Destroy one of every archetype in the system.', (g, s) => (s.kPtypeCount || 0) >= 9),
+    // Off PTYPE_COUNT, not a literal 9: add a tenth archetype to PTYPE_BIT and
+    // a hard-coded threshold would quietly stay winnable one world short.
+    'Destroy one of every archetype in the system.', (g, s) => (s.kPtypeCount || 0) >= PTYPE_COUNT),
 
   // ---- GAS GIANTS. Feeding one is the cheap end; stripping one is the feat.
   A('gasFed', 'combat', PTS.easy, 'Feeding Time',
@@ -1282,11 +1285,6 @@ export function updateAchievements(game, dt) {
 }
 
 // ---- readouts ---------------------------------------------------------------
-export function achSummary(prog) {
-  const st = prog && prog.ach;
-  if (!st) return { score: 0, earned: 0, total: ACH_TOTAL, max: ACH_MAX_POINTS };
-  return { score: st.score, earned: st.order.length, total: ACH_TOTAL, max: ACH_MAX_POINTS };
-}
 // Secret rows stay redacted in the panel until they land (hud.js reads this).
 export const isSecret = (a) => a.cat === 'secret';
 
