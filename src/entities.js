@@ -64,6 +64,8 @@ export class Body {
     this.thrownBy = null;    // 'player' | 'alien' | null
     this.thrownTimer = 0;
     this.throwLock = 0;      // seconds left in which YOUR beam may not re-grab it (CFG.THROW_LOCKOUT)
+    this.holdT = null;       // seconds in the beam — the wind-up (tractor.beamGrip); null = not held
+    this.ropeL = null;       // live length of a taut tether (tractor.springHeld); null = no rope
     this.catchCount = 0;     // repeat catches of the same rock grow the beam less
     this.onRails = false;    // riding a precomputed orbit (circular or ellipse)
     this.rail = null;        // circular {parent,r,w,ang} | ellipse {parent,e,a,...}

@@ -546,8 +546,18 @@ export const CFG = {
   // …and it RUBBER BANDS into that limit rather than hitting it as a wall. The
   // give is a fraction of the max taken from INSIDE it: the band starts biting
   // at (1 - this) x max and is fully taut at max, so the stated ceiling stays
-  // literally true and the last fifth of it is spent easing you to a stop.
-  TETHER_STRETCH: 0.16,
+  // literally true and a third of the way in is spent easing you to a stop.
+  // The band only ever acts on SEPARATING motion, so a long soft zone costs
+  // nothing during ordinary holding — the rock tracks the ship and never
+  // separates. It is only felt when you actively pull against it, which is the
+  // only moment it should be felt at all. (Was 0.16, which still read as a
+  // wall arriving early rather than as rubber.)
+  TETHER_STRETCH: 0.35,
+  // How fast the rope hauls in slack, once it has taken hold somewhere past the
+  // limit (see springHeld: the rope's length is state, not a constant). Slow
+  // enough to read as being reeled in, fast enough that a world does not stay
+  // out at arm's length for long.
+  TETHER_REEL: 300,        // world units per second
 
   // THE WINCH CREDITS THE WIND-UP BUT MUST NEVER FINISH IT (user design rule:
   // full power always takes longer than the winch). The winch seconds carry

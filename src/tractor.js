@@ -220,6 +220,8 @@ export function pushLaunchFx(game, b, vx, vy, charged) {
 // zeroes it); the wind-up added two more pieces of per-hold state to it:
 //   b.holdT   — flingSpeedFor keys the throw wind-up off `holdT != null`, so a
 //               rock that kept it would come back to the beam already charged
+//   b.ropeL   — the taut tether's live length; a stale one would have the next
+//               hold engage its rope at the last one's reach
 //   the CHARGE readout — a stale READY paints a near-white beam on a rock that
 //               is not charged, or on nothing at all
 // Physics owns three of those paths (shatter, vaporize, the ship-death block)
@@ -227,7 +229,7 @@ export function pushLaunchFx(game, b, vx, vy, charged) {
 // It matters MORE since the tether became unbreakable at full power: springHeld's
 // own auto-drop no longer fires on distance, so it cannot mop up a stranded rock.
 export function clearHoldState(game, b) {
-  if (b) { b.holdT = null; b.extAx = 0; b.extAy = 0; }
+  if (b) { b.holdT = null; b.ropeL = null; b.extAx = 0; b.extAy = 0; }
   // The readout describes the rock that just left. springHeld rebuilds it on
   // the next substep for whatever is still in hand.
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false;
@@ -591,15 +593,29 @@ function springHeld(game, b, dt, slot) {
   // nothing (no jolt); deep in the stretch it takes essentially all of it. The
   // hard positional clamp at maxL then only ever catches the residue, so in
   // practice it does nothing at all.
-  if (atFull) {
+  if (!atFull) {
+    b.ropeL = null;   // no rope until the beam is fully closed
+  } else {
     const maxL = st.range * CFG.TETHER_MAX_MUL + b.radius;
-    const soft = maxL * (1 - CFG.TETHER_STRETCH);
     const dx = b.x - s.x, dy = b.y - s.y;
-    const d = Math.hypot(dx, dy);
-    if (d > soft && d > 0) {
+    const d = Math.hypot(dx, dy) || 1;
+    // THE ROPE PAYS OUT TO WHERE THE LOAD ALREADY IS, THEN REELS IN.
+    //
+    // Full power can easily arrive while the rock is ALREADY past the limit —
+    // it lags behind during the wind-up, and the winch on a world runs for
+    // seconds while you are flying. Sizing the rope at `maxL` on that first
+    // substep snapped the load across the whole gap in one frame. So the rope's
+    // length is state, seeded at whatever distance it engaged at and hauled in
+    // at a bounded CFG.TETHER_REEL — you feel it take up the slack instead of
+    // arriving already taut, and it still ends at the stated 1.3x.
+    if (b.ropeL == null) b.ropeL = Math.max(maxL, d);
+    else b.ropeL = Math.max(maxL, b.ropeL - CFG.TETHER_REEL * dt);
+    const lim = b.ropeL;
+    const soft = lim * (1 - CFG.TETHER_STRETCH);
+    if (d > soft) {
       const nx = dx / d, ny = dy / d;
       const ms = Math.max(1, s.mass), mb = Math.max(1, b.mass);
-      const t = clamp((d - soft) / (maxL - soft), 0, 1);
+      const t = clamp((d - soft) / (lim - soft), 0, 1);
       const grab = t * t;
       const sep = (b.vx - s.vx) * nx + (b.vy - s.vy) * ny;
       if (sep > 0) {                       // only while they are pulling APART
@@ -607,9 +623,11 @@ function springHeld(game, b, dt, slot) {
         s.vx += (j / ms) * nx; s.vy += (j / ms) * ny;
         b.vx -= (j / mb) * nx; b.vy -= (j / mb) * ny;
       }
-      if (d > maxL) {
-        // The backstop. Heavier body moves less: the ship takes mb/(ms+mb).
-        const over = d - maxL;
+      if (d > lim) {
+        // The backstop, and it acts against the LIVE rope length — never
+        // against maxL, or it would be the instant snap all over again.
+        // Heavier body moves less: the ship takes mb/(ms+mb).
+        const over = d - lim;
         s.x += nx * over * (mb / (ms + mb)); s.y += ny * over * (mb / (ms + mb));
         b.x -= nx * over * (ms / (ms + mb)); b.y -= ny * over * (ms / (ms + mb));
       }

@@ -54,12 +54,26 @@ code "works."
   - **AT FULL POWER THE TETHER CANNOT BE BROKEN** (user design law). A hold that has fully closed
     does not let go because you flew away — past `CFG.TETHER_MAX_MUL` (1.3) × the beam ring (the ring
     `drawShipRings` already draws, so the limit is something the player can see) it goes **taut** and
-    `tractor.springHeld` resolves it as a rope: cancel the separating velocity, split the overshoot
-    by MASS. Only death drops it; distance no longer can. The rope only ever REMOVES separating
-    motion, so it cannot inject energy or become a slingshot, and the positional correction is
-    bounded by one substep of travel. **This is not the no-recoil law being broken** — that law is
-    about the RELEASE (a throw must never shove the ship); being dragged by something you are still
-    holding is the opposite, and it is the point.
+    `tractor.springHeld` resolves it as a rope: take the separating velocity, split by MASS. Only
+    death drops it; distance no longer can. The rope only ever REMOVES separating motion, so it
+    cannot inject energy or become a slingshot. **This is not the no-recoil law being broken** — that
+    law is about the RELEASE (a throw must never shove the ship); being dragged by something you are
+    still holding is the opposite, and it is the point.
+  - **IT IS A RUBBER BAND, NOT A WALL.** Arresting everything at one exact radius jolted — free one
+    substep, stopped the next. The give lives INSIDE the stated ceiling rather than beyond it: the
+    band starts biting at `(1 - CFG.TETHER_STRETCH)` × the limit and is fully taut at the limit, so
+    "max ~1.3× the ring" stays literally true while a third of the way in is spent easing you to a
+    stop. The fraction of separating velocity taken ramps **quadratically** across that stretch, so
+    first contact takes almost nothing. A long soft zone costs nothing during ordinary holding: the
+    band only ever acts on SEPARATING motion, and a tracked rock never separates.
+  - **THE ROPE'S LENGTH IS STATE, NOT A CONSTANT** (`b.ropeL`). Full power routinely arrives with the
+    rock ALREADY outside the limit — it lags during the wind-up, and a world's winch runs for seconds
+    while you are flying. Sizing the rope at the limit on that first substep snapped the load across
+    the whole gap in one frame (measured: a ~2,000-unit yank). The rope is seeded at whatever
+    distance it engaged at and hauled in at `CFG.TETHER_REEL`, and the taut/backstop maths run
+    against that LIVE length — never against the constant, or it is the instant snap again.
+    Measured after the fix: worst single-substep jump **2.5 units**, reeling in at exactly 300 u/s
+    from 3,000 down to the 921 limit.
   - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 4,200 across the ladder), because a rope
     resolves by mass RATIO and a constant-10 ship meant a Titan wrestled a moon exactly as badly as
     a Scout did. Derived from the drawn footprint — `SHIP_RADIUS` grows ×1.62 a tier and mass rides
