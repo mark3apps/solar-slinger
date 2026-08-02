@@ -191,7 +191,7 @@ identical runs. A first cut compared everything exactly and reported **109 chang
 which just teaches you to ignore the tool. Fields are now classed:
 
 - **VOLATILE** (never compared) — particles, aliens, flares, bolts, dropped sim seconds, wall time.
-- **Banded** — timings (35% or 0.12ms), live populations (20% or 40), death tallies (±4), staged-impact
+- **Banded** — timings (35% or 0.2ms), live populations (20% or 40), death tallies (±4), staged-impact
   rungs (2% or ±1 — see below; they used to be 20%/±3, which was wide enough to hide a whole re-tune
   of the damage curve).
 - **EXACT** — everything else. One moon, one NaN, one off-rail planet is the whole point.
