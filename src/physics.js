@@ -669,13 +669,18 @@ export function shatter(game, body, credit = null) {
   // the killing blow (stamped in collideBodies) — the moon-shot and sniper rows
   // are the only reason it exists.
   noteKill(game, body, credit, body.hitBy);
-  // The rock in the beam shattered. Dropping the pointer is not dropping the
-  // BEAM: setBeam is edge-triggered off releaseHeld/addToOrbit, so without
-  // this the hum kept running with nothing held (Twin Grip's other slot, if
-  // it still has a rock, legitimately keeps it on).
+  // The rock in the beam shattered. Two things go with the pointer, and both
+  // are releaseHeld's law — this path just has to obey it too:
+  //   PROMOTE. Twin Grip's flanking rock moves up into the primary slot. Left
+  //   in held2 with held null it is unthrowable and unstowable — releaseHeld
+  //   and addToOrbit both read game.held and bail — so the player ends up
+  //   holding a rock the beam will not let go of until they grab another.
+  //   THE HUM. setBeam is edge-triggered off releaseHeld/addToOrbit, so
+  //   without this it kept running with nothing held.
   if (body.heldBy === 'player' && game.held === body) {
-    game.held = null;
-    if (!game.held2) sfx.setBeam(false);
+    game.held = game.held2 || null;
+    game.held2 = null;
+    if (!game.held) sfx.setBeam(false);
   }
 
   // FIELD GIANT: cracking one sprays a cascade of smaller FIELD rock — the
@@ -1166,10 +1171,12 @@ function vaporize(game, body) {
     bump(game, 'sunFed');
     if (body.mass >= 3500) bump(game, 'sunFedBig');
   }
-  // Fed to the sun straight out of the beam — same hum drop as a shatter.
+  // Fed to the sun straight out of the beam — same promotion and same hum
+  // drop as a shatter, for the same reasons.
   if (body.heldBy === 'player' && game.held === body) {
-    game.held = null;
-    if (!game.held2) sfx.setBeam(false);
+    game.held = game.held2 || null;
+    game.held2 = null;
+    if (!game.held) sfx.setBeam(false);
   }
   addParticles(game, body.x, body.y, 0, 0, 24, '#ffd98a', 220, 1.1, 4);
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));

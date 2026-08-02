@@ -39,7 +39,11 @@ const PTYPE_BIT = {
   lava: 1, rocky: 2, gas: 4, ice: 8, terran: 16,
   ocean: 32, desert: 64, shroud: 128, crystal: 256,
 };
-export const PTYPE_COUNT = 9;
+// DERIVED, never typed out: `ptypesAll` ("destroy one of every archetype") is
+// the only reader, and a hand-maintained 9 beside the table above is exactly
+// how that row silently goes back to being winnable one world short the day a
+// tenth archetype lands. Computed once at module init — the sweep never sees it.
+export const PTYPE_COUNT = Object.keys(PTYPE_BIT).length;
 
 export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 200 };
 
