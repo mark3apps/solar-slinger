@@ -118,8 +118,17 @@ const BANDS = [
   // per-cause death tallies: small integers with real variance
   [/^nonAsteroidDeaths\./, { abs: 4 }],
   [/(minDebrisHeadroom|worstInstallDriftPct|firstWorldLossAt)$/, { pct: 25, abs: 60 }],
-  // staged-impact probes are best-of-N but still not bit-exact
-  [/^ladder\[/, { pct: 20, abs: 3 }],
+  // Staged-impact probes (combat's damage ladder — `ladderTotals`/
+  // `ladderLawViolations` in progression carry no bracket and stay EXACT).
+  // These are BIT-EXACT now: the suite freezes the target's rotation and pins
+  // the RNG for its own run, so five consecutive runs agree on all 69 fields.
+  // The 20%/3 band this replaces was sized for a measurement that swung 170x
+  // on unchanged code, and it was wide enough to hide a whole re-tune of the
+  // damage curve — a +5% DMG_BODY moved nearly every rung and still diffed
+  // green. Kept one point off `exact` only because the shaped rows report a
+  // MEAN of four quarter-turns, so a rounding can tip either way if anything
+  // upstream of the probe ever shifts.
+  [/^ladder\[/, { pct: 2, abs: 1 }],
   [/worstPlanetDriftPct\.pct$/, { abs: 0.5 }],
 ];
 const policyFor = (k) => {
