@@ -755,36 +755,53 @@ export function setUpgradeVisible(game, choices, kind, onPick) {
   el.upgradeScreen.classList.remove('hidden');
 }
 
-// ---- Mood-reactive cockpit chrome -----------------------------------------
-// The music director's live mood vector (calm / world / sun / danger — music.js
-// publishes it as game.mood) tints the cockpit frame and its edge wash, so the
-// shell breathes with the soundtrack instead of sitting at one violet forever.
-// CHROME ONLY: the instruments keep their semantic colors (hull green, shield
-// blue, lives pink) so they still read at a glance. The lowhull / heat alarm
-// classes override --fr outright in CSS — an alarm always outranks a mood — and
-// mood is all zeros until game.started, so the title screen stays plain violet.
-const MOOD_CALM = [176, 112, 255];    // --chrome, the violet everything-chrome
-const MOOD_SUN = [255, 176, 74];      // corona amber, sibling of the gold trim
-const MOOD_DANGER = [255, 92, 122];   // the ember/pink end of the palette
-const mixRgb = (a, b, t) => [
-  Math.round(a[0] + (b[0] - a[0]) * t),
-  Math.round(a[1] + (b[1] - a[1]) * t),
-  Math.round(a[2] + (b[2] - a[2]) * t),
-];
+// ---- Locale-reactive cockpit chrome ----------------------------------------
+// TWO channels, from two different directors, and keeping them separate is the
+// whole design:
+//
+//   HUE comes from WHERE YOU ARE (zone.js publishes game.zone — deep / world /
+//        corona / shoal / fringe, already crossfaded). The entire cockpit
+//        chrome is spent through it: `--zone-rgb` is a comma triplet, so CSS
+//        can take it at any alpha with rgba(var(--zone-rgb), a).
+//   INTENSITY comes from the MOOD vector (music.js publishes game.mood) — how
+//        loud the edge wash burns, which is genuinely about the moment, not
+//        about the place.
+//
+// The hue used to come from the mood too, and that was the bug this fixes: it
+// blended toward the local sky, so the wash near the star went amber over an
+// amber sky and the chrome lost the contrast it exists to have. The accents in
+// zone.js are picked AGAINST their sky instead.
+//
+// CHROME ONLY, unchanged: the instruments keep their semantic colors (hull
+// green, shield blue, lives pink) so they still read at a glance, and the
+// lowhull / heat alarm classes override --fr outright in CSS — an alarm always
+// outranks a locale. game.zone is undefined until the first frame runs, and the
+// CSS fallbacks are the house violet, so the title screen stays plain violet.
+// The chrome is not one colour, it is a three-step RAMP — the kit's rims are
+// pale, its faces are the accent, its wells are a darkened version of it. CSS
+// can't compute a ramp it can also spend at arbitrary alpha (color-mix returns
+// a colour, not a triplet), so the ramp is mixed HERE and published as three
+// comma triplets. That keeps every rule in the stylesheet in the shape it was
+// already written in: rgba(var(--zone-…-rgb), a).
+const WHITE = [255, 255, 255];
+const WELL = [32, 10, 68];            // the deep purple-black every well sinks toward
+const ramp = (c, to, t) => `${Math.round(c[0] + (to[0] - c[0]) * t)}, ` +
+                           `${Math.round(c[1] + (to[1] - c[1]) * t)}, ` +
+                           `${Math.round(c[2] + (to[2] - c[2]) * t)}`;
 
-function moodChrome(game) {
+function zoneChrome(game) {
+  const z = game.zone;
+  if (z) {
+    const c = z.rgb;
+    setVar(el.hud, '--zone-rgb', `${c[0]}, ${c[1]}, ${c[2]}`);
+    setVar(el.hud, '--zone-soft-rgb', ramp(c, WHITE, 0.5));
+    setVar(el.hud, '--zone-deep-rgb', ramp(c, WELL, 0.3));
+  }
   const m = game.mood;
   if (!m) return;
   const cl = (v) => Math.max(0, Math.min(1, v || 0));
   const sun = cl(m.sun), danger = cl(m.danger), world = cl(m.world);
-  // Danger is blended LAST so it wins a tie: burning up next to a nest should
-  // read as a threat, not as a sunrise.
-  let c = mixRgb(MOOD_CALM, MOOD_SUN, sun * 0.85);
-  c = mixRgb(c, MOOD_DANGER, danger * 0.9);
-  // Worlds only lift the glow — a hue shift there would collide with the cyan
-  // the sensors already own.
   const intensity = Math.min(1, Math.max(sun, danger) * 0.9 + world * 0.22);
-  setVar(el.hud, '--mood', `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
   setVar(el.hud, '--moodI', intensity.toFixed(2));
 }
 
@@ -827,7 +844,7 @@ function perfBadge(game) {
 
 export function updateHud(game) {
   syncMenus(game);
-  moodChrome(game);
+  zoneChrome(game);
   // Dev sim-speed badge (window.speed / ?dev hotkeys): hidden at 1x so normal
   // play never shows it; while fast-forwarding it also owns up to the achieved
   // rate whenever the machine can't keep up with the target.

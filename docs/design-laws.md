@@ -340,13 +340,43 @@ code "works."
   double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
   terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
 - **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
-- **The cockpit chrome is mood-reactive, the instruments are not.** `music.js` publishes its live mood
-  vector as `game.mood`; `hud.moodChrome` blends it into `--mood` / `--moodI` on `#hud` each frame, and
-  the soft edge wash (`#hud::after`, in `--fr`) takes that color — violet when calm, corona amber near
-  the sun, ember under threat (danger blends last so it wins a tie). **CHROME ONLY**: hull green, shield
-  blue and lives pink stay semantic so the instruments still read at a glance. The `lowhull` / `heat`
-  alarm classes override `--fr` outright — an alarm always outranks a mood — and mood is all zeros until
-  `game.started`, so the title screen and a calm cruise look exactly as they always did.
+- **The cockpit chrome is LOCALE-reactive, the instruments are not.** `zone.js` — built as the same
+  machine as `music.js`, and meant to stay that way: buckets, a presence score each, ENTER/EXIT
+  hysteresis, a minimum dwell, a crossfade — decides which of five places the ship is in and publishes
+  the crossfaded accent as `game.zone`. `hud.zoneChrome` writes it to `#hud` as three comma triplets
+  (`--zone-rgb` / `--zone-soft-rgb` / `--zone-deep-rgb`, a pale→accent→well ramp mixed in JS because
+  CSS can't compute a ramp it can also spend at arbitrary alpha), and re-declares `--chrome` /
+  `--chrome-soft` off them, so everything already written in terms of those follows for free.
+  `render.drawMinimap` reads the same `game.zone` for the dial's grid, scale break, sensor bubble,
+  sweep and rim — the top-right is ONE instrument, and a radar still lit violet inside a gold cockpit
+  reads as a bug.
+
+  | zone | where | that region's sky | accent |
+  |---|---|---|---|
+  | `deep` | the fallthrough — open space | blue-black | violet `176,112,255` (the house chrome, unchanged) |
+  | `world` | inside a planet/moon/station domain | dark + the planet's own blush | gold `255,201,100` |
+  | `corona` | the star filling your sky (`R * 1.4`) | hot amber | ice blue `110,205,255` |
+  | `shoal` | inside a dense field's `fieldFrac` footprint | grey/rust rock | orchid `255,106,213` |
+  | `fringe` | the Oort approach, last lane to the wall | dim pale blue | glacial `198,226,255` |
+
+  **Every accent is picked AGAINST its region's sky, and that is the whole point** — the mood tint this
+  replaced blended TOWARD it and went corona amber over an amber sky, the lowest-contrast thing it
+  could have done. Measured against the pilot card's own bed, the switch buys 1.25×–2.4× contrast in
+  every zone that changes and leaves deep space exactly as it was.
+  The palette is also picked around the INSTRUMENTS, which is what actually decides it: mint green,
+  shield cyan, lives rose and alarm ember are spoken for. Acid lime was tried for the shoal first and
+  was wrong for exactly that reason — a lime cockpit sits four inches from a green hull bar. The
+  fringe is the one deliberately DESATURATED accent; saturation is the second axis, and it is what
+  keeps it apart from the corona's ice blue.
+
+  **It is a LOCATION channel, not a threat channel.** Combat is not a place: threat stays with the mood
+  vector, which still drives the edge wash's INTENSITY (`--moodI`), and with the alarm classes. The
+  `lowhull` / `heat` classes still override `--fr` outright — an alarm always outranks a locale — and
+  `game.zone` is undefined until the first frame, with the CSS fallbacks set to the house violet, so
+  the title screen is unchanged. **CHROME ONLY**: hull green, shield blue, lives pink, the gold ★ score
+  and the per-category achievement accents never take it, or the instruments stop reading at a glance.
+  The SHELL MENUS keep the house violet too — they live outside `#hud`, and a pause screen is not a
+  place the ship is at.
 - **NO FRAME AROUND THE VIEWPORT.** The chrome used to include glowing corner arcs — a masked rounded
   border on `#hud::before`, inset 10px, visible near each corner. It was removed on request: a violet
   outline tracing the whole screen reads as browser chrome laid over the game, not as a machine you fly.

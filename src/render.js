@@ -4669,8 +4669,16 @@ function drawMinimap(game) {
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.clip();
 
+  // THE DIAL'S OWN CHROME takes the locale accent (zone.js -> game.zone), for
+  // the same reason the DOM chrome does — the top-right is ONE instrument, and
+  // a radar still lit violet inside a gold or ice-blue cockpit reads as a bug,
+  // not as a choice. Grid, scale break, sensor bubble and sweep only: every
+  // BLIP below keeps its semantic colour, because a blip's colour is what it IS.
+  const zc = game.zone ? game.zone.rgb : [176, 112, 255];
+  const acc = (a) => `rgba(${zc[0]}, ${zc[1]}, ${zc[2]}, ${a})`;
+
   // Grid: range rings + cross axes, barely-there
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.10)';
+  ctx.strokeStyle = acc(0.10);
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(cx, cy, mid * 0.5, 0, TAU); ctx.stroke();
   ctx.beginPath(); ctx.arc(cx, cy, mid + rim * 0.25, 0, TAU); ctx.stroke();
@@ -4680,7 +4688,7 @@ function drawMinimap(game) {
   ctx.stroke();
   // …and the SCALE BREAK itself, dashed (helper-UI grammar) so the jump in
   // scale is something the eye can see rather than a lie about distance.
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.28)';
+  ctx.strokeStyle = acc(0.28);
   ctx.setLineDash([3, 3]);
   ctx.beginPath(); ctx.arc(cx, cy, mid, 0, TAU); ctx.stroke();
   ctx.setLineDash([]);
@@ -4695,9 +4703,9 @@ function drawMinimap(game) {
     if (gh && gh.alive && gh.awake &&
         Math.hypot(gh.x - game.ship.x, gh.y - game.ship.y) < 6000) seeW *= 1.5;
     const seeR = radarR(seeW);
-    ctx.fillStyle = 'rgba(176, 112, 255, 0.05)';
+    ctx.fillStyle = acc(0.05);
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(176, 112, 255, 0.22)';
+    ctx.strokeStyle = acc(0.22);
     ctx.beginPath(); ctx.arc(cx, cy, seeR, 0, TAU); ctx.stroke();
   }
 
@@ -4759,9 +4767,9 @@ function drawMinimap(game) {
   const sweepAng = (game.time * TAU / MINIMAP_SWEEP_T) % TAU;
   if (ctx.createConicGradient) {
     const sweep = ctx.createConicGradient(sweepAng, cx, cy);
-    sweep.addColorStop(0, 'rgba(176, 112, 255, 0)');
-    sweep.addColorStop(0.8, 'rgba(176, 112, 255, 0)');
-    sweep.addColorStop(1, 'rgba(176, 112, 255, 0.20)');
+    sweep.addColorStop(0, acc(0));
+    sweep.addColorStop(0.8, acc(0));
+    sweep.addColorStop(1, acc(0.20));
     ctx.fillStyle = sweep;
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill();
     ctx.strokeStyle = 'rgba(235, 218, 255, 0.5)';
@@ -5169,10 +5177,10 @@ function drawMinimap(game) {
   ctx.restore();
 
   // Rim: bright ring + halo + bearing ticks (cardinals heavier), outside the clip
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.55)';
+  ctx.strokeStyle = acc(0.55);
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = 'rgba(176, 112, 255, 0.12)';
+  ctx.strokeStyle = acc(0.12);
   ctx.lineWidth = 3.5;
   ctx.beginPath(); ctx.arc(cx, cy, r + 2.5, 0, TAU); ctx.stroke();
   ctx.lineWidth = 1;
@@ -5180,7 +5188,7 @@ function drawMinimap(game) {
     const a = (i / 24) * TAU;
     const cardinal = i % 6 === 0;
     const len = cardinal ? 7 : 3.5;
-    ctx.strokeStyle = cardinal ? 'rgba(235, 218, 255, 0.8)' : 'rgba(176, 112, 255, 0.35)';
+    ctx.strokeStyle = cardinal ? 'rgba(235, 218, 255, 0.8)' : acc(0.35);
     ctx.beginPath();
     ctx.moveTo(cx + Math.cos(a) * (r - len), cy + Math.sin(a) * (r - len));
     ctx.lineTo(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1));
