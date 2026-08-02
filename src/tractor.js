@@ -1,6 +1,6 @@
 import { CFG, PROG, addXp, fieldXp } from './config.js';
 import { derail } from './entities.js';
-import { clamp, angDiff, TAU } from './util.js';
+import { clamp, angDiff } from './util.js';
 import { bump, best, noteCatch } from './achievements.js';
 import * as sfx from './sfx.js';
 
