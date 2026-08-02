@@ -1306,6 +1306,14 @@ function drawBody(game, b) {
     drawPodSprite(game, b);
   } else if (b.chunk) {
     drawChunkSprite(b);
+    // Cored chunks carry the reward, so they must carry the tell. config
+    // worldDebris stamps `cored` on a crystal world's rubble (~22% of it) and
+    // entities' chunk material application sets b.cored from it, so both a
+    // seeded belt piece and the crust a wounded world calves can be cored —
+    // and physics still pays out the core crystal on a player smash. This
+    // branch is taken BEFORE the asteroid one below, so those pieces were the
+    // only cored rocks in the game with no purple glint on them.
+    if (b.cored) drawCoreGlint(game, b);   // the vein TWINKLES — never bakeable
   } else if (b.type === 'asteroid') {
     // drawRock draws the pits too (baked into the sprite, or clipped inline),
     // so the pit pass further down is told to stand off.
@@ -1435,13 +1443,19 @@ function drawBody(game, b) {
 
   // MOONSHADOW eclipse: the world dims under its moon's shadow, with a warm
   // rim so it reads as an eclipse rather than damage
+  // THE CRUMBLE: through traceSurface, never a full-radius arc. A raw arc at
+  // b.radius strokes straight across the open mouth of any crater the crumble
+  // carved — redrawing the nominal limb the wound exists to remove as a bright
+  // rim over empty space, and filling the shade over the wound instead of
+  // ending at it. It also bypassed traceCrystal, so a crystal world's eclipse
+  // was a disc laid over a facet silhouette.
   if (b.eclipseT > 0) {
     const k = Math.min(1, b.eclipseT / 0.5);
     ctx.fillStyle = `rgba(2, 4, 14, ${0.42 * k})`;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+    traceSurface(b); ctx.fill();
     ctx.strokeStyle = `rgba(255, 225, 170, ${0.3 * k})`;
     ctx.lineWidth = Math.max(1.2, 2 / game.cam.zoom);
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.stroke();
+    traceSurface(b); ctx.stroke();
   }
 
   // AURORA: solid shimmering rim arcs on the night side while a solar-storm
