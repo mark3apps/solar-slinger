@@ -645,12 +645,19 @@ function shardArch(arch) {
 // Give a chunk its silhouette: the shared archetype inside the bucketed range,
 // a unique per-id shape above it. ONE choke point, so the sprite, the bake and
 // the scar sampler can never disagree about what shape a chunk is.
+// Which shard archetype a chunk wears. `b.shardArch` is set by
+// physics.promoteGravel so a grain keeps the silhouette it was already drawn
+// with; everything else falls back to its id. ONE accessor, because the shape
+// cache (chunkShape) and the atlas cell (blitChunk) must resolve identically —
+// picking different sources would draw one shape and clip scars against another.
+function shardArchOf(b) { return (b.shardArch !== undefined ? b.shardArch : b.id) % SHARD_ARCHS; }
+
 function chunkShape(b) {
   const R = b.radius;
   if (b.shard && b.shardR === R) return;
   const bk = shardBucket(R);
   if (bk >= 0) {
-    const s = shardArch(b.id % SHARD_ARCHS);
+    const s = shardArch(shardArchOf(b));
     b.shard = s.pts; b.shardR = R;
     b.crustAt = s.crustAt; b.facetAt = s.facetAt; b.faultAt = s.faultAt;
     return;
@@ -1157,7 +1164,7 @@ function blitChunk(game, b) {
   const r = shardRow(tier, bk, wt.now);
   const t = tintOf(b.color);
   rockGLPush(r.sh, b.x, b.y, b.rot, b.radius * r.ext,
-    ((b.id % SHARD_ARCHS) * r.cell) / r.sh.w, r.sy / r.sh.h, t[0], t[1], t[2]);
+    (shardArchOf(b) * r.cell) / r.sh.w, r.sy / r.sh.h, t[0], t[1], t[2]);
   return true;
 }
 

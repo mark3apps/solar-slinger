@@ -247,6 +247,9 @@ export function cull(cx, cy, leash, worldR) {
 // Diagnostic readout, in the shape of render's rockPathStats / physics'
 // broad-phase counters.
 export function gravelStats() {
+  // Must match the BYTES calculation the buffer was allocated with — the three
+  // u8 fields are padded to 4, and reporting the unpadded 3 made the diagnostic
+  // under-report by one byte per slot.
   return { live: liveN, top, capacity: cap, freeSlots: freeList.length,
-           bytes: cap * (8 * 4 + 4 * 6 + 3) };
+           bytes: buffer.byteLength };
 }

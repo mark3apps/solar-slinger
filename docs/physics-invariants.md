@@ -399,10 +399,10 @@ range is untouched.
 
 **What gravel deliberately does NOT do**, each an accepted cost rather than an omission:
 
-- **Gravel vs gravel does not collide.** Two anonymous grains grinding is invisible at their size and
-  it is the O(n²) term that makes a cascade expensive. This reads as a permanent `CFG.CHUNK_INERT`
-  between grains, and it IS a feel change. Anything the player would watch collide is a `Body` by
-  construction — promotion on beam reach, plus the `GRAVEL_R_MAX` size cut.
+- **Grains do not damage each other.** They carom (see "Grain-on-grain contact" below) but a grain-on-
+  grain hit produces no damage, no scars, no credit and no splitting — everything that makes a
+  collision an EVENT belongs to `Body`. That is what keeps the O(n²) tail off the cascade while still
+  letting a pocket behave like one.
 - **Grains do not damage celestials.** A grain carries ~90-200 mass against a planet's 1e5+; mass
   dominance already throttled that to nothing, and thousands of `damageBody` calls would reinstate
   the cascade the debris budget exists to bound.
@@ -479,3 +479,10 @@ belongs to `Body`. This only has to make a pocket carom.
 that a shoal plays like a pinball table" (physics.js). Gravel without self-collision would have
 deleted that outright, so grain contact is the GATE on the field-rock migration, not an optimisation
 alongside it.
+
+**IT LIVES IN A SHARED MODULE, and that is not a tidiness choice.** `gravel-contact.js` is called by
+BOTH the worker and `physics.stepGravel`. It was originally implemented only inside the worker, which
+meant a host without `SharedArrayBuffer` — no cross-origin isolation, a worker that failed to start —
+played a game where debris did not carom. **A capability may change how fast something runs; it may
+never change what the simulation does.** If you add a rule to grain contact, it lands in both paths
+automatically; if you ever split them again, you have reintroduced that bug.

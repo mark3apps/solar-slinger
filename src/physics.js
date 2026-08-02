@@ -10,6 +10,7 @@ import {
 } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
+import { collideGrains, makeContactScratch } from './gravel-contact.js';
 import * as sfx from './sfx.js';
 
 // ---------- particles / effects ----------
@@ -1443,6 +1444,12 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
   let ax = 0, ay = 0, pax = 0, pay = 0;
   const loose = starMul === 1 && heavyMul === 1;   // ship passes ≠1 → the wide ship cutoff
   for (const b of attractors) {
+    // A CACHED SHORTLIST CAN OUTLIVE ITS MEMBERS. attShortlist holds references
+    // for up to ATT_STALE seconds, so a body that died inside that window would
+    // otherwise keep pulling with its full mass. The full-attractor callers
+    // (the ship, predictPaths) pass a list rebuilt this substep and never see a
+    // dead entry, so this costs them one byte read against a sqrt and a divide.
+    if (!b.alive) continue;
     const dx = b.x - x, dy = b.y - y;
     const d2 = dx * dx + dy * dy + SOFT2;
     if (d2 > (loose ? b.cullR2 : b.cullShip2)) continue;   // negligible tug — skip the sqrt+div
@@ -3130,8 +3137,16 @@ function gravelAttractors(attractors, cx, cy, reach) {
 // join spun past its bound. `workerDead` latches on the last of those, so a
 // pathological machine degrades once instead of stalling every substep forever.
 let gWorker = null, gReady = false, gPending = false, workerDead = false;
+// Perf/verification escape hatch, same idiom as forceRockPath / forceFullGravity
+// / forceSweptOff: force the INLINE path so the fallback can be exercised on a
+// machine that does have SharedArrayBuffer. That matters more here than for the
+// others — the worker and the inline pass must produce the same simulation, and
+// the only way to keep proving it is to be able to run both on demand.
+let forceInline = false;
+export function forceGravelInline(on) { forceInline = !!on; }
 export function gravelWorkerState() {
-  return { shared: gravel.isShared, started: !!gWorker, ready: gReady, dead: workerDead };
+  return { shared: gravel.isShared, started: !!gWorker, ready: gReady,
+           dead: workerDead, forcedInline: forceInline };
 }
 
 function startGravelWorker() {
@@ -3154,7 +3169,7 @@ function startGravelWorker() {
 // Fill the shared parameter block with this substep's shortlist and wake the
 // worker. Returns false if the caller must do the pass inline instead.
 function gravelDispatch(game, dt, attractors) {
-  if (!gReady || workerDead || !gravel.count()) return false;
+  if (forceInline || !gReady || workerDead || !gravel.count()) return false;
   const s = game.ship;
   const cx = s.alive ? s.x : game.cam.x;
   const cy = s.alive ? s.y : game.cam.y;
@@ -3180,15 +3195,28 @@ function gravelDispatch(game, dt, attractors) {
 // by design. The spin is normally zero iterations (gravel is ~2ms of work
 // against ~25ms of Body physics in the same substep); the bound exists so a
 // wedged worker degrades to the inline path instead of freezing the game.
-const JOIN_SPIN_MAX = 2e7;
+//
+// THE BOUND IS TIME, NOT ITERATIONS. An iteration count is not a bound on the
+// thing that actually matters: 20 million spins is microseconds on one machine
+// and a visible hang on another, so the guard meant to prevent a stall could
+// itself become one. A millisecond budget caps the worst case at a number you
+// can reason about. performance.now() is only sampled every SPIN_CHUNK
+// iterations because reading a clock in the tightest possible loop is most of
+// the loop's cost.
+const JOIN_BUDGET_MS = 4;
+const SPIN_CHUNK = 1024;
 function gravelJoin() {
   if (!gPending) return true;
   gPending = false;
-  for (let i = 0; i < JOIN_SPIN_MAX; i++) {
-    if (Atomics.load(gravel.ctrl, 0) === gravel.CTRL_DONE) {
-      Atomics.store(gravel.ctrl, 0, gravel.CTRL_IDLE);
-      return true;
+  const t0 = performance.now();
+  for (;;) {
+    for (let i = 0; i < SPIN_CHUNK; i++) {
+      if (Atomics.load(gravel.ctrl, 0) === gravel.CTRL_DONE) {
+        Atomics.store(gravel.ctrl, 0, gravel.CTRL_IDLE);
+        return true;
+      }
     }
+    if (performance.now() - t0 > JOIN_BUDGET_MS) break;
   }
   console.warn('Solar Slinger: gravel worker stalled — falling back to the main thread');
   workerDead = true;
@@ -3225,6 +3253,26 @@ function stepGravel(game, dt, attractors) {
     gvx[i] += ax * dt; gvy[i] += ay * dt;
   }
   gravel.integrate(dt);
+  // GRAIN CONTACT RUNS HERE TOO. The worker does this as well, through the SAME
+  // module — contact used to exist only in the worker, which meant a host
+  // without SharedArrayBuffer played a game where debris did not carom. A
+  // capability may change how fast something runs; it may never change what the
+  // simulation does.
+  collideGrains(_grains(), gravel.top, _contactScratch);
+}
+
+const _contactScratch = makeContactScratch();
+let _grainsBundle = null;
+function _grains() {
+  // Built once — the store's arrays are allocated for the process lifetime
+  // (fixed capacity, see gravel.MAX_SLOTS), so the bundle can never go stale.
+  if (!_grainsBundle) {
+    _grainsBundle = {
+      x: gravel.x, y: gravel.y, vx: gravel.vx, vy: gravel.vy,
+      radius: gravel.radius, mass: gravel.mass, inertT: gravel.inertT, flags: gravel.flags,
+    };
+  }
+  return _grainsBundle;
 }
 
 // Gravel contact. Gravel is anonymous rock, so it answers to a deliberately
@@ -3344,7 +3392,13 @@ export function promoteGravel(game, i) {
     gravel.vx[i], gravel.vy[i], gravel.mass[i]);
   b.radius = b.baseRadius = gravel.radius[i];
   b.color = gravel.PALETTE[gravel.tint[i]] || gravel.PALETTE[0];
-  b.chunk = true;                     // it draws as the shard it already was
+  b.chunk = true;
+  // CARRY THE ARCHETYPE. The shard silhouette is normally chosen by
+  // `b.id % SHARD_ARCHS`, and a promoted grain gets a brand-new id — so without
+  // this the rock visibly POPS to a different shape at the exact moment the
+  // player grabs it, which is the one moment they are looking straight at it.
+  // render's chunkShape and blitChunk both prefer b.shardArch when it is set.
+  b.shardArch = gravel.arch[i];
   b.rot = gravel.rot[i]; b.spin = gravel.spin[i];
   b.hp = b.maxHp = gravel.hp[i];
   b.inertT = gravel.inertT[i];        // a fresh fragment stays inert across the change
