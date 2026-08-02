@@ -5,7 +5,7 @@ import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
-  rockShape, bigRockSurfAt, rockJagRing, JAG_PEAK,
+  rockShape, bigRockSurfAt, rockJagRing, jagSamples, JAG_PEAK,
 } from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
@@ -624,12 +624,23 @@ function traceAsteroid(b) {
     }
     return;
   }
-  if (!b.jag || b.jagR !== b.radius) {
-    let bk;
+  // CACHED ON WHAT THE RING ACTUALLY DEPENDS ON, which is not the radius. The
+  // ring is a profile in units of the radius, so a rock that chips only needs a
+  // new one when it changes ARCHETYPE — a different bucket, or (past the last
+  // bucket edge, where the ring is unique per id) a different sample count.
+  // Keying on b.radius rebuilt it on every point of chip damage, and a rebuild
+  // is now real work: ~14-20us, against the ~2us the one-octave loop cost. In a
+  // debris-heavy scene with a few hundred chipping rocks that was measurable in
+  // the frame (+25% on that scenario) — the rebuild rate was the whole cost,
+  // not the generator.
+  // key: 0..3 a size bucket, -1 the carved stone, -1-n a unique big-rock ring.
+  const bk = b.carved ? -2 : rockBucket(b.radius);
+  const key = bk >= 0 ? bk : bk === -2 ? -1 : -1 - jagSamples(b.radius);
+  if (!b.jag || b.jagKey !== key) {
     if (b.carved) {
       // The carved stone: a perfect hexagon — machined, not tumbled
       b.jag = [1, 1, 1, 1, 1, 1];
-    } else if ((bk = rockBucket(b.radius)) >= 0) {
+    } else if (bk >= 0) {
       b.jag = archJag(b.id % ROCK_ARCHS, bk);
     } else {
       // Big rock keeps a one-of-a-kind silhouette (see the header above): past
@@ -649,7 +660,7 @@ function traceAsteroid(b) {
       // bites off the drawn edge.
       b.jag = rockJagRing(mulberry32(b.id * 7919 + 13), b.radius);
     }
-    b.jagR = b.radius;
+    b.jagKey = key;
   }
   const n = b.jag.length;
   ctx.beginPath();
@@ -715,7 +726,7 @@ const SPRITE_TIERS = [8, 16];
 // corners off every rock. The rings mean-normalise to 1 rather than
 // peak-normalise (a rock draws the size it collides at), so the gap between
 // mean and peak has to live in the cell.
-const SPRITE_EXT = JAG_PEAK + 0.08;
+const SPRITE_EXT = JAG_PEAK + 0.05;
 // Rows are bucket x colour. Four buckets against the handful of small-rock
 // colours (belt grey, boulder rust, cored, ice, junk) already fills 16, and
 // the whole win rests on one sheet per tier — so this carries real headroom

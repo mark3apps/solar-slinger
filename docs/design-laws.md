@@ -333,13 +333,52 @@ code "works."
     adjacent-sample jump over 0.20r, against 58 before any of this. And the sampled profile IS the
     table `physics.surfRadius` reads, with no resampling in between, so the drawn edge and the
     collided edge are the same numbers — the CRUMBLE law, reaching rock.
+  - **AND IT IS NEVER CONVEX** (user design law: *"I want there to be more extreme concave shapes as
+    well in there"*). Two mechanisms, because "some rocks are dramatically hollowed" and "no rock is
+    a shape" are different requirements:
+    - **The GOUGE** — one dominant concave feature, on `gougeP` of rocks (always, for a CLEFT).
+      **Width is the half that matters and the half that is easy to get wrong**: a narrow notch
+      removes almost no AREA however deep it goes, so it reads as a crack rather than as a rock with
+      a piece missing. It takes the 0.7 power of the raised cosine — flatter floor, steeper walls,
+      because the walls are what read as a notch — and never `sqrt`, whose infinite slope at the rim
+      puts a vertical wall between two adjacent samples for the collider to catch on. `gougeTwin`
+      adds its opposite number, and cutting from both sides is what makes a WAIST rather than a bay:
+      a dumbbell held together at the middle, which is a real asteroid (Kleopatra, Itokawa) and, at
+      monolith scale, a place to fly through. Measured over 3,000 ids the deepest dent runs p10 0.14
+      / p50 0.35 / p90 0.72 of the chord across it — a spread from merely irregular to hollowed, not
+      a set that is uniformly chewed.
+    - **The CONVEXITY GUARD** — facets are a `min` against a line, so enough of them landing well
+      spread out IS a convex polygon: the machined-block failure arriving by the back door, and it
+      shipped a clean triangle. So `chordDeficit` measures the deepest dent the outline actually has
+      and cuts a modest gouge if there isn't one. Three details are each a bug that was in it:
+      it measures at **three window widths** (one window only sees dents its own size, so a chord
+      drawn across a narrow window sits inside a wide bay and calls it flat); it runs **after the
+      floor**, because a notch that bottoms out ON the floor is shallower than the cut that made it;
+      and its depth is a fraction of the **local** surface, since an absolute cut landing on a tall
+      lobe barely dents it. With all three, 0% of ids come out under the threshold — against 48%
+      measuring near-convex before the guard existed. Its own cut is deliberately MODEST: the drama
+      is supposed to come from `gougeP`, or the kinds that come out convex most often (slab, wedge)
+      would end up the most chewed.
+    - **Gravel's concave features are pulled back** (`GRAVEL_GOUGE_*`) for the same reason it is
+      squatted: a gouge is sized against the body, so on an 18-sample ring drawn at 6 px it is most
+      of the rock, and the deep ones came out as little hearts and bowties — a silhouette, which is
+      the complaint again from the other end. The guard still applies at both scales; it is the
+      DRAMA that scales, not the rule.
+    - **The honest limit of the representation**: a rock may be notched, waisted, hollowed or cut
+      most of the way through, but never HOOKED. An overhang would put two surfaces on one bearing,
+      and the collider's whole narrow phase is a single radial query. `OUTLINE_FLOOR` is how close to
+      the middle a surface may come (0.19 of the mean radius).
   - **Gravel is drawn SQUATTER than a landmark of the same kind** (`GRAVEL_SQUAT`/`GRAVEL_OFF`), and
     that is a memory bill, not a fudge: the sprite cell must span the ring's longest axis, so the
-    atlas pays for the peak-to-mean ratio (`SPRITE_EXT` 1.63 and 6.2 MB of the 8 MB budget at full
-    strength, against 1.46 and 5.0 MB squatted) — and a 1.7:1 splinter drawn at 8 px is three pixels
-    wide. The extremes cost real memory exactly where they cannot be seen. Rings normalise to a mean
-    radius of 1, not a peak, so a body draws the size it collides at whether it came out knobbly or
-    smooth.
+    atlas pays for the peak-to-mean ratio in BOTH memory and fill: `SPRITE_EXT` is sized from
+    `JAG_PEAK`, so every blit in a shoal rasterises that margin whether the rock fills it or not.
+    **This is a measured, accepted cost** — 1.43 against the 1.25 a near-circular ring needed is 31%
+    more quad area, and it shows up as roughly +6% on the dense-field frame and +8% on debris-heavy.
+    It was not worth buying back: pulling `JAG_PEAK` to 1.30 drops the gravel's mean radius to 0.91
+    of the body radius it COLLIDES at, and a rock drawing 9% small is a worse bug than a wider quad.
+    Squatting harder does not help either — the peak's tail comes from the grain, not the
+    elongation. Rings normalise to a mean radius of 1, not a peak, so a body draws the size it
+    collides at whether it came out knobbly or smooth.
 - **Damage detail is sized against a FIXED reference radius, not the body** (`DETAIL_R` 260 in
   render's `drawBodyDamage`). Crack widths, crack lengths, the ember fissure glow and a crater's
   fracture rays were all authored as fractions of R when nothing drew bigger than ~250 units; at

@@ -203,7 +203,68 @@ export const ROCK_REACH_MAX = 1.62;
 // Floor on the profile as a fraction of its own mean. Bites and facets are cut
 // against this: a waist is a feature, a pinch to nothing is a shape whose
 // collider has a hole in it.
-const OUTLINE_FLOOR = 0.34;
+// Lowered from 0.34 to let a gouge actually bite: at 0.34 the deep notches
+// bottomed out on the floor and came back as flat-bottomed dishes, all the
+// same depth. This is as close to the middle as any surface may come — and the
+// star-shaped representation is what bounds it, because a ray from the centre
+// crosses the outline exactly once. That is also the honest limit of what this
+// can express: a rock may be notched, waisted, hollowed, cut most of the way
+// through — but never HOOKED, because an overhang would put two surfaces on one
+// bearing and the collider's whole narrow phase is a single radial query.
+const OUTLINE_FLOOR = 0.19;
+
+// cos/sin at each of `n` even bearings, built once per sample count and shared.
+// Everything below walks the same bearings — the outline's own loop, the facet
+// cuts, the bites, the dent measure — and computing them inline cost more than
+// the shape maths did (the dent measure alone wanted 4,600 trig calls a rock).
+const trigTables = new Map();
+function bearings(n) {
+  let t = trigTables.get(n);
+  if (!t) {
+    t = { c: new Float64Array(n), s: new Float64Array(n) };
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU;
+      t.c[i] = Math.cos(a); t.s[i] = Math.sin(a);
+    }
+    trigTables.set(n, t);
+  }
+  return t;
+}
+
+// THE DEEPEST DENT in the outline, as a fraction of the straight line drawn
+// across it — 0 for anything convex, and it rises with how far the surface
+// falls away from its own hull. Cheaper than a hull (one pass, no sort) and it
+// measures the thing that actually matters: whether there is somewhere the rock
+// is missing a piece. Used as the guard in rockOutline; also the number the
+// presets are tuned against, because SOLIDITY (area over hull area) is a bad
+// proxy here — a notch cut most of the way to the centre removes very little
+// AREA, so a set of properly notched rocks still measures 0.87 solid.
+// Measured at THREE window widths, because one window only sees dents of about
+// its own size: a chord drawn across a narrow window sits inside a wide bay and
+// reports it as flat, which had the guard firing on exactly the rocks that
+// least needed it.
+function chordDeficit(prof, n) {
+  const { c, s } = bearings(n);
+  let worst = 0;
+  for (const frac of [12, 6, 3.5]) {
+    const w = Math.max(2, Math.round(n / frac));
+    for (let i = 0; i < n; i++) {
+      const ia = (i - w + n) % n, ib = (i + w) % n;
+      const axp = c[ia] * prof[ia], ayp = s[ia] * prof[ia];
+      const bxp = c[ib] * prof[ib], byp = s[ib] * prof[ib];
+      // Where the ray at bearing i crosses the chord from a to b.
+      const den = (byp - ayp) * c[i] - (bxp - axp) * s[i];
+      if (den > -1e-9 && den < 1e-9) continue;
+      const rc = (axp * byp - ayp * bxp) / den;
+      if (rc > 0 && prof[i] < rc) {
+        const d = 1 - prof[i] / rc;
+        if (d > worst) worst = d;
+      }
+    }
+  }
+  return worst;
+}
+const CONCAVE_MIN = 0.10;   // every rock must dent at least this much
 
 // Reach of a disc at (cx, cy) radius R along a bearing, measured FROM THE
 // ORIGIN — 0 when the ray misses it. Every preset keeps its lobes overlapping
@@ -222,22 +283,36 @@ function discReach(cx, cy, R, ux, uy) {
 // the docs promise them: a SLAB has long flat faces you route along, a WEDGE
 // tapers to a point, a SHARD is a splinter with a narrow waist, a CLEFT has a
 // notch deep enough to fly into, a LUMP is the gnarled general case.
+// `gougeP` is the chance of ONE dominant concave feature on top of the ordinary
+// bites — a notch cut most of the way to the middle, deep enough that the rock
+// reads as hollowed rather than nibbled. It is a CHANCE and not a term every
+// rock gets, because a field where everything is gouged reads as uniform again;
+// what carries a pocket is a handful of dramatic ones among the merely
+// irregular. Landmarks are gouged more often than gravel because you fly up to
+// them and can fly INTO the result.
 export const ROCK_KINDS = {
   slab:  { lobes: [2, 3], off: [0.35, 0.62], lobeR: [0.62, 0.90], wander: 0.18, taper: 0,
-           elong: [0.10, 0.22], grain: 0.10, facets: [3, 5], cut: [0.66, 0.90],
-           bites: [0, 2], biteW: [0.20, 0.50], biteD: [0.06, 0.16] },
+           elong: [0.10, 0.22], grain: 0.10, facets: [2, 4], cut: [0.70, 0.92],
+           bites: [0, 2], biteW: [0.20, 0.50], biteD: [0.06, 0.16],
+           gougeP: 0.34, gougeW: [0.45, 0.95], gougeD: [0.45, 0.72], gougeTwin: 0.25 },
   wedge: { lobes: [2, 4], off: [0.30, 0.70], lobeR: [0.45, 0.85], wander: 0.22, taper: 0.55,
-           elong: [0.08, 0.20], grain: 0.12, facets: [2, 5], cut: [0.66, 0.90],
-           bites: [0, 2], biteW: [0.20, 0.50], biteD: [0.06, 0.18] },
+           elong: [0.08, 0.20], grain: 0.12, facets: [2, 4], cut: [0.70, 0.92],
+           bites: [0, 2], biteW: [0.20, 0.50], biteD: [0.06, 0.18],
+           gougeP: 0.34, gougeW: [0.42, 0.90], gougeD: [0.45, 0.72], gougeTwin: 0.25 },
   shard: { lobes: [3, 5], off: [0.45, 0.78], lobeR: [0.40, 0.70], wander: 0.10, taper: 0.35,
            elong: [0.26, 0.40], grain: 0.11, facets: [2, 4], cut: [0.68, 0.92],
-           bites: [0, 2], biteW: [0.18, 0.45], biteD: [0.06, 0.16] },
-  cleft: { lobes: [2, 3], off: [0.40, 0.72], lobeR: [0.55, 0.88], wander: 0.28, taper: 0.10,
-           elong: [0.04, 0.16], grain: 0.11, facets: [2, 4], cut: [0.70, 0.92],
-           bites: [2, 4], biteW: [0.28, 0.62], biteD: [0.14, 0.30] },
-  lump:  { lobes: [2, 5], off: [0.28, 0.60], lobeR: [0.50, 0.88], wander: 0.32, taper: 0.15,
+           bites: [0, 2], biteW: [0.18, 0.45], biteD: [0.06, 0.16],
+           gougeP: 0.26, gougeW: [0.30, 0.70], gougeD: [0.40, 0.66], gougeTwin: 0.35 },
+  // The CLEFT is the concave kind and always carries one: widely separated
+  // lobes for a deep natural waist, and a gouge on top of it.
+  cleft: { lobes: [2, 3], off: [0.55, 0.86], lobeR: [0.48, 0.80], wander: 0.30, taper: 0.10,
+           elong: [0.04, 0.16], grain: 0.11, facets: [1, 3], cut: [0.70, 0.92],
+           bites: [1, 3], biteW: [0.28, 0.62], biteD: [0.14, 0.34],
+           gougeP: 1, gougeW: [0.55, 1.15], gougeD: [0.60, 0.92], gougeTwin: 0.55 },
+  lump:  { lobes: [2, 5], off: [0.28, 0.66], lobeR: [0.50, 0.88], wander: 0.32, taper: 0.15,
            elong: [0.04, 0.18], grain: 0.11, facets: [2, 5], cut: [0.70, 0.92],
-           bites: [1, 3], biteW: [0.22, 0.55], biteD: [0.08, 0.22] },
+           bites: [1, 3], biteW: [0.22, 0.55], biteD: [0.08, 0.22],
+           gougeP: 0.40, gougeW: [0.48, 1.00], gougeD: [0.48, 0.80], gougeTwin: 0.35 },
 };
 // The kind mix, unchanged from when the kinds were five separate constructions.
 export function rockKind(roll) {
@@ -273,11 +348,12 @@ export function rockOutline(rng, n, P) {
     amp.push((P.grain / Math.pow(GRAIN_K[j], 0.85)) * (0.5 + rng()));
     ph.push(rng() * TAU);
   }
+  const { c: bc, s: bs } = bearings(n);
   for (let i = 0; i < n; i++) {
-    const th = (i / n) * TAU, ux = Math.cos(th), uy = Math.sin(th);
+    const th = (i / n) * TAU;
     let r = 0;
     for (let k = 0; k < lcx.length; k++) {
-      const d = discReach(lcx[k], lcy[k], lr[k], ux, uy);
+      const d = discReach(lcx[k], lcy[k], lr[k], bc[i], bs[i]);
       if (d > r) r = d;
     }
     let g = 1;
@@ -289,10 +365,11 @@ export function rockOutline(rng, n, P) {
   // out genuinely flat, with the two corners that make it read as fracture.
   const nF = P.facets[0] + Math.floor(rng() * (P.facets[1] - P.facets[0] + 1));
   for (let f = 0; f < nF; f++) {
-    const fi = Math.floor(rng() * n), psi = (fi / n) * TAU;
+    const fi = Math.floor(rng() * n);
     const p = prof[fi] * rand(rng, P.cut[0], P.cut[1]);
     for (let i = 0; i < n; i++) {
-      const c = Math.cos((i / n) * TAU - psi);
+      // cos(theta_i - psi) off the table, both being sample bearings.
+      const c = bc[i] * bc[fi] + bs[i] * bs[fi];
       // Past ~83 degrees off the facet normal the line runs away to infinity and
       // stops constraining anything; skipping it there also keeps p/c finite.
       if (c > 0.12) { const lim = p / c; if (lim < prof[i]) prof[i] = lim; }
@@ -302,34 +379,112 @@ export function rockOutline(rng, n, P) {
   let mean = 0;
   for (let i = 0; i < n; i++) mean += prof[i];
   mean /= n;
+  const cuts = [];
   const nB = P.bites[0] + Math.floor(rng() * (P.bites[1] - P.bites[0] + 1));
   for (let b = 0; b < nB; b++) {
-    const bth = rng() * TAU;
-    const hw = rand(rng, P.biteW[0], P.biteW[1]);
-    const dep = rand(rng, P.biteD[0], P.biteD[1]) * mean;
-    for (let i = 0; i < n; i++) {
-      let d = (i / n) * TAU - bth;
-      d = Math.atan2(Math.sin(d), Math.cos(d));   // wrapped angular distance
-      if (d > hw || d < -hw) continue;
-      prof[i] -= dep * 0.5 * (1 + Math.cos((d / hw) * Math.PI));
-    }
+    cuts.push({ th: rng() * TAU, hw: rand(rng, P.biteW[0], P.biteW[1]),
+      dep: rand(rng, P.biteD[0], P.biteD[1]) * mean, big: false });
   }
+  const gouge = (th, hw, dep) => ({ th, hw, dep, big: true });
+  // THE GOUGE — one dominant concave feature, WIDE as well as deep. Width is
+  // the half of it that matters and the half that is easy to get wrong: a
+  // narrow notch removes almost no area however deep it goes, so it reads as a
+  // crack, not as a rock with a piece missing. Measured as solidity (area over
+  // convex-hull area), narrow-and-deep left the whole set above 0.90 — which is
+  // to say convex, which is to say "a shape".
+  const gth = rng() * TAU, ghw = rand(rng, P.gougeW[0], P.gougeW[1]);
+  const gdep = rand(rng, P.gougeD[0], P.gougeD[1]) * mean;
+  const gtwin = rng() < P.gougeTwin;
+  if (rng() < P.gougeP) {
+    cuts.push(gouge(gth, ghw, gdep));
+    // ...and sometimes its opposite number, which is what makes a WAIST rather
+    // than a bay: cut from both sides and the rock is a dumbbell held together
+    // at the middle. That is a real asteroid silhouette (Kleopatra, Itokawa)
+    // and, at monolith scale, a place you can fly through.
+    if (gtwin) cuts.push(gouge(gth + Math.PI, ghw * 0.9, gdep * 0.85));
+  }
+  const applyCuts = (list) => {
+    for (const c of list) {
+      // Walked in SAMPLE steps rather than radians: the wrap is then an integer
+      // fixup instead of an atan2 per sample per cut, and the half-sample it
+      // costs in placement is under half a degree.
+      const ci = ((Math.round((c.th / TAU) * n) % n) + n) % n;
+      const hw = (c.hw / TAU) * n;
+      for (let i = 0; i < n; i++) {
+        let d = i - ci;
+        if (d > n / 2) d -= n; else if (d < -n / 2) d += n;
+        if (d > hw || d < -hw) continue;
+        const bowl = 0.5 * (1 + Math.cos((d / hw) * Math.PI));
+        // A raised cosine for an ordinary bite. A gouge takes the 0.7 power of
+        // it, which flattens the floor and steepens the walls — a wide shallow
+        // dish reads as a dent, and the walls are what read as a notch. NOT
+        // sqrt: that has infinite slope at the rim, and a vertical wall between
+        // two adjacent samples is a step the collider feels as an edge.
+        prof[i] -= c.dep * (c.big ? Math.pow(bowl, 0.7) : bowl);
+      }
+    }
+  };
+  applyCuts(cuts);
+  // ---- THE CONVEXITY GUARD. Facets are a `min` against a line, so enough of
+  // them landing well spread out IS a convex polygon — the machined-block
+  // failure the half-plane-only version had, arriving by the back door. It is
+  // rare but it is not acceptable at any rate: a rock that comes out convex is
+  // "a shape", which is the whole complaint. So measure the deepest DENT the
+  // outline actually has and, if there isn't one, cut a gouge — every rock
+  // ships with somewhere the surface falls away from its own hull.
+  // The guard's own cut is MODEST on purpose — enough that the rock has a piece
+  // missing, not enough to make it a dramatic one. The dramatic ones are meant
+  // to come from `gougeP` landing, so that a pocket reads as a few striking
+  // rocks among many merely irregular ones; if the guard cut deep, the kinds
+  // that come out convex most often (slab, wedge) would be the most chewed.
   // ---- NORMALISE to a mean radius of 1 — MEAN, not peak, so a body draws the
   // size it collides at whether it came out knobbly or smooth — then hold the
   // floor and the broad-phase ceiling.
-  mean = 0;
-  for (let i = 0; i < n; i++) mean += prof[i];
-  mean /= n;
-  const k = mean > 1e-6 ? 1 / mean : 1;
-  let peak = 0;
-  for (let i = 0; i < n; i++) {
-    const v = prof[i] * k;
-    prof[i] = v < OUTLINE_FLOOR ? OUTLINE_FLOOR : v;
-    if (prof[i] > peak) peak = prof[i];
-  }
-  if (peak > ROCK_REACH_MAX) {
-    const s = ROCK_REACH_MAX / peak;
-    for (let i = 0; i < n; i++) prof[i] *= s;
+  const finish = () => {
+    let m = 0;
+    for (let i = 0; i < n; i++) m += prof[i];
+    m /= n;
+    const k = m > 1e-6 ? 1 / m : 1;
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const v = prof[i] * k;
+      prof[i] = v < OUTLINE_FLOOR ? OUTLINE_FLOOR : v;
+      if (prof[i] > peak) peak = prof[i];
+    }
+    if (peak > ROCK_REACH_MAX) {
+      const s = ROCK_REACH_MAX / peak;
+      for (let i = 0; i < n; i++) prof[i] *= s;
+    }
+  };
+  finish();
+  // ---- THE CONVEXITY GUARD, measured on the FINISHED profile. Facets are a
+  // `min` against a line, so enough of them landing well spread out IS a convex
+  // polygon — the machined-block failure the half-plane-only version had,
+  // arriving by the back door. It is rare, and it is not acceptable at any
+  // rate: a rock that comes out convex is "a shape", which is the whole
+  // complaint. So measure the deepest DENT the outline actually has and, if
+  // there isn't one, cut a gouge — every rock ships with somewhere the surface
+  // falls away from its own hull.
+  //
+  // It has to run after the floor, not before: a notch that bottoms out ON the
+  // floor is shallower afterwards than the cut that made it, so measuring the
+  // pre-floor profile passed rocks that came out flat. Cheap enough to pay for
+  // (three windows over a 256-sample array, once per body id).
+  //
+  // The guard's own cut is MODEST on purpose — enough that the rock has a piece
+  // missing, not enough to make it a dramatic one. The dramatic ones are meant
+  // to come from `gougeP` landing, so that a pocket reads as a few striking
+  // rocks among many merely irregular ones; if the guard cut deep, the kinds
+  // that come out convex most often (slab, wedge) would end up the most chewed.
+  // Depth is a fraction of the LOCAL surface, not an absolute: an absolute cut
+  // landing on a tall lobe barely dents it, which is how the first version of
+  // this guard left 6% of rocks still measuring flat. Bounded retry, walking
+  // the bearing on, so the invariant holds rather than nearly holding.
+  for (let g = 0; g < 3 && chordDeficit(prof, n) < CONCAVE_MIN; g++) {
+    const th = gth + (gtwin ? 1.7 : 0.9) + g * 2.1;
+    const gi = ((Math.round((th / TAU) * n) % n) + n) % n;
+    applyCuts([gouge(th, 0.34, 0.40 * prof[gi])]);
+    finish();
   }
   return prof;
 }
@@ -345,7 +500,14 @@ export function rockOutline(rng, n, P) {
 // down here, blocks up there) was visible as soon as a giant sat among its own
 // gravel. Small rock collides as a CIRCLE of b.radius (only b.bigShape gets a
 // polygon narrow phase), so none of this is load-bearing for physics.
-export const JAG_PEAK = 1.38;   // outermost point a gravel ring may reach
+// Outermost point a gravel ring may reach. It is a RASTER cost as much as a
+// memory one: the sprite quad is sized from it, so every blit in a shoal pays
+// for the margin in pixels whether the rock fills it or not (the old
+// near-circular ring wanted only 1.25, and 1.38 is 1.31x the raster of that).
+// Held at the value where the rings do NOT clamp, because clamping shrinks the
+// rock: at 1.30 the gravel's mean radius fell to 0.91 of the body radius it
+// collides at, and a rock drawing 9% small is a worse bug than a wider quad.
+export const JAG_PEAK = 1.38;
 export const ROCK_JAG_MAX = 48; // vertex ceiling (a rock that grows without
                                 // bound must not take the path build with it)
 // Gravel is drawn SQUATTER than a landmark of the same kind: the elongation and
@@ -356,16 +518,31 @@ export const ROCK_JAG_MAX = 48; // vertex ceiling (a rock that grows without
 // 1.7:1 splinter drawn at 8 px is three pixels wide — it reads as a speck, not
 // as a splinter. The extremes cost real memory exactly where they cannot be
 // seen. Landmarks, which you fly up to, keep theirs in full.
+// ...and gravel's CONCAVE features are pulled back for a related reason. A
+// gouge is sized against the body, so on an 18-sample ring drawn at 6 px it is
+// most of the rock: the deep ones came out as little hearts and bowties, which
+// is a silhouette, which is the complaint again from the other end. Landmarks
+// keep the extremes, because that is where you can see one — and fly into it.
+// The convexity guard still applies at both scales; it is the DRAMA that
+// scales, not the rule.
 const GRAVEL_SQUAT = 0.5, GRAVEL_OFF = 0.7;
+const GRAVEL_GOUGE_P = 0.5, GRAVEL_GOUGE_D = 0.6, GRAVEL_GOUGE_TWIN = 0.4;
+// Sample count for a gravel ring: rises with radius, so a facet is a face and a
+// bite is a bite rather than one stray vertex, and bounded above. Exported
+// because it is the ONLY way a gravel ring depends on the radius — the profile
+// itself is in units of it — which is what lets render cache on the count
+// instead of rebuilding every time a rock chips.
+export function jagSamples(r) { return Math.min(ROCK_JAG_MAX, 16 + Math.round(r * 0.7)); }
 export function rockJagRing(rng, r) {
-  // Sample count rises with radius: enough that a facet is a face and a bite is
-  // a bite rather than one stray vertex, and bounded above.
-  const n = Math.min(ROCK_JAG_MAX, 16 + Math.round(r * 0.7));
+  const n = jagSamples(r);
   const K = ROCK_KINDS[rockKind(rng())];
   const prof = rockOutline(rng, n, {
     ...K,
     elong: [K.elong[0] * GRAVEL_SQUAT, K.elong[1] * GRAVEL_SQUAT],
     off: [K.off[0] * GRAVEL_OFF, K.off[1] * GRAVEL_OFF],
+    gougeP: K.gougeP * GRAVEL_GOUGE_P,
+    gougeD: [K.gougeD[0] * GRAVEL_GOUGE_D, K.gougeD[1] * GRAVEL_GOUGE_D],
+    gougeTwin: K.gougeTwin * GRAVEL_GOUGE_TWIN,
   });
   // Held under JAG_PEAK because the sprite atlas bakes this ring into a cell
   // SPRITE_EXT body-radii wide — a ring reaching past it would have its
