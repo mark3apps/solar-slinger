@@ -82,8 +82,19 @@ for (let i = 0; i < planets.length - 1; i++) {
 // The three field laws, asserted structurally: census near CFG.FIELD_ROCKS,
 // never an attractor at ANY mass, and ONE shared rail.w (a pocket with mixed
 // angular speeds shears itself apart).
+// MEMBERSHIP IS STRUCTURAL, NEVER GEOMETRIC. This read used to be
+// `Math.hypot(b.x - f.x, b.y - f.y) < 6000`, which broke the suite's own
+// time-invariance contract above: f.x/f.y are written ONLY by ai.updateFields,
+// and updateAliens is deliberately excluded from the splash backdrop — but
+// driftSplash does call step(), so the shoals advance on their rails while the
+// anchor stays frozen at its worldgen value. The census radius was therefore
+// measured from a point drifting away from the pocket at ~100u/s, with the
+// outermost rocks already sitting at ~5.4-5.6k against the 6,000 cutoff. It
+// never showed red only because bench.mjs bands these fields at 20%/abs-40.
+// world.markFieldRock stamps b.field = fi (world.js), physics.shatter carries
+// it onto every shard, and ai.js already selects a pocket's rocks this way.
 const fields = (g.fields || []).map((f, i) => {
-  const rocks = alive.filter((b) => b.fieldRock && Math.hypot(b.x - f.x, b.y - f.y) < 6000);
+  const rocks = alive.filter((b) => b.fieldRock && b.field === i);
   const railed = rocks.filter((b) => b.onRails && b.rail);
   return {
     i,
