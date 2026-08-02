@@ -1536,6 +1536,35 @@ function collideBodies(game, a, b) {
   const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
   const closing = -(rvx * nx + rvy * ny);
 
+  // TWO RAILED CELESTIALS BRUSHING AT CONJUNCTION PASS THROUGH EACH OTHER.
+  // Moon families deliberately reach past Hill stability (world.js moonZone,
+  // maxR = hill * 1.5) so systems stay wide, which means NEIGHBOURING planets'
+  // families overlap radially — measured on seed 3827467762, 16 of 20 adjacent
+  // pairs do, several by >8000u. Adjacent lanes run at different angular speeds
+  // and therefore ALWAYS reach conjunction, so these touches are a normal,
+  // recurring event and not drama. They were silently lethal: at closing
+  // 25-240 an impact does NO damage and logs NOTHING (see the sub-DMG_THRESH
+  // note below), but the `closing > 25` derail below still fired, and a moon
+  // knocked out of its exact orbit falls into whatever it is near — around a
+  // gas giant it was SWALLOWED within seconds. Every loss traced this way was a
+  // brush at closing 70-185: 4 swallowed + 7 absorbed moons per 600s idle soak,
+  // with no player anywhere. Letting them overlap is the user's design call —
+  // moons stay far out, and a conjunction must not unmake a charted world.
+  //
+  // Deliberately narrow. It needs BOTH bodies railed (a rail is an exact,
+  // deterministic orbit — nothing here is reacting to it) and BOTH natural
+  // (`thrownTimer <= 0`), so player and alien throws keep every bit of their
+  // impulse, damage and derail. Above DMG_THRESH the collision is real again
+  // and resolves normally, so a genuine celestial crunch still happens.
+  // Returning BEFORE the separation/impulse below is the point: a railed body
+  // shoved by contact resolution snaps back on its next rail advance and
+  // visibly vibrates, so a half-fix that only skipped the derail would trade a
+  // dead moon for a juddering one.
+  if (a.onRails && b.onRails && closing < CFG.DMG_THRESH &&
+      a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
+      (a.type === 'planet' || a.type === 'moon') &&
+      (b.type === 'planet' || b.type === 'moon')) return;
+
   // ICE QUENCHES EMBER: any icy rock (ring chunk, geyser pop, comet) landing
   // on an infested planet smothers its reefs — thrown ice hits harder.
   for (const [pl, rk] of [[a, b], [b, a]]) {
