@@ -163,8 +163,6 @@ Red = an EXACT field moved (structure, integrity, economy). Yellow = a banded fi
 to clear its tolerance. A real example — `DMG_THRESH` lowered 240 → 150:
 
 ```
-combat/20260721 (2 changed)
-  ladder[moon].moon13000@900        null → 2758
 stability/3827467762 (2 changed)
   nonAsteroidDeaths.moon:absorbed      — → 2   NEW
 stability/987654321 (4 changed)
@@ -175,6 +173,16 @@ stability/987654321 (4 changed)
 
 That is the documented regression signature for the railed-conjunction guard (which keys off
 `DMG_THRESH`) — caught across two seeds without anyone knowing to look for it.
+
+**`combat` is silent on that change, and correctly so** — every ladder rung is player-thrown, so it
+prices off `DMG_THRESH_THROWN` and can't see `DMG_THRESH` at all. This example used to carry a
+`combat/20260721  ladder[moon].moon13000@900  null → 2758` row, and that row was never real: it was
+the target-death flake described under `combat` below, firing on a run that happened to land the
+kill. **Attributing a red row to your change without a mechanism that connects the two is how a
+harness starts lying to you.** If a rung moves, name the constant it prices off.
+
+The change that *does* light this suite up is anything in the damage math itself — `DMG_BODY` +25%
+moves 21 fields by a uniform +25%.
 
 #### Tolerances — why the diff is not all noise
 
@@ -192,13 +200,40 @@ with no change, something is genuinely moving.
 
 Three fixes were needed at the source to get there, all worth knowing: `performance.now()` is clamped
 to ~0.1 ms in Electron, so a single render timed 0.2 vs 0.3 on identical code (+50%) — `perf.js` now
-times a batch of 20 renders per sample; `combat.js` **freezes its target** (derails it, zeroes its
-velocity) for the measurement, because a railed moving target gave spreads of 3466 vs 4936 on the same
-rung, plus outright misses; and `worldgen.js` **regenerates the world before counting it**, because
-the splash backdrop is a live sim and `waitfor window.game` returns after an unbounded slice of it —
-its `byType.asteroid` measured 8325 / 8324 / 8323 at 0s / 10s / 25s of boot delay, an EXACT field
-going red on unmodified code. The saved `3827467762` baseline had itself been captured 86 asteroids
-into that erosion.
+times a batch of 20 renders per sample; `combat.js` **stages each impact against a frozen, armoured,
+pristine target down a cleared corridor** (see below); and `worldgen.js` **regenerates the world
+before counting it**, because the splash backdrop is a live sim and `waitfor window.game` returns
+after an unbounded slice of it — its `byType.asteroid` measured 8325 / 8324 / 8323 at 0s / 10s / 25s
+of boot delay, an EXACT field going red on unmodified code. The saved `3827467762` baseline had
+itself been captured 86 asteroids into that erosion.
+
+##### Why a staged impact needs four separate guards
+
+`combat.js` is the cautionary tale, because it looked fixed after the first one. Four consecutive
+`diff combat` runs on unmodified code gave four different answers, the worst being
+`ladder[planet-rocky].moon13000@900  3529 → 3`. Measured over 8 repeats the old suite had **7
+unstable fields, one spanning 4 → 3531**; the current one has **1, spanning ±1** on two seeds and 16
+repeats. Each guard closes a different hole, and dropping any of them reopens it:
+
+1. **Freeze the target** — derail it and zero its velocity. A railed moving target is hit at a
+   different angle every attempt: spreads of 3466 vs 4936 on one rung, plus outright misses.
+2. **Armour the target** — set `hp` (never `maxHp`) to a value nothing can chew through. This is the
+   one that actually mattered. A rung that killed its target left it dead, `step()`'s cull spliced it
+   out of `game.bodies`, and restoring `alive = true` resurrected an orphan the sim no longer
+   contained — so **every later rung on that target reported `null` forever**. Any baseline taken
+   then froze that artifact in as if it were a fact about the game, and the flake was nothing more
+   than whether the boulder rung landed its kill that run. Damage is computed from mass, closing
+   speed and `maxHp` only, so armouring changes no number.
+3. **Spawn the projectile; never borrow one.** Which world body `find` returned varied run to run
+   (runtime spawns use `Math.random` by design, and the cull compacts the array), and it arrived
+   carrying its own damage.
+4. **Clear the corridor, and put the world back.** Spall, calved crust and crystal shards from rung N
+   intercepted rung N+1 — and rung N's *craters* are the collider (`surfRadius` reads `b.scars`), so
+   N+1 was fired at a different silhouette. Restore `scars` and `rot`, and kill everything the shot
+   minted.
+
+With all four in place one shot per rung is enough, which is also why the suite went from ~5.5s to
+~1.8s: "best of 5, take the max" was a way of hoping one attempt in five came through clean.
 
 #### Adding a suite
 
@@ -206,10 +241,17 @@ Drop `suites/<name>.js` in — it runs as an async IIFE in the page, returns a J
 `ARGS` from the JSON passed after the path. Register it in the `SUITES` table in `bench.mjs` with its
 seeds. Rules that keep it diffable: **return numbers, not prose**; never return a wall-clock or a
 `Math.random`-derived count without adding it to `VOLATILE`; **return `null`, not `0`, when a
-measurement did not happen** — a miss and a harmless result must not look alike; and **never assume
-the world is untouched at `waitfor window.game`**. The title screen runs the full physics behind it
-(`driftSplash`), for a wall-clock-dependent length of time, and `physics.step` culls dead and escaped
-bodies out of `game.bodies` — so any count of live bodies silently shrinks with how slow the boot was.
+measurement did not happen** — a miss and a harmless result must not look alike; **and count your
+nulls in an EXACT field of their own**. `null` alone is not enough, because a null sitting in a
+baseline stops looking like a failed measurement and starts looking like a fact about the game —
+`combat`'s did for two whole target classes. `combat.js` now returns `misses` (must be 0) and
+`noContact` (must be empty) alongside the ladder, so a measurement that stops happening is loud
+instead of merely absent. And **never assume the world is untouched at `waitfor window.game`**, or
+that it is untouched between your own measurements: anything a suite does to the world — a kill, a
+crater, a spray of debris — is still there for its next reading unless it is explicitly put back.
+The title screen runs the full physics behind it (`driftSplash`), for a wall-clock-dependent length
+of time, and `physics.step` culls dead and escaped bodies out of `game.bodies` — so any count of
+live bodies silently shrinks with how slow the boot was.
 A `sim: false` suite that needs a pristine sky must rebuild it first (`window.freshRun(0, seed)`) and
 read it in the same synchronous turn, the way `worldgen.js` does. Note that the backdrop runs a
 *partial* update — `step()` yes, `updateAliens` no — so it also leaves AI-written state (field

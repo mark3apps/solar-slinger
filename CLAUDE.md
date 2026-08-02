@@ -44,8 +44,8 @@ you're about to edit:
 |---|---|---|
 | `world.js` generation | `worldgen` | **1s** |
 | `config.js` progression / `ABILITIES` / `shipStats` | `progression` | **0.6s** |
-| `config.js` damage / hp / durability | `progression combat` | ~6s |
-| `physics.js`, rails, gravity, collisions, `CFG` hazards | `stability combat` | ~19s |
+| `config.js` damage / hp / durability | `progression combat` | ~2s |
+| `physics.js`, rails, gravity, collisions, `CFG` hazards | `stability combat` | ~16s |
 | `render.js`, hot loops, the LOD, registries | `perf` | ~11s |
 | anything you're unsure about, or a multi-file change | all — `node $B save` with no args | ~20s |
 
