@@ -213,6 +213,14 @@ Also there: **rails** (circular vs elliptical are different objects; never re-ra
 `game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
 interiors, the orbit rubber band, fog of war, and the frame-relative trajectory forecast.
 
+Plus **SURFACE FRICTION** (`CFG.SURF_FRICTION`): contact with a planet or moon drags the ship toward
+the velocity of the ground under it (`util.surfaceVel` — the world's motion plus its spin's
+tangential speed), so a skid matches the surface in under a second and the ship can be SET DOWN. Its
+own three rules: it is planets and moons only (rock contact is tuned against every dense field), it
+pays the body no reaction (invariant 4 makes a world immovable against the ship, and a torque on a
+world's spin is a secular pump), and there is **nothing to mirror in `predictPaths`** — unlike the
+rubber band and the long arms it exists only in contact, and the forecast terminates at contact.
+
 Plus the three scaling rules that make a big debris cascade affordable:
 
 - **The gravity loop reads a cached ATTRACTOR SHORTLIST**, not the whole sky — of 122 attractors only
@@ -285,6 +293,47 @@ Plus the three scaling rules that make a big debris cascade affordable:
   stop is a body reference, not a coordinate; arrival pops the HEAD ONLY, at world.js's own chart-scan
   zone (so a stop ticks over exactly as the place names itself); a destroyed body leaves a flagged
   "lost contact" at its last position rather than silently vanishing from the list.
+- **A WORLD IS SOMEWHERE YOU CAN STOP.** Set the ship down on a planet or moon ROCKETS-DOWN and hold
+  still and it BERTHS (`physics.updateDock`): three gates — contact, the nose within `DOCK_ARC` of
+  straight up, and surface-relative speed under `DOCK_SPEED` — all true for `DOCK_TIME`. The gates
+  are deliberately GENEROUS; the interesting part is what a dock IS, not how tight the approach
+  window is. **Attitude and stillness are ENTRY gates; only CONTACT holds a berth**, and the latch
+  drains `DOCK_DRAIN`× faster than it fills, which is the whole of the hysteresis. A landing that
+  silently declines to latch is this feature's worst failure mode, so the approach SHOWS ITS STATE —
+  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing.
+- **A DOCK IS A STRUCTURE, NOT A STATE.** Berth on bare ground and you BUILD one: `DOCK_BUILD` (10s)
+  of staying put, during which you get **nothing** — the shield and the repair both gate on
+  `physics.dockReady`, so those ten exposed seconds are the price. Once built the station STANDS on
+  that world for the rest of the run; fly back and you berth instantly with everything live.
+  `game.docks` holds them (bounded by `DOCK_MAX`), and `game.dock`/`game.home` are REFERENCES into
+  it, never copies — the build clock ticks on the station.
+- **A FINISHED DOCK IS A SAFE HARBOUR**: a shield dome over the berth and total damage immunity (one
+  early-out in `damageShip`), plus `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull
+  never self-heals". The dome also **REPELS** loose rock and aliens (`updateDomeShield`) — immunity
+  alone is half a shield. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
+  is why `DOCK_TIERS` lives in config.js: a field whose pushing edge and drawn edge were two
+  expressions is the mirror-drift trap. The ship is **held UPRIGHT** while berthed (`DOCK_UPRIGHT`;
+  the mouse stops steering, aiming is unaffected) and **pinned EXACTLY** to the pad — friction is an
+  exponential approach and cannot hold station on a spinning world, so it left the hull creeping
+  across its own dock.
+- **LEAVING IS A SEQUENCE** (`CFG.LAUNCH_*`): thrust from a berth doesn't drive the ship, it calls a
+  release — clamps swing open, then the engine lights against them, then the pad lets go with
+  `LAUNCH_KICK`. Pinned to the pad's velocity throughout, and it commits once started.
+- **A DOCK IS WHERE YOU STOP WORKING.** Beam, orbit ring, tether, shotgun and mobility abilities are
+  all inert while berthed (`main.dockBlocking` refuses input AND update() skips their substep work —
+  a half-live system re-welds a ring the dock just emptied). Anything in hand is dropped AT THE BERTH
+  (`tractor.standDown`), gently, earning nothing. `dockBlocking` is NOT `menuBlocking`: H/M/V/P/R
+  still work at a dock. And the pad **re-seats its standoff to the ship using it** on every berth —
+  the hull grows from radius 4 to ~44 across the tiers, and the clamps pin it to exactly that height.
+- **A HOME PORT IS A CHOICE, AND IT IS THE RESPAWN POINT.** Berthing is earned by flying; promoting a
+  finished station to home is the H key, because it is the one act that moves where a death puts you
+  back. One at a time, and **it dies with its world**. A station is `{ b, ang, rf, t }` — a body, a
+  SURFACE-LOCAL bearing, a fraction of its radius (`util.padPos`) and its build seconds — never a
+  coordinate: a world orbits AND spins, and a chipped-down world must keep its pad on the surface.
+  HOME is the lives ROSE on all three surfaces (pad, dial, chart) because rose already means "a life"
+  and one meaning must not wear three hues. **The station's ART tracks the SHIP'S TIER**
+  (`config.DOCK_TIERS` via `dockTier`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
+  every station you own from a landing slab to a working spaceport.
 - **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
 - **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
   pink stay semantic). `zone.js` picks the accent from WHERE THE SHIP IS — deep space violet, world
@@ -329,7 +378,8 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
 - **Enemy density is deliberately sparse**; nests and shoal-lurker broods are the only alien sources.
 - **The shield is an ability, not base, and its shape is spec DNA** (BRAWLER front plate / SCOUT
-  full-wrap / HAULER none). Hull does not self-heal.
+  full-wrap / HAULER none). Hull does not self-heal — it mends only at a glow pocket, on a DOCK, and
+  on the sanctioned hull-gain heal.
 
 ### Progression → [docs/progression.md](docs/progression.md)
 

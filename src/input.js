@@ -27,6 +27,7 @@ export function initInput(canvas, handlers) {
     if (e.code === 'KeyT') handlers.onTogglePredict();
     if (e.code === 'KeyV') handlers.onAchievements();   // the run's achievement log
     if (e.code === 'KeyM') handlers.onMap();            // the system chart
+    if (e.code === 'KeyH') handlers.onHome();           // make the current dock your home port
     // Upgrade-card selection (only acts while the choice modal is open)
     if (e.code === 'Digit1') handlers.onUpgradePick(0);
     if (e.code === 'Digit2') handlers.onUpgradePick(1);

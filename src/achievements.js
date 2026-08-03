@@ -27,7 +27,7 @@
 // (heat/oort/gas/skim/coast seconds) are integrated here off live game state
 // rather than instrumented in physics: those flags already exist, and keeping
 // the integration here means the hot path never grew a line for us.
-import { ABILITIES } from './config.js';
+import { ABILITIES, CFG } from './config.js';
 
 // Point bands. Deliberately lopsided: the silly ones are cheap, and the
 // insane ones are worth more than a whole category of easy ones, so a big
@@ -735,6 +735,40 @@ export const ACHIEVEMENTS = [
   A('unlockDeep', 'build', PTS.tricky, 'Deep Array Online', 'Unlock the long-range sensors.',
     (g) => g.st.sensorMul > 1.2),
 
+  // ---- DOCKING. The whole ladder of the verb: set down, build one, keep
+  // several, live out of them. `g.docks.length` is an O(1) read of a list
+  // capped at CFG.DOCK_MAX, so the count rows need no counter behind them.
+  A('dockFirst', 'build', PTS.easy, 'Groundside',
+    'Build a dock on a world. Land rockets-down, hold still, and stay put while it goes up.',
+    (g, s) => s.docksBuilt >= 1),
+  A('homeFirst', 'build', PTS.easy, 'Somewhere To Come Back To',
+    'Name a home port. It is where a death puts you back.',
+    (g, s) => s.homesSet >= 1),
+  A('docks3', 'build', PTS.normal, 'Port Authority',
+    'Have three docks standing at once.',
+    (g) => g.docks && g.docks.length >= 3),
+  A('dockT300', 'build', PTS.tricky, 'Shore Leave',
+    'Spend five minutes berthed at finished docks.',
+    (g, s) => s.dockT >= 300),
+  A('docksMax', 'build', PTS.hard, 'Infrastructure',
+    `Have ${CFG.DOCK_MAX} docks standing at once — every berth the fleet can keep.`,
+    (g) => g.docks && g.docks.length >= CFG.DOCK_MAX),
+  A('dockMoon', 'explore', PTS.normal, 'Lunar Module',
+    'Build a dock on a moon.',
+    (g, s) => s.docksMoon >= 1),
+  A('launch25', 'flight', PTS.normal, 'Cleared For Departure',
+    'Launch from a dock twenty-five times.',
+    (g, s) => s.launches >= 25),
+  A('dockSave', 'peril', PTS.tricky, 'Limped In',
+    'Berth under 15% hull and repair all the way to full without leaving.',
+    (g, s) => s.dockSaves >= 1),
+  A('dockStorm', 'peril', PTS.hard, 'Weathered It',
+    'Sit out a solar wave berthed at a live dock, under its shield.',
+    (g, s) => s.dockStormT >= 8),
+  A('dockDark', 'insane', PTS.insane, 'Lighthouse at the End',
+    "Build a dock on The Wanderer's Star.",
+    (g) => !!(g.dock && g.dock.b.dark && g.dock.t >= CFG.DOCK_BUILD)),
+
   // ---- ODDITIES ---------------------------------------------------------
   A('drops25', 'silly', PTS.normal, 'Butterfingers', 'Gently put down 25 rocks instead of throwing them.',
     (g, s) => s.drops >= 25),
@@ -752,6 +786,18 @@ export const ACHIEVEMENTS = [
     (g, s) => s.openAch >= 1),
   A('achAddict', 'silly', PTS.normal, 'Checking Again', 'Open this panel twenty times in one run.',
     (g, s) => s.openAch >= 20),
+  A('homeHop5', 'silly', PTS.normal, 'Commitment Issues',
+    'Move your home port five times in one run.',
+    (g, s) => s.homesSet >= 5),
+  A('dockRetire', 'silly', PTS.normal, 'Urban Sprawl',
+    'Build so many docks that the oldest one gets abandoned.',
+    (g, s) => s.docksRetired >= 1),
+  A('homebody', 'silly', PTS.tricky, 'Homebody',
+    'Stay berthed for five unbroken minutes. There is a whole system out there.',
+    (g, s) => s.dockStreakBest >= 300),
+  A('homeLost', 'silly', PTS.normal, 'Foreclosure',
+    'Lose your home port along with the world it was standing on.',
+    (g, s) => s.homesLost >= 1),
   A('spin20', 'silly', PTS.normal, 'Dizzy', 'Spin the ship through twenty full turns.',
     (g, s) => s.spins >= 20),
   A('spin150', 'silly', PTS.tricky, 'Centrifuge', 'Spin the ship through 150 full turns.',
@@ -1110,6 +1156,10 @@ export function noteDeath(game, cause) {
   else if (/corona|Melted over/i.test(c)) s.dieHeat = (s.dieHeat || 0) + 1;
   else if (/Oort/i.test(c)) s.dieOort = (s.dieOort || 0) + 1;
   s.gasDepthCur = 0;
+  // …and the berth streaks with it: "five unbroken minutes docked" must not
+  // survive being blown up, and a repair run that ended in a death is no save.
+  s.dockStreak = 0;
+  s.dockHurt = 0;
   s.clutchArmed = 0;
   s.sunIn = 0;
   s.holdT = 0;
@@ -1184,6 +1234,31 @@ export function updateAchievements(game, dt) {
       s.gasDepthCur = 0;
     }
     if (game.dustCloak) s.dustT = (s.dustT || 0) + dt;
+    // ---- DOCKING. All O(1) reads of state main.js and physics already
+    // maintain, so the sweep's budget is untouched: no scan, no allocation.
+    const dk = game.dock;
+    if (dk && dk.t >= CFG.DOCK_BUILD) {
+      s.dockT = (s.dockT || 0) + dt;
+      s.dockStreak = (s.dockStreak || 0) + dt;
+      if (s.dockStreak > (s.dockStreakBest || 0)) s.dockStreakBest = s.dockStreak;
+      // Riding a solar wave out at a live dock. The wave is system-wide, so
+      // being berthed anywhere during one counts — the feat is having built
+      // somewhere to be when it arrived.
+      if (game.storm) s.dockStormT = (s.dockStormT || 0) + dt;
+      // A SAVE: limp in under 15% hull and repair to FULL without leaving.
+      // Two-stage so it can only score for a repair that actually happened —
+      // arriving already full earns nothing, and noteDeath clears the arm.
+      if (ship.hull <= game.st.hullMax * 0.15) s.dockHurt = 1;
+      else if (s.dockHurt && ship.hull >= game.st.hullMax) {
+        s.dockSaves = (s.dockSaves || 0) + 1;
+        s.dockHurt = 0;
+      }
+    } else {
+      s.dockStreak = 0;
+      // The arm does NOT clear here: a build finishing, or a bump that costs
+      // the berth for a moment, must not throw away a repair in progress. Only
+      // completing it or dying does.
+    }
 
     // WHERE you fly, integrated. Oort is measured from the world edge itself,
     // not the warning band, so the achievement means "inside the grinder"
@@ -1303,6 +1378,16 @@ export const isSecret = (a) => a.cat === 'secret';
 // it would be unreachable. Use `g.tut.x` directly for those (the `first`-style
 // rows below do); use this table when you want to COUNT the event.
 export const ACH_EVENT_STATS = {
+  // DOCKING rides the same one-shot flags main.js already drains, exactly as
+  // the discovery rows do — physics and world never grew a second announcement.
+  // (launchName is NOT here: it is a first-time-only row with no `repeat`, so
+  // it fires once ever; physics.updateLaunch bumps `launches` directly.)
+  dockBuildName: 'docksStarted',
+  dockReadyName: 'docksBuilt',
+  dockedName: 'berths',
+  homeSetName: 'homesSet',
+  homeLostName: 'homesLost',
+  dockRetiredName: 'docksRetired',
   visitorWarn: 'visitorSeen',
   visitorGone: 'visitorGone',
   eclipseName: 'eclipses',

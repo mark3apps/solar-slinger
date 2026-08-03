@@ -793,6 +793,50 @@ export function retrieveFromOrbit(game) {
   return true;
 }
 
+// STAND DOWN — everything the beam is holding, let go, gently.
+//
+// Called when the clamps bite (physics.updateDock), so the ring is empty BEFORE
+// a station finishes building. A dock is a place you stop working: the beam, the
+// orbit ring, the tethers and the shotgun are all inert while berthed (main.js
+// skips their updates and refuses their inputs), so anything still in hand has
+// to be let go HERE. Rocks left welded to a parked ship would orbit a structure
+// they are also phasing through, with no input able to clear them.
+//
+// A DROP, NOT A VOLLEY. flingAllFromOrbit hurls the ring at the cursor and
+// credits every rock as a player throw — firing your whole shield across the
+// landscape because you touched down would be the landing doing something
+// violent nobody asked for. These keep the velocity they already had, which at
+// a berth is the ring's own gentle swing, so they drift off the pad and settle.
+//
+// AND IT EARNS NOTHING. Deliberately not built on releaseHeld: that bumps
+// `drops`, and an automatic stand-down must not tick a counter whose
+// achievement reads "gently put down 25 rocks INSTEAD of throwing them". The
+// same reason there is no sfxDrop here — one clamp sound covers the whole act,
+// and physics plays it.
+export function standDown(game) {
+  for (const b of [game.held, game.held2]) {
+    if (!b) continue;
+    b.heldBy = null;
+    b.extAx = 0; b.extAy = 0;
+    b.primed = false;
+    if (b.alive) clearHoldState(game, b);
+  }
+  game.held = null; game.held2 = null;
+  sfx.setBeam(false);   // the hum is edge-triggered
+  for (const b of game.orbit) {
+    b.heldBy = null;
+    b.orbitAng = undefined;
+    b.extAx = 0; b.extAy = 0;
+    // No `thrownBy`/`slung`: this is not a throw, so the debris cull treats
+    // them as ordinary loose rock again.
+  }
+  game.orbit.length = 0;
+  game.volleyCharging = false;
+  game.volleyT = 0;
+  game.volleySel = 0;
+  cancelLatch(game);    // …and a winch in progress is off too
+}
+
 // Which orbiters leave first when the shotgun fires: the ones best lined up
 // with the aim direction. Render uses this too, to highlight the armed set.
 export function volleyPick(game, count) {
