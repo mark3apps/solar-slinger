@@ -75,8 +75,12 @@ const game = {
   prog: freshProgress(),   // roguelite build: xp / level / tier / upgrades / lives / achievements
   st: null,
   pickups: [],             // drifting life pods (world.js seeds/replenishes)
-  choosingUpgrade: false,  // sim frozen while a spec/ability card is open
-  upgradeChoices: null,
+  // WHAT IS BEING OFFERED, and whether it holds the run up. The two Choices/Kind
+  // fields carry every pick; choosingUpgrade is the FREEZE, and only the
+  // run-opening spec card sets it. An ability pick ('tier'/'upgrade') is offered
+  // in place on the pilot card and the sim keeps running under it.
+  choosingUpgrade: false,  // sim frozen while the SPEC card is open
+  upgradeChoices: null,    // the live cards — null when nothing is owed
   upgradeKind: null,       // 'spec' | 'tier' (milestone) | 'upgrade' — cards always offer NEW abilities
   rankUps: [],             // AUTOMATIC ability ranks landed since the last drain (config.growAbilities
                            //   pushes, update() drains into messages + the hull-gain heal)
@@ -86,8 +90,8 @@ const game = {
   lifeTimer: PROG.LIFE_RESPAWN,
   held: null,
   held2: null,             // Twin Grip (hauler): a second held rock
-  flingDelayT: 0,          // >0 briefly after a fling — holds the upgrade modal back so a
-                           // pick threshold crossed mid-throw doesn't freeze the sim mid-aim
+  flingDelayT: 0,          // >0 briefly after a fling — holds the pick offer back so a
+                           // threshold crossed mid-throw doesn't pop cards up mid-aim
   orbit: [],               // bodies circling the ship as a shield
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
@@ -365,7 +369,9 @@ function fireVolley() {
 }
 
 // The player may only touch the sim while actually flying — not on the splash,
-// in the pause menu, mid-settings, or while an upgrade card is open.
+// in the pause menu, mid-settings, or while the spec card is open. An ability
+// pick is deliberately NOT in here: it is offered on the pilot card and the run
+// goes on around it, so it blocks nothing.
 const menuBlocking = () => !game.started || game.paused || shellModal(game) || game.choosingUpgrade;
 // A BERTHED SHIP IS PARKED, NOT FLYING. The clamps hold it, the engine answers
 // to the launch sequence and nothing else, and the beam has stood down
@@ -419,13 +425,13 @@ initInput(canvas, {
     // click you repeat.
     //
     // ABOVE THE MENU GATE, and it has to stay there. mouseup is a WINDOW
-    // listener (input.js), so a release while paused / in settings / on an
-    // upgrade card still clears input.mouseDown — and game.held is null during
-    // a winch, so openUpgrade() is unblocked mid-winch and the click that
-    // dismisses the card is exactly such a release. Behind the gate that
-    // release was banked: updateLatch never reads the mouse, so game.latch
-    // survived the freeze and completed itself on resume, handing the player a
-    // moon they had let go of.
+    // listener (input.js), so a release while paused / in settings / on the
+    // spec card still clears input.mouseDown. Behind the gate that release was
+    // banked: updateLatch never reads the mouse, so game.latch survived the
+    // freeze and completed itself on resume, handing the player a moon they had
+    // let go of. (The bug was found through the old freezing pick card, which
+    // could land mid-winch — game.held is null while a winch runs. Ability
+    // picks no longer freeze anything, but every other freeze still can.)
     cancelLatch(game);
     if (menuBlocking()) return;
     if (game.held) {
@@ -478,7 +484,7 @@ initInput(canvas, {
     openMap();
   },
   onTogglePredict: () => { game.predict = !game.predict; saveSettings(); },
-  onUpgradePick: (i) => applyPick(i),
+  onUpgradePick: (i) => pickFromUi(i),
   // DASH JETS (scout): tap A / D -> dart hard to the ship's left/right with
   // brief i-frames. Sideways relative to the NOSE (angle ± 90°), not the
   // cursor — a positioning twitch, not a lunge.
@@ -794,6 +800,10 @@ hud.initMenus({
   // (not wrapped in ui(): that wrapper takes no arguments, and this one needs
   // the row's index — so it does the click itself, like onRenderScale)
   onRemoveWaypoint: (i) => { sfx.initAudio(); sfx.sfxUiClick(); removeWaypoint(game, i); },
+  // Clicking a card on the inline pick offer. Same index-carrying shape, and
+  // applyPick brings its own sound (upgrade tick / tier-up fanfare), so this
+  // one deliberately does NOT add the generic UI click on top.
+  onUpgradePick: (i) => { sfx.initAudio(); pickFromUi(i); },
   onExit: exitGame,
   onTogglePredict: ui(() => { game.predict = !game.predict; saveSettings(); }),
   onToggleFps: ui(() => { game.showFps = !game.showFps; saveSettings(); }),
@@ -916,8 +926,26 @@ function drainRankUps(preHullMax) {
   hud.message(text, 2.6);
 }
 
+// The one door every PLAYER-driven pick comes through — the 1/2/3 keys and a
+// click on an offer card both land here. The spec card is a modal, so it IS the
+// blocker and answers from anywhere; the inline offer is flight UI and answers
+// only while the cockpit is live. The DOM already hides the cards behind a pause
+// or a panel, but the keys are a window listener that fires regardless, and a
+// digit must never reach into a paused run and spend a pick. Both paths are
+// guarded rather than just the keys: two entry points with one rule between them
+// is how the rule gets forgotten. Internal callers (window.freshRun, the
+// headless autoUpgrade resolve) go straight to applyPick — they mean it.
+const pickFromUi = (i) => {
+  if (!game.choosingUpgrade && menuBlocking()) return;
+  applyPick(i);
+};
+
+// Answers whatever is currently offered — the spec MODAL, or the inline offer
+// on the pilot card. Both live on the same two fields (upgradeKind /
+// upgradeChoices); `choosingUpgrade` says only whether the sim is frozen behind
+// it, which is now the spec card's business alone.
 function applyPick(i) {
-  if (!game.choosingUpgrade || !game.upgradeChoices) return;
+  if (!game.upgradeChoices) return;
   const choice = game.upgradeChoices[i];
   if (!choice) return;
   const oldHullMax = game.st.hullMax;   // healOnHullGain reads the pre-pick ceiling
@@ -950,10 +978,22 @@ function applyPick(i) {
     sfx.sfxUpgrade();
     hud.message(`${choice.name.toUpperCase()} acquired.`, 3.5);
   }
+  const wasInline = !game.choosingUpgrade;
   game.choosingUpgrade = false;
   game.upgradeChoices = null;
   game.upgradeKind = null;
   hud.setUpgradeVisible(game, null, null, null);
+  // NO CARD MAY LAND UNDER A CURSOR THAT JUST CLICKED ONE. Picks queue — bank a
+  // pick's worth of XP while an offer sits unclaimed and the next one is owed
+  // the moment this one is taken — and the offer always appears in the same
+  // corner, so without this the second card materialises under a finger still
+  // on the button and gets bought unread. flingDelayT is already the "hold the
+  // owed pick back" timer (tractor.js arms it after a throw for the same
+  // reason: don't put a card up at the exact moment the player is busy), so it
+  // takes this too rather than growing a second clock beside it. Not headless:
+  // there is no cursor to protect there, and a soak's pick pacing must stay
+  // exactly what it was.
+  if (wasInline && !game.autoUpgrade) game.flingDelayT = Math.max(game.flingDelayT, 0.8);
 }
 
 // Run start: choose a specialization. Freezes the sim behind the card.
@@ -979,18 +1019,30 @@ function beginRunGuidance(spec) {
 
 // The next owed pick. BOTH kinds now draw the same way — NEW abilities you
 // don't own yet (tierChoices) — because deepening is automatic; the milestone
-// ('tier') just also carries the tier bump and the life. Freezes the sim behind
-// the card. Both empty-pool branches must keep progression MOVING: a spec whose
-// offer pool is exhausted still tiers up / still banks the pick, or the ladder
-// silently stalls for the rest of the run.
+// ('tier') just also carries the tier bump and the life. Both empty-pool
+// branches must keep progression MOVING: a spec whose offer pool is exhausted
+// still tiers up / still banks the pick, or the ladder silently stalls for the
+// rest of the run.
+//
+// AN ABILITY PICK NO LONGER FREEZES THE RUN (user call). It is OFFERED — the
+// cards go to the head of the pilot card (hud.syncOffer) and simply wait there,
+// through firefights and dives and whatever else, until the player answers
+// them. `choosingUpgrade` therefore stays FALSE here; the only thing that still
+// holds the sim is the spec card, which is answered before the run has started
+// moving. Nothing else about the ladder changed: the pick stays owed
+// (owesPick), the XP behind it keeps banking, and the next one queues up behind
+// this one the instant it is taken.
 function openUpgrade() {
   const prog = game.prog;
   if (!prog.spec) return;   // no picks until a spec is chosen
-  game.upgradeKind = pickIsMilestone(prog) ? 'tier' : 'upgrade';
+  const kind = pickIsMilestone(prog) ? 'tier' : 'upgrade';
+  game.upgradeKind = kind;
   game.upgradeChoices = tierChoices(prog, 2);
   if (!game.upgradeChoices.length) {
+    game.upgradeKind = null;             // nothing to offer — clear the state...
+    game.upgradeChoices = null;          // ...or the offer would show two blanks
     consumePickCost(prog);
-    if (game.upgradeKind === 'tier') {   // pool exhausted -> tier up with no new ability
+    if (kind === 'tier') {               // pool exhausted -> tier up with no new ability
       applyTierUp(prog);
       game.prog.lives = Math.min(maxLives(prog), game.prog.lives + 1);
       game.st = shipStats(game.prog);
@@ -1002,8 +1054,15 @@ function openUpgrade() {
     }
     return;
   }
-  game.choosingUpgrade = true;
-  hud.setUpgradeVisible(game, game.upgradeChoices, game.upgradeKind, applyPick);
+  // A CHIME and nothing else (user call: "the window popping up is enough").
+  // The cards ARE the notification — they arrive lit, breathing, and they stay
+  // until answered, so a line across the top of the screen said the same thing
+  // twice and stole the slot a real hazard warning needs. The sound stays
+  // because the cards land in a corner: it is the one channel that reaches you
+  // when you are looking somewhere else, and per the event grammar an
+  // opportunity chimes. Skipped headless, where autoUpgrade answers the offer
+  // in this same frame anyway.
+  if (!game.autoUpgrade) sfx.sfxChime();
 }
 
 // Game over -> fresh run: wipe the build, regenerate the world, restart.
@@ -1070,8 +1129,10 @@ function resetRun(seed, openCard = true) {
     openSpec();          // fresh run opens on a new specialization choice
   } else {
     // No card: the dead run's own pick state must go with it, or a stale
-    // choosingUpgrade would freeze the title backdrop behind an invisible modal.
-    game.choosingUpgrade = false; game.upgradeChoices = null;
+    // choosingUpgrade would freeze the title backdrop behind an invisible modal
+    // — and a stale upgradeKind/Choices would hand the next run an offer drawn
+    // against a spec and a tier that no longer exist.
+    game.choosingUpgrade = false; game.upgradeChoices = null; game.upgradeKind = null;
     hud.setUpgradeVisible(game, null, '', applyPick);
   }
 }
@@ -1437,16 +1498,24 @@ function update(dtReal) {
     game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
     applyZoom();
 
-    // Roguelite pick: XP crossing a threshold opens the choice modal, which
-    // freezes the sim (frame() gate) until the player picks. In headless
-    // (window.tick) there is no input, so window.autoUpgrade auto-resolves.
+    // Roguelite pick: XP crossing a threshold OFFERS a choice on the pilot card
+    // (openUpgrade -> hud.syncOffer). It does not freeze anything and it does
+    // not expire — it waits until the player answers it. In headless
+    // (window.tick) there is nobody to answer, so window.autoUpgrade resolves it
+    // in this same frame.
+    // `!game.upgradeChoices` is the re-entry guard: an unanswered offer must not
+    // be re-rolled every frame, or the two cards would shuffle sixty times a
+    // second under the cursor. It also queues the NEXT pick honestly — the offer
+    // clears in applyPick, and if the XP for another one is already banked it
+    // opens on the following frame.
     // NOT while a rock is in the beam, nor for ~2s after a fling (flingDelayT):
-    // freezing the sim mid-aim/mid-throw feels awful. The owed pick isn't lost —
-    // owesPick stays true until consumed, so it opens the moment the throw settles.
-    if (!game.choosingUpgrade && game.prog.spec && game.ship.alive && !game.held &&
+    // mid-aim and mid-throw are the two moments the corner of the screen is the
+    // last place you can look. The owed pick isn't lost — owesPick stays true
+    // until consumed, so it arrives the moment the throw settles.
+    if (!game.upgradeChoices && game.prog.spec && game.ship.alive && !game.held &&
         game.flingDelayT <= 0 && owesPick(game.prog)) {
       openUpgrade();
-      if (game.autoUpgrade && game.choosingUpgrade) applyPick(0);
+      if (game.autoUpgrade && game.upgradeChoices) applyPick(0);
     }
 
     // Per-frame inputs & AI

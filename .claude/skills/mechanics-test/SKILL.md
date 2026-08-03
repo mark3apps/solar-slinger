@@ -45,7 +45,7 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | grab + derail + catch XP | tractor grab, derail-on-grab trigger, XP economy |
 | fling at cursor, no recoil | **"throws never steer"** + **"flinging has no recoil"** design laws |
 | orbit gate, capture + shotgun | orbit ring is ability-gated; capture/launch bookkeeping |
-| pick deferred by fling, then consumed | **"the pick modal is deferred, never lost"** |
+| pick deferred by fling, then consumed | **"the pick offer is deferred, never lost"** (and that an ability pick never sets `choosingUpgrade` — it is offered on the pilot card, not forced) |
 | shield unlocks and absorbs first | shield-is-an-ability law; absorb-before-hull ordering |
 | god mode blocks damage | the `window.god` dev hook |
 | hull does not self-heal | **split-health law** (hull mends only at glow pockets) |

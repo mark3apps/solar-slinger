@@ -105,8 +105,12 @@
     grid: 18 XP, against 52 before). `ABIL_XP_WOBBLE` (the per-rank nudge) was halved to 0.04 to stop
     eating the spacing, and must stay under ~0.108 regardless or a later rank can cost less than an
     earlier one. Tightest kit gap now 47 XP.
-  - **PICKS ONLY EVER OFFER NEW ABILITIES.** Crossing `xpForPick(prog)` sets `game.choosingUpgrade`
-    and PAUSES the sim (`frame()` gate) for a card; both kinds draw from `tierChoices(prog, 2)` —
+  - **PICKS ONLY EVER OFFER NEW ABILITIES.** Crossing `xpForPick(prog)` fills
+    `game.upgradeChoices` / `game.upgradeKind` and the cards are **OFFERED, not forced** — they go to
+    the head of the pilot card (`hud.syncOffer`) and the run carries on around them until the player
+    answers with 1 / 2 or a click. `game.choosingUpgrade` — the `frame()` freeze — is set **only by
+    the run-opening spec card**; an ability pick never pauses anything. Both kinds draw from
+    `tierChoices(prog, 2)` —
     2 random abilities you do NOT own that clear their `minTier`. There is exactly ONE such pick
     between milestones (`PROG.PICKS_PER_TIER` = 1); the next one is the **TIER-UP milestone**, which
     also runs `applyTierUp` (tier bump — it grants NO ranks; a "dividend" would double-count against
@@ -160,10 +164,15 @@
   reset to 0 at every REAL launch** — `tractor.releaseHeld`, `flingAllFromOrbit`, the parry riposte —
   or a rock that once ended a chain can never start one. Belt rock is deliberately UNCAPPED: it is
   sparse and cannot cascade, so planet billiards stay glorious.
-- **The pick modal is deferred, never lost.** It won't open while a rock is in the beam
+- **The pick offer is deferred, never lost.** It won't appear while a rock is in the beam
   (`game.held`) nor for ~2s after any fling (`game.flingDelayT`, set in `releaseHeld` /
-  `flingAllFromOrbit`) — freezing the sim mid-aim feels awful. `owesPick` stays true until consumed,
-  so the pick just waits.
+  `flingAllFromOrbit`) — mid-aim and mid-throw are the two moments the corner of the screen is the
+  last place you can look. `owesPick` stays true until consumed, so the pick just waits.
+  `applyPick` arms that same timer for 0.8s after an inline pick, because **picks QUEUE**: bank a
+  pick's worth of XP while an offer sits unclaimed and the next one is owed the instant this one is
+  taken, and without the settle it would materialise in the same corner under a finger still on the
+  button. Not armed under `autoUpgrade` — headless has no cursor to protect, and a soak's pick
+  pacing has to stay exactly what it was.
 - **`shipStats(prog)` = universal base + channels.** The base is tier-scaled and equals the old
   tier-0..5 baseline, so **the core grab / throw / fly loop works for every spec from frame one**;
   owned abilities add on top. All `st.*` field names are unchanged, so render/physics/tractor/hud

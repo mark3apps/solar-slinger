@@ -19,11 +19,21 @@ sits at 17% from the top, exactly where a panel's header is. `choosingUpgrade` s
 freezes independently — and START goes straight into it: `startGame` calls `openSpec`, so the first thing
 after the splash is the **specialization choice**, held over the frozen just-started world. `resetRun`
 re-arms it for a fresh run.
+**`choosingUpgrade` MEANS THE SPEC CARD AND NOTHING ELSE.** It used to cover ability picks too, and those
+now happen in flight: `openUpgrade` fills `upgradeChoices` / `upgradeKind` and `hud.syncOffer` seats the
+cards at the head of the pilot card, where they wait without pausing anything (design-laws: *an owed pick
+is offered, not forced*). Every consumer that reads the flag therefore now asks about the spec card
+alone — `menuBlocking`, the music duck, the trajectory predictor, the V / M hotkeys, `toggleMenu`,
+`syncMenus`'s `hudLive` — and that is the correct reading in each: a run must not be pausable-by-proxy
+through a card it is allowed to ignore.
 - **Transitions live in main.js** (it owns the state); **hud.js only routes the clicks** and derives which
   overlay is visible from those flags every frame in `syncMenus` (guarded, so the DOM is touched only when
-  a flag flips) — same owner-split as the upgrade modal. `hud.initMenus(handlers)` wires the buttons once.
+  a flag flips) — same owner-split as the spec modal, and `syncOffer` is the same pattern again (signature-
+  guarded, since it is `innerHTML` and rebuilding it per frame would throw away the card under the cursor
+  between the mousedown and the click trying to pick it). `hud.initMenus(handlers)` wires the buttons once,
+  the offer's delegated click included.
 - **ESC / P** are one context-sensitive handler (`toggleMenu`): resume↔pause in-game, back out of whichever
-  shell modal is up, never dismiss an upgrade card, no-op on the splash or over the death/game-over panels.
+  shell modal is up, never dismiss the spec card, no-op on the splash or over the death/game-over panels.
   The on-screen **☰ button** (a tab docked on the minimap's left rim — see design-laws) just calls
   `pauseGame`. Player input
   (grab/fling/RMB) is gated behind `menuBlocking()` so nothing reaches the sim through a menu.
@@ -70,8 +80,10 @@ re-arms it for a fresh run.
 - **The splash and the pause menu have their own music beds** (`title` / `menu` in music.js), chosen
   by game state ahead of the mood vector. Because those beds ARE the content there, they play at full
   level — the old menu duck now only covers the ~2s before the crossfade lands. `choosingUpgrade` is
-  deliberately NOT a menu: pick cards land mid-flight every couple of minutes and swapping the score
-  under each one would shred the soundtrack, so it keeps ducking the gameplay track instead. A shell
+  deliberately NOT a menu: swapping the score under a pick card would shred the soundtrack, so it
+  ducks the gameplay track instead. Since the flag narrowed to the SPEC card that duck now happens
+  once per run, under the title bed — an ability pick is offered in flight and never touches the
+  music at all, which is exactly what the rule was protecting in the first place. A shell
   modal opened FROM the splash stays on the title bed — no run has started, so there is nothing to pause.
   The volume DEFAULTS are deliberately lopsided (music 0.85, SFX 0.5): the ambient tracks are mastered
   quiet while the CC0 sample packs run hot — at equal gains the SFX buried the soundtrack.
@@ -105,7 +117,11 @@ re-arms it for a fresh run.
   `.syskeys`) is the list players read — a hotkey added to `input.js` without a key cap there is a
   control that only exists for whoever wrote it. **H** promotes the current dock to the run's home
   port; like every other hotkey it is gated on `menuBlocking()`, so it does nothing behind a pause,
-  a shell modal or an open upgrade card.
+  a shell modal or the open spec card. **1 / 2 / 3** answer whatever pick is on offer and carry the
+  same gate for the inline one — the spec card is itself the blocker and answers from anywhere, but a
+  digit pressed behind a pause screen must not reach into the run and spend a pick. They are
+  deliberately NOT on the CONTROLS schematic: they exist only while cards are up, and the cards print
+  their own key caps.
 - **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
   keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
   fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`
