@@ -3503,7 +3503,7 @@ function drawApproach(game) {
 // inventing a marker colour is the point: the two instruments already agree
 // about what rose means.
 const DOCK_STEEL = '207, 228, 255';
-const DOCK_HOME = '255, 142, 166';
+const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (style.css)
 
 // THE STATION GROWS WITH THE SHIP. One row per beam tier (0-5), the same shape
 // of table as SHIP_TIERS and read the same way — from `game.st.tier`, i.e. your

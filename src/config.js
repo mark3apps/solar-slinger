@@ -249,6 +249,30 @@ export const CFG = {
   SKIM_SPEED: 100,
   SKIM_DPS_K: 0.09,
 
+  // ---- PLANET SPIN (entities.Body) ----------------------------------------
+  // A WORLD'S DAY IS LONGER THE BIGGER IT IS (user call: "planets, especially
+  // large ones, rotate slower"). Planets used to draw one flat rate regardless
+  // of size, so a 1,290-unit gas giant swept its cloud bands past at the same
+  // angular rate as a 180-unit rock — and angular rate is not what the eye
+  // reads. It reads the SURFACE going by, which is `spin x radius`, so the flat
+  // rate made every big world look like it was visibly spinning rather than
+  // turning. It also gave the biggest worlds the fastest ground to land on,
+  // which is the wrong way round for the thing you most want to set down on.
+  //
+  // Two knobs, deliberately separate. PLANET_SPIN_SLOW is the flat "everything
+  // is calmer now" factor; PLANET_SPIN_REF/POW is the SIZE falloff on top of
+  // it, and only bites above the reference radius (`max(REF, radius)`), so the
+  // small worlds take the flat slowdown alone and are not sped up by the curve.
+  //
+  // Measured across the sky at these values: a 180-unit world goes from a
+  // ~78-210s day to ~157-419s, and the 1,290-unit giant from the same ~78-210s
+  // to ~9-25 MINUTES. MOONS ARE DELIBERATELY UNTOUCHED — the request named
+  // planets, moons are all well under the reference radius anyway, and their
+  // quicker turn is what makes a moon read as a small body next to a world.
+  PLANET_SPIN_SLOW: 0.5,
+  PLANET_SPIN_REF: 300,
+  PLANET_SPIN_POW: 0.85,
+
   // ---- LANDING: SURFACE FRICTION (physics.collideShipBody) ----------------
   // A world is a TURNING body, and until this existed the hull touching one was
   // a purely elastic event: nothing in contact took energy out tangentially, so

@@ -841,7 +841,7 @@ shield dome and the two read as a lens of overlapping circles rather than as a m
 and a ring says nothing about what a home port *is*. A spire does — it caps the gantry at the tiers
 that have one, and it competes with nothing.)
 
-**THE STATION'S ART TRACKS THE SHIP'S TIER** (`render.DOCK_TIERS`, six rows read from `game.st.tier`,
+**THE STATION'S ART TRACKS THE SHIP'S TIER** (`config.DOCK_TIERS`, six rows read via `dockTier(st)` off `game.st.tier`,
 i.e. your CURRENT tier and not the one it was laid down at). A dock is infrastructure you keep
 improving, so tiering up refits every station you own rather than leaving your first pad looking like
 a shack forever. The ladder is a SILHOUETTE, not a detail pass — landing slab → gantry mast → second

@@ -38,11 +38,19 @@ export class Body {
     this.parent = o.parent || null;   // moons orbit a planet; used for gravity weighting
     // Axial spin (rad/s). Planets and moons rotate gently — their surface
     // detail turns under the FIXED star-lit terminator (render.js), so a point
-    // on the surface cycles through day and night. Planets are statelier
-    // (~78-210s day), moons a touch faster (~45-126s); either sign, so some
-    // worlds spin retrograde. Asteroids keep their faster tumble.
+    // on the surface cycles through day and night. Either sign, so some worlds
+    // spin retrograde. Asteroids keep their faster tumble.
+    //
+    // A PLANET'S DAY GETS LONGER THE BIGGER IT IS (CFG.PLANET_SPIN_*): the flat
+    // slowdown applies to every world, and the size falloff on top of it only
+    // bites past PLANET_SPIN_REF, so small worlds are slowed but never sped up.
+    // ~157-419s for a 180-unit world, 9-25 MINUTES for a 1,290-unit giant.
+    // Moons keep their quicker turn (~45-126s) — it is part of reading as a
+    // small body next to a world, and they are all under the reference anyway.
     const spinDir = Math.random() < 0.5 ? -1 : 1;
-    this.spin = this.type === 'planet' ? spinDir * (0.03 + Math.random() * 0.05)
+    this.spin = this.type === 'planet'
+      ? spinDir * (0.03 + Math.random() * 0.05) * CFG.PLANET_SPIN_SLOW
+        * Math.pow(CFG.PLANET_SPIN_REF / Math.max(CFG.PLANET_SPIN_REF, o.radius), CFG.PLANET_SPIN_POW)
       : this.type === 'moon' ? spinDir * (0.05 + Math.random() * 0.09)
       : (Math.random() - 0.5) * 0.6;
     this.rot = Math.random() * 6.28;

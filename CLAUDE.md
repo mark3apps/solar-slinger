@@ -332,7 +332,7 @@ Plus the three scaling rules that make a big debris cascade affordable:
   coordinate: a world orbits AND spins, and a chipped-down world must keep its pad on the surface.
   HOME is the lives ROSE on all three surfaces (pad, dial, chart) because rose already means "a life"
   and one meaning must not wear three hues. **The station's ART tracks the SHIP'S TIER**
-  (`render.DOCK_TIERS`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
+  (`config.DOCK_TIERS` via `dockTier`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
   every station you own from a landing slab to a working spaceport.
 - **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
 - **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
