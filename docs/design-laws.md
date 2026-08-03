@@ -651,12 +651,44 @@ code "works."
   ~1,200 units against a view about 760 across), so culling on the centre meant the ring only ever
   appeared once you were already inside it, i.e. after the stop had popped: the whole thing was dead
   code that nothing errored on.
-- **THE XP RAIL IS MOUNTED ON THE PILOT CARD, not floating and not inset in it.** It used to be a wide
-  hex pill alone at the top centre of the canopy, disconnected from the ability list it fills toward.
-  It now straddles the card's top edge as its own rim-lit slab with a shadow under it — flush-inset
-  first, which just read as one more row; the straddle plus the shadow is what makes it read as a part
-  bolted on. Its `content-box` + 2px padding is load-bearing: hud.js writes `#xpFill`'s width as a
-  percentage, and it has to resolve against the well inside the rim.
+- **THE XP RAIL IS MOUNTED ON THE PILOT CARD'S FOOT, not floating and not inset in it.** It used to
+  be a wide hex pill alone at the top centre of the canopy, disconnected from the ability list it
+  fills toward. It now straddles the card's BOTTOM edge as its own rim-lit slab throwing a shadow up
+  onto the card — flush-inset first, which just read as one more row; the straddle plus the shadow is
+  what makes it read as a part bolted on. Its `content-box` + 2px padding is load-bearing: hud.js
+  writes `#xpFill`'s width as a percentage, and it has to resolve against the well inside the rim.
+  **The FOOT, not the head** (user call), and the reason is that the card is bottom-anchored and
+  grows UPWARD: with the rail on top, every ability learned shoved the run's main gauge another row
+  up the canopy, so the instrument you glance at most never sat in the same place twice. Down there
+  it is pinned to the screen and the loadout stacks away from it. The card reads bottom-up now —
+  rail, the tier it measures, spec + score + lives, then everything that rail has already bought —
+  and the spine gradient, the bed's light spill and the rail's drop-shadow all had to invert with it.
+- **AN OWED PICK IS OFFERED, NOT FORCED** (user call: don't pause the game for it). The cards land at
+  the HEAD of the pilot card, one step above the loadout they are about to join, and simply wait
+  there — through firefights, dives, whatever — until the player answers with 1 / 2 or a click. Only
+  the run-opening SPEC card still freezes the sim, and it is answered before the world has started
+  moving. Three consequences, each deliberate:
+  **(1) It is built from the CARD's vocabulary, not the modal's** — sheer beds, square corners, an
+  accent spine per row, the same glyph column the loadout uses. An offer row is the loadout row it is
+  about to become, one size up and lit, with the catalog line showing and a key cap on the front;
+  pick it and it drops into the list directly below as the compact version of the same object.
+  Octagon chamfers and opaque slabs stay with the modal kit, where a panel is allowed to be a panel.
+  **(2) "Answer me" is carried by LIGHT AND MOTION, never by a heavier surface** — the block breathes,
+  the header pip blinks, the milestone wears the kit's gold trim instead of the locale accent, and
+  the XP rail that bought the pick pulses at the card's foot until it is taken (on `#xpBar::before`,
+  because `.gain` already owns an `animation` on `#xpBar` and retriggers several times a second).
+  There is deliberately **no `#msg` line** — user call, "the window popping up is enough": the cards
+  are the notification, they stay until answered, and a top-centre line said it twice while occupying
+  the slot a real hazard warning needs. The CHIME stays; it is the only channel that reaches a player
+  looking somewhere else.
+  **(3) The cards are the ONE exception to "nothing in the pilot card may take the mouse"** — see the
+  loadout-row law below. They are a control, not a readout, they exist only while a choice is owed,
+  and everything around them (header, hint, the block's padding) stays `pointer-events: none` so only
+  a card itself can eat a click. A queued second offer is held back 0.8s so it cannot land under a
+  cursor that just clicked the first one.
+  The card is capped at `calc(100vh - 34px)` and the LOADOUT is the only part allowed to give: on a
+  short window a full 19-ability list used to run off the top and take the offer with it, which is
+  the one thing on that card asking for something.
 - **In-flight HUD surfaces are SHEER and SQUARE-CORNERED** (user call). The pilot card and its hover
   readout are see-through enough to fly over — you should read the sky through the whole card — and
   their corners are hard. Both were rejected in the other direction first: a chamfered corner plus a
@@ -675,9 +707,11 @@ code "works."
   passed). The hover state is **hit-tested from a window mousemove against cached row rects**, exactly
   as the achievement toasts are, and there is deliberately no `:hover` in the CSS: the card sits in
   the bottom-left of the play area, so giving its rows real `pointer-events` would let them swallow
-  the mousedown that starts a tractor grab. **Nothing in the pilot card may ever take the mouse.**
-  Both the highlight and the panel are gated on the same flag as the menu button, so neither can sit
-  under the pick card or a shell modal.
+  the mousedown that starts a tractor grab. **No READOUT in the pilot card may ever take the mouse.**
+  The pick offer's cards are the one exception and they earn it by not being a readout: they are a
+  control that exists only while a choice is owed, and 1 / 2 answer them without the cursor ever
+  going near that corner. Both the highlight and the panel are gated on the same flag as the menu
+  button, so neither can sit under the spec card or a shell modal.
 - **ROGUE PLANETS ARE GONE** (user call: "they're only causing issues"). A wandering 2.5-4.5e5 mass
   under full gravity was a permanent source of sky damage that no player action caused and none could
   prevent: it derailed whatever lane it crossed, ATE moons on the flyby, and — once the outer band

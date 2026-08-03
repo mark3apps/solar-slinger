@@ -52,7 +52,7 @@ export function initHud(game) {
     'burnBar', 'burnFill', 'burnNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'xpNext', 'upList2', 'bottomleft',
-    'abilOut',
+    'abilOut', 'offerBox',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
     // Front-end shell: splash / pause / settings menus + the in-game menu button
     'topleft', 'splashScreen', 'settingsScreen', 'controlsScreen', 'creditsScreen',
@@ -121,6 +121,16 @@ export function initMenus(handlers) {
     el.mapRouteList.addEventListener('click', (e) => {
       const row = e.target.closest('.mrstop');
       if (row) handlers.onRemoveWaypoint(+row.dataset.i);
+    });
+  }
+  // The inline pick offer. DELEGATED, like the journey rail: its cards are
+  // rebuilt every time a new pick is owed, so a listener bound per card would
+  // die with the card that carried it. This is the one place in the pilot card
+  // that takes the mouse — see the block's note in style.css.
+  if (el.offerBox) {
+    el.offerBox.addEventListener('click', (e) => {
+      const row = e.target.closest('.ofrow');
+      if (row) handlers.onUpgradePick(+row.dataset.i);
     });
   }
   bind('btnMainMenu', handlers.onMainMenu);
@@ -898,11 +908,55 @@ export function setGameOverVisible(v, cause = '', prog = null) {
   gameOverScore(prog);
 }
 
-// Build (or hide) the choice modal. `kind` is 'spec' (run-opening specialization
-// cards), 'tier' (the tier-up milestone) or 'upgrade' (the between-tier pick) —
-// the last two both offer NEW abilities; deepening never comes through here.
-// Both ability kinds title as LEARN — a card is always a new ability now, and
-// only the milestone one also carries the tier.
+// ---- The inline pick offer --------------------------------------------------
+// An owed ability pick, seated at the HEAD OF THE PILOT CARD rather than in a
+// modal that freezes the run — the player answers it when they want to. The
+// full reasoning for how it looks is with its CSS; what matters here is that it
+// is DERIVED, exactly the way syncMenus derives the shell panels: main.js owns
+// game.upgradeChoices, and nothing has to remember to tell this function when a
+// pick lands, is taken, or dies with the run.
+//
+// Rebuilt only when the signature moves. It is innerHTML, and re-authoring two
+// cards sixty times a second would throw away the one under the cursor between
+// the mousedown and the click that is trying to pick it.
+let offerSig = '';
+function syncOffer(game) {
+  // THE SPEC CARD IS STILL A MODAL. It is the run's opening beat, held over a
+  // world that has not started moving yet and answered before the first thrust;
+  // there is no flight to interrupt, and three tall banners are the showpiece.
+  // Only the two ABILITY kinds come here.
+  const choices = game.upgradeKind && game.upgradeKind !== 'spec' ? game.upgradeChoices : null;
+  const live = hudLive && !!(choices && choices.length);
+  // The rail that bought the pick pulses until it is taken — the peripheral
+  // half of the signal, for a pick earned while you are looking elsewhere.
+  el.xpBar.classList.toggle('owed', live);
+  const sig = live ? `${game.upgradeKind}|${choices.map((c) => c.id).join(',')}` : '';
+  if (sig === offerSig) return;
+  offerSig = sig;
+  el.offerBox.classList.toggle('hidden', !live);
+  el.offerBox.classList.toggle('tier', live && game.upgradeKind === 'tier');
+  if (!live) { el.offerBox.innerHTML = ''; return; }
+  // The milestone says so: it carries a tier and a life as well as the ability,
+  // and it is the one pick worth breaking off what you are doing for.
+  const head = game.upgradeKind === 'tier'
+    ? 'TIER UP &mdash; CHOOSE AN ABILITY'
+    : 'ABILITY UNLOCKED &mdash; CHOOSE ONE';
+  el.offerBox.innerHTML =
+    `<div class="ofhead"><i class="ofmark"></i>${head}</div>` +
+    choices.map((c, i) =>
+      // ac-<spec> carries the ability's owner colour, the same identity the
+      // modal cards wore and the same one the loadout row will keep.
+      `<button class="ofrow${c.spec ? ` ac-${c.spec}` : ''}" type="button" data-i="${i}">` +
+      `<span class="ofnum">${i + 1}</span>` +
+      `<span class="oficon">${c.icon || '◦'}</span>` +
+      `<span class="ofname">${esc(c.name)}</span>` +
+      `<span class="ofdesc">${esc(c.desc)}</span></button>`).join('') +
+    `<div class="offoot">PRESS ${choices.map((_, i) => i + 1).join(' OR ')} &middot; OR CLICK A CARD</div>`;
+}
+
+// Build (or hide) the choice modal — the SPECIALIZATION card, and only that one
+// now: ability picks are the inline offer above. `kind` is still passed through
+// so the titles table keeps documenting what each shape of pick is called.
 const UP_TITLES = { spec: 'CHOOSE YOUR SPECIALIZATION', tier: 'TIER UP — LEARN AN ABILITY', upgrade: 'LEARN AN ABILITY' };
 export function setUpgradeVisible(game, choices, kind, onPick) {
   if (!choices || !choices.length) {
@@ -1033,6 +1087,7 @@ function perfBadge(game) {
 
 export function updateHud(game) {
   syncMenus(game);
+  syncOffer(game);   // AFTER syncMenus — it gates on the hudLive flag it sets
   // Only while the chart is up — it is a shell modal, so nothing behind it is
   // moving and nothing it reports can change while it is closed.
   if (game.mapOpen) refreshChart(game);

@@ -162,7 +162,11 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(owesPick(game.prog), 'owed pick was lost during the deferral');
       hooks.stepSim(2.2);
       expect(game.prog.level > lvl0, 'deferred pick was never consumed');
-      expect(!game.choosingUpgrade, 'autoUpgrade left the card open');
+      // An ability pick is an OFFER now, not a freeze — upgradeChoices is what
+      // stands until it is answered, so that is what autoUpgrade has to clear
+      // (choosingUpgrade is the spec card's flag and never moves here at all).
+      expect(!game.upgradeChoices, 'autoUpgrade left the offer standing');
+      expect(!game.choosingUpgrade, 'an ability pick froze the sim');
       return `level ${lvl0} -> ${game.prog.level}`;
     });
 
@@ -183,7 +187,7 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(prog.xp === xp0 + cost1 - 1, 'ability growth ate the pick purse');
       addXp(game, 1);                            // ...and now it does
       expect(prog.upgrades[id] === 2, 'crossing the threshold did not rank up');
-      expect(!game.choosingUpgrade, 'an automatic rank opened a card');
+      expect(!game.choosingUpgrade && !game.upgradeChoices, 'an automatic rank opened a card');
       expect(game.rankUps.some((r) => r.id === id), 'the rank was never queued for the HUD');
       // A fat award crosses several thresholds in one call
       addXp(game, cost2 * 6);

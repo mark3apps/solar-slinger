@@ -34,21 +34,32 @@
       <span class="stattrack"><span class="statwell"><span id="burnFill"></span></span></span>
     </div>
   </div>
-  <!-- The PILOT CARD. Top to bottom it reads as one object: the XP rail across
-       the card's top edge, the tier it measures, who you are, then the loadout
-       that rail is filling toward. -->
+  <!-- The PILOT CARD. It reads BOTTOM-UP, because that is the order the run
+       happens in: the XP rail is bolted across the card's foot, the tier it
+       measures sits on it, then who you are — and everything that rail has
+       already bought stacks up above it. A card anchored to the bottom of the
+       screen grows UPWARD, so putting the gauge and the vitals at the foot
+       leaves them at a fixed height while the loadout climbs; with the rail on
+       top, every ability learned shoved the whole instrument up the canopy.
+       The OFFER rides at the head of that stack, one step above the loadout it
+       is about to join. -->
   <div id="bottomleft">
-    <div id="xpBar"><span id="xpFill"></span></div>
-    <div id="xpRow">
-      <span id="tierLabel">TIER 0 &middot; SCOUT</span>
-      <span id="xpNext"></span>
-    </div>
+    <!-- An owed pick, offered IN PLACE: no freeze, no modal. hud.syncOffer
+         fills it from game.upgradeChoices; it is empty (and gone) the rest of
+         the time. Its cards are the only thing in the pilot card allowed to
+         take the mouse — they are a control, not a readout. -->
+    <div id="offerBox" class="hidden"></div>
+    <div id="upList2"></div>
     <div id="progRow">
       <span id="specLabel" class="hidden"></span>
       <span id="scoreChip" class="hidden" title="Achievement score (V)"></span>
       <span id="livesText"></span>
     </div>
-    <div id="upList2"></div>
+    <div id="xpRow">
+      <span id="tierLabel">TIER 0 &middot; SCOUT</span>
+      <span id="xpNext"></span>
+    </div>
+    <div id="xpBar"><span id="xpFill"></span></div>
   </div>
   <!-- Hovered-ability readout. Its own node OUTSIDE the card: growing the card
        to hold it would shove the XP rail up the screen every time the cursor

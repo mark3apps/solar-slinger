@@ -228,8 +228,10 @@ function computeMood(game, dt) {
 //
 // A shell modal opened FROM the splash stays on the title theme (the run hasn't
 // started, so there is nothing to pause), and choosingUpgrade is deliberately
-// NOT a menu — pick cards land mid-flight every couple of minutes and swapping
-// the score under each one would shred the soundtrack.
+// NOT a menu — swapping the score under a pick card would shred the soundtrack.
+// It only ever means the run-opening SPEC card now (ability picks are offered
+// on the pilot card and never freeze anything), so it ducks once per run,
+// under the title bed, and the gameplay track is never interrupted by a pick.
 function wantBucket(game) {
   if (!game.started) return 'title';
   if (game.paused || shellModal(game)) return 'menu';
@@ -274,7 +276,7 @@ export function updateMusic(game, dt) {
   // The splash and the pause menu have their OWN beds now, so once that bed is
   // actually up it plays at full level — it IS the content, not something to
   // hear under a panel. The old duck still covers the DWELL_STATE seconds
-  // before the crossfade lands, and the upgrade card (which never gets a bed).
+  // before the crossfade lands, and the spec card (which never gets a bed).
   const duckTo = STATE_BUCKETS.has(bucket) ? 1
     : game.gameOver ? 0.3
     : !game.started ? 0.55
