@@ -3,7 +3,7 @@
 > Deep reference. [CLAUDE.md](../CLAUDE.md) carries the summary; read this file before touching
 > `main.js`'s frame loop, `CFG.DT`/`SUBSTEP_MAX`/pacing, or anything that decides *which clock* a
 > system rides. See also [world-content.md](world-content.md) for the field LOD, the awake list and
-> the frame registries — the other half of what makes ~8,000 bodies affordable.
+> the frame registries — the other half of what makes ~3,700 bodies affordable.
 
 ## The loop (main.js)
 

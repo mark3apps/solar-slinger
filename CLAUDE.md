@@ -132,7 +132,7 @@ presentation loop.
 | [achievements.js](src/achievements.js) | The run's scoreboard: the ~400-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
 | [gravel.js](src/gravel.js) | The SoA store for small, anonymous debris — typed arrays, stable slot handles, contiguous integrate. A grain PROMOTES to a real `Body` the moment the beam reaches it. Imports nothing. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates bulk rock draws to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks. |
-| [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~1900 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
+| [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~740 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
 | [minimap-worker.js](src/minimap-worker.js) | The radar's dense-field dot layer, baked off-thread to an ImageBitmap. Its sweep math MIRRORS `drawMinimap`'s — retune both together. |
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |

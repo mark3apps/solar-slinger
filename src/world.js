@@ -1242,7 +1242,8 @@ const FIELD_DEFS = [
 // small tier's floor 120 -> 220): the shoal reads as terrain made of rock you
 // thread between, and the smallest grade was carrying too much of the count
 // for how little it contributes to that. Trading specks for chunk keeps the
-// pocket's nearest-neighbour spacing where it was (~59u at FIELD_ROCKS 1800)
+// pocket's nearest-neighbour spacing where it was (~148u centre-to-centre, ~26u
+// surface-to-surface, measured on seed 20260721 at FIELD_ROCKS 740)
 // while the visible material in it goes up — LESS gravel, MORE rock, which is
 // a different thing from "denser".
 //
@@ -1380,8 +1381,9 @@ function rubblePoint(f, sun, rng, bigs) {
 // silent-deorbit failure the balance baseline exists to catch, and it only
 // appeared when the rocks got big enough to reach.
 // The shortlist is built once per pocket rather than scanned per try: the
-// packer runs ~93 rocks x 60 tries x 4 fields per worldgen, and freshRun /
-// mechTest regenerate the world constantly.
+// packer runs ~205 rocks (CFG.FIELD_GIANTS 200 + FIELD_MONOLITHS 5) x
+// CFG.FIELD_PACK_TRIES 170 x 4 fields per worldgen, and freshRun / mechTest
+// regenerate the world constantly.
 function pocketKeepOut(game, f) {
   const reach = CFG.FIELD_LEN * FIELD_LOBE_MAX + 1200;
   const out = [];
@@ -2060,8 +2062,8 @@ export function replenishWorld(game, dt) {
   // spawn ring's disturb annulus) and a slow trickle leaves a pocket visibly
   // thin for minutes, so the batch is generous — but it is DERIVED from
   // FIELD_ROCKS rather than a constant. It used to be a hardcoded 55 under a
-  // comment claiming it scaled; when the pocket dropped to 690 that same 55
-  // would have refilled it eight times faster than intended.
+  // comment claiming it scaled; at today's FIELD_ROCKS 740 that same 55 would
+  // refill a pocket several times faster than intended.
   game.fieldTimer = (game.fieldTimer ?? 30) - dt;
   if (game.fieldTimer <= 0 && game.fields) {
     game.fieldTimer = 30;
