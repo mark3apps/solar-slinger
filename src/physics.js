@@ -1859,62 +1859,6 @@ function surfNormal(body, ang) {
   return _nrm;
 }
 
-// TWO LANDMARK ROCKS NEED MORE THAN THE CENTRE LINE.
-//
-// The narrow phase above measures each surface along the line joining the two
-// centres. For a circle against anything that is exact, and for a pebble against
-// a slab it is close enough — the pebble is small, so its whole silhouette sits
-// within a degree or two of that line. For two 200-400 unit ANGULAR rocks it is
-// simply the wrong test: a corner can be buried deep in a neighbour's flank
-// while the centre line passes through a notch in one and a waist in the other,
-// and the pair reports no contact at all. That is the "collisions between the
-// large rocks don't work" case — rock visibly overlapping rock, sliding through
-// each other's corners, because the only place the collider ever looked was the
-// one bearing least likely to be where they actually touch.
-//
-// Both profiles are RADIAL functions of bearing (util.rockOutline guarantees it
-// — "composed as a radial function, so the outline cannot self-intersect"), so
-// "is this point inside that rock?" is one profile lookup, and a proper test is
-// just: walk each rock's own surface through the arc that faces the other, and
-// ask. No SAT, no vertex lists, no winding.
-//
-// Deepest contact wins, and its BEARING is what the resolver gets — using the
-// centre line's normal for an off-axis contact would separate along a face the
-// rocks are not touching on.
-// The deepest sample's WORLD POSITION is what comes back, not a bearing: the
-// resolver needs the bearing of the contact from BOTH centres (whichever rock
-// is the wall owns the normal) and the lever arm from each centre for the spin
-// response, and all three fall out of a point.
-const BIG_PROBE_N = 7;          // samples per rock, per pair
-const BIG_PROBE_ARC = 1.0;      // half-width of the probed cone (radians)
-let _probeX = 0, _probeY = 0;
-function bigPenetration(a, b, dx, dy) {
-  const toB = Math.atan2(dy, dx), toA = toB + Math.PI;
-  let best = -Infinity;
-  const step = (BIG_PROBE_ARC * 2) / (BIG_PROBE_N - 1);
-  for (let i = 0; i < BIG_PROBE_N; i++) {
-    const off = -BIG_PROBE_ARC + step * i;
-    // a's surface probed against b...
-    const th = toB + off;
-    const ra = surfRadius(a, th);
-    const px = a.x + Math.cos(th) * ra, py = a.y + Math.sin(th) * ra;
-    const ex = px - b.x, ey = py - b.y;
-    const ed = Math.hypot(ex, ey) || 1e-6;
-    const pen = surfRadius(b, Math.atan2(ey, ex)) - ed;
-    if (pen > best) { best = pen; _probeX = px; _probeY = py; }
-    // ...and b's surface probed against a. Both directions are needed: a corner
-    // of either rock can be the deepest point, and probing only one of them
-    // misses exactly the case where the flat one is the wall.
-    const ph = toA + off;
-    const rb = surfRadius(b, ph);
-    const qx = b.x + Math.cos(ph) * rb, qy = b.y + Math.sin(ph) * rb;
-    const fx = qx - a.x, fy = qy - a.y;
-    const fd = Math.hypot(fx, fy) || 1e-6;
-    const pen2 = surfRadius(a, Math.atan2(fy, fx)) - fd;
-    if (pen2 > best) { best = pen2; _probeX = qx; _probeY = qy; }
-  }
-  return best;
-}
 
 // COULOMB FRICTION AT A LANDMARK CONTACT, plus the tumble it puts on both rocks.
 //
@@ -2403,12 +2347,12 @@ function collideBodies(game, a, b) {
   // it back onto the normal first — otherwise the fix for the slide trades it
   // for a pop off flat faces.
   //
-  // THE PROBED CASE IS ALREADY A DEPTH, not a radial sum, so it takes no such
-  // projection: bigPenetration measures how far one surface is buried past the
-  // other, which is the distance that has to come out. Discounting it by the
-  // centre-line cosine as well would under-separate exactly the deep off-axis
-  // contacts the probe exists to find, and two landmarks would settle
-  // interpenetrated and jitter there. Bounded per substep so a pair that starts
+  // THE SAT CASE IS ALREADY A DEPTH, not a radial sum, so it takes no such
+  // projection: rockshape.rockContacts returns a true minimum-translation
+  // vector, and its depth IS the distance that has to come out along its own
+  // normal. Discounting it by the centre-line cosine as well would
+  // under-separate exactly the off-axis contacts SAT exists to resolve, and two
+  // landmarks would settle interpenetrated and jitter there. Bounded per substep so a pair that starts
   // deeply overlapped (a shatter seeding pieces inside a neighbour) eases apart
   // instead of teleporting.
   const sep = bigProbe

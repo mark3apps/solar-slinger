@@ -119,8 +119,18 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
 
 ## Landmark rock collides as a shape, not as a bearing (added 2026-08)
 
-**Two `bigShape` rocks get a MULTI-SAMPLE narrow phase** (`physics.bigPenetration`), not the
-single-bearing surface test every other shaped pair uses.
+**Two `bigShape` rocks get CONVEX-HULL SAT** (`rockshape.rockContacts`, against the baked
+decomposition in `rockdata.js`), not the single-bearing surface test every other shaped pair uses.
+
+> Superseded 2026-08: this invariant originally described a multi-sample radial probe
+> (`physics.bigPenetration`, now deleted). The measurements below were taken against that probe and
+> are kept because they are what motivated the whole narrow phase — but the mechanism is now SAT.
+> A radial probe can find a deep contact; what it cannot do is produce a true minimum-translation
+> vector, because its depth comes from the deepest sample while its direction comes from a separately
+> looked-up face normal, and the two disagree by however far along a face the contact landed. Resting
+> pairs therefore never resolved and pockets accumulated interpenetration for as long as they were
+> played in. SAT returns depth and axis as one measurement, which is the entire argument for it.
+> See [rock-fracture.md](rock-fracture.md).
 
 The ordinary shaped narrow phase measures each surface along the line joining the two centres. That
 is exact for a circle and close enough for a pebble against a slab — the pebble's whole silhouette
@@ -139,9 +149,15 @@ the face normal, and the lever arms for spin.
 
 Three things follow, and each one is load-bearing:
 
-- **The probed overlap is a DEPTH, not a radial sum**, so it takes no centre-line cosine projection.
-  Discounting it as well would under-separate exactly the deep off-axis contacts the probe exists to
-  find, and two landmarks would settle interpenetrated and jitter there.
+- **The SAT overlap is a DEPTH, not a radial sum**, so it takes no centre-line cosine projection.
+  Discounting it as well would under-separate exactly the off-axis contacts SAT exists to resolve,
+  and two landmarks would settle interpenetrated and jitter there.
+- **Every overlapping hull pair yields its own manifold, and the list must not be collapsed to one.**
+  A decomposed body has no single separating vector — two gnarled rocks can catch on a corner AND
+  rest on a face at once. Resolving only the deepest left 46% of overlapping pairs still overlapping.
+- **The contact normal is NOT re-derived from the centre line.** SAT already orients it from a toward
+  b, and a corner catch legitimately points back across that line. Re-deriving it is what made
+  contacts read as skating sideways down a slab.
 - **Landmark contacts carry tangential friction and the spin it implies**
   (`physics.applyBigFriction`, `CFG.FIELD_BIG_FRICTION` / `FIELD_BIG_SPIN`). Nothing else in the file
   has a tangential term — without one, two slabs meeting corner-to-face exchange no sideways force

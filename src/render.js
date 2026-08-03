@@ -737,8 +737,15 @@ function cosmeticRing(sh) {
       const t = k / COSM_SUB;
       // Deterministic per (edge, step) — a rock must not shimmer between frames,
       // and two bodies wearing one shape must wear it identically.
-      const h = Math.sin((i * 12.9898 + k * 78.233) * 43758.5453) ;
-      const d = (h - Math.trunc(h)) * 2 - 1;
+      // fract(sin(seed) * K) — the multiply is OUTSIDE the sin, and the
+      // fractional part is taken with FLOOR. Both matter: with the multiply
+      // inside, `h` is already a sine in [-1,1], Math.trunc of it is always 0,
+      // and `d` came out spanning -2.999..1.000 instead of [-1,1] — asymmetric,
+      // and up to 3x the amplitude budget inward. That budget is the whole
+      // design of this function (see COSM_AMP), so overshooting it is exactly
+      // the visible-gap failure it exists to avoid.
+      const h = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453;
+      const d = (h - Math.floor(h)) * 2 - 1;
       out.push(ax + ex * t + px * d * COSM_AMP * scale,
                ay + ey * t + py * d * COSM_AMP * scale);
     }

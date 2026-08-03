@@ -1,21 +1,23 @@
 # The rock fracture library — design + implementation plan
 
-> **Status: PART BUILT.** The library, the bake and the narrow phase exist and are verified. Nothing
-> is wired into the sim yet — `physics.js` still runs the old sampled collider. When it lands, the
-> laws move into [design-laws.md](design-laws.md) and
-> [physics-invariants.md](physics-invariants.md) and this file shrinks to a pointer.
+> **Status: WIRED AND LIVE.** The library, the bake, the narrow phase and the fracture are built and
+> running — `physics.js` drives every `bigShape` pair through `rockshape.rockContacts`, and a
+> landmark breaks into the pieces it was cut from. The old sampled collider
+> (`physics.bigPenetration`, `util.rockShape`'s LUT/normal/sector tables) is deleted.
 >
 > | | |
 > |---|---|
 > | ✅ `tools/bake-rocks.mjs` | authors the tree by cutting, decomposes, asserts its own output |
 > | ✅ `src/rockdata.js` | 68 baked shapes — 5 giants, 18 mids, 45 smalls. 44 KB |
 > | ✅ `src/rockshape.js` | SAT narrow phase: true MTV, real manifolds |
-> | ✅ `tools/test-rockshape.mjs` | 17,839 checks green |
+> | ✅ wired into `physics.js` | `bigShape` pairs, `surfRadius` / `surfReach` / `surfNormal`, the packer |
+> | ✅ the fracture | giant → mids → smalls → ordinary asteroids, mass conserved to 1.000 |
+> | ✅ `tools/test-rockshape.mjs` | 17,840 checks green |
 > | ✅ `tools/rockviz.html` | look at the library and verify the pieces tile |
-> | ⬜ wiring into `physics.js` | the old collider is still the one running |
-> | ⬜ soft rails | |
-> | ⬜ the fracture itself | |
-> | ⬜ deleting the old machinery | |
+> | ⬜ soft rails | overlap still accumulates in play — see "Still open" |
+>
+> Remaining known-unresolved items are listed at the end of this file; they are the reason this doc
+> has not yet been folded into design-laws.md.
 
 ## Why
 
