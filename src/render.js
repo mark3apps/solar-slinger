@@ -11,8 +11,9 @@ import {
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
-  rockShape, bigRockSurfAt, rockJagRing, jagSamples, JAG_PEAK,
+  rockJagRing, jagSamples, JAG_PEAK,
 } from './util.js';
+import { rockShapeOf, rockSurfAt } from './rockshape.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
   rockGLCount, rockGLResetTextures, rockGLStats, rockGLAvailable,
@@ -554,7 +555,10 @@ const ROCK_ARCHS = 24;   // silhouettes per size bucket. MUST stay a multiple of
 const ROCK_BUCKET_MAX = [3.5, 5.5, 8, 11];
 const ROCK_BUCKET_R = [2.6, 4.5, 6.7, 9.4];
 const archJags = [];   // [bucket * ROCK_ARCHS + arch] -> jag array
-const ROCK_SIL_N = 128;   // silhouette samples for a shaped rock (see bigRockSil)
+const ROCK_SIL_N = 128;
+// Sentinel jag cache key for baked-shape landmarks — out of range of both the
+// 0..3 bucket indices and the -1-jagSamples() unique-ring keys.
+const JAG_KEY_SHAPED = -9999;   // samples for the radial profile the crack/scar decals index
 // Screen size (world radius x zoom) below which the intricate surface skips
 // its fine layers — they are sub-pixel there and cost more than they show.
 // WHICH rocks get the pass at all is world.shapeBig's `b.bigShape`, never a
@@ -687,53 +691,91 @@ function chunkShape(b) {
 // means and why it is not a roughened polygon. The ring is cached on the body
 // and regenerated if the radius changes (chip damage shrinks rocks), which is
 // also what re-buckets a rock that has shed its way down a size class.
-// THE BIG-ROCK SILHOUETTE — its broken shape ring with its impact craters cut
-// out of it, sampled from util.bigRockSurfAt, which is the SAME function
-// physics.surfRadius collides against. That is the CRUMBLE law reaching rock:
-// the notch you can see in a giant is the notch you can fly into.
+// A LANDMARK IS DRAWN AS THE POLYGON IT IS COLLIDED AS — the same baked vertex
+// list rockshape.js runs SAT over, not a resampling of it. That is the crumble
+// law's "one profile feeds render and physics" made literal rather than merely
+// kept in step: there is no second sampling to drift.
 //
-// Cached like worldSil and invalidated on the same three things — vertex count,
-// newest scar, radius — because unlike every other rock this outline is not
-// static: it wears as the rock is hit. SIL_N samples is dense enough that a
-// slab's corner lands within a fraction of a unit of true at 300 units drawn,
-// and it is what lets one profile serve both the polygon and the craters
-// instead of tracking corners and bowls separately.
-function bigRockSil(b) {
-  const sh = (b._shape ||= rockShape(b.id));
-  const scars = b.scars;
-  const newest = scars && scars.length ? scars[scars.length - 1].t : -1;
-  let s = b._rsil;
-  if (!s || s.n !== (scars ? scars.length : 0) || s.t !== newest || s.r !== b.radius) {
-    s = b._rsil = { n: scars ? scars.length : 0, t: newest, r: b.radius,
-      rr: new Float32Array(ROCK_SIL_N) };
-    for (let i = 0; i < ROCK_SIL_N; i++) {
-      s.rr[i] = bigRockSurfAt(sh, scars, b.radius, (i / ROCK_SIL_N) * TAU);
+// It also deleted a cache. The old silhouette was resampled at ROCK_SIL_N
+// bearings and invalidated on vertex count, newest scar and radius, because the
+// outline WORE as the rock was hit. Scars are cosmetic decals now (a shaped rock
+// expresses damage by breaking into pieces cut from its own outline — see
+// docs/rock-fracture.md), so the outline is static per shape and there is
+// nothing left to invalidate.
+// COSMETIC ONLY — the drawn edge, not the collided one.
+//
+// The baked outline is simplified (the bake drops vertices that sit within 1.2%
+// of the line through their neighbours), which is right for a collider and reads
+// a little too CUT on screen: long dead-straight faces meeting at clean corners.
+// This subdivides each face and walks it off the straight line by a hair, so an
+// edge has grain without gaining a feature.
+//
+// THE AMPLITUDE IS THE WHOLE DESIGN. It is held at 0.8% of body radius, under
+// the 1.2% the collision hulls were already simplified by — so the wobble stays
+// inside a band where drawn and collided ALREADY disagree, and cannot open a gap
+// the collider doesn't have. Anything bigger would be visible rock you fly
+// through, or visible space you stop in, which is the one thing this outline
+// exists to prevent.
+//
+// Cached on the SHAPE, not the body: 68 shapes serve ~1,600 rocks, so this is
+// built a few dozen times per session and read every frame.
+const COSM_AMP = 0.008, COSM_SUB = 3;
+function cosmeticRing(sh) {
+  if (sh._cosm) return sh._cosm;
+  const v = sh.v, n = v.length >> 1, out = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = v[i * 2], ay = v[i * 2 + 1];
+    const bx = v[j * 2], by = v[j * 2 + 1];
+    const ex = bx - ax, ey = by - ay, L = Math.hypot(ex, ey) || 1;
+    // Perpendicular, and a face gets more grain than a stub — a 2-unit sliver
+    // between two real faces should not wobble as hard as a 200-unit slab side.
+    const px = -ey / L, py = ex / L;
+    const scale = Math.min(1, L / 0.35);
+    out.push(ax, ay);
+    for (let k = 1; k < COSM_SUB; k++) {
+      const t = k / COSM_SUB;
+      // Deterministic per (edge, step) — a rock must not shimmer between frames,
+      // and two bodies wearing one shape must wear it identically.
+      const h = Math.sin((i * 12.9898 + k * 78.233) * 43758.5453) ;
+      const d = (h - Math.trunc(h)) * 2 - 1;
+      out.push(ax + ex * t + px * d * COSM_AMP * scale,
+               ay + ey * t + py * d * COSM_AMP * scale);
     }
   }
-  return s;
+  return (sh._cosm = Float64Array.from(out));
 }
 
 function traceAsteroid(b) {
   if (b.bigShape) {
-    const s = bigRockSil(b);
-    const step = TAU / ROCK_SIL_N;
-    const dc = Math.cos(step), ds = Math.sin(step);
-    let c = Math.cos(b.rot), sn = Math.sin(b.rot);
+    const v = cosmeticRing(rockShapeOf(b)), n = v.length >> 1;
+    const c = Math.cos(b.rot), sn = Math.sin(b.rot), r = b.radius;
     ctx.beginPath();
-    for (let i = 0; i < ROCK_SIL_N; i++) {
-      const rr = s.rr[i] * b.radius;
-      const px = b.x + c * rr, py = b.y + sn * rr;
+    for (let i = 0; i < n; i++) {
+      const x = v[i * 2] * r, y = v[i * 2 + 1] * r;
+      const px = b.x + x * c - y * sn, py = b.y + x * sn + y * c;
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      const nc = c * dc - sn * ds;
-      sn = sn * dc + c * ds;
-      c = nc;
     }
     ctx.closePath();
     // The crack clip and the scar edge sampler index b.jag as `i/n * TAU`, so
-    // hand them the same samples rather than a second, separate shape.
-    if (!b.jag || b.jag.length !== ROCK_SIL_N || b.jagR !== b.radius) {
-      b.jag = Array.from(s.rr);
+    // they still want a radial profile. Built once per shape+radius off the same
+    // polygon, so the decals sit on the outline that is actually drawn.
+    // ...and it MUST claim b.jagKey as well. The gravel path below caches on
+    // that key alone; leaving it undefined meant its test never matched, so it
+    // rebuilt b.jag as a 16-48 entry archetype ring over the 128-entry one this
+    // path had just written, every frame, back and forth. The crack clip and the
+    // scar edge sampler index b.jag as `i/n * TAU`, so they were reading an
+    // array built at a different resolution than they assumed — which draws as
+    // regular parallel rungs across the rock. JAG_KEY_SHAPED can never collide
+    // with a bucket index or a -1-jagSamples() big-rock key.
+    if (!b.jag || b.jagKey !== JAG_KEY_SHAPED || b.jagR !== b.radius || b.jagShape !== b.shapeId) {
+      b.jag = new Array(ROCK_SIL_N);
+      for (let i = 0; i < ROCK_SIL_N; i++) {
+        b.jag[i] = rockSurfAt(b, (i / ROCK_SIL_N) * TAU + b.rot) / b.radius;
+      }
       b.jagR = b.radius;
+      b.jagShape = b.shapeId;
+      b.jagKey = JAG_KEY_SHAPED;
     }
     return;
   }
@@ -4642,7 +4684,11 @@ function drawAlien(game, al) {
     const f = game.fields && game.fields[al.field];
     const s = game.ship;
     const hunting = !f || (s.alive && !senseBlind(game) && fieldFrac(f, s.x, s.y) < 1.15);
-    const r = al.radius;
+    // CFG.LURKER_DRAW holds the on-screen size across the collider bump that
+    // made the hitbox match this silhouette — see the note on LURKER_RADIUS.
+    // The sprite reaches r*1.7 forward and r*1.3 back, so it must be scaled
+    // here or a lurker would simply have grown 30%.
+    const r = al.radius * CFG.LURKER_DRAW;
     ctx.save();
     ctx.translate(al.x, al.y);
     // Nose along the velocity — it swims, it doesn't hover

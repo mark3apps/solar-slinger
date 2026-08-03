@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rock fracture library</title>
+<style>
+  body { background:#06080f; color:#8fa6c8; font:12px/1.5 ui-monospace,Menlo,monospace; margin:0; padding:18px 22px; }
+  h1 { font-size:13px; letter-spacing:.14em; text-transform:uppercase; color:#d8e6ff; margin:0 0 4px; font-weight:600; }
+  .note { color:#63799b; margin:0 0 16px; max-width:80ch; }
+  .row { display:flex; gap:14px; align-items:flex-start; margin-bottom:14px; flex-wrap:wrap; }
+  figure { margin:0; }
+  figcaption { color:#5b7096; margin-top:3px; letter-spacing:.06em; }
+  canvas { background:#0a0e18; border:1px solid #16203a; border-radius:4px; display:block; }
+  b { color:#ffd479; font-weight:600; }
+</style>
+<h1>Rock fracture library</h1>
+<p class="note">
+  Left: the giant, drawn outline only. Middle: its children transformed back into the parent frame &mdash;
+  if the cut is a true partition these tile it with no gap and no overlap. Right: the same pieces exploded.
+  Far right: the next tier down, in place. <b>Amber</b> overlays the convex decomposition actually used for collision.
+</p>
+<div id="out"></div>
+<script type="module">
+import { ROCK_SHAPES, ROCK_ROOTS } from '../src/rockdata.js';
+
+const PAL = ['#4ec9f0','#f0764e','#8ef04e','#f04ec9','#f0c94e','#9a6ef0','#4ef0a8','#f0846e'];
+const out = document.getElementById('out');
+
+function pts(flat) { const a = []; for (let i = 0; i < flat.length; i += 2) a.push([flat[i], flat[i+1]]); return a; }
+
+function mk(size, label) {
+  const fig = document.createElement('figure');
+  const c = document.createElement('canvas');
+  const dpr = devicePixelRatio || 1;
+  c.width = size * dpr; c.height = size * dpr;
+  c.style.width = c.style.height = size + 'px';
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  g.translate(size / 2, size / 2);
+  const cap = document.createElement('figcaption');
+  cap.textContent = label;
+  fig.append(c, cap);
+  return { fig, g };
+}
+
+function poly(g, p, ox, oy, s, rot, stroke, fill) {
+  g.save();
+  g.translate(ox, oy); g.rotate(rot || 0); g.scale(s, s);
+  g.beginPath();
+  p.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+  g.closePath();
+  g.restore();
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.stroke(); }
+}
+
+// Every descendant of `id`, flattened into the frame of `id`.
+function flatten(id, ox = 0, oy = 0, s = 1, depth = 0, want = 1, acc = []) {
+  const sh = ROCK_SHAPES[id];
+  if (depth === want) { acc.push({ id, ox, oy, s }); return acc; }
+  for (const k of sh.kids) flatten(k.s, ox + k.ox * s, oy + k.oy * s, s * k.rs, depth + 1, want, acc);
+  return acc;
+}
+
+for (const root of ROCK_ROOTS) {
+  const sh = ROCK_SHAPES[root];
+  const row = document.createElement('div');
+  row.className = 'row';
+  const S = 190, K = (S / 2 - 10) / sh.reach;
+
+  { const { fig, g } = mk(S, `${root} — ${sh.kind}, ${sh.hulls.length} hulls`);
+    poly(g, pts(sh.v), 0, 0, K, 0, '#9fc4ff', 'rgba(90,130,190,.18)');
+    for (const h of sh.hulls) poly(g, pts(h), 0, 0, K, 0, 'rgba(255,212,121,.55)');
+    row.append(fig); }
+
+  for (const [tier, want] of [[1, 1], [2, 2]]) {
+    const parts = flatten(root, 0, 0, 1, 0, want);
+    const { fig, g } = mk(S, `tier ${tier} in place — ${parts.length} pieces`);
+    parts.forEach((p, i) => poly(g, pts(ROCK_SHAPES[p.id].v), p.ox * K, p.oy * K, p.s * K, 0,
+      PAL[i % PAL.length], PAL[i % PAL.length] + '33'));
+    row.append(fig);
+  }
+
+  { const parts = flatten(root, 0, 0, 1, 0, 1);
+    const { fig, g } = mk(S, 'exploded');
+    parts.forEach((p, i) => {
+      const d = Math.hypot(p.ox, p.oy) || 1;
+      const push = 1 + 0.42 / Math.max(0.35, d);
+      poly(g, pts(ROCK_SHAPES[p.id].v), p.ox * K * push, p.oy * K * push, p.s * K, 0,
+        PAL[i % PAL.length], PAL[i % PAL.length] + '2a');
+    });
+    row.append(fig); }
+
+  out.append(row);
+}
+
+const n = Object.keys(ROCK_SHAPES).length;
+const hulls = Object.values(ROCK_SHAPES).reduce((a, s) => a + s.hulls.length, 0);
+const info = document.createElement('p');
+info.className = 'note';
+info.innerHTML = `<b>${n}</b> shapes &middot; <b>${hulls}</b> convex hulls total &middot; mean <b>${(hulls / n).toFixed(1)}</b> per shape`;
+out.append(info);
+</script>

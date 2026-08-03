@@ -117,10 +117,57 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
    6,000 boulder one. It does NOT stop the ambient `absorbed` losses in a long soak — that rule is a
    mass ratio and never reads hp, so those are a rail/derail question, not a toughness one.
 
+## Landmark rock collides as a shape, not as a bearing (added 2026-08)
+
+**Two `bigShape` rocks get a MULTI-SAMPLE narrow phase** (`physics.bigPenetration`), not the
+single-bearing surface test every other shaped pair uses.
+
+The ordinary shaped narrow phase measures each surface along the line joining the two centres. That
+is exact for a circle and close enough for a pebble against a slab — the pebble's whole silhouette
+sits within a degree or two of that line. For two 200–400 unit ANGULAR rocks it is simply the wrong
+test: a corner can be buried deep in a neighbour's flank while the centre line passes through a notch
+in one and a waist in the other, and the pair reports no contact at all. **Measured on seed 20260721,
+a freshly generated pocket at rest: of 801 candidate pairs the centre-line test found 90 contacts and
+the probe found 144 — 54 real overlaps, 37% of the total, were invisible to the collider, the worst
+buried 87 units deep.**
+
+Both profiles are radial functions of bearing (`util.rockOutline` guarantees it — the outline cannot
+self-intersect), so "is this point inside that rock?" is one profile lookup. The probe walks each
+rock's own surface through the arc facing the other and asks. No SAT, no vertex lists, no winding.
+Deepest contact wins and its POSITION is what the resolver gets — the bearing from each centre for
+the face normal, and the lever arms for spin.
+
+Three things follow, and each one is load-bearing:
+
+- **The probed overlap is a DEPTH, not a radial sum**, so it takes no centre-line cosine projection.
+  Discounting it as well would under-separate exactly the deep off-axis contacts the probe exists to
+  find, and two landmarks would settle interpenetrated and jitter there.
+- **Landmark contacts carry tangential friction and the spin it implies**
+  (`physics.applyBigFriction`, `CFG.FIELD_BIG_FRICTION` / `FIELD_BIG_SPIN`). Nothing else in the file
+  has a tangential term — without one, two slabs meeting corner-to-face exchange no sideways force
+  and neither one turns, so they slide across each other and part still tumbling at exactly the rate
+  they were seeded with. Coulomb-clamped to the slip so friction can never reverse the slide; the
+  moment of inertia is the uniform disc's, because these are explicitly rubble piles and anything
+  tighter would be false precision. **Scoped to `bigShape` pairs** — Coulomb friction on every pebble
+  in the sky is a much larger change to a long-tuned resolver.
+- **Two railed rocks of the same pocket skip the whole thing** (see below). They must, or the probe
+  finding 144 resting overlaps would turn into 144 pointless resolutions per substep.
+
 ## Railed conjunctions pass through (added 2026-08)
 
 **Two RAILED natural celestials touching below `DMG_THRESH` do not collide at all** — no derail, no
 separation, no impulse (`physics.collideBodies`, guarded right after `closing` is computed).
+
+**The same rule covers a shoal's own masonry, and it sits ABOVE the narrow phase rather than below
+it.** A pocket shares one angular rate (`world.seedDenseFields`'s `w`, re-applied by the reknit and
+by the settle re-rail), so two rocks both still on that rail have exactly zero relative motion —
+there is no collision to resolve, now or ever. And they genuinely do interlock: the packer spaces
+landmarks by their circle radii while a shaped rock's corners reach past that (`util.rockShape`'s
+`reach`), so a freshly generated pocket has its masonry keyed together at the corners on purpose.
+Without the guard the resolver would push all 144 resting overlaps apart every substep and the rail
+advance would snap them back on the next — the judder described below, on a hundred rocks at once,
+plus the shaped narrow phase paid on every one of them for nothing. A knock derails, and a derailed
+rock collides normally again.
 
 Moon families deliberately reach past Hill stability (`world.moonZone`, `maxR = hill *
 CFG.MOON_ZONE_MUL`) so systems stay wide, which means **neighbouring planets' families overlap

@@ -18,6 +18,7 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 | `config.js` progression, `ABILITIES`, `shipStats`, `achievements.js` | [docs/progression.md](docs/progression.md) |
 | `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
+| `rockshape.js`, `rockdata.js`, `tools/bake-rocks.mjs`, shaped-rock collision | [docs/rock-fracture.md](docs/rock-fracture.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
 | splash / pause / settings / controls / credits / achievements / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
 | `starmap.js`, the chart's knowledge ladder, journey waypoints | [docs/design-laws.md](docs/design-laws.md) |
@@ -130,6 +131,8 @@ presentation loop.
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems, shoal lurkers), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields. Rides `dtReal`, never the fixed step. |
 | [achievements.js](src/achievements.js) | The run's scoreboard: the ~400-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
+| [rockdata.js](src/rockdata.js) | GENERATED (`tools/bake-rocks.mjs`). The fixed asteroid shape library and its fracture tree — 68 shapes in 5 families, each child CUT from its parent so the pieces tile it exactly. Imports nothing. |
+| [rockshape.js](src/rockshape.js) | The narrow phase for shaped rock: convex-hull SAT with a true MTV and real contact manifolds. Imports only rockdata.js. **Not yet wired into physics.js** — see [docs/rock-fracture.md](docs/rock-fracture.md). |
 | [gravel.js](src/gravel.js) | The SoA store for small, anonymous debris — typed arrays, stable slot handles, contiguous integrate. A grain PROMOTES to a real `Body` the moment the beam reaches it. Imports nothing. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates bulk rock draws to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks. |
 | [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~1900 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
@@ -208,6 +211,11 @@ changing anything it touches.**
    7b. A split must not chain (no credit propagation, `chainOk`, `CHUNK_INERT`).
 8. A planet is its own durability class (flat `PLANET_HP_BASE` + gentle slope, not the mass curve).
 9. So is a moon (`MOON_HP_BASE`/`MOON_HP_MUL`).
+
+10. A shoal has FRICTION and SETTLES — field rock is damped toward its pocket's own flow (never
+    toward rest) and re-rails once it rides with its neighbours again.
+11. Two landmark rocks collide as SHAPES — a multi-sample probe, not one bearing; with friction and
+    spin. Two railed rocks of the same pocket skip collision entirely.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
 `game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
@@ -324,6 +332,28 @@ Plus the three scaling rules that make a big debris cascade affordable:
   conjunctions come round far more often and arrive above `DMG_THRESH`, where the railed-conjunction
   pass-through no longer protects the overlapping moon families. The rng draw it replaced is KEPT
   and discarded — never buy a constant with the seeded stream.
+- **A SHOAL IS GRADED — YOU COME IN THINKING IT'S FINE AND STUMBLE INTO IT.** The landmark ladder is
+  a `[rim, core]` ramp in mass AND drawn size (`FIELD_GIANT_MASS` / `FIELD_GIANT_R_MUL` /
+  `FIELD_GIANT_SKEW`), and what enforces it is that **a rock's allowed reach falls as a power of its
+  radius** (`FIELD_REACH` + `FIELD_REACH_FALL`) — not a biased sampler (`packBigRock`'s greedy-snug
+  scoring saturates the pocket flat and overrides any sampler preference) and not a cumulative-area
+  frontier alone (one shared envelope confines the small rock along with the big). The outer third
+  holds no large rock at all. The core allowance has a floor set by the HEART's own footprint, and
+  the outer third's mean size is floored by the class's small end.
+- **MASONRY IS SPACED BY ITS SHAPE, NOT ITS RADIUS** — corners reach up to 1.62x the nominal radius,
+  so circle packing births the pocket interlocked. The bound is DIRECTIONAL (`util.rockReachAt`) and
+  must be taken over the arc the other rock subtends, or two big rocks interlock at a corner off the
+  centre line; a conservative bound alone strands the biggest rocks in their own clearings, so it is
+  used to ACCEPT and an exact probe (`world.pairClearance`) arbitrates the near misses.
+  Small rock BANKS against big rock (`FIELD_PACK_BANK`) — without it the greedy-snug packer is
+  rich-get-richer and never fills the sparse core.
+- **A SHOAL HAS SWIMLANES, AND THEY ARE FOUND AMONG THE ROCK, NOT CARVED THROUGH IT** — routes rim to
+  rim that SKIRT the core (`world.findLanes`; a lane is ~180 wide and a core rock ~300 across, so a
+  core-crossing route can only exist by deleting what it crosses). Only rocks that would leave less
+  than `FIELD_LANE_MIN` of passage are dropped; gravel is cleared too, but leaks
+  (`FIELD_LANE_LEAK`) so the edge stays ragged.
+- **FIELD ROCK REMEMBERS WHERE IT BELONGS** (`world.setFieldHome`) and drifts back to it, so a pocket
+  reconstitutes its layout — above all its lanes — instead of merely coming to rest.
 - **A planet system is alive while you are in it**; loose debris is on a leash; a world you are not
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).

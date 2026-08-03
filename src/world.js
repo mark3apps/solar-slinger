@@ -4,7 +4,10 @@ import {
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
-import { TAU, mulberry32, rand, pick, CRYSTAL_REACH } from './util.js';
+import {
+  TAU, mulberry32, rand, pick, CRYSTAL_REACH,
+} from './util.js';
+import { pickShapeId, reachAt, shapeReach, rockOverlap, rockReach } from './rockshape.js';
 import * as gravel from './gravel.js';
 import { sfxPing } from './sfx.js';
 
@@ -1275,6 +1278,25 @@ function fieldMass(rng, frac = 0.5) {
 //     quietly turn the shoal into its own little solar system — and put
 //     dozens of extra bodies into the O(bodies x attractors) gravity loop.
 //   - hp x FIELD_HP_MUL: it survives the chaos it exists to create.
+// A rock's HOME, in the pocket's own rotating frame (tangential/radial offsets
+// in world units — config.fieldFrac's projection, so home and containment can
+// never disagree about the frame). Because the pocket is rigid, this is constant
+// for the run: the pocket turns, the offsets do not.
+//
+// It exists so a stirred-up shoal comes BACK, and specifically so the SWIMLANES
+// do (user design law: "the rocks should slowly revert back to their rail after
+// getting moved around — we want to keep the swimlanes mostly intact"). Settling
+// a rock wherever it happened to stop is what silts a route up over a run; the
+// pocket has to reconstitute the layout it was seeded with, not merely stop
+// moving. physics.js does the drifting.
+export function setFieldHome(b, f) {
+  const dx = b.x - f.x, dy = b.y - f.y;
+  const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
+  b.homeTan = -dx * sa + dy * ca;
+  b.homeRad = dx * ca + dy * sa;
+  return b;
+}
+
 export function markFieldRock(b, fi) {
   b.field = fi;
   b.fieldRock = true;
@@ -1324,9 +1346,31 @@ function fieldPoint(f, sun, rng, pow = 0.5) {
   if (rng() < 0.07) q *= 1 + rng() * 0.35;
   const tan = Math.cos(th) * q * CFG.FIELD_LEN;
   const rad = Math.sin(th) * q * CFG.FIELD_SPREAD;
+  const w = pocketToWorld(f, sun, tan, rad);
+  const rr = w.rr, a = w.a;
+  // `qn` is this draw's position in config.fieldFrac units — 0 at the heart, 1
+  // at the outline. Handed back rather than re-derived, because the packer's
+  // radial frontier (packBigRock) tests every candidate against it and
+  // fieldFrac would redo the whole projection to recover a number that was in
+  // hand here. It is exactly `q / lb`: fieldFrac divides the same q by the same
+  // lobe radius at the same bearing.
+  // `tan`/`rad` ride along for the lane test — they are the pocket-frame
+  // coordinates this point was built FROM, so handing them back costs nothing
+  // and avoids projecting the world position straight back again.
+  return { x: sun.x + Math.cos(a) * rr, y: sun.y + Math.sin(a) * rr,
+    qn: q / lb, tan, rad };
+}
+
+// The pocket frame -> world. Pulled out of fieldPoint because the packer's bank
+// draw (see packBigRock) builds points in the pocket frame directly rather than
+// from a bearing and a radius, and both have to land in the same place.
+// The arc term uses the LOCAL radius and the tan^2/2r term undoes the chord bow
+// — without that a 3900u-long pocket at the inner lane sags ~730u sunward at its
+// ends and the containment test stops agreeing with where the rocks are.
+function pocketToWorld(f, sun, tan, rad) {
   const rr = f.r + rad + (tan * tan) / (2 * f.r);
   const a = f.ang + tan / rr;
-  return { x: sun.x + Math.cos(a) * rr, y: sun.y + Math.sin(a) * rr };
+  return { rr, a, x: sun.x + Math.cos(a) * rr, y: sun.y + Math.sin(a) * rr };
 }
 
 // RUBBLE: a point on a skirt just off one of the pocket's huge rocks. Small
@@ -1358,6 +1402,262 @@ function rubblePoint(f, sun, rng, bigs) {
   const d = h.radius * 1.02
     + rand(rng, CFG.FIELD_RUBBLE_BAND[0], CFG.FIELD_RUBBLE_BAND[1]);
   return { x: h.x + Math.cos(a) * d, y: h.y + Math.sin(a) * d };
+}
+
+// ---- SWIMLANES: routes THROUGH the rock (user design law) -------------------
+//
+// "Tight swimlanes throughout these, so if you follow the path you have a better
+// shot of getting out." A pocket that is uniformly impassable is not a maze, it
+// is a wall; the lanes are what make working your way in and back out a skill
+// rather than a grind.
+//
+// THIS REVERSES AN EARLIER DECISION AND HAS TO ANSWER WHY IT FAILED BEFORE.
+// Corridors were tried once and rejected on two counts (see the MAZE note in
+// config.js): they "read as randomly generated cleared paths", and "the thing
+// actually blocking you was gravel rather than anything you could see coming".
+// Both are addressed here, and neither is optional:
+//   - THE WIDTH BREATHES. A constant-width channel is the thing that reads as
+//     drawn. Each lane's half-width runs through a couple of slow sine terms, so
+//     it pinches to a squeeze and opens into a bay along its length, and no two
+//     stretches of the same lane look alike.
+//   - GRAVEL IS CLEARED TOO, not just the masonry. A lane the landmarks respect
+//     and the pebbles silt up is exactly the old failure. That is what
+//     CFG.FIELD_LANE_LEAK moderates: a small share of gravel ignores the lane
+//     entirely, so the EDGE is ragged and a route is a place rock thins out
+//     rather than a channel with a kerb.
+//
+// Lanes are stored in the POCKET FRAME (tangential/radial offsets in world
+// units, the same frame config.fieldFrac projects into) so they rotate with the
+// pocket for free and cost nothing to maintain — and so the reknit and the
+// rocks' own drift home can both read them and keep the routes open over a run.
+// One curved road between two pocket-frame points. A quadratic Bezier with the
+// control point pushed off the chord, so an edge bows rather than running
+// straight — a network of straight segments reads as a diagram.
+function buildEdge(rng, a, b, bow) {
+  const mx = (a.tan + b.tan) / 2, my = (a.rad + b.rad) / 2;
+  const ex = b.tan - a.tan, ey = b.rad - a.rad;
+  const el = Math.hypot(ex, ey) || 1;
+  const cx = mx - (ey / el) * bow, cy = my + (ex / el) * bow;
+  const pts = [];
+  const N = 18;
+  for (let k = 0; k < N; k++) {
+    const t = k / (N - 1), u = 1 - t;
+    pts.push({
+      tan: u * u * a.tan + 2 * u * t * cx + t * t * b.tan,
+      rad: u * u * a.rad + 2 * u * t * cy + t * t * b.rad,
+    });
+  }
+  return {
+    pts,
+    w0: rand(rng, CFG.FIELD_LANE_W[0], CFG.FIELD_LANE_W[1]),
+    k1: rand(rng, 1.7, 3.1), p1: rng() * TAU,
+    k2: rand(rng, 4.3, 6.9), p2: rng() * TAU,
+  };
+}
+
+// THE ROADS ARE A NETWORK, NOT A HANDFUL OF CROSSINGS (user design law: "smaller
+// and more intricate and connecting").
+//
+// Three independent rim-to-rim curves gave three ways through and no way to
+// change your mind — and because each was wide enough to need its own clearing,
+// they had to be routed around the core, so following one inward just opened out
+// into undifferentiated space. Narrow roads fix both halves at once: a 70-unit
+// channel can THREAD between 300-unit rocks instead of deleting them, so the
+// network can reach the middle, and it can afford far more edges.
+//
+// Built as a graph over shared nodes, so the roads genuinely meet rather than
+// crossing coincidentally: junctions are a property of the structure. Node sites
+// are chosen by looking for the quietest spot at a target radius — the routes
+// still FOLLOW the gaps the masonry left (see the note above findLanes' old
+// form), they are simply joined up now.
+function findLanes(f, rng, slots) {
+  const L = CFG.FIELD_LEN, S = CFG.FIELD_SPREAD;
+  // How hemmed-in a pocket-frame point is: nearby rock, weighted by proximity.
+  const crowd = (tan, rad) => {
+    let c = 0;
+    for (const sl of slots) {
+      const d = Math.hypot((sl.tan || 0) - tan, (sl.rad || 0) - rad) - sl.r;
+      if (d < 520) c += 520 - Math.max(0, d);
+    }
+    return c;
+  };
+  // INTERIOR JUNCTIONS, spread across the radius so the network reaches the
+  // middle instead of ringing it. Each is the quietest of several draws at its
+  // target radius — a junction in a wall would force every road through it to
+  // delete rock.
+  const nodes = [];
+  const NN = CFG.FIELD_LANE_NODES;
+  for (let i = 0; i < NN; i++) {
+    const tq = 0.14 + (0.62 * i) / Math.max(1, NN - 1);
+    let best = null, bestC = Infinity;
+    for (let t = 0; t < 16; t++) {
+      const a = rng() * TAU, q = tq * rand(rng, 0.8, 1.2);
+      const n = { tan: Math.cos(a) * q * L, rad: Math.sin(a) * q * S };
+      const c = crowd(n.tan, n.rad);
+      if (c < bestC) { bestC = c; best = n; }
+    }
+    nodes.push(best);
+  }
+  // RIM MOUTHS — where the network opens onto the approach.
+  const rim = [];
+  for (let i = 0; i < CFG.FIELD_LANES; i++) {
+    const a = (i / CFG.FIELD_LANES) * TAU + rand(rng, -0.35, 0.35);
+    rim.push({ tan: Math.cos(a) * 1.12 * L, rad: Math.sin(a) * 1.12 * S });
+  }
+  // EDGES: every mouth reaches its nearest junction, the junctions are chained
+  // so the interior is connected end to end, and a few chords close loops — a
+  // tree would mean exactly one route between any two points, which is a maze
+  // solution, not a road network.
+  const pairs = [];
+  for (const r of rim) {
+    let n = nodes[0], nd = Infinity;
+    for (const c of nodes) {
+      const d = Math.hypot(c.tan - r.tan, c.rad - r.rad);
+      if (d < nd) { nd = d; n = c; }
+    }
+    pairs.push([r, n]);
+  }
+  for (let i = 0; i < nodes.length; i++) pairs.push([nodes[i], nodes[(i + 1) % nodes.length]]);
+  for (let i = 0; i + 2 < nodes.length; i += 2) pairs.push([nodes[i], nodes[i + 2]]);
+  // Each edge takes the quietest of a few bows, so an individual road still
+  // picks its way through what is actually there.
+  const lanes = [];
+  for (const [a, b] of pairs) {
+    const span = Math.hypot(b.tan - a.tan, b.rad - a.rad);
+    let best = null, bestC = Infinity;
+    for (let t = 0; t < CFG.FIELD_LANE_TRIES; t++) {
+      const ln = buildEdge(rng, a, b, rand(rng, -0.42, 0.42) * span);
+      let cost = 0;
+      for (const sl of slots) {
+        const d = laneDepthOne(ln, sl.tan || 0, sl.rad || 0) + sl.r;
+        if (d > 0) cost += d * d;
+      }
+      if (cost < bestC) { bestC = cost; best = ln; }
+    }
+    if (best) lanes.push(best);
+  }
+  return lanes;
+}
+
+// Half-width of `ln` at normalised position `t` along it. Breathing, never
+// constant — see seedLanes. Floored so a pinch is a squeeze, not a blockage.
+function laneWidth(ln, t, q) {
+  const m = 1 + 0.42 * Math.sin(ln.k1 * t * TAU + ln.p1)
+    + 0.24 * Math.sin(ln.k2 * t * TAU + ln.p2);
+  // NARROWER TOWARD THE MIDDLE. Two reasons, and they agree: a wide channel
+  // through the core displaces the rock the core exists to hold, and squeezing
+  // through the dense part is what a route should FEEL like — it opens out as
+  // you near the rim, which is also the direction it is getting you.
+  const taper = q === undefined ? 1 : 0.55 + 0.45 * Math.min(1, q / 0.6);
+  return ln.w0 * Math.max(0.45, m) * taper;
+}
+
+// How far INSIDE a lane the pocket-frame point (tan, rad) sits, in world units:
+// > 0 means it is in the clear channel by that much, <= 0 means it is not in a
+// lane at all. Walks every lane's segments — 3 lanes x 25 segments is nothing
+// against the packer's own budget, and it is exact rather than a grid lookup
+// that would quantise the very edge the leak is there to keep ragged.
+function laneDepth(f, tan, rad) {
+  let best = -Infinity;
+  if (!f.lanes) return best;
+  let bw = 0, bx = 0, by = 0;
+  for (const ln of f.lanes) {
+    const d = laneDepthOne(ln, tan, rad);
+    if (d > best) { best = d; bw = _laneW; bx = _laneCx; by = _laneCy; }
+  }
+  _laneW = bw; _laneCx = bx; _laneCy = by;
+  return best;
+}
+
+// Depth inside ONE lane. Split out so a candidate route can be scored against
+// the rock already on the ground before it is adopted (see findLanes).
+let _laneW = 0;   // half-width of the channel at the closest point of the last query
+let _laneCx = 0, _laneCy = 0;   // ...and that closest point, in the pocket frame
+function laneDepthOne(ln, tan, rad) {
+  let best = -Infinity;
+  {
+    const p = ln.pts;
+    for (let i = 0; i < p.length - 1; i++) {
+      const ax = p[i].tan, ay = p[i].rad;
+      const ex = p[i + 1].tan - ax, ey = p[i + 1].rad - ay;
+      const len2 = ex * ex + ey * ey || 1;
+      let s = ((tan - ax) * ex + (rad - ay) * ey) / len2;
+      s = s < 0 ? 0 : s > 1 ? 1 : s;
+      const dx = tan - (ax + ex * s), dy = rad - (ay + ey * s);
+      const d = Math.hypot(dx, dy);
+      const t = (i + s) / (p.length - 1);
+      // Normalised radius of the CLOSEST POINT on the lane, which is what the
+      // taper is about — not of the query point, or a rock just outside a core
+      // stretch would be tested against the rim's generous width.
+      const cx = (ax + ex * s) / CFG.FIELD_LEN, cy = (ay + ey * s) / CFG.FIELD_SPREAD;
+      const hw = laneWidth(ln, t, Math.hypot(cx, cy));
+      const w = hw - d;
+      if (w > best) { best = w; _laneW = hw; _laneCx = ax + ex * s; _laneCy = ay + ey * s; }
+    }
+  }
+  return best;
+}
+
+// The same test from WORLD coordinates. The projection is fieldFrac's, so
+// "inside a lane" and "inside the pocket" can never disagree about the frame.
+function laneDepthAt(f, x, y) {
+  const dx = x - f.x, dy = y - f.y;
+  const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
+  return laneDepth(f, -dx * sa + dy * ca, dx * ca + dy * sa);
+}
+
+// EXACT surface clearance between two placed/candidate rocks, in world units.
+// Negative means they interpenetrate.
+//
+// Only ever called when the cheap conservative bound has already REJECTED a
+// candidate — that structure is what makes an exact test affordable here. The
+// bound has to cover the whole arc over which two rocks could touch, so for two
+// large rocks it approaches their global reach and holds them much further apart
+// than they need to be: measured, mean surface gap to the nearest landmark ran
+// ~30 units for every size class but 250+, which sat at 89. Using the bound to
+// ACCEPT (where it is free and always right) and this to arbitrate the near
+// misses (where the bound is merely pessimistic) gets both — the guarantee and
+// the tightness.
+// Same idea as physics.bigPenetration: both outlines are radial functions, so
+// walking one surface through the arc that faces the other and asking how far it
+// is from the other's surface is exact, and needs no polygon clipping.
+// EXACT, and now genuinely exact rather than exact-to-seven-probes. The old
+// version walked each radial outline through the arc the other subtended and
+// took the worst surface-to-surface distance — correct only because both shapes
+// were radial functions, and only as good as the probe count. The baked shapes
+// are convex-decomposed, so overlap is a boolean SAT query against a handful of
+// hulls: cheaper than seven probes and right at every bearing rather than seven
+// of them.
+//
+// It answers a BOOLEAN, and the caller still bounds with reachAt first. That
+// split is the point: the bound is free and always right, so it ACCEPTS; this
+// arbitrates the near misses the bound is merely pessimistic about. Using the
+// bound as the decision strands the biggest rocks in their own clearings
+// (measured: mean surface gap ~30 units for every size class but 250+, which
+// sat at 89), and using this for everything spends exact work ranking candidates
+// that were going to be rejected anyway.
+// TWO PERSISTENT PROXIES, MUTATED IN PLACE — not a micro-optimisation, the
+// difference between a 1s worldgen and a 3.7s one. rockshape caches each body's
+// world-space hulls keyed on (shape, radius, rotation) and applies TRANSLATION
+// at read time, so moving a proxy costs nothing while a fresh object per call
+// re-rotates and re-allocates every hull. The packer runs hundreds of rocks x
+// 170 tries x every slot placed so far, per pocket, on every worldgen — and
+// worldgen runs constantly (freshRun / mechTest), so this path is hot in a way
+// its call site does not look.
+const _pgA = { id: 0, shapeId: null, x: 0, y: 0, rot: 0, radius: 1 };
+const _pgB = { id: 0, shapeId: null, x: 0, y: 0, rot: 0, radius: 1 };
+function put(p, x, y, r, shapeId, rot) {
+  // Only the cache-invalidating fields are compared; x/y are free to change.
+  if (p.shapeId !== shapeId || p.radius !== r || p.rot !== rot) {
+    p.shapeId = shapeId; p.radius = r; p.rot = rot;
+    p._hw = null; p._rs = null;
+  }
+  p.x = x; p.y = y;
+  return p;
+}
+function pairOverlaps(gx, gy, gr, gShape, gRot, px, py, pr, pShape, pRot) {
+  return rockOverlap(put(_pgA, gx, gy, gr, gShape, gRot),
+                     put(_pgB, px, py, pr, pShape, pRot));
 }
 
 // PACK THE HUGE ROCKS. This is the maze generator — there is no other one.
@@ -1396,11 +1696,14 @@ function pocketKeepOut(game, f) {
 // Returns how many were placed. Placement is best-effort within a bounded try
 // budget: a pocket this full rejects most draws, and seedDenseFields reports
 // what actually landed rather than looping until it fits.
-// `spec` entries are {mass, vary} — vary is the per-rock CFG.FIELD_SIZE_VARY
-// draw, resolved by the caller so the packer knows each rock's true radius
-// before it looks for room. Placing on the class radius and varying afterwards
-// would be the same bug the celestial keep-out fixes: a rock that grew after
-// placement overlaps whatever it was measured to clear.
+// `spec` entries are {mass, r, pow, qMax} — `r` is the rock's FINAL radius,
+// size draw and class multiplier already folded in by the caller. It is resolved
+// up front rather than derived here because the packer has to know the true
+// radius before it looks for room: placing on a class radius and varying
+// afterwards is the same bug the celestial keep-out fixes, a rock that grew
+// after placement overlapping whatever it was measured to clear. (It is also
+// why the caller passes a radius rather than a mass->radius function now — the
+// giant multiplier is graded per rock, so there is no such function.)
 // THE BIGGEST GO IN FIRST AND THEY GO IN THE MIDDLE. `spec` is placed in the
 // order given (seedDenseFields sorts it heaviest-first) and each entry carries
 // its own `pow`, interpolated from CFG.FIELD_CORE_POW down to FIELD_EDGE_POW
@@ -1415,19 +1718,139 @@ function pocketKeepOut(game, f) {
 // LOST rather than placed further out, and the count that vanishes is exactly
 // the biggest rocks. Past FIELD_PACK_BIAS_TRIES the draw goes back to uniform
 // and the rock takes what room is left.
-function packBigRock(f, sun, rng, spec, radiusOf, slots, keepOut) {
+//
+// ...BUT `sp.qMax` SURVIVES THAT DROP, and it is what actually grades a pocket.
+// Biasing the SAMPLER alone does not, and the measured reason is this function's
+// own greedy-snug rule: scoring candidates by distance-to-nearest-neighbour
+// makes the masonry fill outward from whatever is already placed, so the pocket
+// saturates to one flat coverage everywhere the packer can reach and the
+// sampler's preference is overridden by the score. Measured with the size ramp
+// and a 2.4 core exponent already in but no cap: mean landmark radius across
+// five equal-AREA bands ran 165 / 153 / 157 / 153 / 121 and coverage ran
+// 0.61 / 0.68 / 0.66 / 0.59 / 0.24 — flat until the very rim, which is exactly
+// the "the whole thing is filled with them" this exists to fix.
+// `qMax` is set in seedDenseFields from the rock's OWN SIZE (CFG.FIELD_REACH),
+// with a cumulative-area valve underneath it — see the note there for why the
+// area solve cannot carry this alone.
+// The slack is the last-resort valve: rather than opening the whole pocket to a
+// rock that cannot fit — which puts the BIGGEST rocks on the rim, the exact
+// failure being fixed — a late try lets it spill just past its own band, and
+// only that far.
+function packBigRock(f, sun, rng, spec, slots, keepOut) {
   let placed = 0;
   for (const sp of spec) {
-    const mass = sp.mass;
-    const r = radiusOf(mass) * sp.vary;    // the radius this rock WILL have
+    const mass = sp.mass, r = sp.r;
     let spot = null, spotNear = Infinity;
     const biasTries = CFG.FIELD_PACK_TRIES * CFG.FIELD_PACK_BIAS_FRAC;
     for (let t = 0; t < CFG.FIELD_PACK_TRIES; t++) {
-      const p = fieldPoint(f, sun, rng, t < biasTries ? sp.pow : 0.5);
-      const gap = rand(rng, CFG.FIELD_PACK_GAP[0], CFG.FIELD_PACK_GAP[1]);
+      // BANK AGAINST THE MASONRY (CFG.FIELD_PACK_BANK) — the same idea
+      // rubblePoint uses for gravel, applied to the landmarks themselves.
+      //
+      // Without it the greedy-snug rule is rich-get-richer: it scores candidates
+      // by distance to the nearest neighbour, so a rock drawn anywhere in the
+      // pocket snugs into whatever region ALREADY has the most rock in it. The
+      // biggest rocks go down first, alone, in a core the later draws then never
+      // choose — and they stay alone. Measured, mean gap from a 250+ rock to its
+      // nearest landmark ran ~3x every other size class however the radial
+      // biases were tuned, because the bias picks WHERE candidates fall and the
+      // snug score picks which one wins.
+      // Drawing a share of tries on a ring just off a bigger placed rock puts
+      // the choice where the problem is: small rock banks against big rock, and
+      // a landmark ends up with company at its own scale.
+      let p = null;
+      if (slots.length > 1 && rng() < CFG.FIELD_PACK_BANK) {
+        // PICKED FROM THE BIGGEST, not uniformly. `slots` is filled in
+        // descending size order (heart, monoliths, then giants heaviest-first),
+        // so the head of the array IS the big rock. A uniform pick over ~300
+        // slots chose any given monolith 0.3% of the time, so the bank draw
+        // fired constantly and almost never actually banked against the rocks
+        // that needed company — 250+ mean gap sat at 91-99 through three
+        // successive attempts to fix it from the radial biases.
+        const top = Math.min(slots.length, CFG.FIELD_PACK_BANK_TOP);
+        const g = slots[Math.floor(rng() * top)];
+        // NEVER BANK AGAINST THE HEART. It is slots[0], so an unguarded pick
+        // lands on it more than any other rock, and the whole point of
+        // FIELD_HEART_CLEAR is that this one rock keeps a clearing — it is the
+        // field's name, its chart entry, the AI's anchor and the thing you fly
+        // in to reach and then have to fight. Measured with it in the pool: the
+        // combat ladder's shot at the heart lost 58% of its damage to what had
+        // banked in front of it.
+        if (g && g.heart) { /* fall through to the ordinary draw */ } else
+        if (g.r > r * 1.2) {
+          const a = rng() * TAU;
+          // The ring has to sit at the REAL clearance for this bearing, not at
+          // the sum of nominal radii: the acceptance test below bounds both
+          // rocks by their directional reach, so a ring drawn on nominal radii
+          // lands inside the big rock's own corner envelope and is rejected
+          // almost every time — the bank draw fires and then quietly does
+          // nothing, which is exactly what it looked like (250+ mean gap 96 ->
+          // 79, when it should have collapsed to the gap band).
+          const dd = g.r * reachAt(g.shapeId, a - g.rot)
+            + r * reachAt(sp.shapeId, a + Math.PI - sp.rot)
+            + rand(rng, 2, 55);
+          const tan = (g.tan || 0) + Math.cos(a) * dd;
+          const rad = (g.rad || 0) + Math.sin(a) * dd;
+          const w = pocketToWorld(f, sun, tan, rad);
+          const nx = tan / CFG.FIELD_LEN, ny = rad / CFG.FIELD_SPREAD;
+          const qq = Math.hypot(nx, ny);
+          p = { x: w.x, y: w.y, tan, rad, banked: true,
+            qn: qq < 1e-6 ? 0 : qq / fieldLobe(f, Math.atan2(ny, nx)) };
+        }
+      }
+      if (!p) p = fieldPoint(f, sun, rng, t < biasTries ? sp.pow : 0.5);
+      // Frontier test. Slack ramps in only after the biased tries are spent.
+      if (sp.qMax !== undefined) {
+        // PROPORTIONAL, not additive. A flat slack is a much bigger concession
+        // to a rock held at 0.30 than to one allowed 1.15 — it moved the former
+        // a third of the way out again while barely touching the latter, i.e. it
+        // leaked hardest exactly where the cap matters most.
+        const slack = t < biasTries ? 0
+          : CFG.FIELD_FRONT_SLACK * ((t - biasTries) / (CFG.FIELD_PACK_TRIES - biasTries));
+        if (p.qn > sp.qMax * (1 + slack)) continue;
+      }
+      // A BANKED DRAW IS ALLOWED TO TOUCH. The general band is a floor on
+      // spacing for everything on the try, so a rock aimed at resting against a
+      // monolith was still held the band's mean (~35 units) off it — and off
+      // every other rock too. That is the difference between a landmark with
+      // rock piled against it and a landmark with a moat, which is what "all
+      // alone" looks like from the cockpit.
+      const gap = p.banked ? rand(rng, 6, CFG.FIELD_PACK_SNUG * 2)
+        : rand(rng, CFG.FIELD_PACK_GAP[0], CFG.FIELD_PACK_GAP[1]);
       let clash = false, near = Infinity;
       for (const g of slots) {
-        const d = Math.hypot(g.x - p.x, g.y - p.y) - g.r - r;
+        // SPACED BY THE SHAPE'S REACH, NOT BY ITS CIRCLE. A landmark's corners
+        // reach 1.14-1.62x its nominal radius (util.rockShape's `reach`), so
+        // packing on `r` reserved a footprint about half the size of the rock
+        // that went into it, and the masonry was born INTERLOCKED — visibly
+        // overlapping and clipping on every seed, before anything moved.
+        //
+        // REACH, not the extent along this pair's bearing. The bearing version
+        // was tried and is wrong for the same reason the old collider was wrong:
+        // two star polygons can clear along the line joining their centres and
+        // still interlock at a corner off it. Measured with the bearing test,
+        // the seeded pocket still had 60-75 overlapping pairs and the worst was
+        // buried 237 units. Probing enough bearings to catch that (the collider
+        // uses 14) is not affordable HERE — the packer runs hundreds of rocks x
+        // 170 tries x every slot placed so far, per pocket, on every worldgen,
+        // and worldgen runs constantly (freshRun / mechTest).
+        // Reach is the cheap guarantee: one number per rock, and no orientation
+        // can defeat it.
+        // Bounded PER DIRECTION (util.rockReachAt), not by the shape's global
+        // reach. Still a strict upper bound — nothing can overlap — but an
+        // honest one: a slab's longest corner points one way, and reserving for
+        // it in every direction is what left the biggest rocks stranded in their
+        // own clearings (see CFG.FIELD_PACK_NESTLE for the measurement).
+        const ang = Math.atan2(p.y - g.y, p.x - g.x);
+        const dc = Math.hypot(g.x - p.x, g.y - p.y) || 1;
+        // Each rock's bound is taken over the arc the OTHER one subtends — see
+        // util.rockReachAt. Without the window this is a centre-line bound and
+        // two large rocks interlock at a corner off it, which is the clipping
+        // the reach bound exists to prevent.
+        const hg = Math.min(1.2, Math.asin(Math.min(1, r * shapeReach(sp.shapeId) / dc)));
+        const hp = Math.min(1.2, Math.asin(Math.min(1, g.r * shapeReach(g.shapeId) / dc)));
+        const d = dc
+          - g.r * reachAt(g.shapeId, ang - g.rot, hg)
+          - r * reachAt(sp.shapeId, ang + Math.PI - sp.rot, hp);
         // THE HEART KEEPS ITS OWN CLEARANCE. Everything else is spaced by the
         // per-pair FIELD_PACK_GAP (4-58 units — at the low end, two neighbours
         // read as touching), and once the biggest rocks are drawn toward the
@@ -1437,8 +1860,25 @@ function packBigRock(f, sun, rng, spec, radiusOf, slots, keepOut) {
         // monolith stays breakable. The heart is also the field's NAME, its
         // chart entry and the AI's anchor — it is the thing you fly in to
         // reach, so it is the one rock that is allowed some room around it.
-        if (d < (g.heart ? CFG.FIELD_HEART_CLEAR : gap)) { clash = true; break; }
-        if (d < near) near = d;
+        const want = g.heart ? CFG.FIELD_HEART_CLEAR : gap;
+        let dd2 = d;
+        if (d < want) {
+          // The conservative bound says no. It is pessimistic by construction,
+          // so ask the exact question before giving up on this spot.
+          // Grow the neighbour by the gap and ask whether they touch. That
+          // turns "are they at least `want` apart" into the exact boolean SAT
+          // can answer, instead of a distance query the hulls cannot give
+          // cheaply. Conservative at the corners, which is precisely where the
+          // masonry used to be born interlocked.
+          if (pairOverlaps(g.x, g.y, g.r + want, g.shapeId, g.rot,
+                           p.x, p.y, r, sp.shapeId, sp.rot)) { clash = true; break; }
+          // Legal but tight. Report it as exactly the gap it was required to
+          // clear rather than 0 — the greedy scorer below ranks on this, and
+          // handing it a 0 would make every bound-rejected-but-legal spot look
+          // like the snuggest one in the pocket.
+          dd2 = want;
+        }
+        if (dd2 < near) near = dd2;
       }
       // Celestials get a fat margin on top of both radii. Touching is not good
       // enough — a moon is MOVING, and one born a few units clear still grinds
@@ -1463,7 +1903,9 @@ function packBigRock(f, sun, rng, spec, radiusOf, slots, keepOut) {
       if (near <= CFG.FIELD_PACK_SNUG) break;   // snug enough; stop paying for tries
     }
     if (!spot) continue;                   // no room left — a full pocket, not a bug
-    spot.r = r; spot.mass = mass;
+    // The silhouette travels WITH the slot: it is what the next rock measures
+    // its clearance against, and what the body is stamped with when it spawns.
+    spot.r = r; spot.mass = mass; spot.shapeId = sp.shapeId; spot.rot = sp.rot;
     slots.push(spot);
     placed++;
   }
@@ -1524,41 +1966,206 @@ function seedDenseFields(game, sun, rng) {
     // containment frame with it — measured before this rule: 40% of a shoal's
     // own rocks fell OUTSIDE fieldFrac <= 1, i.e. outside its own leash, wake
     // and entry announce.
+    // THE SILHOUETTE IS DRAWN BEFORE PLACEMENT, not at first use. Packing has to
+    // know the rock's true outline and which way it is turned to space it
+    // correctly (see packBigRock). Drawn from the seeded stream so a pocket's
+    // masonry stays a property of the world seed, then stamped on the body as
+    // `shapeId` / `rot`.
+    //
+    // TIER IS CHOSEN FROM THE SIZE CLASS, and that is what makes a fracture
+    // read: a monolith wears a tier-0 silhouette and breaks into the tier-1
+    // pieces cut from it, which are the same shapes the mid-size rocks lying
+    // around it are already wearing. The pieces look like they belong to the
+    // pocket because they are drawn from the same shelf of the same library.
+    // See docs/rock-fracture.md.
+    const drawShape = (tier) => pickShapeId(rng(), tier);
     const heartMass = CFG.FIELD_MONOLITH_MASS[1];
-    slots.push({ x: f.x, y: f.y, mass: heartMass, heart: true,
-      r: asteroidRadius(heartMass) * CFG.FIELD_MONOLITH_R_MUL });
+    slots.push({ x: f.x, y: f.y, mass: heartMass, heart: true, tan: 0, rad: 0,
+      r: asteroidRadius(heartMass) * CFG.FIELD_MONOLITH_R_MUL,
+      shapeId: drawShape(0), rot: rng() * TAU });
     // Mass AND the per-rock size draw together — see CFG.FIELD_SIZE_VARY, and
     // packBigRock's note on why the radius has to be settled before placement.
     const vary = () => rand(rng, CFG.FIELD_SIZE_VARY[0], CFG.FIELD_SIZE_VARY[1]);
     const monoSpec = [], giantSpec = [];
     for (let i = 0; i < CFG.FIELD_MONOLITHS; i++) {
-      monoSpec.push({ mass: rand(rng, CFG.FIELD_MONOLITH_MASS[0], CFG.FIELD_MONOLITH_MASS[1]),
-        vary: vary() });
+      const mass = rand(rng, CFG.FIELD_MONOLITH_MASS[0], CFG.FIELD_MONOLITH_MASS[1]);
+      monoSpec.push({ mass, r: asteroidRadius(mass) * CFG.FIELD_MONOLITH_R_MUL * vary(),
+        shapeId: drawShape(0), rot: rng() * TAU });
     }
-    for (let i = 0; i < CFG.FIELD_GIANTS; i++) {
-      giantSpec.push({ mass: rand(rng, CFG.FIELD_GIANT_MASS[0], CFG.FIELD_GIANT_MASS[1]),
-        vary: vary() });
+    // THE LANDMARK LADDER IS A RAMP, NOT A BAND (user design law: little and
+    // mid-size rock at the rim, the large ones packed in toward the centre).
+    // Rank i walks CFG.FIELD_GIANT_MASS from its core end down to its rim end,
+    // so the class is a continuum of sizes rather than 240 draws from one band —
+    // and since the pull toward the heart below is set from each rock's own
+    // place on that ramp, size and position are the SAME gradient rather than
+    // two that happen to correlate.
+    //
+    // In LOG space, because radius goes with cbrt(mass): a linear ramp across
+    // 4,200-360,000 spends over half its length above 180,000, where every rock
+    // is within 15% of the same drawn size, and the visible half of the ladder
+    // gets squeezed into the last few ranks.
+    //
+    // The jitter is what keeps it a distribution instead of a staircase.
+    // Slightly wider than one rung (1.6 / N), so adjacent ranks overlap and the
+    // ordering is a tendency rather than a sort — without it a pocket grades in
+    // visibly concentric size bands, which reads as authored.
+    const gLo = Math.log(CFG.FIELD_GIANT_MASS[0]), gHi = Math.log(CFG.FIELD_GIANT_MASS[1]);
+    const [mulLo, mulHi] = CFG.FIELD_GIANT_R_MUL;
+    const gN = CFG.FIELD_GIANTS;
+    for (let i = 0; i < gN; i++) {
+      const u = gN > 1 ? i / (gN - 1) : 0;   // 0 = core end of the ladder, 1 = rim
+      // SKEWED toward the small end (CFG.FIELD_GIANT_SKEW) — see the note there
+      // for why an even spread is not the neutral choice it looks like.
+      const t = Math.min(1, Math.max(0,
+        Math.pow(u, CFG.FIELD_GIANT_SKEW) + (rng() - 0.5) * (1.6 / gN)));
+      const mass = Math.exp(gHi + (gLo - gHi) * t);
+      // The size multiplier rides the SAME t as the mass — see the note on
+      // CFG.FIELD_GIANT_R_MUL: density falls with size, which is what gives the
+      // class a mid-size rung without dropping its small end below the gravel.
+      const mul = mulHi + (mulLo - mulHi) * t;
+      // TIER OFF THE SAME `t` as the mass and the size multiplier. The three
+      // ride one gradient, so the pieces a rock breaks into are drawn from the
+      // shelf its own neighbours came from — which is what stops a fracture
+      // reading as debris from somewhere else.
+      giantSpec.push({ mass, r: asteroidRadius(mass) * mul * vary(),
+        shapeId: drawShape(t < 0.34 ? 0 : t < 0.7 ? 1 : 2), rot: rng() * TAU });
     }
     // HEAVIEST FIRST, and each rock's own pull toward the heart set from where
     // it sits in the size range. Sorting is what makes the bias mean anything:
     // draw order IS packing order, so whatever goes first takes the middle.
-    // The two classes are ranked TOGETHER — monoliths are 5-8x a giant's mass,
+    // The two classes are ranked TOGETHER — monoliths are 2-250x a giant's mass,
     // so ranking within each class separately would have the smallest monolith
     // and the biggest giant asking for the same spot with the same claim.
-    const spanLo = CFG.FIELD_GIANT_MASS[0], spanHi = CFG.FIELD_MONOLITH_MASS[1];
+    //
+    // Ranked on DRAWN RADIUS, not on mass — and the two are no longer the same
+    // ordering now that the giant multiplier is graded (a rim giant is denser
+    // than a core one, so mass order and size order genuinely differ across the
+    // class boundary). Packing order is about who needs the room, and the room a
+    // rock needs is its radius.
+    //
+    // The normalisation is LOG for the reason the mass ramp is: on a linear
+    // scale the class spans 36-325 units against a 413-unit ceiling, so most of
+    // it scores near one end and draws nearly the same centre bias. That was the
+    // old bug in its purest form — the gradient existed, indexed by a number
+    // that barely moved.
+    const spanLo = Math.log(asteroidRadius(CFG.FIELD_GIANT_MASS[0]) * mulLo);
+    const spanHi = Math.log(asteroidRadius(CFG.FIELD_MONOLITH_MASS[1])
+      * CFG.FIELD_MONOLITH_R_MUL * CFG.FIELD_SIZE_VARY[1]);
     const setPow = (sp) => {
-      const s = Math.min(1, Math.max(0, (sp.mass * sp.vary - spanLo) / (spanHi - spanLo)));
+      const s = Math.min(1, Math.max(0, (Math.log(sp.r) - spanLo) / (spanHi - spanLo)));
       sp.pow = CFG.FIELD_EDGE_POW + (CFG.FIELD_CORE_POW - CFG.FIELD_EDGE_POW) * s;
       return sp;
     };
     monoSpec.forEach(setPow); giantSpec.forEach(setPow);
-    monoSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
-    giantSpec.sort((a, b) => b.mass * b.vary - a.mass * a.vary);
+    monoSpec.sort((a, b) => b.r - a.r);
+    giantSpec.sort((a, b) => b.r - a.r);
+
+    // THE RADIAL FRONTIER — how far out each rock is allowed to go, in
+    // config.fieldFrac units. This is the knob that actually makes a pocket
+    // grade (see the note on packBigRock for the measurement that says so).
+    //
+    // SOLVED FROM AREA, NOT PICKED. Walking the size order and accumulating
+    // rock area, a rock's frontier is the radius at which everything bigger
+    // than it would fill the pocket to FIELD_PACK_FRONT coverage:
+    //     cumArea = front * pocketArea * qMax^2   =>   qMax = sqrt(...)
+    // so the masonry grows outward from the heart as a saturated disc and each
+    // rock may reach exactly as far as the rock ahead of it did. A hand-picked
+    // ladder cannot survive a change to the counts, the mass band or the
+    // multipliers — this one re-solves itself, which matters because all three
+    // of those move together whenever the pocket is retuned.
+    // The heart's own footprint plus its clearance ring seeds the accumulator:
+    // that area is genuinely spoken for, and starting from zero would hand the
+    // first few monoliths a frontier inside a disc they cannot occupy.
+    // A ROCK'S OWN SIZE IS THE PRIMARY LIMIT; the area frontier is the RELIEF
+    // VALVE under it (`qMax` = whichever is more generous).
+    //
+    // The area solve alone cannot express what a shoal is supposed to be, and
+    // the reason is worth keeping: it derives reach from CUMULATIVE area, so
+    // every rock's frontier is one shared envelope. Tighten it enough to keep
+    // giants in the middle and it confines the SMALL rock to the middle too —
+    // the last rock placed always sits at the envelope's edge, wherever that is.
+    // With the pocket's landmarks at ~66% coverage that envelope lands at
+    // q ~0.96, i.e. everywhere, which is "the whole thing is filled with them".
+    //
+    // So the allowance is read off the rock's own size (CFG.FIELD_REACH,
+    // [rim, core], log-interpolated across the class span): the smallest
+    // landmarks may go anywhere, the biggest are held inside the core. That is a
+    // direct statement of the design law and it does not care how much rock
+    // there is in total.
+    // The area frontier still runs underneath as `max(...)`: if the big rocks
+    // genuinely do not fit inside their allowance, it grows and they spill
+    // outward rather than being silently dropped — which is what it was always
+    // for, and what a hard size band on its own would lose.
+    const pocketA = Math.PI * CFG.FIELD_LEN * CFG.FIELD_SPREAD;
+    let cumA = Math.PI * Math.pow(slots[0].r + CFG.FIELD_HEART_CLEAR, 2);
+    const reachLo = Math.log(asteroidRadius(CFG.FIELD_GIANT_MASS[0]) * mulLo
+      * CFG.FIELD_SIZE_VARY[0]);
+    const reachHi = Math.log(asteroidRadius(CFG.FIELD_MONOLITH_MASS[1])
+      * CFG.FIELD_MONOLITH_R_MUL * CFG.FIELD_SIZE_VARY[1]);
+    // ALLOWED REACH FALLS AS A POWER OF THE ROCK'S RADIUS, and the shape of that
+    // curve is the whole design. A LINEAR ramp between the two ends was tried
+    // and is far too generous in the middle of the ladder: interpolated across
+    // the class, a 332-unit rock — 80% of the biggest thing in the pocket — came
+    // out allowed to q 0.63, so genuinely huge rock reached the outer third and
+    // the pocket still read as "big asteroids the whole way".
+    // As a power law the allowance collapses where it needs to: at FALL 0.6 the
+    // smallest landmark goes anywhere, ~50 units reaches 0.85, ~80 reaches 0.64,
+    // ~150 reaches 0.45 and anything 250+ is inside 0.33. Read it as an AREA
+    // budget per size class — allowance^2 falls as r^-1.2, so a rock twice as
+    // wide gets well under half the pocket to live in.
+    const rMin = Math.exp(reachLo);
+    const setQMax = (sp) => {
+      cumA += Math.PI * sp.r * sp.r;
+      // EXPONENTIAL DECAY, NOT A POWER LAW. A power of the size ratio spends most
+      // of its travel in the middle of the size range, so the allowance came down
+      // steadily across every class and the pocket read as a size that slides
+      // inward — mid rock pushed out of the core along with the small rock. An
+      // exponential holds the allowance near its ceiling across the small and
+      // mid end and then falls away hard, which is the shape the design actually
+      // wants: most of the pocket admits ANY rock, and only the genuinely large
+      // are squeezed toward the middle. Read with the size law in
+      // docs/rock-fracture.md — the range WIDENS toward the core, it does not
+      // slide, so the bottom of it has to keep the run of the whole pocket.
+      const allow = CFG.FIELD_REACH[1] + (CFG.FIELD_REACH[0] - CFG.FIELD_REACH[1])
+        * Math.exp(-CFG.FIELD_REACH_EXP * (sp.r / rMin - 1));
+      sp.qMax = Math.min(FIELD_LOBE_MAX, Math.max(allow,
+        Math.sqrt(cumA / (CFG.FIELD_PACK_FRONT * pocketA))));
+    };
+    // Accumulated across BOTH calls in placement order — monoliths are every
+    // one of them bigger than every giant, so mono-then-giant is one descending
+    // size order and the frontier only ever grows.
+    for (const sp of monoSpec) setQMax(sp);
+    for (const sp of giantSpec) setQMax(sp);
+
     const keepOut = pocketKeepOut(game, f);
-    packBigRock(f, sun, rng, monoSpec,
-      (m) => asteroidRadius(m) * CFG.FIELD_MONOLITH_R_MUL, slots, keepOut);
-    packBigRock(f, sun, rng, giantSpec,
-      (m) => asteroidRadius(m) * CFG.FIELD_GIANT_R_MUL, slots, keepOut);
+    packBigRock(f, sun, rng, monoSpec, slots, keepOut);
+    packBigRock(f, sun, rng, giantSpec, slots, keepOut);
+
+    // ---- 1b. THE LANES, found among the rock that is now on the ground (see
+    // findLanes for why this order and not the other one). Only then are the few
+    // rocks still standing in a chosen route dropped — a handful, against the
+    // half of the pocket's largest rocks that carving-first cost.
+    // The HEART is never dropped: it is the field's name, its chart entry and
+    // the AI's anchor, and findLanes' cost function already weights it heavily
+    // enough that a route rarely wants its ground.
+    f.lanes = findLanes(f, rng, slots);
+    const clear = [];
+    for (const sl of slots) {
+      // DROP ONLY WHAT BLOCKS, and measure blocking by the PASSAGE LEFT rather
+      // than by contact. Anything else is a swathe: excluding every landmark
+      // that so much as touches a route clears ~450 units either side of it for
+      // a 300-unit rock, and three routes then take most of the pocket's biggest
+      // rocks with them — measured, 27 landmarks over 250 units down to 8, and
+      // the survivors left further from their neighbours than before the lanes
+      // existed at all. A slab at a lane's edge is not a problem, it is the
+      // WALL; a slab plugging the middle is.
+      const dep = laneDepth(f, sl.tan || 0, sl.rad || 0);
+      const left = 2 * _laneW - (dep + sl.r);   // passable width this rock leaves
+      if (!sl.heart && dep > -sl.r && left < CFG.FIELD_LANE_MIN) continue;
+      clear.push(sl);
+    }
+    slots.length = 0;
+    for (const sl of clear) slots.push(sl);
 
     const bigs = [];
     for (let i = 0; i < slots.length; i++) {
@@ -1573,10 +2180,22 @@ function seedDenseFields(game, sun, rng) {
         f.heart = rock;
       }
       rock.radius = rock.baseRadius = sl.r;
+      // The silhouette the packer measured, not a fresh one off the body id —
+      // a rock that changed shape after placement overlaps whatever it was
+      // spaced against, which is the bug this whole pre-resolve exists to fix.
+      rock.shapeId = sl.shapeId; rock.rot = sl.rot;
+      // A BIG ROCK TUMBLES SLOWLY. The Body constructor gives every asteroid the
+      // same +/-0.3 rad/s tumble, which is right for a pebble and absurd on a
+      // 400-unit slab — at that size the rim is moving faster than the ship and
+      // the whole pocket reads as a blender. Scaled off radius so the drawn
+      // SURFACE speed stays in a believable band across a ladder that spans more
+      // than a decade of size.
+      rock.spin *= Math.max(0.12, Math.min(1, 55 / sl.r));
       shapeBig(rock);
       railBody(rock, sun);
       rock.rail.w = w;   // the rigid-pocket rule — see the note on `w` above
       markFieldRock(rock, fi);
+      setFieldHome(rock, f);
       bigs.push(rock);
     }
 
@@ -1585,14 +2204,92 @@ function seedDenseFields(game, sun, rng) {
     // flyable. Anything that lands inside a big rock is redrawn: a body born
     // under a surface is quietly ABSORBED on the first substep, which at this
     // rock size would be a steady, invisible leak out of the pocket.
+    // Placed gravel, bucketed, so each new pebble can clear the ones already
+    // down. Without this the rubble pass only ever checked the MASONRY and
+    // gravel silently piled into itself — measured on a seeded world, 21 of 27
+    // overlapping pairs in the whole sky were gravel on gravel. They then sit
+    // interpenetrated for the run, because two railed rocks of one pocket skip
+    // collision by design (they are rigidly co-moving), so nothing separates
+    // them until the player disturbs one and it derails — which is exactly
+    // "many rocks initially overlap until I touch them and then they snap
+    // apart".
+    const GCELL = 120;
+    const gcells = new Map();
+    const gkey = (x, y) => Math.floor(x / GCELL) + ',' + Math.floor(y / GCELL);
+    const gravelClear = (x, y, r) => {
+      const cx = Math.floor(x / GCELL), cy = Math.floor(y / GCELL);
+      for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
+        const cell = gcells.get(ix + ',' + iy);
+        if (!cell) continue;
+        for (const o of cell) {
+          if (Math.hypot(o.x - x, o.y - y) < o.r + r + 3) return false;
+        }
+      }
+      return true;
+    };
     for (let i = bigs.length; i < CFG.FIELD_ROCKS; i++) {
-      let x = f.x, y = f.y;
+      let x = f.x, y = f.y, sited = false;
       for (let tries = 0; tries < 8; tries++) {
         const p = rubblePoint(f, sun, rng, bigs);
         x = p.x; y = p.y;
+        // GRAVEL IS CLEARED FROM THE LANES TOO — the old corridor attempt
+        // failed partly because it was not, and "the thing actually blocking
+        // you was gravel". A share leaks through (CFG.FIELD_LANE_LEAK) so a
+        // route reads as rock thinning out rather than a channel with a kerb.
+        // THE LEAK LIVES AT THE EDGE, NOT IN THE MIDDLE. A uniform leak puts as
+        // much rock down the centre of a route as along its walls, which is what
+        // makes a lane read as "slightly thinner" rather than as a lane. Scaling
+        // it by how deep into the channel the rock landed keeps the CENTRE open
+        // and leaves the ragged fringe exactly where it does its job — on the
+        // boundary, where a crisp kerb would read as authored.
+        // BANKED ONTO THE SHOULDER, not merely rejected. A road is only visible
+        // if the rock either side of it is denser than the ambient scatter —
+        // measured, the channels were genuinely clear (cover 0.013 inside
+        // against 0.200 outside) and still invisible, because at 9% of the
+        // pocket's area a thin clear line reads exactly like the gaps that are
+        // everywhere anyway. Pushing a rejected pebble OUT to the shoulder
+        // instead of redrawing it elsewhere builds a berm along every road: same
+        // rock count, same overall density, but the road now has walls.
+        // The leak still applies, and still only at the EDGE (a crisp kerb reads
+        // as authored), so the berm is ragged rather than a wall of masonry.
+        const ld = laneDepthAt(f, x, y);
+        if (ld > 0) {
+          const core = Math.min(1, ld / (_laneW * 0.6));
+          if (rng() > CFG.FIELD_LANE_LEAK * (1 - core)) {
+            const dx = x - f.x, dy = y - f.y;
+            const ca = Math.cos(f.ang), sa = Math.sin(f.ang);
+            const tn = -dx * sa + dy * ca, rd = dx * ca + dy * sa;
+            let ox = tn - _laneCx, oy = rd - _laneCy;
+            const om = Math.hypot(ox, oy);
+            // Dead on the centreline there is no outward direction to take, so
+            // pick one; anywhere else, push along the way it already leans.
+            if (om < 1e-3) { const a2 = rng() * TAU; ox = Math.cos(a2); oy = Math.sin(a2); }
+            else { ox /= om; oy /= om; }
+            const push = _laneW + rand(rng, 4, 90);
+            const ntan = _laneCx + ox * push, nrad = _laneCy + oy * push;
+            const w2 = pocketToWorld(f, sun, ntan, nrad);
+            x = w2.x; y = w2.y;
+          }
+        }
         let clash = false;
+        // Cheap radius guess for the clearance test — the true one needs the
+        // mass draw below, and the ladder's spread is narrow enough at this
+        // scale that a mid estimate keeps pebbles apart without wasting draws.
+        if (!gravelClear(x, y, 13)) { if (tries < 7) continue; }
         for (const g of bigs) {
-          if (Math.hypot(g.x - x, g.y - y) < g.radius + 26) { clash = true; break; }
+          // Against the SHAPE, for the same reason the masonry is packed against
+          // it: a landmark's corners reach past its nominal radius, so a circle
+          // test here drops gravel inside those corners, where it is absorbed on
+          // the first substep — a steady, invisible leak out of the pocket.
+          // Bounded, not sampled: rockSurfAt on the centre line alone misses a
+          // corner that reaches past it, and a pebble dropped inside one is
+          // absorbed on the first substep — a steady, invisible leak. The window
+          // is the arc this pebble subtends, which at gravel size is small, so
+          // the bound stays tight rather than pushing a halo off every landmark.
+          const dg = Math.hypot(g.x - x, g.y - y) || 1;
+          const hw = Math.min(1.0, Math.asin(Math.min(1, 16 / dg)));
+          const ext = g.radius * reachAt(g.shapeId, Math.atan2(y - g.y, x - g.x) - g.rot, hw);
+          if (dg < ext + 26) { clash = true; break; }
         }
         // THE DENSITY TAPER, applied where the rock actually LANDED. Biasing
         // the samplers is not enough on its own: four rocks in five are skirt
@@ -1602,8 +2299,15 @@ function seedDenseFields(game, sun, rng) {
         // pocket. Count is unchanged — a rejected draw is retried, so the same
         // FIELD_ROCKS end up further in rather than fewer.
         if (!clash && rng() > fieldKeep(f, x, y) && tries < 7) continue;
-        if (!clash) break;
+        if (!clash) { sited = true; break; }
       }
+      // NEVER PLACE A PEBBLE THAT NEVER FOUND ROOM. The loop used to fall out of
+      // its try budget and spawn at whatever the LAST candidate was, clash and
+      // all — which is a body born inside a landmark. It is absorbed on the first
+      // substep if it is deep, and sits visibly interpenetrated if it is not,
+      // and being railed field rock nothing ever separates it. Dropping the rock
+      // costs one pebble out of hundreds; keeping it costs a bug.
+      if (!sited) continue;
       const v = orbitVel(sun, x, y, 1);
       // The mass ladder is drawn against where the rock LANDED, not where it
       // was aimed — the skirt draw offsets it off a host by up to a couple of
@@ -1613,9 +2317,13 @@ function seedDenseFields(game, sun, rng) {
         ? spawnCache(game.bodies, x, y, v.vx, v.vy)   // shoals hide salvage
         : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy,
           fieldMass(rng, fieldFrac(f, x, y))), rng);
+      const gk = gkey(x, y);
+      if (!gcells.has(gk)) gcells.set(gk, []);
+      gcells.get(gk).push({ x, y, r: rock.radius });
       railBody(rock, sun);
       rock.rail.w = w;
       markFieldRock(rock, fi);
+      setFieldHome(rock, f);
     }
   }
 }
@@ -2081,9 +2789,43 @@ export function replenishWorld(game, dt) {
       const bigs = [];
       for (const b of game.bodies) if (b.alive && b.field === fi && b.bigShape) bigs.push(b);
       const batch = Math.max(5, Math.round(CFG.FIELD_ROCKS * 0.029));   // ~3% a tick
+      // THE REKNIT MUST CLEAR ITS GROUND, exactly as the seed pass does.
+      //
+      // It used to spawn wherever rubblePoint pointed, with no check of any kind
+      // — not against the masonry, not against other gravel, not against the
+      // roads. Every 30 seconds it dropped rock straight into whatever was
+      // standing there, and because two railed rocks of one pocket skip
+      // collision by design, the pair then sat interpenetrated until the player
+      // disturbed one and it derailed and snapped clear. Seeding could be made
+      // perfect and a session would still fill up with overlaps at ~3% of the
+      // pocket per tick, which is exactly what it looked like.
+      // The neighbour scan is over this field's own rocks only and the batch is
+      // ~23, so it is a few thousand distance tests per 30 seconds.
+      const mine = [];
+      for (const b of game.bodies) if (b.alive && b.field === fi) mine.push(b);
+      const roomAt = (x, y, r) => {
+        for (const o of mine) {
+          const dx = o.x - x, dy = o.y - y;
+          if (Math.abs(dx) > 420 || Math.abs(dy) > 420) continue;
+          const ext = o.bigShape
+            ? rockReach(o)
+            : o.radius;
+          if (Math.hypot(dx, dy) < ext + r + 8) return false;
+        }
+        return true;
+      };
       for (let i = 0; i < batch; i++) {
-        const p = rubblePoint(f, game.homeStar, rng, bigs);
-        const x = p.x, y = p.y;
+        let x = 0, y = 0, sited = false;
+        for (let t = 0; t < 6 && !sited; t++) {
+          const p = rubblePoint(f, game.homeStar, rng, bigs);
+          x = p.x; y = p.y;
+          // ...and it does not silt up the roads either, or a session slowly
+          // erases the one part of the layout that has to survive being fought
+          // in (the same argument as the rocks' drift home).
+          if (laneDepthAt(f, x, y) > 0 && rng() > CFG.FIELD_LANE_LEAK) continue;
+          if (roomAt(x, y, 14)) sited = true;
+        }
+        if (!sited) continue;
         // Never in view — a rock fading into existence mid-screen reads wrong
         if (Math.hypot(x - s.x, y - s.y) < (game.viewR || 1200) * 1.3) continue;
         const v = orbitVel(game.homeStar, x, y, 1);
@@ -2095,6 +2837,8 @@ export function replenishWorld(game, dt) {
         railBody(rock, game.homeStar);
         rock.rail.w = f.w;   // join the rigid pocket, not the jittered flow
         markFieldRock(rock, fi);
+        setFieldHome(rock, f);
+        mine.push(rock);   // later rocks in this batch must clear it too
       }
     }
   }

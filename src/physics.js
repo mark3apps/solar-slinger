@@ -1,13 +1,13 @@
-import { CFG, PROG, addXp, fieldXp, worldDebris, crustMass, FIELD_LOBE_MAX } from './config.js';
+import { CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
-import { spawnAsteroid, markFieldRock, asteroidRadius } from './world.js';
+import { spawnAsteroid, markFieldRock, asteroidRadius, setFieldHome } from './world.js';
 import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
-  rockShape, bigRockSurfAt, rockNormalAt,
 } from './util.js';
+import { rockContacts, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
@@ -29,8 +29,60 @@ export function addParticles(game, x, y, vx, vy, n, color, speed = 120, life = 0
   if (game.particles.length > 900) game.particles.splice(0, game.particles.length - 900);
 }
 
-export function addShake(game, amt) {
-  game.shake = Math.min(30, game.shake + amt);
+export function addShake(game, amt, x, y) {
+  // SOFT SATURATION, not a clamp. A hard Math.min pins at the ceiling the moment
+  // a few things die together and then STAYS there — every further event adds
+  // nothing, so a big destruction and an enormous one shake identically and the
+  // camera sits at maximum until the whole cascade finishes. Reported as the
+  // shake getting out of hand at the top end of destruction.
+  // Each addition is scaled by the headroom left, so the first hit lands in full
+  // and the hundredth barely moves it: the curve approaches the ceiling instead
+  // of slamming into it, and a single dramatic event still reads as bigger than
+  // ambient chip damage.
+  // A DEADZONE AT THE BOTTOM. Ambient chip damage fires addShake constantly, and
+  // each call is individually tiny — but they never stop, so the camera sat in a
+  // permanent low-grade tremble. It reads worst at high tier precisely because
+  // the view is zoomed further out: the same world-space wobble covers more
+  // screen, and there is always something chipping somewhere in a shoal.
+  // Below the floor an event simply is not worth a camera move.
+  // DISTANCE FALLS OFF, and this is the half that actually fixed it. Shake had
+  // no notion of WHERE an event happened, so a rock breaking clear across the
+  // pocket moved the camera exactly as hard as one against the hull — and a
+  // shoal is always breaking something somewhere. Ambient shake still peaked at
+  // 17.6 of 26 with the player doing nothing at all, which is the permanent
+  // low-grade tremble; the deadzone alone could not touch it, because each
+  // individual break is a legitimately large event, just not one happening to
+  // YOU. It reads worst at high tier because the view is wider, so more of the
+  // pocket is close enough to be breaking on screen.
+  // Callers that pass no position keep full strength — ship-local events (hull
+  // hits, your own ram) are supposed to hit at full force.
+  if (x !== undefined) {
+    const d = Math.hypot(x - game.ship.x, y - game.ship.y);
+    amt *= Math.max(0, 1 - d / CFG.SHAKE_RANGE);
+  }
+  if (!(amt > CFG.SHAKE_MIN)) return;
+  // A REFRACTORY WINDOW ON WORLD EVENTS. The decay is already brisk — main.js
+  // runs shake *= exp(-7*dtReal), which halves it every tenth of a second — so a
+  // shake that "never stops" is not decaying too slowly, it is being TOPPED UP
+  // faster than it can fall. A big cascade breaks rock for several seconds and
+  // every break called in, so the camera stayed pinned for the whole event.
+  // One top-up per window lets the decay win between them: the shake still
+  // rises with a long cascade, but it visibly breathes instead of sitting at the
+  // ceiling until the last rock settles.
+  // Ship-local events (no position) bypass this — being hit should always land.
+  if (x !== undefined) {
+    if (game.time < (game.shakeCdT || 0)) return;
+    game.shakeCdT = game.time + CFG.SHAKE_CD;
+  }
+  // ...and the headroom term is SQUARED for world events, so a cascade's
+  // repeated top-ups stop lifting it back to the ceiling. With a linear term the
+  // shake sawtoothed — each accepted event restored most of what the decay had
+  // just removed — and a big explosion held the camera for six seconds. Squared,
+  // the first event still lands nearly in full and later ones only nudge, so the
+  // curve is one sharp jolt that visibly falls away instead of a plateau.
+  const h = Math.max(0, CFG.SHAKE_MAX - game.shake) / CFG.SHAKE_MAX;
+  const head = x !== undefined ? h * h : h;
+  game.shake = Math.min(CFG.SHAKE_MAX, game.shake + amt * head);
 }
 
 // ---------- destruction ----------
@@ -95,7 +147,21 @@ function chainOk(src, dst) {
   return !(dst.fieldRock || dst.chunk) || (src.chainN || 0) + 1 <= CFG.FIELD_CHAIN_MAX;
 }
 function collisionCredit(target, other) {
-  if (other.thrownBy === 'player' && other.thrownTimer > 0) return 'player-throw';
+  // 'player-throw' IS THE ABILITY TRIGGER, so it belongs only to the rock the
+  // player ACTUALLY threw — chainN 0. A rock merely marked player-thrown by
+  // being hit (the chainOk propagation in collideBodies) still earns full scrap
+  // and XP as 'player', but must not re-fire Cluster Rounds / Shockwave /
+  // Demolition.
+  //
+  // This was the chain reaction. brawlerThrowKill guards against feeding itself
+  // by crediting its own Demolition kills as plain 'player' — but the chain MARK
+  // is a second way back in that the guard never saw: your throw marks what it
+  // hits, that rock's kill credits 'player-throw', the abilities fire again, and
+  // Shockwave's area push plus Demolition's area damage mark and kill more. In a
+  // dense pocket at tier 5 one throw took the whole field.
+  if (other.thrownBy === 'player' && other.thrownTimer > 0) {
+    return (other.chainN || 0) === 0 ? 'player-throw' : 'player';
+  }
   // Cluster-Rounds shrapnel scores a player kill (scrap) but NOT 'player-throw',
   // so a shard-kill can't re-trigger Cluster Rounds — no exponential shard chain.
   if (other.thrownBy === 'shard' && other.thrownTimer > 0) return 'player';
@@ -201,7 +267,7 @@ function brawlerThrowKill(game, body) {
       if (++hits >= 20) break;
     }
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 22, '#ffcaa0', 230, 1.1, 4);
-    addShake(game, 5 + 1.5 * Math.max(st.shockwave, st.demolition));
+    addShake(game, 5 + 1.5 * Math.max(st.shockwave, st.demolition), body.x, body.y);
   }
 }
 
@@ -765,30 +831,87 @@ export function shatter(game, body, credit = null) {
   // ordinary belt gravel every time something big broke. Mass is conserved
   // (roughly) rather than invented, and the spray is capped by the global
   // body budget like every other shed.
-  if (body.fieldRock && body.giant) {
-    const lo = CFG.FIELD_GIANT_SHARDS[0], hi = CFG.FIELD_GIANT_SHARDS[1];
-    // Budget headroom must sit ABOVE the world's steady-state body count
-    // (~9700 with four pockets) or the cascade silently never fires — keep it
-    // in step with the caps in world.replenishWorld.
-    const n = Math.min(lo + Math.floor(Math.random() * (hi - lo + 1)),
-      Math.max(0, 11200 - game.bodies.length));
-    const share = (body.mass * 0.72) / Math.max(1, n);
-    for (let i = 0; i < n; i++) {
-      const th = (i / n) * TAU + Math.random() * 0.6;
-      const sp = 40 + Math.random() * 110;
-      const shard = spawnAsteroid(game.bodies,
-        body.x + Math.cos(th) * (body.radius * 0.7),
-        body.y + Math.sin(th) * (body.radius * 0.7),
-        body.vx + Math.cos(th) * sp, body.vy + Math.sin(th) * sp,
-        share * (0.6 + Math.random() * 0.8));
-      markFieldRock(shard, body.field);
-      // A shard big enough to be worth breaking again keeps the cascade
-      // going — one more level, not an unbounded chain (the threshold sits
-      // above what a second-generation shard can inherit, so it terminates).
-      if (shard.mass > 3000) shard.giant = true;
+  // A LANDMARK BREAKS INTO THE PIECES IT WAS CUT FROM.
+  //
+  // rockdata.js is a fracture TREE, not a set of silhouettes: every child was
+  // produced by cutting its parent, so the pieces tile the parent exactly and
+  // their areas sum to it (tools/bake-rocks.mjs, docs/rock-fracture.md). Spawn
+  // them at their baked offsets and a broken monolith comes apart along seams
+  // that were always in its outline, into rock that matches what it came from —
+  // instead of the generic spray of round asteroids this replaces, which is what
+  // made a break read as "the rock vanished and some gravel appeared".
+  //
+  // Mass rides the baked area fraction, so it CONSERVES rather than being
+  // invented at 0.72 of the parent and shared out evenly.
+  //
+  // NO CHAIN. A piece is spawned inert (CFG.CHUNK_INERT) and, crucially, is NOT
+  // marked to break again — it breaks when the player breaks it, one level per
+  // kill. That is physics-invariant 7b: the tree is deep, but descending it is
+  // player-driven, never a single hit cascading down three tiers.
+  if (body.fieldRock && body.bigShape) {
+    const sh = rockShapeOf(body);
+    const kids = sh.kids || [];
+    // Budget headroom must sit ABOVE the world's steady-state body count or the
+    // break silently produces nothing — keep in step with world.replenishWorld.
+    if (kids.length && game.bodies.length + kids.length < 11200) {
+      const c = Math.cos(body.rot || 0), sn = Math.sin(body.rot || 0);
+      for (const k of kids) {
+        // The piece's own place inside the parent, taken to world.
+        const lx = k.ox * body.radius, ly = k.oy * body.radius;
+        const px = body.x + lx * c - ly * sn, py = body.y + lx * sn + ly * c;
+        // Outward from the parent's centre, so the pieces open up along the
+        // seams rather than all drifting the same way.
+        const od = Math.hypot(px - body.x, py - body.y) || 1;
+        const sp = CFG.FIELD_BREAK_SPREAD * (0.7 + Math.random() * 0.6);
+        // A BREAK EATS ENERGY. Pieces inherit only FIELD_BREAK_KEEP of the
+        // parent's velocity, and the faster it was going the more the fracture
+        // takes — because breaking rock is what that kinetic energy was SPENT
+        // on. Full inheritance is what let one tier-5 throw take a whole pocket:
+        // a 458,000-mass monolith flung at throw speed shattered into four
+        // pieces each still doing throw speed, every one of them able to break
+        // its neighbours, which broke theirs. Bounded here rather than by
+        // capping damage downstream, because the runaway is in the MOMENTUM, and
+        // damage caps only slow how fast it spends it.
+        const pv = Math.hypot(body.vx, body.vy);
+        const keep = CFG.FIELD_BREAK_KEEP *
+          Math.min(1, CFG.FIELD_BREAK_SOFT / Math.max(CFG.FIELD_BREAK_SOFT, pv));
+        const piece = spawnAsteroid(game.bodies, px, py,
+          body.vx * keep + ((px - body.x) / od) * sp,
+          body.vy * keep + ((py - body.y) / od) * sp,
+          body.mass * k.af);
+        markFieldRock(piece, body.field);
+        // It wears the baked child shape at the baked scale — this is what makes
+        // the pieces MATCH the rock they fell out of.
+        piece.bigShape = true;
+        piece.shapeId = k.s;
+        // BOTH radius AND baseRadius, and baseMass with them. spawnAsteroid
+        // sizes the body from asteroidRadius(mass) — about 31 units for a piece
+        // this heavy — while a landmark's drawn size runs through the FIELD
+        // R_MUL multipliers and is nearer 108. Overriding `radius` alone left
+        // baseRadius at the small value, and the chip easing drives radius
+        // toward baseRadius * cbrt(mass/baseMass): the first scratch a piece
+        // took made it visibly SHRINK to a third of its size over about a
+        // second. world.js does the same pairing when it seeds a landmark
+        // (`rock.radius = rock.baseRadius = sl.r`) — this path just has to obey
+        // the same rule.
+        piece.radius = piece.baseRadius = body.radius * k.rs;
+        piece.baseMass = piece.mass;
+        piece.radiusT = undefined;
+        piece.rot = body.rot || 0;
+        piece.spin = (body.spin || 0) + (Math.random() - 0.5) * 0.3;
+        piece._rs = null; piece._hw = null;   // stale shape/hull caches
+        // Fresh pieces pass through each other while they clear the break, or
+        // they resolve against their own siblings in the substep they are born.
+        piece.inertT = CFG.CHUNK_INERT;
+        // A NEWLY CALCULATED HOME, not the parent's. Each piece re-rails onto a
+        // rail derived from where it actually ended up, which is the whole point
+        // of soft-railing them back rather than inheriting a rail that described
+        // a rock that no longer exists.
+        setFieldHome(piece, game.fields && game.fields[body.field]);
+      }
+      addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 34, body.color, 210, 1.3, 4);
+      addShake(game, 9, body.x, body.y);
     }
-    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 34, body.color, 210, 1.3, 4);
-    addShake(game, 9);
   }
 
   const isBig = body.mass > 5e4;
@@ -1155,7 +1278,18 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     // bodies and put 1.0ms on the substep, which persists because the pieces
     // stay. Gated to `hard`, the feature survives (a real throw still takes a
     // slab off) and the ambient grinding of a busy shoal stops paying for it.
-    const calves = isWorldBody || (body.bigShape && hard);
+    // A LANDMARK BARELY CALVES ANY MORE — CFG.FIELD_CALVE_CHANCE of what it did.
+    // This spray predates the fracture library: it was how a big rock expressed
+    // being hurt, one slab plus crumbs per hard blow, and a monolith takes many
+    // blows before it dies. Now the rock comes APART into the pieces it was cut
+    // from (docs/rock-fracture.md), so the old crumb stream is a second, worse
+    // answer to the same question running alongside the good one — and it is the
+    // one making a broken giant bury the pocket in gravel.
+    // Kept rather than removed: an occasional chip flying off a rock you are
+    // grinding down still reads right, and it is the only feedback a NON-fatal
+    // hit gives. Worlds are untouched — the crumble is their whole language.
+    const calves = isWorldBody ||
+      (body.bigShape && hard && Math.random() < CFG.FIELD_CALVE_CHANCE);
     if (calves && bigEnough && body.nearShip) {
       // ...and fewer pieces per blow than a world sheds, for the same reason.
       const n = Math.min(hard ? (isWorldBody ? 1 + Math.round(sev * 3) : 1 + Math.round(sev)) : 1,
@@ -1177,7 +1311,16 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
       // cbrt(mass/baseMass)) and would have hollowed it out long before its hp
       // ran out. Erosion still happens, through the chip path below, which is
       // where it was always metered.
-    } else if (hard && !calves && debrisRoom(game) > 0) {
+    } else if (hard && !calves && !body.bigShape && debrisRoom(game) > 0) {
+      // NOT FOR SHAPED LANDMARKS, and the `!body.bigShape` is load-bearing
+      // because this is an IF/ELSE. `calves` used to be true for every hard hit
+      // on a landmark, so a landmark never reached this branch at all. Cutting
+      // the calve rate to FIELD_CALVE_CHANCE did not remove that spray — it
+      // redirected 95% of landmark hits INTO here, which is the gravel spray at
+      // GRAVEL_SPRAY_MUL (10x): up to ~60 grains per hit, on a monolith that
+      // takes many hits, across a cascade. Thousands of sprites out of a change
+      // meant to produce fewer.
+      // A landmark's damage output is its FRACTURE now. It wants neither path.
       // THE SPRAY IS NOW MOSTLY GRAVEL (CFG.GRAVEL_SPRAY_MUL). `real` is the
       // yield this impact always had, still minted as full Bodies and still
       // bounded by the debris budget — grabbable, damaging, carrying gravity-
@@ -1194,7 +1337,14 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
       // Erosion is still metered by the `real` pieces and by the chip path, both
       // untouched, so a world wears at precisely the rate it always did.
       const real = 2 + Math.round(sev * 4);
-      const want = real * CFG.GRAVEL_SPRAY_MUL;
+      // FIELD ROCK DOES NOT SPRAY GRAVEL. The 10x multiplier was written for the
+      // sparse belt, where a hit is an event and the extra grit sells it. A
+      // shoal is already made of rock: every hard hit on every one of ~800 plain
+      // asteroids per pocket minting up to 60 grains is how ONE tier-5 throw put
+      // 2,829 grains on screen against 12 real bodies. The pocket supplies its
+      // own debris — it does not need a tenfold spray on top, and the fracture
+      // tree now supplies the drama that spray was standing in for.
+      const want = real * (body.fieldRock ? CFG.GRAVEL_SPRAY_FIELD : CFG.GRAVEL_SPRAY_MUL);
       const n = Math.min(real, debrisRoom(game));
       const spill = want - n;
       let shed = 0;
@@ -1625,10 +1775,13 @@ function surfRadius(body, ang) {
   // `bigShape` is stamped by world.js on the rocks that earn it; everything
   // smaller stays the circle it was, which is what keeps the sweep affordable
   // at ~7,600 field rocks.
-  if (body.bigShape) {
-    const sh = (body._shape ||= rockShape(body.id));
-    return body.radius * bigRockSurfAt(sh, body.scars, body.radius, ang - body.rot);
-  }
+  // SCARS NO LONGER COMPOSE ONTO A ROCK'S OUTLINE. Damage on shaped rock is a
+  // decal plus an hp value; the way a rock expresses being hurt is that it comes
+  // APART, into pieces cut from its own silhouette (see docs/rock-fracture.md).
+  // This is a deliberate narrowing of the CRUMBLE law, not a lapse from it —
+  // worlds keep "the crater you see is the crater you can fly into", and a
+  // fracture is a more legible answer for rock than gradual erosion was.
+  if (body.bigShape) return rockSurfAt(body, ang);
   // CRATERED WORLDS collide as the shape they are DRAWN as, for exactly the
   // reason crystal worlds do. Once impacts started cutting real notches out of
   // a world's outline, the collider was still the full circle behind them, so
@@ -1668,7 +1821,7 @@ function shaped(body) {
 // loop invariant 7 warns about).
 function surfReach(body) {
   if (body.ptype === 'crystal') return body.radius * CRYSTAL_REACH;
-  if (body.bigShape) return body.radius * (body._shape ||= rockShape(body.id)).reach;
+  if (body.bigShape) return rockReach(body);
   return body.radius;
 }
 
@@ -1689,13 +1842,121 @@ function surfReach(body) {
 const _nrm = { x: 0, y: 0 };
 function surfNormal(body, ang) {
   if (!body.bigShape) { _nrm.x = Math.cos(ang); _nrm.y = Math.sin(ang); return _nrm; }
-  const sh = (body._shape ||= rockShape(body.id));
-  const na = rockNormalAt(sh, ang - body.rot) + body.rot;
+  const na = rockNormalAt(body, ang);
   _nrm.x = Math.cos(na); _nrm.y = Math.sin(na);
   return _nrm;
 }
 
+// TWO LANDMARK ROCKS NEED MORE THAN THE CENTRE LINE.
+//
+// The narrow phase above measures each surface along the line joining the two
+// centres. For a circle against anything that is exact, and for a pebble against
+// a slab it is close enough — the pebble is small, so its whole silhouette sits
+// within a degree or two of that line. For two 200-400 unit ANGULAR rocks it is
+// simply the wrong test: a corner can be buried deep in a neighbour's flank
+// while the centre line passes through a notch in one and a waist in the other,
+// and the pair reports no contact at all. That is the "collisions between the
+// large rocks don't work" case — rock visibly overlapping rock, sliding through
+// each other's corners, because the only place the collider ever looked was the
+// one bearing least likely to be where they actually touch.
+//
+// Both profiles are RADIAL functions of bearing (util.rockOutline guarantees it
+// — "composed as a radial function, so the outline cannot self-intersect"), so
+// "is this point inside that rock?" is one profile lookup, and a proper test is
+// just: walk each rock's own surface through the arc that faces the other, and
+// ask. No SAT, no vertex lists, no winding.
+//
+// Deepest contact wins, and its BEARING is what the resolver gets — using the
+// centre line's normal for an off-axis contact would separate along a face the
+// rocks are not touching on.
+// The deepest sample's WORLD POSITION is what comes back, not a bearing: the
+// resolver needs the bearing of the contact from BOTH centres (whichever rock
+// is the wall owns the normal) and the lever arm from each centre for the spin
+// response, and all three fall out of a point.
+const BIG_PROBE_N = 7;          // samples per rock, per pair
+const BIG_PROBE_ARC = 1.0;      // half-width of the probed cone (radians)
+let _probeX = 0, _probeY = 0;
+function bigPenetration(a, b, dx, dy) {
+  const toB = Math.atan2(dy, dx), toA = toB + Math.PI;
+  let best = -Infinity;
+  const step = (BIG_PROBE_ARC * 2) / (BIG_PROBE_N - 1);
+  for (let i = 0; i < BIG_PROBE_N; i++) {
+    const off = -BIG_PROBE_ARC + step * i;
+    // a's surface probed against b...
+    const th = toB + off;
+    const ra = surfRadius(a, th);
+    const px = a.x + Math.cos(th) * ra, py = a.y + Math.sin(th) * ra;
+    const ex = px - b.x, ey = py - b.y;
+    const ed = Math.hypot(ex, ey) || 1e-6;
+    const pen = surfRadius(b, Math.atan2(ey, ex)) - ed;
+    if (pen > best) { best = pen; _probeX = px; _probeY = py; }
+    // ...and b's surface probed against a. Both directions are needed: a corner
+    // of either rock can be the deepest point, and probing only one of them
+    // misses exactly the case where the flat one is the wall.
+    const ph = toA + off;
+    const rb = surfRadius(b, ph);
+    const qx = b.x + Math.cos(ph) * rb, qy = b.y + Math.sin(ph) * rb;
+    const fx = qx - a.x, fy = qy - a.y;
+    const fd = Math.hypot(fx, fy) || 1e-6;
+    const pen2 = surfRadius(a, Math.atan2(fy, fx)) - fd;
+    if (pen2 > best) { best = pen2; _probeX = qx; _probeY = qy; }
+  }
+  return best;
+}
+
+// COULOMB FRICTION AT A LANDMARK CONTACT, plus the tumble it puts on both rocks.
+//
+// `j` is the normal impulse already applied; the friction impulse is
+// CFG.FIELD_BIG_FRICTION of it, directed against the tangential slip and clamped
+// so it can never exceed the slip itself (past that it would reverse the slide,
+// which is friction pushing — the classic sign error here).
+//
+// The angular half uses the uniform disc's moment of inertia, 0.5*m*r^2. These
+// rocks have no real inertia tensor and are explicitly rubble piles, so a
+// tighter figure would be false precision; CFG.FIELD_BIG_SPIN damps the result
+// and SPIN_MAX bounds it, because the failure mode of an unbounded angular
+// impulse on a lopsided contact is a landmark that ends up spinning fast enough
+// for its own surface to outrun the collider.
+// rad/s. Well under the tumble a fresh asteroid is born with (+/-0.3), because
+// this is what a GRAZE may add: a contact that leaves a landmark spinning faster
+// than it was seeded reads as a hit from a much bigger thing than actually
+// touched it. Big rock is also spun down at seed off its radius
+// (world.seedDenseFields) — a 400-unit slab at 0.3 rad/s has a rim moving
+// faster than the ship, and a pocket of those reads as a blender.
+const SPIN_MAX = 0.3;
+function applyBigFriction(a, b, j, nx, ny, cx, cy, invA, invB) {
+  if (invA === 0 && invB === 0) return;
+  // Contact-point velocities, spin included — a turning rock drags its surface
+  // past the contact even when its centre is still.
+  const rax = cx - a.x, ray = cy - a.y;
+  const rbx = cx - b.x, rby = cy - b.y;
+  const avx = a.vx - a.spin * ray, avy = a.vy + a.spin * rax;
+  const bvx = b.vx - b.spin * rby, bvy = b.vy + b.spin * rbx;
+  // Slip: the part of the relative surface velocity that lies along the face.
+  const rvx = bvx - avx, rvy = bvy - avy;
+  const vn = rvx * nx + rvy * ny;
+  let tx = rvx - vn * nx, ty = rvy - vn * ny;
+  const slip = Math.hypot(tx, ty);
+  if (slip < 1e-4) return;
+  tx /= slip; ty /= slip;
+  // Coulomb clamp: never more than what it takes to stop the slip outright.
+  const jt = Math.min(CFG.FIELD_BIG_FRICTION * Math.abs(j), slip / (invA + invB || 1));
+  a.vx += jt * invA * tx; a.vy += jt * invA * ty;
+  b.vx -= jt * invB * tx; b.vy -= jt * invB * ty;
+  // Torque from the same impulse, about each centre.
+  const k = CFG.FIELD_BIG_SPIN * 2 * jt;   // 2/(m r^2) folded from I = 0.5 m r^2
+  if (invA > 0) {
+    a.spin = clamp(a.spin + (rax * ty - ray * tx) * k * invA / (a.radius * a.radius),
+      -SPIN_MAX, SPIN_MAX);
+  }
+  if (invB > 0) {
+    b.spin = clamp(b.spin - (rbx * ty - rby * tx) * k * invB / (b.radius * b.radius),
+      -SPIN_MAX, SPIN_MAX);
+  }
+}
+
 function collideBodies(game, a, b) {
+  let stuckPair = false;   // two railed rocks of one pocket, possibly interpenetrating
   // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
   // (or gets ground by it) until the flick launches it back into play.
   if (a.parryFrozen || b.parryFrozen) return;
@@ -1718,6 +1979,51 @@ function collideBodies(game, a, b) {
   if ((a.heldBy === 'orbit' && bOwn) || (b.heldBy === 'orbit' && aOwn)) return;
   // Twin Grip: your two beam-held rocks don't grind against each other
   if (a.heldBy === 'player' && b.heldBy === 'player') return;
+  // TWO RAILED ROCKS OF THE SAME POCKET ARE ONE RIGID BODY — the field analogue
+  // of the railed-conjunction pass-through below, and it must sit above the
+  // narrow phase rather than below it.
+  //
+  // A shoal shares ONE angular rate (world.seedDenseFields' `w`, re-applied by
+  // the reknit and by the settle re-rail), so two rocks that are both still on
+  // that rail have exactly ZERO relative motion: there is no collision here to
+  // resolve, now or ever. And they genuinely do interlock — the packer spaces
+  // landmarks by their circle radii while a shaped rock's corners reach past
+  // that (util.rockShape's `reach`), so a freshly generated pocket has its
+  // masonry keyed together at the corners on purpose. Measured on seed
+  // 20260721: 144 of 801 candidate pairs overlap at rest.
+  // Without this gate the resolver would push all 144 apart every substep and
+  // the rail advance would snap them back on the next — the visible judder the
+  // conjunction guard's note warns about, on a hundred rocks at once, plus the
+  // shaped narrow phase paid on every one of them for nothing.
+  // A knock derails, and a derailed rock collides normally again.
+  if (a.onRails && b.onRails && a.fieldRock && b.fieldRock && a.field === b.field &&
+      a.thrownTimer <= 0 && b.thrownTimer <= 0) {
+    // ...UNLESS THEY ARE ACTUALLY OVERLAPPING, in which case this guard is the
+    // thing keeping them that way and the pocket has no other route out.
+    //
+    // A railed pair cannot separate: the resolver's position shove is undone by
+    // the next rail advance, so the pass-through above is the only sane answer
+    // for rock that is merely interlocked at the corners by design. But rock
+    // does end up genuinely overlapped during play — a rock knocked loose drifts
+    // home and re-rails when it is CLOSE to home rather than exactly on it, and
+    // the spot may be occupied. Measured over 600s of idle sky: 260 overlapping
+    // pairs, every single one of them railed, worst 266 units. That is the
+    // "rocks overlap and glitch until I touch them, then snap apart" — touching
+    // one derails it, which is what let it resolve.
+    // Derailing the lighter one hands the pair to machinery that already works:
+    // contact separates them, drag bleeds the motion, and the home spring walks
+    // it back. Self-healing, and it costs one distance test on the overwhelming
+    // majority of pairs, which are not overlapping at all.
+    // The cheap bound has to be REACH, not radius: a shaped rock's surface
+    // reaches past its own radius, so a circle test misses exactly the corner
+    // overlaps this is here to catch (measured: it only found half of them).
+    // Reach over-triggers, so nothing is derailed on the strength of it — the
+    // pair merely falls through to the real narrow phase below, which decides.
+    const ddx = b.x - a.x, ddy = b.y - a.y;
+    const rsum = surfReach(a) + surfReach(b);
+    if (ddx * ddx + ddy * ddy >= rsum * rsum) return;
+    stuckPair = true;
+  }
   const dx = b.x - a.x, dy = b.y - a.y;
   let rr = a.radius + b.radius;
   const d2 = dx * dx + dy * dy;
@@ -1726,15 +2032,96 @@ function collideBodies(game, a, b) {
   // rr along the actual bearing. Spikes reach OUTSIDE the radius, so crystal
   // has to bound on surfReach; craters only cut inward, so the plain sum is
   // already a valid outer bound and the early-out below does the rejecting.
+  let bigProbe = false, probedPen = 0, raSurf = a.radius;
+  let sat = null;
   if (shaped(a) || shaped(b)) {
     const bound = surfReach(a) + surfReach(b);
     if (d2 >= bound * bound) return;
-    const ang = Math.atan2(dy, dx);
-    rr = surfRadius(a, ang) + surfRadius(b, ang + Math.PI);
+    if (a.bigShape && b.bigShape) {
+      // TWO LANDMARKS RUN CONVEX-HULL SAT (rockshape.rockContacts) against the
+      // baked decomposition. It returns a genuine minimum-translation vector —
+      // the depth and the direction fall out of the same measurement — where
+      // every collider before it derived the two separately and they disagreed
+      // by however far along a face the contact sat. That disagreement is why a
+      // resting pair never resolved and a pocket accumulated overlap the longer
+      // it was played in (265 interpenetrating pairs over 600s of idle sky).
+      //
+      // Only the DEEPEST contact is resolved per substep. rockContacts hands
+      // back one manifold per overlapping hull pair, and a decomposed body has
+      // no single separating vector — but 98% of realistic overlaps clear in one
+      // push and the rest in two (tools/test-rockshape.mjs), and at 120 substeps
+      // a second the remainder is gone within a frame. Resolving the whole list
+      // here would apply several impulses to one pair in one substep, which is
+      // how a contact turns into a launch.
+      //
+      // Paid only here — a landmark against gravel keeps the single-bearing
+      // test, which is correct enough at that size ratio and is the
+      // overwhelmingly common case in a pocket of 800 rocks.
+      const cs = rockContacts(a, b);
+      if (!cs.length) return;
+      sat = cs[0];
+      probedPen = sat.depth;
+      bigProbe = true;
+    } else {
+      const ang = Math.atan2(dy, dx);
+      raSurf = surfRadius(a, ang);
+      rr = raSurf + surfRadius(b, ang + Math.PI);
+    }
   }
-  if (d2 >= rr * rr) return;
+  if (!bigProbe && d2 >= rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
-  const overlap = rr - d;
+  // The probe measures penetration along its own contact bearing, so it IS the
+  // overlap — there is no radial rr to subtract a distance from.
+  const overlap = bigProbe ? probedPen : rr - d;
+  // WHERE the two are touching, in world coords. The probe reports it directly;
+  // otherwise it is a's surface along the centre line, which is what every
+  // circular contact in this file has always implicitly meant. It feeds the
+  // contact normal and the spin lever arms below.
+  // WHERE the two are touching. SAT reports it directly as a manifold point;
+  // with two of them (a face-face rest) take their midpoint, which is the lever
+  // arm the pair actually pivots about. Otherwise it is a's surface along the
+  // centre line, which is what every circular contact in this file has always
+  // implicitly meant.
+  let cx, cy;
+  if (sat) {
+    const p = sat.points;
+    cx = p.length > 1 ? (p[0].x + p[1].x) / 2 : p[0].x;
+    cy = p.length > 1 ? (p[0].y + p[1].y) / 2 : p[0].y;
+  } else {
+    cx = a.x + (dx / d) * raSurf;
+    cy = a.y + (dy / d) * raSurf;
+  }
+
+  // A ROCK THAT IS TOUCHING SOMETHING MAY NOT GO BACK ON RAILS. Stamped here,
+  // on every confirmed contact, and read by the settle gate in the integrate
+  // loop (CFG.FIELD_RAIL_CLEAR).
+  //
+  // This is what stops overlap ACCUMULATING over a session. The re-rail was
+  // already careful not to teleport — it rails the rock where it stands rather
+  // than snapping it to its exact home — but "where it stands" can still be
+  // inside a neighbour, because the home spring walks it back to a spot that may
+  // have been taken while it was away. The moment it rails there, the
+  // railed-pair pass-through above freezes the overlap in place, and the only
+  // escape is the derail below, after which it drifts home and rails into the
+  // same occupied spot again. Measured: seeded clean at 3 overlapping pairs,
+  // then 139 after 120s of play — every single one of them BOTH railed, which
+  // is the signature of this churn rather than of a collider that cannot
+  // separate things.
+  //
+  // O(1), and it reuses the contact pass that already runs. The alternative —
+  // asking "is my home clear?" from the integrate loop — is a spatial query per
+  // settling rock per frame, to answer a question the collider has already
+  // answered for free.
+  if (a.fieldRock) a.touchT = game.time;
+  if (b.fieldRock) b.touchT = game.time;
+
+  // A CONFIRMED railed-pair overlap: free the lighter one and let the ordinary
+  // machinery take it from here — contact separates them, drag bleeds the
+  // motion, the home spring walks it back. Returning before the impulse is
+  // deliberate: these two have been sitting still inside each other, so there is
+  // no collision to resolve, only a state to escape. Resolving it as an impact
+  // would hand them a bounce and damage they never earned.
+  if (stuckPair) { derail(a.mass <= b.mass ? a : b); return; }
 
   // Stars vaporize anything they touch
   if (a.type === 'star' || b.type === 'star') {
@@ -1747,9 +2134,21 @@ function collideBodies(game, a, b) {
   // rock is involved (see surfNormal) — the flat-face slide. When both are big
   // the heavier one owns the normal: it is the wall, the other is what hit it.
   let nx = dx / d, ny = dy / d;
-  if (a.bigShape || b.bigShape) {
+  if (sat) {
+    // STRAIGHT FROM THE SEPARATING AXIS, and deliberately not re-derived from
+    // the centre line or from a face lookup. rockContacts already orients it
+    // from a toward b, and it is NOT guaranteed to point along centre-to-centre:
+    // two gnarled rocks catching on a corner legitimately produce a normal
+    // pointing back across that line. Re-deriving it is exactly the mistake that
+    // made contacts read as skating sideways down a slab.
+    nx = sat.nx; ny = sat.ny;
+  } else if (a.bigShape || b.bigShape) {
     const wall = (a.bigShape && (!b.bigShape || a.mass >= b.mass)) ? a : b;
-    const towardOther = wall === a ? Math.atan2(dy, dx) : Math.atan2(-dy, -dx);
+    // The bearing of the CONTACT from the wall's centre, not of the other
+    // body's centre. For a pebble on a slab those agree to within a degree; for
+    // two landmarks probed off-axis they do not, and taking the centre-line face
+    // there resolves the contact against a face the rocks are not touching on.
+    const towardOther = Math.atan2(cy - wall.y, cx - wall.x);
     const n = surfNormal(wall, towardOther);
     // Re-expressed as "from a toward b", which is the sense the impulse and
     // the separation below are both written in.
@@ -1968,8 +2367,22 @@ function collideBodies(game, a, b) {
   // celestial crunches keep their damped shoves — those are intended drama.
   const celestial = (x) => x.type === 'planet' || x.type === 'moon' || x.type === 'rogue' || x.majorComet;
   const natRock = (x) => x.type === 'asteroid' && x.thrownTimer <= 0;
-  const aMoves = a.mass < b.mass * 20 && !(celestial(a) && natRock(b));
-  const bMoves = b.mass < a.mass * 20 && !(celestial(b) && natRock(a));
+  // FIELD ROCK IS NEVER IMMOVABLE — it is HEAVY, which is a different thing.
+  //
+  // The 20x rule exists to stop the constant rain of ambient bumps random-walking
+  // a CELESTIAL's orbit: a planet nudged off its lane has nothing to put it back.
+  // None of that applies here. Field rock has no orbit to protect — it is railed,
+  // gravity-free, and it now drifts back to its seeded position on its own — so
+  // the rule was buying nothing and costing the whole feel of the pocket:
+  // anything more than 20x lighter than a landmark, which is every belt rock in
+  // the sky, bounced off it with the landmark perfectly still.
+  // Dropping the cutoff does NOT make them easy to move. The impulse is already
+  // divided by mass, so a 600-mass pebble shifts a 130k landmark by a fraction of
+  // a unit and a heavy throw shifts it visibly — a smooth ratio instead of a
+  // cliff, which is what "fairly unmoving but still movable" actually means.
+  const fieldPair = a.fieldRock || b.fieldRock;
+  const aMoves = (fieldPair || a.mass < b.mass * 20) && !(celestial(a) && natRock(b));
+  const bMoves = (fieldPair || b.mass < a.mass * 20) && !(celestial(b) && natRock(a));
 
   // Positional separation (mass-weighted among movers)
   const total = (aMoves ? a.mass : 0) + (bMoves ? b.mass : 0) || 1;
@@ -1977,7 +2390,18 @@ function collideBodies(game, a, b) {
   // that full amount over-pushes by 1/cos of the angle between them, so project
   // it back onto the normal first — otherwise the fix for the slide trades it
   // for a pop off flat faces.
-  const sep = overlap * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
+  //
+  // THE PROBED CASE IS ALREADY A DEPTH, not a radial sum, so it takes no such
+  // projection: bigPenetration measures how far one surface is buried past the
+  // other, which is the distance that has to come out. Discounting it by the
+  // centre-line cosine as well would under-separate exactly the deep off-axis
+  // contacts the probe exists to find, and two landmarks would settle
+  // interpenetrated and jitter there. Bounded per substep so a pair that starts
+  // deeply overlapped (a shatter seeding pieces inside a neighbour) eases apart
+  // instead of teleporting.
+  const sep = bigProbe
+    ? Math.min(overlap, 0.5 * Math.min(a.radius, b.radius))
+    : overlap * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
   if (aMoves) { const p = sep * (bMoves ? b.mass / total : 1); a.x -= nx * p; a.y -= ny * p; }
   if (bMoves) { const p = sep * (aMoves ? a.mass / total : 1); b.x += nx * p; b.y += ny * p; }
 
@@ -2021,6 +2445,25 @@ function collideBodies(game, a, b) {
     }
     a.vx -= j * invA * nx; a.vy -= j * invA * ny;
     b.vx += j * invB * nx; b.vy += j * invB * ny;
+
+    // TANGENTIAL FRICTION AND THE SPIN IT IMPLIES — landmark rock only.
+    //
+    // Everything above this line is a pure normal impulse, which is the whole
+    // model a circle needs and half the model an angular 300-unit slab needs.
+    // Without a tangential term two landmarks meeting corner-to-face exchange
+    // no sideways force and neither one turns: they slide across each other and
+    // part still tumbling at exactly the rate they were seeded with. That reads
+    // as the rocks passing through one another even when the contact resolved
+    // correctly, and it is the other half of "the big rocks don't collide right".
+    //
+    // Scoped to bigShape pairs deliberately. Coulomb friction plus an angular
+    // response on every pebble in the sky is a much larger change to a
+    // long-tuned resolver, and the shaped rocks are both where it is visible and
+    // where the contact geometry (a real face normal, a real contact point) is
+    // good enough to be worth integrating.
+    if (a.bigShape && b.bigShape) {
+      applyBigFriction(a, b, j, nx, ny, cx, cy, invA, invB);
+    }
 
     // Impact damage — each takes damage scaled by the other's mass, but only
     // above the closing-speed threshold (thrown objects hit harder & easier).
@@ -2385,9 +2828,50 @@ function collideShipBody(game, s, b, dt) {
     // the kick before it can derail anything heavy), so orbits stay safe.
     const shipM = 30 + game.st.totalLevel * 25;
     const bKick = Math.min(260, closing * 1.1 * (shipM / (shipM + b.mass)));
-    if (bKick > 6) {
+    // FIELD ROCK ANSWERS THE SHIP, AND IT TURNS WHEN IT DOES.
+    //
+    // The generic mass ratio above is shipM / (shipM + b.mass), and a landmark
+    // masses 8,000-460,000 against a shipM of 30-80. That is a factor of ~0.004:
+    // at closing 300 the kick came out near 1.3, never cleared the `> 6` gate,
+    // and the rock did not move, did not derail and did not spin — at any speed,
+    // from any angle. Reported as "if I collide into a shoal rock they don't
+    // move at all".
+    //
+    // The knee is softened for field rock rather than removed, so the response
+    // still SCALES with what you hit: a rim pebble is shoved properly, a core
+    // monolith gives a couple of units and stays where it is. That is the brief
+    // — fairly unmoving, but movable, and then drifting home — and the drift is
+    // already built (the derail below hands it to the home spring).
+    let kickB = bKick;
+    if (b.fieldRock) {
+      // HARD-CAPPED, and the cap is the load-bearing half. The softened knee
+      // below is what lets a landmark answer the ship at all, but shipM is
+      // 30 + totalLevel*25 — so by late game it is ~1030 against an effective
+      // rock mass of 600 and the ratio inverts: the ship OUT-MASSES the
+      // monolith and launches it at hundreds of u/s. That rock then hits its
+      // neighbours above the damage threshold, they break and hit theirs, and
+      // the whole pocket goes up from one ram — the cascade physics-invariants
+      // 7/7b exist to forbid, arriving through the ship instead of through a
+      // split. Measured only at tier 0 when this was written, where the ratio is
+      // 30/8600 and the bug is invisible.
+      kickB = Math.min(CFG.FIELD_SHIP_KICK_MAX, Math.max(bKick, closing * 1.1 *
+        (shipM / (shipM + b.mass * CFG.FIELD_SHIP_MASS_K))));
+    }
+    if (kickB > 6) {
       if (closing > 25) derail(b);
-      b.vx += nx * bKick; b.vy += ny * bKick;
+      b.vx += nx * kickB; b.vy += ny * kickB;
+      // ...AND THE TORQUE. A normal impulse through a lever arm off the rock's
+      // centre is a rotation, and without this half a glancing blow on a 250-unit
+      // slab slid it sideways without ever turning it — which is most of why a
+      // hit read as "nothing happened". Real inertia off the baked shape
+      // (rockdata's `I` is normalised by area, so the body's is mass * I * r^2,
+      // and the mass cancels against the impulse).
+      if (b.bigShape) {
+        const rx = s.x - b.x, ry = s.y - b.y;
+        const shI = Math.max(0.05, rockShapeOf(b).I);
+        b.spin = clamp(b.spin + (rx * ny - ry * nx) * kickB / (shI * b.radius * b.radius),
+          -CFG.FIELD_SPIN_MAX, CFG.FIELD_SPIN_MAX);
+      }
     }
     const effB = Math.max(0, closing - 100);
     // RAM PROW / JUGGERNAUT boost the ram (st.ramMul); BERSERKER adds more as the
@@ -3435,7 +3919,7 @@ export function step(game, dt) {
     // pruned before the narrow phase ever runs. Everything else: _bp IS the
     // radius — one property read, no shape lookup, on the ~7,600 pebbles.
     b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH
-      : b.bigShape ? b.radius * (b._shape ||= rockShape(b.id)).reach
+      : b.bigShape ? rockReach(b)
       : b.radius;
     if (!b.attractor) continue;
     // Influence-cutoff ranges for this substep (see GRAV_CULL_A above). Stars
@@ -3642,6 +4126,102 @@ export function step(game, dt) {
       // interstellar visitor's alone).
       const bnd0 = boundaryAccel(b.x, b.y);
       if (bnd0) { b.ax += bnd0.ax; b.ay += bnd0.ay; }
+      // THE POCKET SETTLES (CFG.FIELD_DRAG — user design call). Gravity-free
+      // rock had nothing at all removing energy from it, so a cascade never
+      // ended: stirred-up rock kept crossing the pocket at damage speed until
+      // the shoal had ground itself down. Damped toward THE POCKET'S OWN FLOW,
+      // never toward rest — a shoal orbits, and a rock damped toward zero in the
+      // sun frame falls out of its lane and smears the whole field along it.
+      // ONLY INSIDE ITS OWN POCKET. The flow below is a RIGID rotation, w * r,
+      // so it is only the pocket's velocity near the pocket's radius — evaluated
+      // out where a knocked rock has flown to, it is a speed nothing there
+      // should have (at three times the lane radius it is three times the
+      // pocket's own speed), and damping toward it would ACCELERATE an escapee
+      // instead of slowing it. Measured before this gate: rocks kicked clear of
+      // the pocket sat at a fixed 1,479 u/s relative for the whole run, being
+      // held there by the very term meant to bleed them off.
+      // Outside, field rock keeps the behaviour it always had — it drifts and
+      // caroms in a straight line, which is the design law for rock knocked out
+      // of a shoal.
+      const ff = game.fields && game.fields[b.field];
+      if (ff && !b.heldBy && fieldFrac(ff, b.x, b.y) < CFG.FIELD_SETTLE_FRAC) {
+        const sun0 = game.homeStar;
+        // The rigid pocket's velocity here: one shared angular rate about the
+        // sun (world.seedDenseFields' `w`), so this is exactly the velocity the
+        // rail would be giving this rock at this position.
+        const fvx = sun0.vx - ff.w * (b.y - sun0.y);
+        const fvy = sun0.vy + ff.w * (b.x - sun0.x);
+        let rvx = b.vx - fvx, rvy = b.vy - fvy;
+        // A live player throw barely feels it: the aim solver leads against a
+        // straight line, so a throw that visibly bled speed would make the
+        // marker lie and quietly nerf every heavy shot.
+        const kD = Math.exp(-(b.thrownTimer > 0 ? CFG.FIELD_DRAG_THROWN : CFG.FIELD_DRAG) * dt);
+        rvx *= kD; rvy *= kD;
+        b.vx = fvx + rvx; b.vy = fvy + rvy;
+        // ...AND IT DRIFTS BACK TO WHERE IT BELONGS (user design law: "the rocks
+        // should slowly revert back to their rail after getting moved around —
+        // we want to keep the swimlanes mostly intact").
+        //
+        // Drag alone only stops a rock; it does not put it back. Settling
+        // wherever it happened to halt is what silts a SWIMLANE up over a run —
+        // the routes are the one part of the layout that has to survive being
+        // fought in, and they are the first thing a cascade fills. So each rock
+        // carries the pocket-frame position it was seeded at
+        // (world.setFieldHome) and is pulled gently toward it.
+        // A weak spring against the drag above is a damped oscillator in the
+        // pocket's rotating frame, so it converges rather than ringing; the
+        // acceleration is capped so this can never read as the rock being
+        // dragged, and never fights a throw (thrownTimer is exempt below).
+        let homeD = 0, hx = 0, hy = 0;
+        if (b.homeTan !== undefined && b.thrownTimer <= 0) {
+          const ca = Math.cos(ff.ang), sa = Math.sin(ff.ang);
+          hx = ff.x + ca * b.homeRad - sa * b.homeTan;
+          hy = ff.y + sa * b.homeRad + ca * b.homeTan;
+          const ddx = hx - b.x, ddy = hy - b.y;
+          homeD = Math.hypot(ddx, ddy);
+          if (homeD > 1) {
+            const a = Math.min(CFG.FIELD_HOME_A, homeD * CFG.FIELD_HOME_K);
+            b.ax += (ddx / homeD) * a; b.ay += (ddy / homeD) * a;
+          }
+        }
+        // ...and once it is home and riding with its neighbours again, REJOIN
+        // THE RAIL — snapped to the home position exactly, so the pocket
+        // reconstitutes the layout it was seeded with rather than merely
+        // stopping. Drag plus spring only ever asymptote, and the pocket's
+        // rigidity is defined by every rock sharing one exact w, which an
+        // asymptote never reaches; it also leaves thousands of nearly-stopped
+        // free bodies awake and integrating forever.
+        // Gated on still being in or near its own pocket, or a rock knocked
+        // across the system would be snapped onto a circular orbit at whatever
+        // radius it drifted to and called shoal.
+        // liveT gates the knock itself: derail() zeroes it, so this is "no hard
+        // contact for a second and a half". Re-railing a rock that is still
+        // being shoved would fight the contact resolver — position-shoved on one
+        // substep, snapped back by the rail advance on the next, which is the
+        // visible judder the railed-conjunction guard warns about.
+        // NO TELEPORT. Snapping the rock onto its exact home was a way to make
+        // the pocket reconstitute perfectly, and it is a way to drop a rock on
+        // top of whatever is standing there — which then never separates,
+        // because two railed rocks of one pocket skip collision by design. The
+        // spring above has already brought it within FIELD_HOME_SNAP; re-railing
+        // in place is close enough to hold the layout, and it cannot land on
+        // anybody.
+        // ...AND IT MUST HAVE BEEN LEFT ALONE FIRST. A rock still in contact
+        // when it rails freezes that contact: the railed-pair pass-through
+        // treats the two as one rigid body and neither can separate again. See
+        // the note where `touchT` is stamped — this one gate is the difference
+        // between a pocket that stays as clean as it seeded and one that
+        // accumulates overlap for as long as you play in it.
+        if (b.thrownTimer <= 0 && b.liveT > 1.5 && b.inertT <= 0 &&
+            game.time - (b.touchT || -99) > CFG.FIELD_RAIL_CLEAR &&
+            Math.hypot(rvx, rvy) < CFG.FIELD_SETTLE_V &&
+            (b.homeTan === undefined || homeD < CFG.FIELD_HOME_SNAP)) {
+          b.vx = sun0.vx - ff.w * (b.y - sun0.y);
+          b.vy = sun0.vy + ff.w * (b.x - sun0.x);
+          railBody(b, sun0);
+          b.rail.w = ff.w;   // the rigid-pocket rule, same as the seed pass
+        }
+      }
       continue;
     }
     // Celestials keep the FULL weighted walk (invariant 2's symmetric pairs are
