@@ -5,7 +5,7 @@ import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
 import { spawnAsteroid, markFieldRock, asteroidRadius } from './world.js';
-import { computeFlingVelocity, clearHoldState } from './tractor.js';
+import { computeFlingVelocity, clearHoldState, standDown } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
   rockShape, bigRockSurfAt, rockNormalAt, surfaceVel, padPos,
@@ -2620,6 +2620,8 @@ function updateDock(game, dt) {
         if (d.t >= CFG.DOCK_BUILD) {
           game.dockReadyName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
           game.dockFlashT = 0.9;
+          // The one thing the dockReadyName flag can't carry: WHAT you built on.
+          if (d.b.type === 'moon') bump(game, 'docksMoon');
           sfx.sfxOrbitCapture();
         }
       }
@@ -2662,10 +2664,27 @@ function updateDock(game, dt) {
       }
       game.dockBuildName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
     } else {
+      // RE-SEAT THE PAD TO THE SHIP THAT IS USING IT. `rf` is the hull's
+      // standoff as a fraction of the world's radius, and it was measured off
+      // whatever ship built the station — but the ship GROWS (radius 4 at tier
+      // 0, ~44 at tier 5), and the clamps pin the hull to exactly this height.
+      // Left at its build-time value, returning to an early pad in a bigger
+      // ship either parks the hull short of contact or buries it in the crust.
+      // Re-measuring on each berth is also honest about what the station is:
+      // the art already refits to your current tier, and so does the berth.
+      d.rf = dist / Math.max(1, b.radius);
       game.dockedName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
       game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
     }
     game.dock = d;
+    // THE CLAMPS TAKE THE SHIP, SO THE BEAM STANDS DOWN. A dock is a place you
+    // stop working: the beam, the ring, the tethers and the shotgun are all
+    // inert while berthed (main.js skips their updates and refuses their
+    // inputs), so anything still held has to be let go HERE — at the berth,
+    // which is before the station finishes building. Rocks left welded to a
+    // parked ship would orbit a structure they also phase through, with no
+    // input able to clear them. A gentle drop, never a volley (tractor.dropOrbit).
+    standDown(game);
     sfx.sfxOrbitCapture();     // the clamps biting — a mechanical catch, not a chime
   }
 
@@ -2782,6 +2801,9 @@ function updateLaunch(game, dt) {
   // hand it straight back while the ship is still inside the pad's contact.
   landing.t = 0; landing.b = null;
   addShake(game, 12);
+  // Counted here rather than off launchName: that row is first-time-only (no
+  // `repeat`), so the flag fires exactly once per run and could never count.
+  bump(game, 'launches');
   // The blast the pad takes as it lets go — a full ring, not a side wash: the
   // ship is climbing now and the exhaust finally has somewhere to go.
   addParticles(game, s.x - Math.cos(up) * s.radius * 1.5, s.y - Math.sin(up) * s.radius * 1.5,

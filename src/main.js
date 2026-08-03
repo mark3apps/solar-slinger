@@ -367,10 +367,24 @@ function fireVolley() {
 // The player may only touch the sim while actually flying — not on the splash,
 // in the pause menu, mid-settings, or while an upgrade card is open.
 const menuBlocking = () => !game.started || game.paused || shellModal(game) || game.choosingUpgrade;
+// A BERTHED SHIP IS PARKED, NOT FLYING. The clamps hold it, the engine answers
+// to the launch sequence and nothing else, and the beam has stood down
+// (tractor.standDown at the berth) — so the tractor, the orbit ring, the
+// shotgun and the mobility abilities all refuse while docked, and update()
+// skips their per-substep work entirely. Half-disabling them was the trap: a
+// beam you can still fire from a pad would re-fill a ring the dock just
+// emptied, and a warp would tear the hull off a station it is clamped into
+// without ever running the release.
+//
+// Separate from menuBlocking on purpose — this blocks GAMEPLAY verbs, not the
+// shell. H (home port), M (chart), V, P and R must all still work at a dock;
+// standing at your own home port and being unable to open the chart would be
+// absurd.
+const dockBlocking = () => !!game.dock;
 
 initInput(canvas, {
   onGrab: () => {
-    if (menuBlocking() || !game.ship.alive) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive) return;
     // tryGrab reports WHAT THE CLICK DID, not a boolean (see its doc comment).
     // The orbit-retrieve fallback below is for an EMPTY click only: a click the
     // beam answered — a winch it just started, or a refusal it just sounded —
@@ -423,7 +437,7 @@ initInput(canvas, {
     }
   },
   onRmbDown: () => {
-    if (menuBlocking()) return;
+    if (menuBlocking() || dockBlocking()) return;
     if (game.held) {
       // Send the held rock (back) into your orbit; too big -> gentle drop
       if (!addToOrbit(game)) releaseHeld(game, false);
@@ -469,7 +483,7 @@ initInput(canvas, {
   // brief i-frames. Sideways relative to the NOSE (angle ± 90°), not the
   // cursor — a positioning twitch, not a lunge.
   onDash: (dir) => {
-    if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
     const s = game.ship;
     const ang = s.angle + dir * Math.PI / 2;
     const burst = 380 + 35 * game.st.evasion;
@@ -482,7 +496,7 @@ initInput(canvas, {
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
   onWarp: () => {
-    if (menuBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
     const s = game.ship;
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     const dist = game.st.warpDist;
@@ -1486,10 +1500,18 @@ function update(dtReal) {
       // goes in because the winch is a HELD commitment: onFling ends it on the
       // release, and this is the backstop for a release that never arrives as
       // one (see updateLatch).
-      updateLatch(game, dt, input.mouseDown);
-      updateTractor(game, dt);
-      updateOrbit(game, dt);
-      updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
+      // THE BEAM IS OFF AT A BERTH. Everything the tractor owns — the winch,
+      // the hold, the orbit ring, the Recovery Tether — is skipped outright
+      // while docked rather than merely refusing input, because these run on
+      // state the berth has already cleared (tractor.standDown) and a half-live
+      // system is how a ring gets re-welded to a parked ship. The dock stands
+      // the beam down; this is what keeps it down.
+      if (!game.dock) {
+        updateLatch(game, dt, input.mouseDown);
+        updateTractor(game, dt);
+        updateOrbit(game, dt);
+        updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
+      }
       step(game, dt);
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);

@@ -319,6 +319,12 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **LEAVING IS A SEQUENCE** (`CFG.LAUNCH_*`): thrust from a berth doesn't drive the ship, it calls a
   release — clamps swing open, then the engine lights against them, then the pad lets go with
   `LAUNCH_KICK`. Pinned to the pad's velocity throughout, and it commits once started.
+- **A DOCK IS WHERE YOU STOP WORKING.** Beam, orbit ring, tether, shotgun and mobility abilities are
+  all inert while berthed (`main.dockBlocking` refuses input AND update() skips their substep work —
+  a half-live system re-welds a ring the dock just emptied). Anything in hand is dropped AT THE BERTH
+  (`tractor.standDown`), gently, earning nothing. `dockBlocking` is NOT `menuBlocking`: H/M/V/P/R
+  still work at a dock. And the pad **re-seats its standoff to the ship using it** on every berth —
+  the hull grows from radius 4 to ~44 across the tiers, and the clamps pin it to exactly that height.
 - **A HOME PORT IS A CHOICE, AND IT IS THE RESPAWN POINT.** Berthing is earned by flying; promoting a
   finished station to home is the H key, because it is the one act that moves where a death puts you
   back. One at a time, and **it dies with its world**. A station is `{ b, ang, rf, t }` — a body, a

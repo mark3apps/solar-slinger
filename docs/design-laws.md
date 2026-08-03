@@ -802,6 +802,25 @@ the pad (materializing flush with the collider means being shoved off your own d
 riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the ship back standing
 still in front of it.
 
+**A DOCK IS WHERE YOU STOP WORKING.** The beam, the orbit ring, the Recovery Tether, the shotgun and
+the mobility abilities are all inert while berthed — `main.dockBlocking` refuses their inputs and
+update() skips their per-substep work outright. Half-disabling them was the trap: a beam you can
+still fire from a pad re-fills a ring the dock just emptied, and a warp tears the hull off a station
+it is clamped into without ever running the release. Anything still in hand is let go AT THE BERTH
+(`tractor.standDown`, before the station finishes building) — rocks left welded to a parked ship
+would orbit a structure they also phase through, with no input able to clear them. It is a DROP, not
+a volley: firing your whole shield across the landscape because you touched down would be the landing
+doing something violent nobody asked for, and it earns nothing (the `drops` counter belongs to
+deliberate gentle put-downs). `dockBlocking` is deliberately separate from `menuBlocking`: H, M, V, P
+and R all still work at a dock, because standing at your own home port unable to open the chart
+would be absurd.
+
+**THE PAD RE-SEATS TO THE SHIP USING IT.** `rf` is the hull's standoff, measured off whatever ship
+built the station — but the ship grows from radius 4 to ~44 across the tiers, and the clamps pin the
+hull to exactly that height. Left at its build-time value, returning to an early pad in a bigger ship
+parks the hull short of contact or buries it in the crust. Re-measured on every berth, which is also
+honest about what a station is: the art already refits to your current tier, and so does the berth.
+
 **THE SHIP IS HELD, AND LEAVING IS A SEQUENCE.** A berthed ship stands UPRIGHT (`DOCK_UPRIGHT`) and
 is pinned EXACTLY to its pad: the clamps own the attitude and the position, the mouse stops steering,
 and W therefore always points straight off the pad. That is what makes a berth read as *held* rather
