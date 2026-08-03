@@ -1,4 +1,6 @@
-import { CFG, PROG, addXp, fieldXp, worldDebris, crustMass, FIELD_LOBE_MAX } from './config.js';
+import {
+  CFG, PROG, addXp, fieldXp, worldDebris, crustMass, FIELD_LOBE_MAX, dockDomeR,
+} from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
 } from './entities.js';
@@ -6,7 +8,7 @@ import { spawnAsteroid, markFieldRock, asteroidRadius } from './world.js';
 import { computeFlingVelocity, clearHoldState } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
-  rockShape, bigRockSurfAt, rockNormalAt,
+  rockShape, bigRockSurfAt, rockNormalAt, surfaceVel, padPos,
 } from './util.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
@@ -1340,8 +1342,17 @@ export function killAlien(game, alien) {
 export function damageShip(game, dmg, cause, hitAng) {
   const s = game.ship;
   // godMode is the window.god() dev/test hook — every ship-damage path funnels
-  // through here, so this one early-out is the whole feature
-  if (!s.alive || s.invuln > 0 || game.godMode) return;
+  // through here, so this one early-out is the whole feature.
+  //
+  // A FINISHED DOCK IS A SAFE HARBOUR (dockReady): its shield dome covers the
+  // berth and nothing gets through, which is what the ten seconds of building
+  // it while exposed bought. Gated on READY, never on merely being berthed —
+  // the build is meant to be the risky part, and a station that protected you
+  // while it was still going up would make its own cost free. It rides here
+  // rather than on s.invuln so that nothing else (a respawn, a dash) can be
+  // confused with it, and so every damage path in the game is covered by the
+  // one test.
+  if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return;
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull. Coverage
   // is spec DNA (st.shieldArc, config.shipStats): BRAWLER's War Plating wraps
@@ -2368,6 +2379,49 @@ function collideShipBody(game, s, b, dt) {
     }
   }
 
+  // ---- SURFACE FRICTION, and the LANDING it makes possible -----------------
+  // A world is a place you can put the ship down on; a rock is not. See
+  // CFG.SURF_FRICTION for why this drags the WHOLE relative velocity (and why
+  // it cannot fight the bounce impulse below).
+  //
+  // NEWTON'S OTHER HALF IS DELIBERATELY OMITTED. The bounce below pays the body
+  // its share; friction does not, because every body this can touch is a planet
+  // or a moon and therefore >20x the ship's mass — the regime invariant 4 makes
+  // immovable outright. Paying it would be a rounding error that had to be
+  // damped back out, and a torque on a world's spin from a ship scraping it is
+  // exactly the kind of secular pump the rails exist to prevent.
+  //
+  // NOTHING TO MIRROR IN predictPaths, unlike the orbit rubber band and the
+  // long arms. Those are ship-only forces that act at RANGE, so a forecast that
+  // ignored them drew the wrong curve. This one exists only in contact, and the
+  // forecast TERMINATES at contact (`shipHit`) — it never integrates a substep
+  // where this term is live.
+  if (b.type === 'planet' || b.type === 'moon') {
+    const sv = surfaceVel(b, s.x, s.y);
+    const f = 1 - Math.exp(-CFG.SURF_FRICTION * dt);
+    s.vx += (sv.vx - s.vx) * f;
+    s.vy += (sv.vy - s.vy) * f;
+    // …and the three docking gates, read in the one place that knows the hull
+    // is actually touching something. `landing` accumulates across the
+    // substeps and updateDock (end of step) resolves it — the reset has to
+    // live there, because a per-body collider cannot see "no contact at all".
+    landing.touch = b;
+    // ROCKETS DOWN: the nose within DOCK_ARC of straight UP off the surface.
+    // `dx/dy` runs ship -> body, so the outward bearing is its reverse. On a
+    // shaped world this is deliberately the RADIAL up and not surfNormal's
+    // face normal: the player is lining the ship up against a horizon they can
+    // see, not against a crater wall's local slope.
+    const up = Math.atan2(-dy, -dx);
+    const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
+    const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
+    if (level && still) landing.settle = b;
+    // WHICH GATE IS REFUSING, for the approach guidance. Attitude first: it is
+    // the one a player will not work out on their own, and it is also the one
+    // they can fix instantly. A landing that silently declines to latch is the
+    // single worst failure mode this feature has.
+    else landing.gate = !level ? 'level' : 'fast';
+  }
+
   if (closing > 0) {
     // Ship bounces away, scaled by the impactor's mass and hard-capped — a
     // flat closing*1.3 kick let alien-thrown rocks launch the ship at 900+.
@@ -2452,6 +2506,288 @@ function collideShipBody(game, s, b, dt) {
       if (own && !s.alive) bump(game, 'ownGoal');
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// DOCKING.
+//
+// A DOCK IS A STRUCTURE, NOT A STATE. That is the load-bearing decision in this
+// section and everything else follows from it. Set the ship down on a world
+// rockets-down and hold still and it BERTHS; berth on bare ground and you start
+// BUILDING a station, which takes CFG.DOCK_BUILD seconds of staying put and
+// gives you nothing until it is finished. Once built it STANDS THERE for the
+// rest of the run — fly away, come back, and you berth at it immediately with
+// the shield and the repair live from the first moment.
+//
+// The state lives on `game` in three pieces. A station is { b, ang, rf, t }:
+// a body, a SURFACE-LOCAL bearing, a fraction of that body's radius
+// (util.padPos), and the build seconds banked into it.
+//
+//   game.docks — every station standing (or half-built) this run.
+//   game.dock  — the station the ship is berthed at RIGHT NOW, or null. A
+//                REFERENCE INTO game.docks, never a copy: the build clock ticks
+//                on the station, and a copy would bank the seconds somewhere
+//                that is thrown away when you lift off.
+//   game.home  — the station a respawn uses. Also a reference into game.docks.
+//
+// The gates themselves are read inside collideShipBody, which is the one place
+// that knows the hull is in contact. It writes into this scratch; the resolve
+// happens here, once per substep, because "no contact at all" is a fact no
+// per-body collider can observe. Module-level rather than on `game` for the
+// same reason `shipContacts` is: it is scratch between two functions in this
+// file and means nothing to a save, a soak or the HUD.
+const landing = { touch: null, settle: null, gate: '', b: null, t: 0 };
+
+// Is this station finished? The ONE test for "does this dock actually work" —
+// the shield, the repair and the pad's built look all read it, so a station can
+// never be protective in one system and a building site in another.
+export function dockReady(d) { return !!d && d.t >= CFG.DOCK_BUILD; }
+
+// Cleared on a world REGEN as well as a run reset — the bodies these point at
+// are about to be thrown away, exactly like a chart route's stops.
+export function clearDocks(game) {
+  game.dock = null; game.home = null; game.launch = null;
+  if (game.docks) game.docks.length = 0; else game.docks = [];
+  landing.touch = null; landing.settle = null; landing.b = null;
+  landing.gate = ''; landing.t = 0;
+  game.dockT = 0; game.dockCand = null; game.dockGate = '';
+}
+
+function updateDock(game, dt) {
+  const s = game.ship;
+  const docks = game.docks;
+  // A STATION DIES WITH ITS WORLD. Swept every substep — it is a walk of at
+  // most CFG.DOCK_MAX entries, and the world in question is usually the one
+  // being shot at when it matters.
+  for (let i = docks.length - 1; i >= 0; i--) {
+    if (docks[i].b.alive) continue;
+    const dead = docks.splice(i, 1)[0];
+    if (game.dock === dead) game.dock = null;
+    if (game.home === dead) {
+      game.homeLostName = dead.b.name || 'your home world';
+      game.home = null;
+    }
+  }
+
+  // The latch timer fills only while all three gates hold and drains
+  // DOCK_DRAIN times faster off the surface — see CFG.DOCK_DRAIN for why
+  // CONTACT alone holds a berth that attitude and stillness had to earn.
+  const on = landing.settle || landing.touch;
+  if (on && on !== landing.b) { landing.b = on; landing.t = 0; }   // a different world is a fresh landing
+  if (!s.alive || (landing.b && !landing.b.alive)) {
+    landing.t = 0; landing.b = null;
+  } else if (landing.settle) {
+    landing.t = Math.min(CFG.DOCK_TIME, landing.t + dt);
+  } else if (!landing.touch) {
+    landing.t = Math.max(0, landing.t - dt * CFG.DOCK_DRAIN);
+    if (landing.t <= 0) landing.b = null;
+  }
+
+  if (game.dock) {
+    // Losing the berth: the timer ran dry, or the hull is now resting on a
+    // DIFFERENT world, which is a fresh landing and has to be earned from zero
+    // rather than inherited. (A launch clears game.dock itself — see
+    // updateLaunch — so this path is the "flew off / got knocked off" one.)
+    if (landing.t <= 0 || landing.b !== game.dock.b) {
+      game.dock = null;
+      game.launch = null;      // a berth lost mid-sequence takes the sequence with it
+    } else {
+      const d = game.dock;
+      // THE CLAMPS HOLD THE SHIP — an exact pin to the pad, not a spring.
+      //
+      // Surface friction alone is an exponential approach, so it can never
+      // quite match a surface that is ROTATING: co-rotating needs a continuous
+      // centripetal term that a velocity damper only ever supplies as a lag, and
+      // the residual is a slow steady creep of the hull across its own pad
+      // (measured ~0.06 u/s — invisible for a second, and a berth visibly
+      // sliding off its dock after a minute). Reported as "the ship moves
+      // slightly faster than the base does".
+      //
+      // Pinning is also what a clamp physically IS, so this is the honest model
+      // rather than a patch: position to padPos, velocity to the ground under
+      // it. Runs after the whole contact pass, so it wins over the resolver's
+      // push-out and the friction both — and it costs nothing, because the pad
+      // is by construction exactly where the hull was when the clamps bit.
+      const pp = padPos(d, _padScratch);
+      s.x = pp.x; s.y = pp.y;
+      const sv = surfaceVel(d.b, s.x, s.y);
+      s.vx = sv.vx; s.vy = sv.vy;
+      // BUILDING. Only advances while berthed — you are the one building it —
+      // and the seconds bank on the STATION, so leaving pauses rather than
+      // discards. The crossing is announced once, on the frame it completes.
+      if (d.t < CFG.DOCK_BUILD) {
+        d.t = Math.min(CFG.DOCK_BUILD, d.t + dt);
+        if (d.t >= CFG.DOCK_BUILD) {
+          game.dockReadyName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+          game.dockFlashT = 0.9;
+          sfx.sfxOrbitCapture();
+        }
+      }
+    }
+  } else if (landing.t >= CFG.DOCK_TIME && landing.settle) {
+    const b = landing.settle;
+    const dist = Math.hypot(s.x - b.x, s.y - b.y) || 1;
+    // BERTH AT A STANDING STATION IF THERE IS ONE HERE. Matched by world
+    // distance to the pad rather than by body, so a second landing a quarter
+    // of the way round a planet is a second station (which is the point of
+    // being able to build more than one) while a landing a few units off the
+    // first is the SAME station rather than one built through the middle of it.
+    let d = null, best = CFG.DOCK_BERTH_R * CFG.DOCK_BERTH_R;
+    for (const q of docks) {
+      if (q.b !== b) continue;
+      const p = padPos(q, _padScratch);
+      const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
+      if (d2 < best) { best = d2; d = q; }
+    }
+    if (!d) {
+      // A FRESH BUILD SITE.
+      d = {
+        b,
+        // SURFACE-LOCAL, so the pad turns with the world under it (util.padPos).
+        ang: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
+        rf: dist / Math.max(1, b.radius),
+        t: 0,
+      };
+      docks.push(d);
+      // The bound, not a balance number (CFG.DOCK_MAX). Retire the OLDEST
+      // station that is neither the home port nor the one just laid down —
+      // losing the place you respawn at because you built a shed somewhere
+      // would be the worst possible thing for this cap to do.
+      if (docks.length > CFG.DOCK_MAX) {
+        const i = docks.findIndex((q) => q !== game.home && q !== d);
+        if (i >= 0) {
+          const gone = docks.splice(i, 1)[0];
+          game.dockRetiredName = gone.b.name || 'a world';
+        }
+      }
+      game.dockBuildName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+    } else {
+      game.dockedName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+      game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
+    }
+    game.dock = d;
+    sfx.sfxOrbitCapture();     // the clamps biting — a mechanical catch, not a chime
+  }
+
+  // Published for the approach guidance (render.drawDockGuide) — the player has
+  // to be able to SEE the latch filling and which gate is refusing, or a
+  // landing that does not take reads as the feature being broken.
+  game.dockT = landing.t / CFG.DOCK_TIME;
+  game.dockCand = landing.b;
+  game.dockGate = landing.gate;
+  landing.touch = null; landing.settle = null; landing.gate = '';
+}
+
+// THE DOME PUSHES BACK. Damage immunity alone is only half a shield: without
+// this, rock and aliens still pile into the berth, and while the clamps mean
+// they can no longer shove the ship anywhere, a hull sitting inside a heap of
+// debris it is invulnerable to reads as a bug rather than as protection. A
+// force field's whole job is that things bounce off it.
+//
+// Geometry comes from config.dockDomeR — the SAME expression render draws, for
+// the reason on that table. Centred on the SURFACE POINT under the pad, so the
+// pushing edge is where the drawn arc is.
+//
+// SCOPED TO LOOSE ROCK AND ALIENS. Never celestials: a moon arriving at your
+// home world is a far bigger event than a dock's shield, invariant 4 makes the
+// heavy body immovable against anything this small anyway, and a field that
+// nudged railed worlds would be a secular pump on the sky. Never your own held
+// or orbiting rock either — the beam outranks the dome.
+function updateDomeShield(game, live) {
+  const d = game.dock;
+  if (!dockReady(d) || !game.ship.alive) return;
+  const b0 = d.b;
+  const up = d.ang + b0.rot;
+  const cx = b0.x + Math.cos(up) * b0.radius;      // the surface under the pad
+  const cy = b0.y + Math.sin(up) * b0.radius;
+  const dr = dockDomeR(game.st, b0.radius, b0.radius * (d.rf - 1));
+  const push = (o, r) => {
+    const dx = o.x - cx, dy = o.y - cy;
+    if (dx > dr + r || dx < -(dr + r) || dy > dr + r || dy < -(dr + r)) return false;
+    const dd = Math.hypot(dx, dy);
+    const need = dr + r;
+    if (dd >= need || dd < 1e-3) return false;
+    // Only the OUTWARD hemisphere: the other half of this sphere is buried in
+    // the planet, and shoving crust-side debris would be pushing things INTO
+    // the world the dock is standing on.
+    const nx = dx / dd, ny = dy / dd;
+    if (nx * Math.cos(up) + ny * Math.sin(up) < -0.25) return false;
+    o.x = cx + nx * need; o.y = cy + ny * need;
+    const vn = o.vx * nx + o.vy * ny;
+    if (vn < 0) { o.vx -= 2 * vn * nx; o.vy -= 2 * vn * ny; }   // reflect off the field
+    // …and make sure it actually LEAVES. A pure reflection lets a slow drifter
+    // sit on the boundary being re-solved every substep; the floor turns the
+    // dome from a wall into something that throws.
+    const out = o.vx * nx + o.vy * ny;
+    if (out < CFG.DOCK_REPEL_MIN) {
+      o.vx += (CFG.DOCK_REPEL_MIN - out) * nx;
+      o.vy += (CFG.DOCK_REPEL_MIN - out) * ny;
+    }
+    game.domeHitT = 0.3;                    // render: the rim flares where it bit
+    game.domeHitA = Math.atan2(ny, nx);
+    return true;
+  };
+  for (const b of live) {
+    if (!b.alive || b === b0 || b.type !== 'asteroid') continue;
+    if (b.heldBy || (b.thrownBy === 'player' && b.thrownTimer > 0)) continue;
+    if (push(b, b.radius) && b.onRails) derail(b);
+  }
+  for (const al of game.aliens) {
+    if (al.alive) push(al, al.radius);
+  }
+}
+
+// LEAVING IS A SEQUENCE (CFG.LAUNCH_*). Thrust from a berth and the station
+// runs a release: clamps back, engine spooling against them, then the pad lets
+// go. The ship is PINNED to the pad's velocity throughout, so the sequence
+// cannot be steered or shoved out of, and it commits once started.
+const _padScratch = { x: 0, y: 0 };
+function updateLaunch(game, dt) {
+  const L = game.launch;
+  if (!L) return;
+  const s = game.ship;
+  const d = game.dock;
+  if (!d || !d.b.alive || !s.alive) { game.launch = null; return; }
+  L.t += dt;
+  // Pinned: the pad is holding the ship, so it rides the ground exactly.
+  const sv = surfaceVel(d.b, s.x, s.y);
+  s.vx = sv.vx; s.vy = sv.vy;
+  const up = Math.atan2(s.y - d.b.y, s.x - d.b.x);
+  // ACT TWO — IGNITION. The engine lights against the clamps: exhaust washes
+  // sideways off the deck (it has nowhere else to go while the ship is pinned,
+  // which is exactly what makes a held burn look held), and the shake climbs
+  // toward the release so the wait reads as pressure building rather than as a
+  // hang. Throttled cadence — this runs at 120Hz.
+  if (L.t > CFG.LAUNCH_HOLD) {
+    const k = (L.t - CFG.LAUNCH_HOLD) / (CFG.LAUNCH_TIME - CFG.LAUNCH_HOLD);
+    addShake(game, 2.2 * dt * 60 * k);
+    L.fx = (L.fx ?? 0) - dt;
+    if (L.fx <= 0) {
+      L.fx = 0.03;
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const tx = -Math.sin(up) * side, ty = Math.cos(up) * side;   // along the deck
+      addParticles(game,
+        s.x - Math.cos(up) * s.radius * 1.4, s.y - Math.sin(up) * s.radius * 1.4,
+        s.vx + tx * 260 * (0.5 + k), s.vy + ty * 260 * (0.5 + k),
+        3, Math.random() < 0.5 ? '#ffd27a' : '#ff9a5c', 150, 0.55, 3);
+    }
+  }
+  if (L.t < CFG.LAUNCH_TIME) return;
+  // RELEASE.
+  s.vx += Math.cos(up) * CFG.LAUNCH_KICK;
+  s.vy += Math.sin(up) * CFG.LAUNCH_KICK;
+  game.launch = null;
+  game.dock = null;
+  // The berth has to be re-earned from zero, or the drain's grace window would
+  // hand it straight back while the ship is still inside the pad's contact.
+  landing.t = 0; landing.b = null;
+  addShake(game, 12);
+  // The blast the pad takes as it lets go — a full ring, not a side wash: the
+  // ship is climbing now and the exhaust finally has somewhere to go.
+  addParticles(game, s.x - Math.cos(up) * s.radius * 1.5, s.y - Math.sin(up) * s.radius * 1.5,
+    s.vx * 0.2 - Math.cos(up) * 220, s.vy * 0.2 - Math.sin(up) * 220,
+    22, '#ffce8a', 260, 0.7, 3.5);
+  sfx.sfxFling();
 }
 
 // DEFLECTOR PARRY — a FRONT-ARC field, not a contact reaction: each substep
@@ -3708,7 +4044,18 @@ export function step(game, dt) {
     // NOSE LOCK during a Deflector parry: the mouse is being read as the
     // flick (updateParry), so the ship must NOT also turn with it — steering
     // and flicking off one input at once feels like the ship fighting you.
-    if (!game.parry) {
+    // A BERTHED SHIP STANDS UPRIGHT AND STAYS UPRIGHT. The clamps hold the
+    // attitude, so the helm gives the nose to the surface normal and the mouse
+    // stops steering — which is what makes a dock read as being HELD rather
+    // than as hovering. It also means W always points straight off the pad, so
+    // the launch below needs no separate notion of "up". Eased, not snapped:
+    // the ship visibly stands up as the clamps take it. Aiming is unaffected —
+    // the beam and every throw go at the cursor, never along the nose.
+    if (game.dock) {
+      const d = game.dock;
+      const up = Math.atan2(s.y - d.b.y, s.x - d.b.x);
+      s.angle += angDiff(s.angle, up) * (1 - Math.exp(-CFG.DOCK_UPRIGHT * dt));
+    } else if (!game.parry) {
       const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
       s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
     }
@@ -3736,8 +4083,27 @@ export function step(game, dt) {
     const back = c.b * game.st.reversePower;
     let throttle = s.engineOutT > 0 ? 0 : c.f - back;
     if (boosting) throttle = Math.max(throttle, 1);   // Shift alone dashes forward
-    s.thrusting = throttle > 0;
-    s.braking = throttle < 0;
+    // THE PAD OWNS THE ENGINE. Thrust from a berth doesn't drive the ship, it
+    // CALLS FOR A LAUNCH (CFG.LAUNCH_*) — the clamps are holding it, so a
+    // throttle that just added acceleration would have the ship straining
+    // against a structure that never visibly let go. Zeroed here rather than
+    // in updateLaunch so the engine is dead for the whole berth, not only
+    // during the sequence.
+    if (game.dock) {
+      if (!game.launch && throttle > 0) {
+        game.launch = { t: 0 };
+        game.launchName = game.dock.b.name || 'the pad';
+      }
+      throttle = 0;
+      // The plume IS the sequence's second act — s.thrusting drives render's
+      // engine art, so the ignition hold has to claim it explicitly.
+      s.thrusting = !!game.launch && game.launch.t > CFG.LAUNCH_HOLD;
+      s.braking = false;
+    }
+    if (!game.dock) {
+      s.thrusting = throttle > 0;
+      s.braking = throttle < 0;
+    }
     const tx = Math.cos(s.angle) * th * throttle;
     const ty = Math.sin(s.angle) * th * throttle;
 
@@ -4293,6 +4659,13 @@ export function step(game, dt) {
     if (s.alive) collideShipBody(game, s, b, dt);
     if (aliens.length) for (const al of aliens) if (al.alive) collideAlienBody(game, al, b, dt);
   }
+  // Resolve the landing gates the pass above just recorded. Directly after it,
+  // and never inside it: this is the only point in the substep where "the hull
+  // touched nothing" is a knowable fact. The launch sequence follows it, so a
+  // release always acts on a berth this substep has already confirmed.
+  updateDock(game, dt);
+  updateDomeShield(game, live);
+  updateLaunch(game, dt);
 
   // Alien-ship ramming
   for (const al of game.aliens) {

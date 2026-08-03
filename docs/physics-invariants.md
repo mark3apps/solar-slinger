@@ -207,6 +207,77 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
   predictPaths). Outbound is exempt by design — the assist must never become an escape jail. **Surface
   skimming** (`SKIM_*`): tangential contact grinding damages the hull with sparks + a contact glow; the
   normal bounce path still only bites above closing-speed thresholds.
+  **MOSTLY REMOVED, 2026-08** (user call: "it kinda breaks things") — `DAMP` 1.2 → **0.3**. The damage
+  was structural, not a matter of degree: the brake ramps with `t`, which is 0 at the band's edge and
+  **1 at the surface**, so the assist was strongest exactly where the player is trying to arrive.
+  Terminal descent is `g_surface / DAMP`; measured A/B in one session, an unpowered 400-unit fall at
+  1.2 **never completed inside 60s** and at 0.3 lands in ~21s. The wider cost was the same everywhere:
+  the band quietly cancelled the inward half of every approach, so a world's well never really felt
+  like one however hard `PLANET_GRAV_SHIP` pulled. Kept rather than deleted — at zero, every near-miss
+  is a hyperbolic slingshot and there is no capture arc left at all. **Note this constant is
+  SHIP-ONLY, so the stability/combat suites are blind to it**: all four seeds diff clean across the
+  change, and the evidence that it did anything is the descent A/B above, not the bench.
+- **Surface friction** (`SURF_FRICTION`, added 2026-08): ship-only, CONTACT-only. Touching a planet or
+  a moon drags the ship toward the velocity of the ground under it — `util.surfaceVel`, the body's own
+  motion plus `spin x r` tangentially — at an exponential rate, so a skid matches the surface in
+  ~0.7s and the ship can be landed at all. Before it, hull-vs-world contact was purely elastic and a
+  graze skated across a planet at its arrival speed until the grind killed the ship.
+  Four rules hold it in place, and each one guards something:
+  - **Planets and moons only.** A rock is not a place you land on, and rock contact is long-tuned
+    against every dense field in the game (invariants 3–5).
+  - **It drags the WHOLE relative velocity, not just the tangential half.** The radial part cancels
+    the gravity the ship keeps falling in with, so it settles against the resolver's push-out rather
+    than chattering on it — that half is what makes a landing possible instead of a bounce. Residual
+    drift is `g_surface / SURF_FRICTION`: under 1 u/s on a mid world, ~4 u/s at the deepest LONG ARMS
+    amplification, i.e. far inside `DOCK_SPEED` either way.
+  - **It never fights the bounce.** The kick is an impulse in the same substep and at 1/120s this
+    rate removes 3.7% of a velocity, so a hard arrival still bounces exactly as invariants 3–5 tune
+    it. Only a ship that STAYS down is slowed, and thrust wins easily (180 u/s² against 4.5/s is a
+    40 u/s terminal), so a pad can never become flypaper.
+  - **No reaction on the body, and NOTHING TO MIRROR in predictPaths.** Every body it can touch is
+    >20x the ship's mass — invariant 4's immovable regime — and a torque on a world's spin from a
+    ship scraping it is precisely the secular pump the rails exist to prevent. And unlike the rubber
+    band and the long arms, which act at RANGE and so must be mirrored, this term exists only in
+    contact and the forecast TERMINATES at contact (`shipHit`).
+- **Docking** (`DOCK_*`, `physics.updateDock`): the landing this makes possible. Three gates —
+  contact, nose within `DOCK_ARC` of straight up off the surface, surface-relative speed under
+  `DOCK_SPEED` — held together for `DOCK_TIME`. The gates are read inside `collideShipBody` (the one
+  place that knows the hull is touching something) into a module-level `landing` scratch, and
+  RESOLVED once per substep in `updateDock` right after the ship/alien contact pass — because "the
+  hull touched nothing" is a fact no per-body collider can observe. **Attitude and stillness are
+  ENTRY gates; only contact holds a berth.** The latch timer drains `DOCK_DRAIN`x faster than it
+  fills, which is the whole hysteresis (~0.17s of grace over a crater lip). The gates were WIDENED in
+  2026-08 (arc 0.72 → 1.0 rad, speed 30 → 60, time 0.8 → 0.5s): the first pass was too fiddly to land
+  with, and the interesting part of the feature is what a dock IS, not the approach window.
+  `game.dockT` / `dockCand` / `dockGate` are published per substep for the approach guidance —
+  a landing that silently declines to latch is the worst failure mode this has.
+- **The berthed ship is HELD** (`DOCK_UPRIGHT`): the helm gives the nose to the surface normal and the
+  mouse stops steering, so W always points straight off the pad and the launch needs no separate
+  notion of "up". Aiming is untouched — the beam and every throw still go at the cursor.
+- **THE CLAMPS ARE AN EXACT PIN, NOT A SPRING.** While berthed, `updateDock` sets the hull's position
+  to `padPos` and its velocity to `surfaceVel` every substep, after the whole contact pass — so it
+  wins over both the resolver's push-out and the friction. Surface friction alone CANNOT hold a berth:
+  it is an exponential approach, and co-rotating with a spinning world needs a continuous centripetal
+  term a velocity damper only ever supplies as a lag. The residual was a steady ~0.06 u/s creep of the
+  hull across its own pad (reported as "the ship moves slightly faster than the base does") — visible
+  as a berth sliding off its dock after a minute. Pinning is also what a clamp physically IS, so this
+  is the honest model rather than a patch, and it costs nothing: the pad is by construction exactly
+  where the hull was when the clamps bit. Measured 0.0000 drift over 30s across 2.3 rad of rotation.
+- **The dome REPELS** (`updateDomeShield`, `CFG.DOCK_REPEL_MIN`): damage immunity alone is half a
+  shield — without the push, rock and aliens still pile into the berth, and a hull sitting inside a
+  heap of debris it happens to be invulnerable to reads as a bug rather than as protection. Reflects
+  the inward component and then floors the outward one, so a slow drifter cannot sit on the boundary
+  being re-solved every substep. **Geometry comes from `config.dockDomeR` — the same expression
+  render draws**, which is why the tier table lives in config.js and not in render.js. **Scoped to
+  loose asteroids and aliens**: never celestials (invariant 4 makes the heavy body immovable against
+  something this small anyway, and a field nudging railed worlds would be a secular pump on the sky),
+  never the host body, and never your own held or thrown rock — the beam outranks the dome.
+- **Launch** (`LAUNCH_*`, `physics.updateLaunch`): thrust from a berth is zeroed and CALLS A RELEASE
+  instead — clamps back over `LAUNCH_HOLD`, engine lighting against them to `LAUNCH_TIME`, then
+  `LAUNCH_KICK` straight up. The ship is pinned to the pad's `surfaceVel` throughout (the sequence
+  cannot be steered or shoved out of) and it commits once started. On release the latch timer is
+  zeroed by hand, or the drain's grace window would hand the berth straight back while the hull is
+  still inside the pad's contact.
 - **Corona heat** (`HEAT_*`): bodies/aliens melt inside `HEAT_ZONE x radius` (depth², lava-born matter
   immune: `ptype 'lava'`, `magma > 0`, `ember > 0.01`) — that zone's outer edge MUST stay inside the
   graveyard ring (~3160): ANY body damage derails railed wrecks, there is no "subtle" for them. The

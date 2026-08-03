@@ -1,6 +1,6 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
-  canLift, canStow, liftClass,
+  canLift, canStow, liftClass, dockTier, dockPadR, dockDomeR,
 } from './config.js';
 import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import * as gravel from './gravel.js';
@@ -11,7 +11,7 @@ import {
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
-  rockShape, bigRockSurfAt, rockJagRing, jagSamples, JAG_PEAK,
+  rockShape, bigRockSurfAt, rockJagRing, jagSamples, JAG_PEAK, padPos,
 } from './util.js';
 import {
   initRockGL, resizeRockGL, rockGLBegin, rockGLPush, rockGLFlush,
@@ -3487,6 +3487,507 @@ function drawApproach(game) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE DOCK, on the world it is clamped to. A pad is a REAL OBJECT, not helper
+// UI, so it obeys the object half of the visual grammar: solid strokes only, no
+// dash, and its line widths are WORLD units that scale with the camera rather
+// than the /zoom idiom the overlays use — it is a structure standing on a
+// planet, and a structure whose girders stay 2 screen-pixels wide as you pull
+// away is a HUD element pretending to be scenery.
+//
+// TWO COLOURS, and they say two different things. A plain dock is STEEL: a
+// service you are using right now. A HOME PORT is the lives ROSE (style.css
+// #ff5c7a, the colour of the life pips) because that is precisely what it is —
+// the place a death hands the ship back. Reusing the lives hue rather than
+// inventing a marker colour is the point: the two instruments already agree
+// about what rose means.
+const DOCK_STEEL = '207, 228, 255';
+const DOCK_HOME = '255, 142, 166';
+
+// THE STATION GROWS WITH THE SHIP. One row per beam tier (0-5), the same shape
+// of table as SHIP_TIERS and read the same way — from `game.st.tier`, i.e. your
+// CURRENT tier and not the tier the station was laid down at. A dock is
+// infrastructure you keep improving, so tiering up refits every station you own
+// rather than leaving your first pad looking like a shack forever.
+//
+// The progression is a silhouette, not a detail pass: a bare landing slab
+// becomes a gantry, then a serviced berth, then a control block, then a proper
+// port. Each row only ever ADDS, so the thing you learned to recognize at tier 0
+// is still the thing in the middle at tier 5.
+// `w` scales the whole structure, and it tracks WHAT IS STANDING ON THE DECK
+// rather than growing for its own sake: a tier-0 pad is a narrow slab because a
+// slab is all it is, and the deck widens exactly as the gantry, the blocks and
+// the second clamp pair arrive to fill it. A deck sized for the top tier at
+// tier 0 reads as a derelict apron with a toy in the middle of it.
+// The table and the size maths live in config.js — the SHIELD DOME is a real
+// collider now (physics.updateDomeShield repels rock and aliens off it), and a
+// field whose drawn edge and pushing edge came from two different expressions
+// would be the exact mirror-drift trap this codebase keeps warning about. One
+// source, both readers.
+
+// A station under construction REVEALS ITSELF PIECE BY PIECE, heaviest
+// structure first, so the ten seconds read as building rather than as waiting
+// for a bar. Each element fades in over a slice of the build instead of
+// popping. Returns 0..1.
+function built(prog, at, span = 0.14) {
+  return clamp((prog - at) / span, 0, 1);
+}
+
+// One station. `up` is the world bearing of the surface normal under it, which
+// is also the bearing the ship parks along — so the pad is drawn in a frame
+// where +y is DOWN into the crust and the whole sprite is authored upright.
+//
+// `release` (0..1) is the launch sequence swinging the clamps open; `dome` asks
+// for the shield bubble (berthed at a finished station).
+function drawPad(game, pad, ink, home, flash, release, dome) {
+  const p = padPos(pad);
+  if (p.x < view.x0 - 500 || p.x > view.x1 + 500 ||
+      p.y < view.y0 - 500 || p.y > view.y1 + 500) return;
+  // Sized off the SHIP, not the world: a pad is a BERTH, and a berth is only
+  // ever meaningful at the scale of the thing that parks in it. A world-scaled
+  // pad would be a continent on a planet and a speck on a moonlet.
+  //
+  // THE ORIGIN IS WHERE THE SHIP'S CENTRE SAT WHEN THE CLAMPS BIT, which is the
+  // constraint the whole sprite is composed around: the parked ship is drawn
+  // ON TOP OF this point every frame, so anything put NEAR it is simply hidden.
+  // The deck therefore sits BELOW the origin (down into the crust, which is
+  // also what "seated" should look like) and the masts stand OUTBOARD of it, so
+  // the berth frames the ship rather than fighting it. An earlier pass put a
+  // beacon at the origin and it vanished under the hull.
+  const T = dockTier(game.st);
+  const R = dockPadR(game.st, pad.b.radius);
+  const up = pad.ang + pad.b.rot;
+  const prog = clamp(pad.t / CFG.DOCK_BUILD, 0, 1);
+  const ready = prog >= 1;
+
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(up + Math.PI / 2);   // +y now points down into the surface
+
+  // WHERE THE GROUND IS, in this frame. The pad's origin is the ship's centre
+  // at the moment the clamps bit, i.e. about a hull-radius ABOVE the crust, and
+  // +y here runs down into it — so the surface is this far below the origin.
+  // Everything that has to LOOK like it is standing on the planet (the deck's
+  // pylons, the shield dome's foot) measures from here rather than from the
+  // origin, which is what stops the structure floating over its own world.
+  const groundY = pad.b.radius * (pad.rf - 1);
+
+  // DECK: a slab bridging the berth, carried on pylons that run down into the
+  // crust. The pylons are what seat it — a slab alone reads as a decal lying on
+  // the ground, and the moment there is daylight under it, it is a building.
+  const a0 = 0.35 + 0.65 * built(prog, 0);
+  const deckY = R * 0.22;
+  // SUBSTRUCTURE — the body of the thing. A central block sunk into the crust
+  // with splayed legs either side of it: this is what carries the visual mass,
+  // and without it the station is a line with sticks on it. Filled dark and
+  // outlined rather than glowing, so it reads as MATERIAL against a lit deck.
+  const baseTop = deckY, baseBot = groundY + R * 0.1;
+  ctx.fillStyle = `rgba(10, 8, 20, ${0.75 * a0})`;
+  ctx.beginPath();
+  ctx.moveTo(-R * 0.46, baseTop); ctx.lineTo(R * 0.46, baseTop);
+  ctx.lineTo(R * 0.32, baseBot); ctx.lineTo(-R * 0.32, baseBot);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = `rgba(${ink}, ${0.55 * a0})`;
+  ctx.lineWidth = R * 0.04;
+  ctx.stroke();
+  // Ribbing across the block — machinery, not a box.
+  ctx.lineWidth = R * 0.025;
+  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
+  for (let i = 1; i <= 2; i++) {
+    const y = baseTop + (baseBot - baseTop) * (i / 3);
+    const w = lerp(0.46, 0.32, i / 3);
+    ctx.beginPath(); ctx.moveTo(-R * w, y); ctx.lineTo(R * w, y); ctx.stroke();
+  }
+  // Splayed legs outboard of the block, planted on the crust.
+  ctx.strokeStyle = `rgba(${ink}, ${0.6 * a0})`;
+  ctx.lineWidth = R * 0.05;
+  for (const f of [-0.88, 0.88]) {
+    ctx.beginPath();
+    ctx.moveTo(f * R, deckY); ctx.lineTo(f * R * 0.7, baseBot);
+    ctx.stroke();
+  }
+  // The slab itself: a SOLID body with real thickness, not a line. A deck drawn
+  // as a stroke is a decal; a deck you can see the depth of is a structure, and
+  // that difference is most of whether the whole thing reads as built.
+  const deckG = ctx.createLinearGradient(0, deckY, 0, deckY + R * 0.24);
+  deckG.addColorStop(0, `rgba(${ink}, ${0.5 * a0})`);
+  deckG.addColorStop(1, `rgba(${ink}, ${0.1 * a0})`);
+  ctx.fillStyle = deckG;
+  ctx.beginPath();
+  ctx.moveTo(-R, deckY + R * 0.24); ctx.lineTo(-R * 0.97, deckY);
+  ctx.lineTo(R * 0.97, deckY); ctx.lineTo(R, deckY + R * 0.24);
+  ctx.closePath(); ctx.fill();
+  // The lit top edge — the surface the ship actually stands on.
+  ctx.strokeStyle = `rgba(${ink}, ${0.95 * a0})`;
+  ctx.lineWidth = R * 0.07;
+  ctx.beginPath();
+  ctx.moveTo(-R, deckY); ctx.lineTo(R, deckY);
+  ctx.stroke();
+  // Raised lips at each end, so the deck has a silhouette from the side.
+  ctx.lineWidth = R * 0.05;
+  for (const sx of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(sx * R, deckY); ctx.lineTo(sx * R * 0.99, deckY - R * 0.16);
+    ctx.stroke();
+  }
+  // TOUCHDOWN MARKINGS: a bullseye you land in the middle of, drawn on the deck
+  // and mostly framed by the parked hull rather than hidden under it.
+  ctx.lineWidth = R * 0.035;
+  ctx.strokeStyle = `rgba(${ink}, ${0.4 * a0})`;
+  ctx.beginPath(); ctx.arc(0, deckY, R * 0.34, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, deckY, R * 0.2, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
+  // Hazard chevrons along the deck edge — the detail that makes it read as a
+  // working surface instead of a plate.
+  ctx.lineWidth = R * 0.03;
+  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
+  for (let i = -4; i <= 4; i++) {
+    const x = i * R * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(x - R * 0.05, deckY + R * 0.14); ctx.lineTo(x + R * 0.05, deckY + R * 0.05);
+    ctx.stroke();
+  }
+
+  // CLAMP ARMS: struts rising OUTBOARD of the berth and leaning in over it —
+  // the thing that actually holds a ship down, and what makes the silhouette
+  // read as a dock rather than as a platform. THE LAUNCH SWINGS THEM OPEN: the
+  // lean flips from inboard to outboard across `release`, which is the visible
+  // half of the release sequence and the reason it doesn't read as a pause.
+  // THE DECK IS DIVIDED INTO ZONES and every tier's additions stay in theirs,
+  // so a port that grows never turns into a pile: the CENTRE is the berth (the
+  // ship is drawn there), the clamps are INBOARD of it, the gantry is the LEFT
+  // outboard end and the control blocks are the RIGHT one. Everything lives
+  // inside +/-1.0R, which is what lets the rings below enclose the structure at
+  // every tier instead of slicing through it.
+  ctx.lineCap = 'round';
+  const armA = built(prog, 0.16);
+  if (armA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.8 * armA})`;
+    for (let i = 0; i < T.pairs; i++) {
+      const base = 0.5 + i * 0.22;                     // outer pairs step outward
+      const h = 0.62 - i * 0.13;
+      ctx.lineWidth = R * (0.1 - i * 0.018);
+      for (const sx of [-1, 1]) {
+        // the tip travels from leaning IN over the berth to thrown wide open
+        const tipX = sx * R * lerp(base * 0.72, base * 1.75, release);
+        const tipY = -R * lerp(h, h * 0.3, release);
+        const kx = sx * R * base * 1.12, ky = -R * (h * 0.55);
+        ctx.beginPath();
+        ctx.moveTo(sx * R * base, deckY);
+        ctx.lineTo(kx, ky);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+        // A JOINT at the elbow and a GRIP PAD at the tip — an arm that is just
+        // a bent line is a stick; the two nodes are what make it read as a
+        // mechanism that could actually hold something down.
+        ctx.fillStyle = `rgba(${ink}, ${0.9 * armA})`;
+        ctx.beginPath(); ctx.arc(kx, ky, R * 0.055, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx * R * base, deckY, R * 0.05, 0, TAU); ctx.fill();
+        ctx.save();
+        ctx.translate(tipX, tipY);
+        ctx.rotate(Math.atan2(tipY - ky, tipX - kx));
+        ctx.fillRect(-R * 0.03, -R * 0.09, R * 0.06, R * 0.18);
+        ctx.restore();
+      }
+    }
+  }
+
+  // GANTRY MAST + SERVICE BOOM — the left outboard end.
+  const mastA = T.mast ? built(prog, 0.42) : 0;
+  const mx = -R * 0.9, mt = deckY - R * T.mast;
+  if (mastA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.72 * mastA})`;
+    ctx.lineWidth = R * 0.06;
+    ctx.beginPath(); ctx.moveTo(mx, deckY); ctx.lineTo(mx, mt); ctx.stroke();
+    ctx.lineWidth = R * 0.035;
+    for (let i = 1; i <= 3; i++) {                     // cross-bracing
+      const y = deckY + (mt - deckY) * (i / 4);
+      ctx.beginPath(); ctx.moveTo(mx, y); ctx.lineTo(mx + R * 0.13, y - R * 0.08); ctx.stroke();
+    }
+    // A SERVICE BOOM reaches back over the berth from the mast head — the piece
+    // that makes a gantry look like it is doing something to the ship. It
+    // withdraws with the clamps on a launch.
+    ctx.lineWidth = R * 0.05;
+    ctx.beginPath();
+    ctx.moveTo(mx, mt); ctx.lineTo(mx + R * lerp(0.5, 0.14, release), mt + R * 0.12);
+    ctx.stroke();
+  }
+  // CONTROL BLOCKS — the right outboard end. Lit windows are the one thing on
+  // this structure that says CREWED, so they only come on with the station.
+  const towerA = T.tower ? built(prog, 0.62) : 0;
+  if (towerA > 0) {
+    ctx.lineWidth = R * 0.045;
+    for (let i = 0; i < T.tower; i++) {
+      const bx = R * (0.52 + i * 0.26), by = deckY;
+      const bw = R * 0.22, bh = R * (0.4 + i * 0.18);
+      ctx.fillStyle = `rgba(${ink}, ${0.26 * towerA})`;
+      ctx.strokeStyle = `rgba(${ink}, ${0.75 * towerA})`;
+      ctx.beginPath(); ctx.rect(bx, by - bh, bw, bh);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = `rgba(${ink}, ${(ready ? 0.85 : 0.2) * towerA})`;
+      for (let w = 0; w < 2; w++) {
+        ctx.fillRect(bx + bw * 0.24, by - bh + R * (0.08 + w * 0.14), bw * 0.22, R * 0.06);
+      }
+    }
+  }
+  // COMMS DISH, on the mast head.
+  const dishA = T.dish ? built(prog, 0.78) : 0;
+  if (dishA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.8 * dishA})`;
+    ctx.lineWidth = R * 0.045;
+    ctx.beginPath(); ctx.arc(mx, mt - R * 0.15, R * 0.17, Math.PI * 0.12, Math.PI * 0.88, true); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mx, mt); ctx.lineTo(mx, mt - R * 0.15); ctx.stroke();
+  }
+
+  // BEACONS: lamps along the deck edge, clear of where the hull sits. STEADY,
+  // never blinking — the calm rule the ship's own shield rim obeys. Motion on
+  // this structure belongs to the build, the launch and the one-shot bloom, and
+  // nowhere else. They are DARK until the station is live, which is the single
+  // clearest read of "is this thing finished".
+  // SMALL AND CRISP — a bright core with a tight halo. An earlier pass used wide
+  // soft blooms and they washed out the whole structure they were meant to be
+  // lighting: at close zoom the pad was two glowing blobs with some sticks
+  // between them. A runway light is a POINT.
+  ctx.lineCap = 'butt';
+  const lampA = ready ? 1 : 0.18;
+  for (let i = 0; i < T.lights; i++) {
+    const f = T.lights === 1 ? 0 : (i / (T.lights - 1)) * 2 - 1;   // -1..1 across the deck
+    const lx = f * R * 0.88, ly = deckY - R * 0.06;
+    ctx.fillStyle = `rgba(${ink}, ${0.95 * lampA})`;
+    ctx.beginPath(); ctx.arc(lx, ly, R * 0.05, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    const rr = R * 0.2;
+    const lamp = ctx.createRadialGradient(lx, ly, 0, lx, ly, rr);
+    lamp.addColorStop(0, `rgba(${ink}, ${(home ? 0.7 : 0.5) * lampA})`);
+    lamp.addColorStop(1, `rgba(${ink}, 0)`);
+    ctx.fillStyle = lamp;
+    ctx.beginPath(); ctx.arc(lx, ly, rr, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // UNDER CONSTRUCTION: a solid progress arc closing over the berth — the same
+  // helper-UI idiom as the winch (drawLatch) and the shotgun charge ring, solid
+  // and never dashed. Ten seconds of nothing visible is how a feature gets
+  // reported as broken.
+  if (!ready) {
+    ctx.strokeStyle = `rgba(${ink}, 0.30)`;
+    ctx.lineWidth = R * 0.06;
+    ctx.beginPath(); ctx.arc(0, 0, R * 1.2, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.beginPath();
+    ctx.arc(0, 0, R * 1.2, -Math.PI / 2, -Math.PI / 2 + TAU * prog);
+    ctx.stroke();
+  }
+
+  // A HOME PORT FLIES A BEACON, not a ring. It used to wear a full circle and
+  // that was a mistake twice over: it sat concentric-ish with the shield dome
+  // and the two read as a lens of overlapping circles rather than as a mark on
+  // a structure, and a ring says nothing about WHAT a home port is. A lit spire
+  // does — it is the thing you can see from orbit, it caps the gantry at the
+  // tiers that have one, and it competes with nothing.
+  if (home && ready) {
+    const hx = T.mast ? mx : -R * 0.9;
+    const hy = T.mast ? mt : deckY;
+    const tip = hy - R * (T.mast ? 0.3 : 0.62);
+    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.lineWidth = R * 0.05;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx, tip); ctx.stroke();
+    // The pennant, so the mark has a SHAPE and not just a colour.
+    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.beginPath();
+    ctx.moveTo(hx, tip); ctx.lineTo(hx + R * 0.34, tip + R * 0.11);
+    ctx.lineTo(hx, tip + R * 0.22);
+    ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    const bg = ctx.createRadialGradient(hx, tip, 0, hx, tip, R * 0.55);
+    bg.addColorStop(0, `rgba(${ink}, 0.85)`);
+    bg.addColorStop(1, `rgba(${ink}, 0)`);
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.arc(hx, tip, R * 0.55, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // THE SHIELD DOME. Up only while the ship is berthed at a FINISHED station —
+  // it is the thing the ten-second build bought, and it is what makes the berth
+  // read as safe rather than merely occupied.
+  //
+  // IT STANDS ON THE GROUND, and getting that right is the whole job. Centred
+  // on the SURFACE POINT under the pad (groundY), not on the pad origin, and
+  // CLIPPED against the planet's own disc — so its foot follows the world's
+  // curvature instead of cutting a straight chord across it. A dome sized in
+  // pad units alone is fine on a big planet and wider than the whole body on a
+  // moonlet; clipping is what makes one expression correct at both. (On a
+  // crystal or heavily cratered world the true surface is not the mean disc, so
+  // the foot can sit a hull-radius off the real ground — the pad's own rf is
+  // measured from where the ship actually sat, which keeps that within a hull.)
+  //
+  // Calm and steady, exactly like the ship's own shield rim: no dashes, no idle
+  // motion, because a protective field that pulses reads as an alarm. The
+  // detail is STRUCTURE — ribs, bands, emitter nodes — never animation.
+  if (dome) {
+    const Rc = pad.b.radius * pad.rf;            // body centre, in this frame
+    // config.dockDomeR — the SAME expression physics.updateDomeShield pushes
+    // things off. See the note on the table: drawn edge and pushing edge must
+    // never be two expressions.
+    const dr = dockDomeR(game.st, pad.b.radius, groundY);
+    const box = dr * 2;
+    ctx.save();
+    // Clip to everything OUTSIDE the world: rect minus the planet disc.
+    ctx.beginPath();
+    ctx.rect(-box, groundY - box, box * 2, box * 2);
+    ctx.arc(0, Rc, pad.b.radius, 0, TAU, true);
+    ctx.clip();
+
+    ctx.globalCompositeOperation = 'lighter';
+    const g2 = ctx.createRadialGradient(0, groundY, dr * 0.2, 0, groundY, dr);
+    g2.addColorStop(0, 'rgba(110, 200, 255, 0.015)');
+    g2.addColorStop(0.7, 'rgba(120, 210, 255, 0.06)');
+    g2.addColorStop(0.93, 'rgba(150, 226, 255, 0.16)');
+    g2.addColorStop(1, 'rgba(190, 240, 255, 0.30)');
+    ctx.fillStyle = g2;
+    ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.fill();
+    // RIBS + BANDS: the field is panelled, which is what makes it read as
+    // engineered rather than as a blur. Static geometry, never motion.
+    ctx.strokeStyle = 'rgba(168, 232, 255, 0.13)';
+    ctx.lineWidth = R * 0.022;
+    for (let i = 1; i < 6; i++) {
+      const a = Math.PI + (i / 6) * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(Math.cos(a) * dr, groundY + Math.sin(a) * dr);
+      ctx.stroke();
+    }
+    for (const f of [0.45, 0.75]) {
+      ctx.beginPath(); ctx.arc(0, groundY, dr * f, Math.PI, TAU); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    // The rim: a hard bright edge over a softer inner line, so the field has a
+    // definite SURFACE. A single hairline reads as a drawn circle; two weights
+    // read as something with thickness that light is catching.
+    ctx.strokeStyle = 'rgba(120, 200, 240, 0.3)';
+    ctx.lineWidth = R * 0.1;
+    ctx.beginPath(); ctx.arc(0, groundY, dr * 0.985, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(206, 245, 255, 0.9)';
+    ctx.lineWidth = R * 0.035;
+    ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.stroke();
+    // THE BITE. Where the field just threw something off, it flares — an EVENT,
+    // which is the one thing this otherwise-calm surface is allowed to animate
+    // for. Without it the dome silently deflects and the push reads as rocks
+    // behaving oddly rather than as the shield doing its job.
+    if ((game.domeHitT || 0) > 0) {
+      const k = clamp(game.domeHitT / 0.3, 0, 1);
+      const a = (game.domeHitA || 0) - up - Math.PI / 2;   // world bearing -> pad frame
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k})`;
+      ctx.lineWidth = R * 0.09 * k;
+      ctx.beginPath();
+      ctx.arc(0, groundY, dr, a - 0.5 * (1 - k) - 0.18, a + 0.5 * (1 - k) + 0.18);
+      ctx.stroke();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.restore();
+
+    // EMITTER POSTS: the dome has to come FROM something, so the field's feet
+    // are short lit posts on the deck where the arc lands. Outside the clip —
+    // they are hardware standing on the pad, not part of the field. Kept small
+    // and cool: an earlier pass had them as wide hot blooms that washed out the
+    // whole structure they were supposed to be standing on.
+    for (const sx of [-1, 1]) {
+      const ex = sx * R * 0.94;
+      ctx.strokeStyle = 'rgba(178, 236, 255, 0.85)';
+      ctx.lineWidth = R * 0.05;
+      ctx.beginPath();
+      ctx.moveTo(ex, deckY); ctx.lineTo(ex, deckY - R * 0.26);
+      ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(ex, deckY - R * 0.26, 0, ex, deckY - R * 0.26, R * 0.2);
+      eg.addColorStop(0, 'rgba(206, 245, 255, 0.55)');
+      eg.addColorStop(1, 'rgba(206, 245, 255, 0)');
+      ctx.fillStyle = eg;
+      ctx.beginPath(); ctx.arc(ex, deckY - R * 0.26, R * 0.2, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  // THE CLAMPS BITING / THE STATION GOING LIVE — a one-shot bloom, which is an
+  // EVENT and therefore the one place this structure is allowed to move.
+  if (flash > 0) {
+    const k = 1 - flash / 0.9;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${ink}, ${0.6 * (1 - k)})`;
+    ctx.lineWidth = R * 0.16 * (1 - k);
+    ctx.beginPath(); ctx.arc(0, 0, R * (0.4 + 2.4 * k), 0, TAU); ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+}
+
+// Every station standing this run. At most CFG.DOCK_MAX of them and each is
+// off-screen-culled inside drawPad, so this is a walk of a handful.
+function drawDocks(game) {
+  const docks = game.docks;
+  if (!docks || !docks.length) return;
+  const flash = game.dockFlashT || 0;
+  const L = game.launch;
+  // The release eases over the sequence's FIRST act (LAUNCH_HOLD): the clamps
+  // are wide open before the engine lights, which is the order the sequence
+  // has to happen in for it to read as machinery rather than as an effect.
+  const release = L ? clamp(L.t / CFG.LAUNCH_HOLD, 0, 1) : 0;
+  for (const d of docks) {
+    if (!d.b.alive) continue;
+    const berthed = game.dock === d;
+    drawPad(game, d, game.home === d ? DOCK_HOME : DOCK_STEEL, game.home === d,
+      berthed ? flash : 0,
+      berthed ? release : 0,
+      berthed && d.t >= CFG.DOCK_BUILD);
+  }
+}
+
+// ---- THE APPROACH. A landing that silently declines to latch is this
+// feature's worst failure mode: the player is doing something reasonable, the
+// game is refusing, and nothing says why. So while the hull is on a dockable
+// world, the berth shows its state right where the player is looking — a solid
+// arc filling as the latch takes, and the name of the gate that is refusing.
+//
+// Helper UI, so it is drawn in SCREEN-CONSTANT widths (the /zoom idiom) unlike
+// the station itself, which is a real structure. Suppressed the moment the
+// berth takes: from then on the pad's own art is the readout.
+function drawDockGuide(game) {
+  const s = game.ship;
+  if (!s.alive || game.dock || !game.dockCand) return;
+  const b = game.dockCand;
+  const z = Math.max(game.cam.zoom, 0.25);
+  const f = clamp(game.dockT || 0, 0, 1);
+  const rr = s.radius * 2.6 + 10 / z;
+  const gate = game.dockGate;
+  const col = gate ? '255, 190, 120' : '150, 230, 255';   // amber = refusing, cyan = taking
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = `rgba(${col}, 0.22)`;
+  ctx.lineWidth = 2.5 / z;
+  ctx.beginPath(); ctx.arc(s.x, s.y, rr, 0, TAU); ctx.stroke();
+  if (f > 0) {
+    ctx.strokeStyle = `rgba(${col}, 0.95)`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, rr, -Math.PI / 2, -Math.PI / 2 + TAU * f);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+  // One short line, above the ship so the hull never sits on it. The wording is
+  // an INSTRUCTION, not a diagnosis — "LEVEL OFF" tells you what to do; "bad
+  // attitude" tells you what you did.
+  const label = gate === 'level' ? 'LEVEL OFF — ROCKETS DOWN'
+    : gate === 'fast' ? 'TOO FAST — SETTLE'
+    : 'DOCKING';
+  const fs = 11 / z;
+  ctx.font = `600 ${fs}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = `rgba(${col}, ${gate ? 0.9 : 0.5 + 0.5 * f})`;
+  ctx.fillText(label, s.x, s.y - rr - fs * 0.7);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
 // DEFLECTOR PARRY: every frozen rock charges up. Aiming/helper UI, so DASHED
 // strokes are correct here (design law): a charge ring contracting onto each
 // rock over the window, and a flick arrow per rock showing the current hurl
@@ -5430,6 +5931,48 @@ function drawMinimap(game) {
     }
   }
 
+  // YOUR DOCKS, on the dial. They break the radar's forgetting rule the way the
+  // rescue dock and the journey do, and for the same reason: a station is not a
+  // CONTACT, it is a place you built, and a bearing home that blinked out with
+  // every sweep would be useless. RIM-PINNED past the dial's reach — the whole
+  // value of the mark is "which way is it from here", and it is usually well
+  // outside 7,800 units.
+  //
+  // The HOME PORT is loud (rose, labelled, matching the pad sprite and the life
+  // pips — see DOCK_HOME); every other station is a small steel berth glyph, so
+  // the dial says "you have somewhere to go" without four docks competing with
+  // the one that matters. Drawn before the journey so an active route's next
+  // stop stays the loudest thing on the instrument.
+  if (game.docks) for (const dk of game.docks) {
+    if (!dk.b.alive) continue;
+    const isHome = game.home === dk;
+    const done = dk.t >= CFG.DOCK_BUILD;
+    const p = padPos(dk);
+    const dx = p.x - fx, dy = p.y - fy;
+    const d = Math.hypot(dx, dy) || 1;
+    const rr = Math.min(radarR(d), r - 9);
+    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    const ink = isHome ? DOCK_HOME : DOCK_STEEL;
+    // The berth glyph, not a blip: a ring under a roof, solid — a real
+    // structure on the map draws like one. Dim while it is still going up.
+    const a = done ? 1 : 0.4;
+    const sc = isHome ? 1 : 0.72;
+    ctx.strokeStyle = `rgba(${ink}, ${0.95 * a})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 3.4 * sc, 0, TAU); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 4.6 * sc, y + 1.4 * sc); ctx.lineTo(x, y - 3 * sc);
+    ctx.lineTo(x + 4.6 * sc, y + 1.4 * sc);
+    ctx.stroke();
+    if (!isHome) continue;                                 // only home is worth a word
+    const lx = x - (dx / d) * 13, ly = y - (dy / d) * 13;  // tag pulled inward, never clipped
+    ctx.font = '600 7px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(${ink}, 0.8)`;
+    ctx.fillText('HOME', lx, ly + 2.5);
+    ctx.textAlign = 'left';
+  }
+
   // THE JOURNEY, on the dial. The chart is where a route is PLOTTED; the radar
   // is where it is FLOWN, so the dial has to carry it without the panel open.
   // The whole path is drawn faint and the NEXT stop is the loud one — the same
@@ -6016,6 +6559,43 @@ export function drawStarMap(game) {
   }
   ctx.textAlign = 'left';
   chart.marks = marks;
+
+  // ---- YOUR DOCKS. A chart is the instrument that REMEMBERS, so the places in
+  // the system you have BUILT belong on it — and unlike every other mark here
+  // they are not contacts at all: they are decisions, like a journey. They ride
+  // their world's charted position (a docked world is charted by construction —
+  // you flew there and landed on it), and they are drawn UNDER the route so an
+  // active journey's next stop stays the loudest thing on screen.
+  //
+  // Rose for HOME, and deliberately against this file's "a UI construct is
+  // painted in chrome ink" note: HOME already means rose on the pad sprite and
+  // on the dial, and one meaning wearing three colours across three instruments
+  // is worse than one construct borrowing a semantic hue. Other stations get
+  // the steel ring with no label — findable, not shouting.
+  if (game.docks) for (const dk of game.docks) {
+    if (!dk.b.alive) continue;
+    const isHome = game.home === dk;
+    const hb = dk.b;
+    const hx = toX(hb.x), hy = toY(hb.y);
+    const rr = Math.max(isHome ? 9 : 7, hb.radius * s + 5);
+    const ink = isHome ? DOCK_HOME : DOCK_STEEL;
+    ctx.strokeStyle = `rgba(${ink}, ${isHome ? 0.8 : 0.42})`;
+    ctx.lineWidth = isHome ? 1.4 : 1;
+    ctx.beginPath(); ctx.arc(hx, hy, rr, 0, TAU); ctx.stroke();
+    // The same roof-over-a-berth glyph the dial uses, seated on the ring.
+    ctx.beginPath();
+    ctx.moveTo(hx - 5, hy - rr - 2.5); ctx.lineTo(hx, hy - rr - 7);
+    ctx.lineTo(hx + 5, hy - rr - 2.5);
+    ctx.stroke();
+    if (!isHome) continue;
+    ctx.font = '600 8.5px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
+    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.fillText('HOME PORT', hx, hy + rr + 12);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'left';
+  }
 
   drawChartRoute(game, ctx, s, toX, toY);
 
@@ -6841,6 +7421,8 @@ export function render(game) {
     }
   }
   drawGlow(game);
+  drawDocks(game);
+  drawDockGuide(game);
   drawApproach(game);
   drawRouteWorld(game);
   drawDeflectable(game);

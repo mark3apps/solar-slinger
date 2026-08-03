@@ -221,8 +221,25 @@ export const CFG = {
   // captures and orbits circularize on their own. Outward radial velocity
   // is exempt ON PURPOSE: an assist must never become an escape jail.
   // Mirrored in predictPaths like the long arms.
+  //
+  // MOSTLY REMOVED (2026-08, user call: "it kinda breaks things"). DAMP was
+  // 1.2, and the damage was structural rather than a matter of degree: the
+  // brake ramps with `t`, which is 0 at the band's edge and 1 AT THE SURFACE —
+  // so the assist was strongest at exactly the place the player is trying to
+  // arrive. Terminal descent speed is g_surface / DAMP, which at 1.2 is about
+  // 5 u/s: a descent from 120 units up took nearly half a minute of the ship
+  // apparently refusing to fall, and it read as gravity being broken rather
+  // than as an assist. The wider cost was the same everywhere — the band
+  // quietly cancelled the inward half of every approach, so a world's well
+  // never really felt like one however hard PLANET_GRAV_SHIP pulled.
+  //
+  // At 0.3 the same descent is ~20 u/s and takes a few seconds, while a
+  // genuine PLUNGE (200+ u/s inbound) still gets a meaningful 60 u/s² of
+  // softening on the way in, which is the case the band was written for.
+  // Kept rather than deleted: killing it outright makes every near-miss a
+  // hyperbolic slingshot and there is no capture arc left at all.
   SHIP_BAND_RANGE: 4,
-  SHIP_BAND_DAMP: 1.2,
+  SHIP_BAND_DAMP: 0.3,
   SHIP_BAND_MAX: 130,
   // SURFACE SKIMMING: grinding tangentially along a body while in contact
   // chews the hull (collideShipBody) — a gentle landing is free below
@@ -231,6 +248,113 @@ export const CFG = {
   // off in a few substeps and only takes a scratch — both are intended.)
   SKIM_SPEED: 100,
   SKIM_DPS_K: 0.09,
+
+  // ---- LANDING: SURFACE FRICTION (physics.collideShipBody) ----------------
+  // A world is a TURNING body, and until this existed the hull touching one was
+  // a purely elastic event: nothing in contact took energy out tangentially, so
+  // a graze skated across a planet at the speed it arrived with until the grind
+  // killed the ship. Contact now drags the ship toward the velocity of THE
+  // PATCH OF GROUND UNDER IT — the world's own motion plus the tangential speed
+  // of its spin at that radius — as an exponential rate, so a skid matches the
+  // surface it is skidding on in well under a second.
+  //
+  // Applied to the WHOLE relative velocity, not just the tangential half, and
+  // that is what makes a landing possible at all: the radial part cancels the
+  // gravity the ship keeps falling in with, so it settles against the
+  // resolver's push-out instead of chattering on it. Residual drift is
+  // g_surface / SURF_FRICTION — under 1 u/s on a mid world, ~4 u/s under the
+  // deepest LONG ARMS amplification, i.e. far inside DOCK_SPEED either way.
+  //
+  // It never touches the BOUNCE: the kick below is an impulse applied in the
+  // same substep, and at 1/120s this rate removes 3.7% of a velocity. A hard
+  // arrival still bounces exactly as invariants 3-5 tune it; only a ship that
+  // STAYS down is slowed. Thrust wins easily (180 u/s² against 4.5/s is a
+  // 40 u/s terminal, and clearing the hull ends contact anyway), so the pad
+  // never becomes flypaper.
+  //
+  // PLANETS AND MOONS ONLY. A rock is not a place you land on, and rock contact
+  // is long-tuned against every dense field in the game.
+  SURF_FRICTION: 4.5,      // 1/s — 95% of the difference gone in 0.67s
+
+  // ---- DOCKING (physics.updateDock) ---------------------------------------
+  // Set the ship down on a world ROCKETS-DOWN and hold still and it BERTHS.
+  // Three gates, all true together for DOCK_TIME, and then one of two things
+  // happens: you berth at a station that is already standing there, or you
+  // start BUILDING one.
+  //
+  // THE GATES ARE DELIBERATELY GENEROUS (widened 2026-08 — the first pass was
+  // too fiddly to land with). A landing is meant to be a thing you decide to
+  // do, not a trick you execute; the interesting part of this feature is what
+  // a dock IS, not how tight the approach window is.
+  DOCK_ARC: 1.0,           // rad of slop on "rockets down" — the nose has to sit
+                           //   within ~57° of straight up off the surface. Still
+                           //   a real requirement (a belly flop or a nose-in
+                           //   crash is not a docking) but forgiving of drift.
+  DOCK_SPEED: 60,          // u/s of SURFACE-RELATIVE speed that still reads as
+                           //   stopped. Under SKIM_SPEED (100) on purpose:
+                           //   anything still GRINDING is not parked.
+  DOCK_TIME: 0.5,          // s all three gates must hold before the clamps bite
+  // The latch timer DRAINS this many times faster than it fills once the hull
+  // leaves the surface, which is the whole of the berth's hysteresis: a berthed
+  // ship gets DOCK_TIME / DOCK_DRAIN (~0.17s) of grace so a bump across a
+  // crater lip cannot flicker the clamps, and a deliberate lift-off still
+  // reads as leaving almost at once.
+  //
+  // ATTITUDE AND STILLNESS ARE ENTRY GATES, NOT HOLDING ONES — only CONTACT
+  // holds a berth. (The ship is held UPRIGHT while berthed anyway, so the
+  // attitude gate could not fail; the rule still matters for the moment
+  // between the clamps letting go and the helm coming back.)
+  DOCK_DRAIN: 3,
+  // ---- Building a station -------------------------------------------------
+  // A DOCK IS A STRUCTURE, NOT A STATE. Berthing at a bare patch of ground
+  // starts a build that takes DOCK_BUILD seconds of staying put — and none of
+  // what a dock gives you (the shield, the repair) arrives until it is
+  // finished, so those ten seconds are a real exposed commitment rather than a
+  // loading bar. Once built the station STAYS on that world for the rest of the
+  // run: fly away, come back, and you berth at it immediately with everything
+  // live from the first moment.
+  //
+  // Progress is kept if you leave mid-build (`d.t` lives on the station, not on
+  // the berth), so an interrupted build resumes rather than being thrown away.
+  // It only advances while you are actually berthed — you are the one building it.
+  DOCK_BUILD: 10,
+  DOCK_BERTH_R: 90,        // world units: land this close to a standing station
+                           //   and you berth at IT instead of starting a second
+                           //   one beside it. Comfortably wider than the pad
+                           //   sprite at every tier.
+  // Cap on standing stations per run. Not a balance number — a bound, so the
+  // list, the two instruments and the draw can never grow without limit. Well
+  // above any plausible play pattern; the oldest NON-HOME station retires when
+  // it binds, and the home port is never retired.
+  DOCK_MAX: 8,
+  DOCK_HEAL: 6,            // hull/s while berthed at a FINISHED station (see the
+                           //   design law note in docs/design-laws.md — this is
+                           //   the second sanctioned exception to "the hull
+                           //   never heals")
+  DOCK_UPRIGHT: 6,         // 1/s the helm eases the nose to the surface normal
+                           //   while berthed — the ship stands up and stays up
+  DOCK_LIFT: 1.6,          // hull radii a respawn is placed above the pad, so
+                           //   the ship never materializes inside the crust
+  // ---- LAUNCH (physics.updateLaunch) --------------------------------------
+  // LEAVING A DOCK IS A SEQUENCE, NOT A KEYPRESS. Thrust from a berth and the
+  // station runs a release: the clamps swing back, the engine spools against
+  // them, and only then does it let go. The ship is PINNED to the pad's own
+  // velocity for the whole of it (so the sequence cannot be steered or shoved
+  // out of), and it commits once started — a launch you can abort halfway is a
+  // stutter, not a moment.
+  //
+  // The point is the WEIGHT. A dock you can leave instantly is a parking space;
+  // one that takes a second to release makes berthing feel like a real
+  // commitment, which is what earns the protection it gives.
+  LAUNCH_HOLD: 0.5,        // s of CLAMPS RELEASING — arms swing out, glow builds
+  LAUNCH_TIME: 1.25,       // s total; HOLD..TIME is the IGNITION hold (plume,
+                           //   rising shake) before the pad lets go
+  LAUNCH_KICK: 300,        // u/s straight up as the clamps release — the shove
+                           //   off the pad, so a launch clears the structure
+                           //   without needing the player to fight gravity
+  // The dome does not just absorb, it PUSHES: anything crossing it is thrown
+  // back out at no less than this, so a berth can never be crowded or shoved.
+  DOCK_REPEL_MIN: 210,
 
   // Solar flares: the sun RARELY erupts plasma at ships that fly close.
   // A direct hit is a real event now: EMP kills the engines for
@@ -1352,6 +1476,62 @@ export function worldDebris(ptype, hostColor, mix = 0.5) {
     // Everything solid keeps its parent's face.
     default: return { color: hostColor };
   }
+}
+
+// ---------------------------------------------------------------------------
+// DOCK STATIONS: the tier ladder, and the two radii both readers need.
+//
+// THE ART TABLE LIVES HERE, not in render.js, for one reason: the shield dome
+// is a REAL COLLIDER (physics.updateDomeShield throws rock and aliens off it)
+// as well as a drawn arc, and a field whose pushing edge and drawn edge came
+// from two different expressions is the exact mirror-drift trap this codebase
+// keeps warning about. One source, both readers — render.drawPad for the
+// structure, physics for the push.
+//
+// One row per beam tier (0-5), read from the ship's CURRENT tier and not the
+// one a station was laid down at: a dock is infrastructure you keep improving,
+// so tiering up refits every station you own. The progression is a SILHOUETTE,
+// not a detail pass — landing slab, gantry, second clamp pair, control block,
+// dish, working spaceport — and each row only ever ADDS, so the thing you
+// learned to recognize at tier 0 is still the thing in the middle at tier 5.
+//
+// `w` tracks WHAT IS STANDING ON THE DECK rather than growing for its own sake:
+// a tier-0 pad is a narrow slab because a slab is all it is. A deck sized for
+// the top tier at tier 0 reads as a derelict apron with a toy in the middle.
+export const DOCK_TIERS = [
+  { w: 0.86, pairs: 1, mast: 0,    tower: 0, dish: 0, lights: 2 },   // 0 — a landing slab and two clamps
+  { w: 0.95, pairs: 1, mast: 0.8,  tower: 0, dish: 0, lights: 2 },   // 1 — a gantry mast goes up
+  { w: 1.04, pairs: 2, mast: 0.95, tower: 0, dish: 0, lights: 3 },   // 2 — a second pair of clamps
+  { w: 1.13, pairs: 2, mast: 1.1,  tower: 1, dish: 0, lights: 3 },   // 3 — a control block
+  { w: 1.22, pairs: 2, mast: 1.25, tower: 1, dish: 1, lights: 4 },   // 4 — a comms dish
+  { w: 1.32, pairs: 2, mast: 1.4,  tower: 2, dish: 1, lights: 4 },   // 5 — a working spaceport
+];
+
+// How big a station is. THE BERTH SETS THE SCALE — a dock is sized by the thing
+// that parks in it, so this tracks the hull, not the world. The tier table then
+// widens it only modestly, because the SHIP is already growing underneath
+// (radius 4 at tier 0, ~44 at tier 5): multiplying the two growth curves
+// together put a tier-5 port at two thirds of its planet's radius, which read
+// as a megastructure the world was orbiting rather than a building on it.
+//
+// The host cap keeps a port from swallowing a small moon, and the berth floor
+// WINS over it — a pad the ship does not fit on is not a pad, and on a moonlet
+// a titan-class hull genuinely is most of the horizon.
+export function dockTier(st) {
+  return DOCK_TIERS[Math.min(DOCK_TIERS.length - 1, st.tier || 0)];
+}
+export function dockPadR(st, hostR) {
+  const want = Math.max(16, st.radius * 2.2) * dockTier(st).w;
+  return Math.max(Math.max(14, st.radius * 1.9), Math.min(want, hostR * 0.42));
+}
+// The dome, measured FROM THE SURFACE POINT under the pad (not the pad origin,
+// which sits a hull-radius above the crust — `groundY` is that lift). Sized to
+// ENCLOSE the station at whatever tier it is, so it tracks the mast height: a
+// shield with the gantry poking out of the top is not a shield, and a flat
+// multiple would leave tier 0 (no mast at all) under a dome three times taller
+// than the thing it covers.
+export function dockDomeR(st, hostR, groundY) {
+  return dockPadR(st, hostR) * (1.15 + dockTier(st).mast * 0.24) + groundY;
 }
 
 // ---------------------------------------------------------------------------

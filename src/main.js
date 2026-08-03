@@ -5,7 +5,7 @@ import {
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD, frameReg } from './physics.js';
+import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -142,6 +142,21 @@ const game = {
   launchFx: [],
   // The WINCH in progress on a moon/world: { body, t, need } (tractor.updateLatch).
   latch: null,
+  // ---- DOCKING (physics.updateDock owns all of it; util.padPos reads it) ----
+  // A DOCK IS A STRUCTURE, NOT A STATE — see the section comment in physics.js.
+  docks: [],               // every station standing (or half-built) this run:
+                           //   { b, ang, rf, t }, t = build seconds banked.
+  dock: null,              // the station the ship is BERTHED at right now, or null.
+                           //   A REFERENCE into docks, never a copy — the build
+                           //   clock ticks on the station itself.
+  home: null,              // the station a respawn uses. Also a reference into docks.
+  launch: null,            // { t } while the release sequence is running (CFG.LAUNCH_*)
+  dockFlashT: 0,           // one-shot bloom on the pad as a station goes live (render)
+  domeHitT: 0,             // …and a rim flare where the shield last threw something off
+  domeHitA: 0,             //   (world bearing of that bite)
+  dockT: 0,                // approach guidance, published per substep: latch fill 0..1,
+  dockCand: null,          //   the world being landed on,
+  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast')
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
@@ -277,6 +292,11 @@ function regenWorld(seed) {
   game.orbit.length = 0; game.pickups.length = 0;
   game.held = null; game.held2 = null;
   sfx.setBeam(false);   // the hum is edge-triggered — a reset must drop it too
+  // The dock and the home port pin to BODIES, so they die with the world the
+  // way a chart route's stops do — and this has to happen BEFORE generateWorld,
+  // which respawns the ship: a home port left pointing into the dead system
+  // would place the fresh run's ship on a planet that no longer exists.
+  clearDocks(game);
   game.worldSeed = seed ?? pickSeed();
   generateWorld(game, game.worldSeed);   // clears game.bodies itself, then respawns the ship
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
@@ -483,6 +503,27 @@ initInput(canvas, {
     updateFieldLOD(game, 0);
     bump(game, 'warps');
     sfx.sfxWarp();
+  },
+  // HOME PORT (H): promote the pad the ship is currently docked at to the
+  // run's respawn point. The DOCK is earned by flying (physics.updateDock);
+  // making it home is a CHOICE, and a deliberate one — it is the only thing in
+  // the game that moves where a death puts you back, so it must never happen
+  // as a side effect of landing somewhere to patch the hull.
+  onHome: () => {
+    if (menuBlocking() || !game.ship.alive) return;
+    const d = game.dock;
+    if (!d) { game.homeNoDockWarn = true; return; }
+    // Only a FINISHED station can be a home port — a respawn puts the ship on
+    // a pad that has to actually be there and actually work.
+    if (!dockReady(d)) { game.homeBuildingWarn = true; return; }
+    if (game.home === d) { game.homeSameWarn = true; return; }
+    // THE STATION ITSELF, not a copy of it. `home` and `dock` are both
+    // references into game.docks, so promoting one is a pointer — a copy would
+    // fork the build clock and leave the home port frozen at whatever progress
+    // it happened to be at.
+    game.home = d;
+    game.homeSetName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+    game.dockFlashT = 0.9;
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
   // 1x. They only set the multiplier — updateScaled applies it — so they're
@@ -984,6 +1025,7 @@ function resetRun(seed, openCard = true) {
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
+  game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
@@ -1203,6 +1245,49 @@ const EVENT_MSGS = [
     first: ['FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5] },
   { flag: 'scrapeWarn', tut: 'scrape', snd: sfx.sfxWarnLow,
     first: ["HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5] },
+  // ---- DOCKING. Three separate moments, because they mean three different
+  // things and collapsing them into one message is how a ten-second build
+  // reads as a hang. No `snd` on any of them: physics plays the mechanical
+  // catch (sfxOrbitCapture) at the clamps and again when the station goes
+  // live, and a chime layered on top turns a machine into a notification.
+  //
+  // BUILDING — the first landing has to TEACH the whole verb, because nothing
+  // else in this game says a world is somewhere you can stop. It must also say
+  // STAY, or a player who lifts off after two seconds never learns the feature
+  // exists.
+  { flag: 'dockBuildName', tut: 'dockBuild',
+    first: [(v) => `BUILDING A DOCK ON ${v.toUpperCase()} — hold position. It takes ${CFG.DOCK_BUILD}s, and nothing protects you until it is up.`, 6],
+    repeat: [(v) => `BUILDING A DOCK ON ${v.toUpperCase()} — hold position.`, 3] },
+  // LIVE — the payoff, and the moment the H key first becomes worth knowing about.
+  { flag: 'dockReadyName', tut: 'dockReady',
+    first: [(v) => `DOCK LIVE ON ${v.toUpperCase()} — shielded and repairing. Press H to make it your home port. It stays here; come back any time.`, 7],
+    repeat: [(v) => `DOCK LIVE ON ${v.toUpperCase()} — shielded and repairing.`, 3] },
+  // RETURNING to a station you already built. Says the thing that makes the
+  // build worth having: no wait this time.
+  { flag: 'dockedName', tut: 'docked',
+    first: [(v) => `BERTHED AT ${v.toUpperCase()} — your dock is still standing. Shielded and repairing at once.`, 5],
+    repeat: [(v) => `BERTHED AT ${v.toUpperCase()} — shielded and repairing.`, 2.5] },
+  { flag: 'dockRetiredName', snd: sfx.sfxWarnLow,
+    first: [(v) => `OLDEST DOCK ABANDONED — you can keep ${CFG.DOCK_MAX} standing, and the one on ${v.toUpperCase()} was the oldest.`, 5] },
+  { flag: 'launchName', tut: 'launch',
+    first: ['LAUNCH — clamps releasing. The dock stays; fly back to it whenever you want.', 4.5] },
+  // Choosing a home port is the one act that moves where a death puts you back.
+  // sfxLife — it is the closest thing this game has to banking progress.
+  { flag: 'homeSetName', snd: sfx.sfxLife,
+    first: [(v) => `HOME PORT SET — ${v.toUpperCase()}. You will respawn here.`, 5] },
+  // Two refusals for H, each naming the thing that is actually missing. No
+  // `snd` on either: a key that did nothing is not an event.
+  { flag: 'homeNoDockWarn', tut: 'homeNoDock',
+    first: ['NO DOCK — land on a world rockets-down and come to a stop first, then press H.', 5],
+    repeat: ['NO DOCK — you have to be berthed at a dock.', 2.5] },
+  { flag: 'homeBuildingWarn',
+    first: ['STILL BUILDING — wait for the dock to go live, then press H.', 3] },
+  { flag: 'homeSameWarn',
+    first: ['This is already your home port.', 2.5] },
+  // Losing the home world is real bad news, and it must never be something the
+  // player only finds out about by dying.
+  { flag: 'homeLostName', snd: sfx.sfxWarnLow,
+    first: [(v) => `HOME PORT LOST — ${v.toUpperCase()} is gone, and the dock with it. You respawn at your starting orbit.`, 6] },
 ];
 
 let last = performance.now();
@@ -1495,13 +1580,28 @@ function update(dtReal) {
       game.sling = null;
     }
 
-    // Shield recharges after a quiet spell; the hull never self-heals (it mends
-    // only at glow pockets — glow.js). Scout's Phase Screen recharges faster
+    // Shield recharges after a quiet spell; the hull mends only at glow pockets
+    // (glow.js) and ON A DOCK. Scout's Phase Screen recharges faster
     // (spec-derived st.regen / st.regenDelay — see config.shipStats).
     if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
     if (s.shieldHitT > 0) s.shieldHitT -= dtReal;
+
+    // DOCKED REPAIR — the second sanctioned exception to "the hull never
+    // self-heals" (docs/design-laws.md). It is what makes putting the ship
+    // down a real decision rather than a stunt: a dock is a place you stop
+    // being in the fight to get the hull back. Rides dtReal like the shield
+    // regen it sits beside — a heal has no quantized target to beat against.
+    //
+    // A FINISHED station only (dockReady), the same gate the shield dome uses:
+    // the ten seconds spent building one are meant to be exposed, and a
+    // building site that repaired you would pay the reward before the cost.
+    if (s.alive && dockReady(game.dock)) {
+      s.hull = Math.min(game.st.hullMax, s.hull + CFG.DOCK_HEAL * dtReal);
+    }
+    if (game.dockFlashT > 0) game.dockFlashT -= dtReal;
+    if (game.domeHitT > 0) game.domeHitT -= dtReal;   // dome deflection flare
 
     replenishWorld(game, dtReal);
     updateLifePods(dtReal);

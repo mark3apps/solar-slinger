@@ -27,6 +27,40 @@ export const senseBlind = (g) => !!(g.dustCloak || g.stormBlind);
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
+// ---- A PAD ON A TURNING WORLD ---------------------------------------------
+// A dock (game.dock) and a home port (game.home) are both { b, ang, rf }: a
+// body, a SURFACE-LOCAL bearing, and a fraction of that body's radius. Stored
+// that way rather than as a world point because both of the things a pad is
+// pinned to move — the world orbits and it SPINS — so a coordinate pair is
+// stale within a frame, exactly like a chart waypoint (starmap.js). The radius
+// is a fraction so a world that is chipped down under fire keeps its pad ON the
+// surface instead of leaving it floating where the crust used to be.
+//
+// Both readers (render's pad sprite and the marks on both instruments, world's
+// respawn) come through here, so a pad can never be drawn in one place and
+// flown to in another. Writes into `out` — this is called a few times a frame.
+const _pad = { x: 0, y: 0 };
+export function padPos(d, out = _pad, lift = 0) {
+  const b = d.b;
+  const a = d.ang + b.rot;
+  const r = b.radius * d.rf + lift;
+  out.x = b.x + Math.cos(a) * r;
+  out.y = b.y + Math.sin(a) * r;
+  return out;
+}
+
+// The velocity of that patch of ground: the body's own motion plus the
+// tangential speed its spin gives a point at (px, py). The one expression
+// behind surface friction, the docking stillness test and a home respawn's
+// starting velocity — three places that MUST agree, or a ship would dock at a
+// speed the friction never reaches, or respawn already sliding off its pad.
+const _sv = { vx: 0, vy: 0 };
+export function surfaceVel(b, px, py, out = _sv) {
+  out.vx = b.vx - b.spin * (py - b.y);
+  out.vy = b.vy + b.spin * (px - b.x);
+  return out;
+}
+
 // Smallest signed angle from a to b, in (-PI, PI]
 export function angDiff(a, b) {
   let d = (b - a) % TAU;

@@ -101,6 +101,11 @@ re-arms it for a fresh run.
   ENDING on that card), and the dead run's last words go with it (`hud.clearMessage` + the pending
   grab-tip `setTimeout` — the `#msg` lifetime is wall-clock, so a warning raised in a run's final
   second would otherwise hang over the title panel's header).
+- **The system keys are ESC / T / V / M / H / R**, and the CONTROLS schematic (`index.html`
+  `.syskeys`) is the list players read — a hotkey added to `input.js` without a key cap there is a
+  control that only exists for whoever wrote it. **H** promotes the current dock to the run's home
+  port; like every other hotkey it is gated on `menuBlocking()`, so it does nothing behind a pause,
+  a shell modal or an open upgrade card.
 - **A focused text field owns the keyboard** (`input.js`). Every gameplay hotkey is a bare letter, so the
   keydown listener bails out on `INPUT`/`TEXTAREA`/contenteditable targets — without it, typing a seed
   fires `R` (respawn, and on game over a full restart), `T`, `P`, the digit picks, and the `w`/`s`
