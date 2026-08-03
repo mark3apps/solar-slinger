@@ -103,7 +103,11 @@ const game = {
   stormExposed: false,     // in the sheath with no world between us and the sun
   stormShelter: null,      // the world whose lee we're in, when we are in one
   stormIonT: 0,            // seconds of sensor scramble left (outlives exposure)
-  stormIonMax: 0,          // …the class's full scramble, since ionT outlives the wave
+  // …what stormIonT was last SET to (the class's `ion` scaled by the wave's
+  // remaining strength, refreshed every exposed frame), NOT the class maximum.
+  // It exists because stormIonT outlives the wave that set it, so render has to
+  // normalise the wash against the thing that actually set it.
+  stormIonMax: 0,
   stormBlind: false,       // alien senses are down system-wide (util.senseBlind)
   stormRode: 0,            // seconds ridden exposed this wave (capped payout)
   evadeT: 0,                            // Dash Jets cooldown (scout, A/D)

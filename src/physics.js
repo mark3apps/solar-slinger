@@ -4007,16 +4007,25 @@ export function step(game, dt) {
           d.ax += (hx / hr) * storm.shove * depth * storm.k;
           d.ay += (hy / hr) * storm.shove * depth * storm.k;
           // …and the wave leaves it IONIZED: it glows, and it pays more when
-          // collected. d.ion stores HOW CHARGED (the sweeping wave's `pay`,
-          // 0..1) rather than a bare flag, so a squall's salvage is worth
-          // visibly less than a CME's while every `if (d.ion)` still reads
-          // true. Never field-sourced scrap — that chunk's XP was already
-          // charged against the pocket's budget at drop time and must not be
-          // re-inflated here (see config).
+          // collected. d.ion stores HOW CHARGED (the sweeping wave's `pay`
+          // times its remaining `k`, 0..1) rather than a bare flag, so a
+          // squall's salvage is worth visibly less than a CME's. Never
+          // field-sourced scrap — that chunk's XP was already charged against
+          // the pocket's budget at drop time and must not be re-inflated here
+          // (see config).
+          //
+          // ALL OR NOTHING at the bottom (PROG.STORM_ION_FLOOR — it lives with
+          // ION_SCRAP_MUL, the payout it guards): 0 is a real
+          // state for this scalar, and downstream still asks `if (d.ion)` — so
+          // a front too spent to charge anything meaningful must leave the
+          // chunk plainly UNCHARGED rather than stamping a 0.02 that draws full
+          // charged-blue and pays nothing. The colour is the price tag.
+          //
           // MAX, not assignment: two waves can wash the same chunk, and the
           // stronger one has to win — otherwise a squall trailing a CME would
           // DISCHARGE salvage the big wave had already charged.
-          if (!d.field) d.ion = Math.max(d.ion || 0, storm.pay * storm.k);
+          const charge = storm.pay * storm.k;
+          if (!d.field && charge >= PROG.STORM_ION_FLOOR) d.ion = Math.max(d.ion || 0, charge);
         }
       }
     }
@@ -4346,9 +4355,10 @@ export function step(game, dt) {
         // do NOT heal the hull (hull only resets on respawn; shield recharges).
         // A chunk the solar wave swept comes out IONIZED and pays more (never
         // field scrap — dropScrap's fromField flag keeps the pocket budget
-        // honest, see config.ION_SCRAP_MUL). d.ion is HOW CHARGED, 0..1, so the
-        // multiplier lerps 1 -> ION_SCRAP_MUL with the class that swept it: the
-        // big wave's salvage is the good salvage.
+        // honest, see config.ION_SCRAP_MUL). d.ion is HOW CHARGED, 0..1 with 0
+        // meaning untouched, so the multiplier lerps 1 -> ION_SCRAP_MUL with the
+        // class that swept it: the big wave's salvage is the good salvage. The
+        // `|| 0` covers the never-swept chunk, where the field is undefined.
         addXp(game, d.value * PROG.XP_SCRAP * (1 + (PROG.ION_SCRAP_MUL - 1) * (d.ion || 0)));
         if (d.ion) bump(game, 'ionScrap');
         bump(game, 'scrap');

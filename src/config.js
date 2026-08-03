@@ -1861,13 +1861,26 @@ export const PROG = {
   // drop time (fieldXp), and re-inflating it at pickup would launder the field
   // farm straight back through the weather.
   //
-  // THIS IS THE CEILING, reached only by a CME. `d.ion` stores how far toward it
-  // the chunk was charged (the sweeping wave's `pay`, 0..1) rather than a bare
-  // flag, so the pickup multiplier lerps 1 -> ION_SCRAP_MUL and a squall's
-  // salvage is worth visibly less than a CME's. It stays TRUTHY at every class,
-  // which is what keeps every `if (d.ion)` — the charged-blue draw, the ionScrap
-  // stat — working unchanged.
+  // THIS IS THE CEILING, reached only by a CME at full strength. `d.ion` stores
+  // how far toward it the chunk was charged — the sweeping wave's `pay` times
+  // its remaining `k` — rather than a bare flag, so the pickup multiplier lerps
+  // 1 -> ION_SCRAP_MUL and a squall's salvage is worth visibly less than a CME's.
+  //
+  // 0 MEANS UNCHARGED, and that is a state the scalar really can reach now that
+  // a spending wave scales `pay` by `k`. Everything downstream still tests
+  // `if (d.ion)` — the charged-blue draw, the ionScrap stat — so the value has
+  // to be either a MEANINGFUL charge or none at all: see STORM_ION_FLOOR, which
+  // is what keeps those truthiness tests honest rather than merely defined.
   ION_SCRAP_MUL: 1.7,
+  // The least a wave may charge a chunk and still mark it. Below this it stamps
+  // NOTHING, because render's rule is that the colour IS the price tag and has
+  // to be unmistakable at a glance — and a chunk burning full charged-blue for a
+  // 1.03x payout is that tag lying. The floor sits well under the weakest real
+  // charge (a squall at full strength is `pay` 0.45), so it only ever catches a
+  // front already shredding at the end of its reach: squall stops charging below
+  // k~0.44, surge below k~0.28, CME below k 0.2. A wave too spent to bite is too
+  // spent to ionize.
+  STORM_ION_FLOOR: 0.2,
   // FIELD ROCK PAYS A FRACTION (fieldXp below). A dense field is ~1900 rocks
   // in one pocket and there are four of them: at full rates parking inside one
   // and grinding the nearest gravel out-earned every aimed, risky thing in the
