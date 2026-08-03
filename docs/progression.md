@@ -202,16 +202,30 @@
     FREEZES them where caught. At rank 1 the reach is a hair past the hull — the rock must
     actually HIT the ship (user design rule: no catching out in space); ranks widen the bubble.
     Capacity is the RANK (SIX ranks — a maxed deflector freezes a six-rock volley) and late
-    arrivals JOIN the running window. While a session is live the nose is LOCKED (the steering block checks
-    `game.parry`) and the mouse is a FLICK read from RAW SCREEN deltas (`game.mouseSX/SY`, stashed
-    in main.js — world-aim deltas are camera-contaminated); a decisive flick or window end hurls
-    EVERY held rock player-thrown at `st.deflectPower` (flick = volley one way; no flick = each
-    back along its capture bearing), paying `XP_PARRY` per rock. Fixed 2.5s cooldown; ranks buy
+    arrivals JOIN the running window. **The launch is on the CLOCK, never on the input**: at window
+    end EVERY held rock fires player-thrown at `st.deflectPower` along **ship→cursor** (`game.aim`
+    minus the ship, read at that instant; a cursor on the hull falls back to each rock's own capture
+    bearing), paying `XP_PARRY` per rock. It used to fire on a mouse FLICK off raw screen deltas —
+    an ordinary aiming twitch spent the parry, and raising the threshold twice never fixed it, so
+    the flick, `game.mouseSX/SY` and the mid-parry NOSE LOCK are all gone: the window is the timer
+    and the cursor is the aim, so nothing fights over one input. Fixed 2.5s cooldown; ranks buy
     field width + slots + window + power. Eligibility (`parryEligible`): loose asteroids only,
     beam-scale mass cap, `!majorComet`, never held/own-throws — `render.drawDeflectable` MIRRORS it
     for the incoming-rock indicator (pulsing cyan circlet on catchable rocks), keep them in sync;
     `parryFrozen` is skipped by `collideBodies`/`collideShipBody`/`tryGrab`; `resetRun` clears
-    `game.parry`. Render: `drawParry` — dashed charge ring + per-rock flick arrow (helper UI),
+    `game.parry`. **The reload tell is ship hardware, never a bar**: `drawShip` paints a thin
+    bracketed arc across the nose spanning `PARRY_ARC` (exported from physics.js so the rail, the
+    deflectable hint and the sim all read ONE constant). **The rail IS the field edge** — drawn at
+    `s.radius + st.deflectReach`, so a rock's own surface meets it on the frame `updateParry`
+    freezes it (the sim's test adds `b.radius`) and the catch never happens out in space short of a
+    visible line; it is floored at the drawn hull, which only binds at rank 1 where the field sits
+    on the hull by design. It shows whenever the field can catch, draws NOTHING
+    while it reloads or runs out of slots (the bare-nose grammar of a downed shield), and POPS once
+    on the re-arm — `game.parryReadyT`, set on the cooldown CROSSING in `updateParry` and decayed on
+    that same fixed step so the pop and the state can't disagree; `PARRY_READY_T` is its length.
+    Solid stroke: it is equipment, not aiming UI. Render: `drawParry` — dashed charge ring +
+    per-rock aim arrow that lengthens and brightens with the charge (helper UI; it mirrors the
+    ship→cursor direction and its fallback),
     additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
     protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
     NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots

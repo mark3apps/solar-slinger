@@ -2,7 +2,7 @@ import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR,
 } from './config.js';
-import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
+import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T } from './physics.js';
 import * as gravel from './gravel.js';
 import {
   chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
@@ -3991,17 +3991,21 @@ function drawDockGuide(game) {
 
 // DEFLECTOR PARRY: every frozen rock charges up. Aiming/helper UI, so DASHED
 // strokes are correct here (design law): a charge ring contracting onto each
-// rock over the window, and a flick arrow per rock showing the current hurl
-// direction. The energy glow itself is a solid additive gradient (event
+// rock over the window, and an aim arrow per rock showing where the volley
+// is about to go. The energy glow itself is a solid additive gradient (event
 // motion — the parry IS an event, so animation is allowed).
 function drawParry(game) {
   const p = game.parry;
   if (!p || !p.rocks.length) return;
-  const z = game.cam.zoom;
+  const z = game.cam.zoom, s = game.ship;
   const prog = Math.min(1, p.t / Math.max(0.01, p.window));
-  const fx = (game.mouseSX ?? 0) - p.mx0, fy = (game.mouseSY ?? 0) - p.my0;
-  const mag = Math.hypot(fx, fy);
-  const flicked = mag > 12;   // matches updateParry's aim dead-zone
+  // Every rock launches along ship→cursor when the window closes — MIRROR
+  // physics.updateParry, degenerate-cursor fallback included, or the arrow
+  // promises a throw the sim won't make.
+  const ax = game.aim.x - s.x, ay = game.aim.y - s.y;
+  const am = Math.hypot(ax, ay);
+  const aimed = am > 1;
+  const adx = aimed ? ax / am : 0, ady = aimed ? ay / am : 0;
 
   for (const r of p.rocks) {
     const b = r.b;
@@ -4024,14 +4028,13 @@ function drawParry(game) {
     ctx.setLineDash([6 / z, 5 / z]);
     ctx.beginPath(); ctx.arc(b.x, b.y, ringR, 0, TAU); ctx.stroke();
 
-    // Flick arrow: where THIS rock goes right now (flick = all together;
-    // no flick = back out along its own capture bearing)
-    const dx = flicked ? fx / mag : r.nx, dy = flicked ? fy / mag : r.ny;
-    // Arrow length fills toward the REAL launch threshold — the player can
-    // see how close their motion is to firing the throw.
-    const len = b.radius + 34 / z + (Math.min(mag, PARRY_FLICK) / PARRY_FLICK) * 30 / z;
+    // Aim arrow: where the volley goes when the window closes. The launch is
+    // on the clock now, so the arrow LENGTHENS AND BRIGHTENS with the charge
+    // — reaching full is the countdown, and there is no threshold to hunt.
+    const dx = aimed ? adx : r.nx, dy = aimed ? ady : r.ny;
+    const len = b.radius + 34 / z + prog * 30 / z;
     const tipX = b.x + dx * len, tipY = b.y + dy * len;
-    ctx.strokeStyle = flicked ? 'rgba(159, 214, 255, 0.95)' : 'rgba(159, 214, 255, 0.45)';
+    ctx.strokeStyle = `rgba(159, 214, 255, ${0.45 + 0.5 * prog})`;
     ctx.lineWidth = 2.5 / z;
     ctx.setLineDash([8 / z, 6 / z]);
     ctx.beginPath();
@@ -4072,7 +4075,7 @@ function drawDeflectable(game) {
     const d = Math.hypot(dx, dy) || 0.001;
     const nx = dx / d, ny = dy / d;
     if (-((b.vx - s.vx) * nx + (b.vy - s.vy) * ny) <= 60) continue;         // not incoming
-    if (Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) > 1.05) continue;    // not in the front arc (PARRY_ARC)
+    if (Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) > PARRY_ARC) continue;   // not in the front arc
     ctx.strokeStyle = `rgba(159, 214, 255, ${0.25 + 0.45 * pulse})`;
     ctx.lineWidth = 1.5 / z;
     ctx.setLineDash([4 / z, 4 / z]);
@@ -4933,6 +4936,58 @@ function drawShip(game) {
         ctx.beginPath(); ctx.arc(s.x, s.y, R, 0, TAU); ctx.fill();
       }
       ctx.restore();
+    }
+  }
+
+  // DEFLECTOR ARMED RAIL: a thin bracketed arc across the nose, spanning the
+  // exact wedge the parry field scans (PARRY_ARC). This is the reload tell,
+  // and it is a STATE, not a meter — no bar, no sweep, no countdown to read.
+  // Present = the field can catch; ABSENT ENTIRELY while it reloads or while
+  // every slot is full, which is the downed-shield law: the bare nose IS the
+  // indicator. It is ship hardware, not aiming UI, so the stroke is SOLID
+  // (dashes stay reserved for helper/aiming overlays) and it never moves
+  // while it just sits there. The one piece of motion is the POP on the
+  // frame it re-arms — one bloom that expands and fades, so "good to go"
+  // lands in peripheral vision the way the throw-charge bloom does.
+  if (game.st.deflect > 0 && s.invuln <= 0) {
+    const z = game.cam.zoom;
+    const armed = !(game.parryCd > 0) &&
+      !(game.parry && game.parry.rocks.length >= game.st.deflect);
+    if (armed) {
+      const pop = game.parryReadyT > 0 ? game.parryReadyT / PARRY_READY_T : 0;   // 1 -> 0
+      // THE RAIL IS THE FIELD EDGE, not decoration near it. updateParry
+      // catches at s.radius + b.radius + deflectReach, so drawing the rail at
+      // s.radius + deflectReach means a rock's own SURFACE meets the rail on
+      // exactly the frame the sim freezes it — the rock stops AT the line
+      // instead of hanging in space short of it. It also makes every rank-up
+      // of the catch bubble something you can see on the ship.
+      // The floor keeps the rail off the drawn art: the sprite reaches
+      // further than the collision radius, so at rank 1 (field AT the hull,
+      // by design) an honest radius would bury the tell inside the hull.
+      const R = Math.max(s.radius + game.st.deflectReach, visR * morphScale * 1.06 + 3 / z);
+      const a0 = s.angle - PARRY_ARC, a1 = s.angle + PARRY_ARC;
+      ctx.strokeStyle = `rgba(159, 214, 255, ${0.5 + 0.45 * pop})`;
+      ctx.lineWidth = (1.6 + 2.4 * pop) / z;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R, a0, a1); ctx.stroke();
+      // End ticks — they turn the arc into a piece of equipment instead of
+      // yet another bubble around the ship.
+      const tick = 3 / z + R * 0.12;
+      for (const a of [a0, a1]) {
+        const cx = Math.cos(a), cy = Math.sin(a);
+        ctx.beginPath();
+        ctx.moveTo(s.x + cx * (R - tick * 0.5), s.y + cy * (R - tick * 0.5));
+        ctx.lineTo(s.x + cx * (R + tick * 0.5), s.y + cy * (R + tick * 0.5));
+        ctx.stroke();
+      }
+      if (pop > 0) {   // the re-arm bloom, expanding outward as it dies
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(205, 240, 255, ${0.8 * pop})`;
+        ctx.lineWidth = 2.5 / z;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, R * (1 + (1 - pop) * 0.55), a0, a1);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
     }
   }
 
