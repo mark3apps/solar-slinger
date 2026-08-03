@@ -9,6 +9,61 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.5.0] — 2026-08-03
+
+### Changes
+
+- **Baked rock shape + fracture library, replacing the shoal's sampled collider** ([#83](https://github.com/mark3apps/solar-slinger/pull/83)) — @mark3apps
+  The shoal's collider is replaced with a baked shape library that is also a fracture tree, plus a pass of playtest fixes on top of it.
+- **Pilot card reads bottom-up, and an owed pick is offered rather than forced** ([#82](https://github.com/mark3apps/solar-slinger/pull/82)) — @mark3apps
+  Two user calls on the abilities window in the bottom-left.
+- **Land on worlds: surface friction, dock stations and home ports** ([#80](https://github.com/mark3apps/solar-slinger/pull/80)) — @mark3apps
+  Makes a world somewhere you can stop. Everything else in this game treats a planet as an obstacle, a resource or a weapon; this adds the one verb that treats it as a place.
+- **Deflector: aim the riposte with the cursor, not a flick** ([#81](https://github.com/mark3apps/solar-slinger/pull/81)) — @mark3apps
+  The Deflector parry no longer fires on a mouse flick. The window is the timer and the cursor is the aim: when the freeze window runs out, every held rock launches along…
+- **Three solar wave intensities, and every moon shelters from them** ([#79](https://github.com/mark3apps/solar-slinger/pull/79)) — @mark3apps
+  The sun threw exactly one thing, and moons only pretended to block it. This
+- **Fix the five open QA findings, and re-derive the body counts they exposed** ([#78](https://github.com/mark3apps/solar-slinger/pull/78)) — @mark3apps
+  Clears the open qa-bot issues: four real bugs (#73, #74, #75, #76) and the doc-drift sweep (#77). #72 needs no change — see below.
+- **Make a debris cascade cheap enough to be 10x bigger** ([#70](https://github.com/mark3apps/solar-slinger/pull/70)) — @mark3apps
+  A cascade produced ~1,500 pieces, hard-capped by DEBRISBUDGET because every piece was a full Body. It now produces 12,000+, and a piece costs 29× less (4.9µs → 0.17µs of sim).
+- **Add the system chart, and a journey to plot on it** ([#71](https://github.com/mark3apps/solar-slinger/pull/71)) — @mark3apps
+  A sun-centred system chart over the whole screen, and a multi-stop journey you can plot on it and then fly.
+- **Rock silhouettes, and grade the shoals from the heart outward** ([#67](https://github.com/mark3apps/solar-slinger/pull/67)) — @mark3apps
+  Two related pieces of shoal work: what a rock looks like, and where the rock is.
+- **Give the cockpit an accent that follows where the ship is** ([#69](https://github.com/mark3apps/solar-slinger/pull/69)) — @mark3apps
+  The cockpit chrome was one violet everywhere. It now takes an accent from where the ship is, switched by a new locale director in src/zone.js — built deliberately as the same…
+- **Make a planet system rare, big, and an event** ([#68](https://github.com/mark3apps/solar-slinger/pull/68)) — @mark3apps
+  The sky is spread 30% wider, holds ~80% as many worlds, gives every surviving one a ~30% bigger moon family reaching ~30% further out, and turns one way.
+- **Make the combat damage ladder bit-exact** ([#66](https://github.com/mark3apps/solar-slinger/pull/66)) — @mark3apps
+  ladder[fieldRock]. swung 170x on unchanged code. Ten bench.mjs diff combat runs against an identical working tree gave rock2500@700 = 2, 99, 104, 146, 185, 265, 310, 315, 339, 345.
+- **Rebuild the dense fields as a maze made of huge, breakable rock** ([#65](https://github.com/mark3apps/solar-slinger/pull/65)) — @mark3apps
+  The shoals were a uniform cloud of gravel — dense in every direction, so there was no route through one, only more of the same. They are now packed with 124–131 landmark rocks…
+- **Make the combat ladder's heaviest rung deterministic** ([#63](https://github.com/mark3apps/solar-slinger/pull/63)) — @mark3apps
+  node .claude/skills/run-solar-slinger/bench.mjs diff combat gave four different answers across four runs on completely unmodified code. CLAUDE.md gates every src/ change on that…
+- **Make a gas giant erupt boulders instead of dust** ([#64](https://github.com/mark3apps/solar-slinger/pull/64)) — @mark3apps
+  A hit gas giant threw 3–15 pieces sized 1.2–4.2% of its radius. Measured on Sable (radius 1,148):
+- **Rebuild the pilot card around a mounted XP rail** ([#62](https://github.com/mark3apps/solar-slinger/pull/62)) — @mark3apps
+  The XP bar used to float alone at the top centre of the canopy, with no relationship to the ability list it fills toward. This moves it onto the pilot card and reworks the card…
+- **Rework the beam: class ladder, winch, wind-up, and what a throw looks like** ([#61](https://github.com/mark3apps/solar-slinger/pull/61)) — @mark3apps
+  Reworks how the tractor beam decides what it can lift, how hard it can push it, and what any of that looks like. Driven end-to-end by playtest feedback, so it's a series of…
+- **Route the eclipse through traceSurface, and glint cored chunks** ([#60](https://github.com/mark3apps/solar-slinger/pull/60)) — @mark3apps
+  Two render.js fixes. Fixes #52 and #53.
+- **Gas giant: subject the swallow to the conjunction guard, and stop double-draining the vent timer** ([#59](https://github.com/mark3apps/solar-slinger/pull/59)) — @mark3apps
+  Two independent gas-giant defects in physics.js. Fixes #50 and #51.
+- **Measure the generated sky in worldgen, not the surviving one** ([#58](https://github.com/mark3apps/solar-slinger/pull/58)) — @mark3apps
+  worldgen.js declares every metric it returns time-invariant, and bench.mjs diffs all of them EXACT. Two fields broke that contract and went red on unmodified code in run after run.
+- **Select field membership structurally in the worldgen suite** ([#57](https://github.com/mark3apps/solar-slinger/pull/57)) — @mark3apps
+  Fixes #55.
+- **Gather a world's satellites once instead of per belt slot** ([#56](https://github.com/mark3apps/solar-slinger/pull/56)) — @mark3apps
+  Fixes #54.
+- **Stop dropped rocks keeping the force that was holding them** ([#49](https://github.com/mark3apps/solar-slinger/pull/49)) — @mark3apps
+  A bug-fix sweep. The load-bearing find is one state-cleanup miss with two sites, both on the ship-death path.
+- **Slim CLAUDE.md into docs/, add a diffable test harness, and fix moons dying at conjunction** ([#48](https://github.com/mark3apps/solar-slinger/pull/48)) — @mark3apps
+  CLAUDE.md drops from 143 KB to 19 KB, the repo gains a five-suite test harness that shows you what a change moved, and one 29-line physics fix stops moons being destroyed by an…
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.4.0...v0.5.0
+
 ## [0.4.0] — 2026-08-01
 
 ### Changes
