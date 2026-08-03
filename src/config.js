@@ -644,6 +644,10 @@ export const CFG = {
   // come out of the crater) is tuned, and this must not reshape it — only make
   // more of it.
   GRAVEL_SPRAY_MUL: 10,
+  // ...but 1 (i.e. none of the extra) inside a dense field. See physics.js: a
+  // pocket is already made of rock, and spraying 10x grit per hit across ~800
+  // plain asteroids is what buried a tier-5 throw in thousands of grains.
+  GRAVEL_SPRAY_FIELD: 1,
 
   // ---- CRUST DEBRIS: the crumble layer -----------------------------------
   // A world under fire CALVES. Every wounding hit knocks real pieces of the
@@ -907,7 +911,34 @@ export const CFG = {
   // of pebbles between the giants only obscured it. Density is a fifth of what
   // it was, and the pocket reads as more open BECAUSE the structure in it is
   // more legible, not less full.
-  FIELD_ROCKS: 740,
+  // NB: this is the pocket's TOTAL body count, masonry included — the rubble
+  // loop runs `for (i = bigs.length; i < FIELD_ROCKS; i++)`, so raising the
+  // landmark count without raising this pays for the landmarks by deleting
+  // gravel.
+  // Back at its long-standing value after a detour to 660. Cutting THIS is not
+  // how the pocket's density came down — the density the player feels is the
+  // MASONRY, and that came down by capping where big rock may go
+  // (FIELD_REACH) and spacing it by its true extent (FIELD_PACK_GAP). Cutting
+  // gravel instead just thinned the haze the small rock provides, which is what
+  // makes the outer approach read as a rock field at all.
+  // Held at 800 while the fracture library lands. It was briefly at 1250, raised
+  // chasing road visibility — a +54% swing in TOTAL world bodies that was never
+  // measured for frame cost. The collider rewrite has to be A/B'd against a
+  // stationary target, and the roads don't read for a reason raw count doesn't
+  // fix (they measure genuinely clear: 0.013 cover inside vs 0.200 outside, 15x,
+  // but occupy only 9.3% of the pocket, so there is nothing dense enough beside
+  // them to read as a wall). Density contrast is the lever, not population.
+  // Held at 800 while the fracture library lands (it was briefly 1250, an
+  // unmeasured +54% on total world bodies). With FIELD_GIANTS down to 300 this
+  // is now MOSTLY ordinary asteroid rather than landmark, which is the requested
+  // mix: fewer mid and small shaped rocks, more plain rock between them.
+  // 800 -> 920, +15% plain asteroid. This is the pocket's TOTAL body count with
+  // the masonry counted inside it, and the rubble loop runs
+  // `for (i = bigs.length; i < FIELD_ROCKS; i++)` — so with FIELD_GIANTS cut to
+  // 100 at the same time, nearly the whole rise plus the freed landmark budget
+  // lands as plain rock, which is what was asked for from both directions at
+  // once.
+  FIELD_ROCKS: 920,
   // Pocket size is PHYSICAL, not angular — an angular width scales with the
   // orbit radius and turned the outer field into an 11,000u dilute arc.
   // The pocket is deliberately close to ROUND rather than a long lane-shaped
@@ -956,22 +987,56 @@ export const CFG = {
   // FIELD_SPREAD, because spreading the same rocks over a bigger pocket turns
   // the gaps into open space and there is nothing left to navigate.
   // It is ALSO the budget for the shaped narrow phase: every one carries a real
-  // polygon collider (util.rockShape via world.shapeBig). 474 in the world,
-  // 113-122 a pocket (measured), of which only the awake ones are ever swept.
-  // The packer is best-effort and this is a TARGET, not a count: a pocket fills
-  // up and rejects the rest, so 200 draws place 107-116 giants. Do not read the
-  // constant as the number of colliders you are paying for.
-  FIELD_GIANTS: 200,
-  FIELD_GIANT_MASS: [14000, 60000],   // the biggest are moon-scale monoliths
-  // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL
-  // below, and for the same reasons (grab class, damage ladder and payout all
-  // key off mass and none of them are what "bigger" is asking for).
-  // 10.2x puts a giant at 146-311 units — four to six ship-lengths of rock, and
-  // the size at which a rock stops being an obstacle you dodge and becomes a
-  // wall you route around. That is what makes the packing a maze: at the old
-  // 2.4x the gaps between neighbours were wider than the view and there was
-  // nothing to navigate.
-  FIELD_GIANT_R_MUL: 10.2,
+  // polygon collider (rockshape.js via world.shapeBig), of which only the awake
+  // ones are ever swept.
+  // A REQUEST, NOT A GUARANTEE — world.packBigRock is best-effort and reports
+  // what it actually placed. What bounds the real number is the packing rule
+  // (FIELD_PACK_GAP, measured between REACH circles): the count should be
+  // limited by whether the rock physically fits, not by a number picked to
+  // approximate whether it fits.
+  //
+  // 100, down a long way. The class was crowding the core with exactly the wrong
+  // thing: the bottom of a shoal's size ladder should be PLAIN asteroids — a
+  // circle collider and an atlas sprite — not small landmarks paying for a
+  // polygon narrow phase nobody can see at that size. The ramp is rank-based and
+  // skewed small, so trimming the count takes the bottom rungs first and leaves
+  // the handful of genuinely large rocks intact.
+  // (main took this to 200 with a flat FIELD_GIANT_R_MUL of 10.2; that predates
+  // the graded ladder below and would undo it — see FIELD_GIANT_SKEW.)
+  FIELD_GIANTS: 100,
+  // The mass ladder the class is drawn from — low end to high end. Walked by
+  // rank through FIELD_GIANT_SKEW below, so this is a CONTINUUM of sizes rather
+  // than a band.
+  FIELD_GIANT_MASS: [8000, 130000],
+  // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL, and
+  // for the same reasons (grab class, damage ladder and payout all key off mass,
+  // and none of them is what "bigger" is asking for).
+  //
+  // A [rim, core] RAMP, not a scalar, and world.js destructures it as one. The
+  // multiplier rides the same `t` as the mass, so density falls with size — that
+  // is what gives the class a populated mid-size rung instead of jumping from
+  // gravel to monolith. The core end came down 30% (7.9 -> 5.53) because the
+  // biggest rocks were too big on screen; the rim end is untouched, since moving
+  // both would flatten the ladder that makes a shoal read as graded at all.
+  FIELD_GIANT_R_MUL: [2.3, 5.53],
+  // HOW THE COUNT IS SPREAD ALONG THAT LADDER — the exponent on rank position.
+  //
+  // THIS IS THE GRADIENT, and it is the single most misread knob in the file.
+  // `t = pow(u, SKEW)` and mass runs from the HIGH end at t=0 to the LOW end at
+  // t=1, so a skew far below 1 drives t toward 1 for nearly every rank and piles
+  // the whole class into its smallest bucket. At 0.14 that measured, across four
+  // pockets: 843 rocks between 24 and 48 units, 53 between 64 and 96, ONE
+  // between 96 and 128, and NOTHING between 128 and 160 — then the monoliths
+  // appearing from nowhere at 160+. That is not a gentle ramp with a heavy small
+  // end, it is two populations with a hole between them, which is why flying in
+  // never felt graded.
+  //
+  // 0.42 is where the two requirements meet, and they pull opposite ways: the
+  // ramp has to reach high enough to leave no gap, while the large end stays
+  // THIN. The share of the class above any rung is T^(1/skew), so this moves the
+  // tail hard — 0.72 closed the hole but doubled rock over 160 units, and 0.42
+  // keeps the ladder continuous while cutting that tail to about a third.
+  FIELD_GIANT_SKEW: 0.42,
   FIELD_GIANT_SHARDS: [5, 9],   // pieces a giant breaks into (big shards re-flag as giants — one more cascade level)
   // Both lurker ranges are sized OFF the pocket, not absolutely: the wake
   // must reach past the far end (FIELD_LEN) or you could sit deep inside the
@@ -984,8 +1049,18 @@ export const CFG = {
   // MONOLITHS: a couple of rocks per pocket (plus the named heart), the
   // landmarks you steer by from across the shoal. Still field rock — no
   // gravity, and breakable only by a truly heavy blow (see FIELD_HP_CAP).
-  FIELD_MONOLITHS: 5,
-  FIELD_MONOLITH_MASS: [3e5, 4.8e5],
+  // 5 -> 3, the requested 60% of the large end. Cut HERE rather than by capping
+  // the giant ramp, because the ramp is what bridges up to this class: thinning
+  // its top would re-open the gap that FIELD_GIANT_SKEW was just raised to
+  // close. Fewer of the very large, with a full ladder leading up to each.
+  FIELD_MONOLITHS: 3,
+  // Raised with the giants (same "much more mass" call), and bounded by the one
+  // number that matters here: TIERS.ceil[5] is 1,200,000, and a monolith above
+  // it is permanently ungrabbable at every tier. The heart takes MASS[1], so
+  // the ceiling of this band IS the heaviest thing in a pocket — 1.05e6 keeps a
+  // fully-ranked top-tier beam able to take one, which is the payoff the whole
+  // landmark is built around. Do not raise it past ~1.1e6.
+  FIELD_MONOLITH_MASS: [3e5, 4.6e5],
   // ...and then DOUBLED AGAIN in drawn size. This is the world-scale law
   // (PLANET_R_MUL / MOON_R_MUL) applied to the shoal: it grows the RADIUS
   // only, and the mass is untouched. Going the other way — 8x the mass, since
@@ -999,11 +1074,18 @@ export const CFG = {
   // sim reads. Applied in world.seedDenseFields to radius AND baseRadius, or
   // the first chip would snap it back to its mass-derived size (physics
   // eases radiusT off baseRadius * cbrt(mass / baseMass)).
-  // 6.8x puts a monolith at ~258-408 units, keeping it clearly the biggest thing
-  // in the pocket now that FIELD_GIANT_R_MUL has taken the giants to ~146-311.
-  // A monolith is most of a screen of solid rock: the thing you round and find
-  // the way blocked by.
-  FIELD_MONOLITH_R_MUL: 6.8,
+  // (The mass raise above is the deliberate exception to that, argued at
+  // FIELD_GIANT_MASS — it is scoped to the shoal's landmark classes and to a
+  // user design call, and the ceiling it has to respect is spelled out there.)
+  // Cut from 6.8 with that raise, on the same cbrt arithmetic the giants use, so
+  // a monolith lands at ~228-413 units — unchanged in the only terms that read
+  // on screen, and still clearly the biggest thing in the pocket now that
+  // FIELD_GIANT_R_MUL has taken the giants to 36-325. A monolith is most of a
+  // screen of solid rock: the thing you round and find the way blocked by.
+  // 6.6 -> 4.62, the same 30% cut as FIELD_GIANT_R_MUL's core end, so the
+  // monoliths stay the top of one continuous ladder instead of stepping out
+  // above a class that just shrank underneath them.
+  FIELD_MONOLITH_R_MUL: 4.62,
 
   // ------------------------------------------------------------------ MAZE --
   // THE MAZE IS THE ROCKS. Not a corridor network carved out of the pocket and
@@ -1032,8 +1114,123 @@ export const CFG = {
   // together: with rejection sampling a tight floor did nothing (rocks still
   // landed wherever they first fit), and with a greedy search a loose floor
   // holds every rock at arm's length however hard it tries to snug up.
-  // At [4, 58] most neighbour pairs are within a ship-length of touching.
-  FIELD_PACK_GAP: [4, 58],
+  // THE GAP IS NOW MEASURED BETWEEN REACH CIRCLES, SO IT MAY GO NEGATIVE — and
+  // that is what keeps the walls solid. world.packBigRock spaces landmarks by
+  // `radius * shape.reach` (the guarantee that no orientation can defeat), and
+  // a reach circle is much bigger than the silhouette inside it in most
+  // directions — mean reach is 1.49x, so a strictly non-negative gap would hold
+  // every pair a third of a rock apart and the maze would dissolve into a
+  // polka-dot scatter with no walls and no dead ends.
+  // A negative gap lets the bounding circles interpenetrate, so silhouettes come
+  // right up against each other, while the LOW END is a hard bound on how far a
+  // pair can clip. Read it as "how much of the slack between circle and rock the
+  // packer is allowed to spend": at -40 two neighbours nestle or rest on one
+  // another; at +40 there is a passage.
+  // SWEPT AGAINST ACTUAL SURFACE OVERLAP in a seeded pocket (mean over 4):
+  //   gap[0]     0 -> 0 overlapping pairs, 216 landmarks placed
+  //            -40 -> 5 pairs, worst 17u  (7% of one rock — not visible)
+  //            -80 -> 31 pairs, worst 55u
+  //           -150 -> 103 pairs, worst 118u  (the reported clipping)
+  // Anything at or above 0 is a proof, not a tuning; below it this is a budget
+  // for how much clipping is acceptable. RE-SWEEP if FIELD_SIZE_VARY, the
+  // R_MULs or the shape kinds change — all three move `reach`.
+  // THE LOW END MAY NOT BE ZERO. At 0 the packer is allowed to set two rocks
+  // down exactly touching, and a pocket seeded with touching mid-size rock is
+  // trading contacts from the first substep — which is the clipping and the
+  // breaking, not a collider fault: they were born in contact. Measured at 0:
+  // 63 overlapping pairs at seed, 15 of them mid-against-mid.
+  // 20 is under the drawn size of even the smallest landmark, so the masonry
+  // still reads as interlocked rather than as spaced-out furniture; it just
+  // cannot start the run already pressed together.
+  FIELD_PACK_GAP: [20, 70],
+  // ...AND A SIZE-PROPORTIONAL SHARE ON TOP, because the band above is absolute
+  // and the slack it is spending is NOT.
+  //
+  // This is why "the really large ones seem to be all alone". The gap is applied
+  // to REACH circles, and a reach circle exceeds its rock by (reach - 1) * r —
+  // ~196 units of invisible margin on a 400-unit landmark against ~15 on a
+  // 30-unit one. An absolute -40 claws back the same 40 for both, so the small
+  // rock nestles and the big rock is left holding a margin nothing can close.
+  // Measured, mean surface-to-surface gap to the nearest neighbour by size:
+  //   r 0-50 -> 27,  50-90 -> 32,  90-150 -> 35,  150-250 -> 27,  250+ -> 85.
+  // Every class sat at ~30 except the biggest, which sat at nearly three times
+  // that — visibly stranded in its own clearing.
+  // FIXED BY A TIGHTER BOUND, NOT BY A CONCESSION — this knob is kept at 0 and
+  // documented because the obvious fix is wrong. Spending a fraction of each
+  // radius does close the big rocks up, but it spends the very margin that
+  // guarantees no overlap, and at 0.10 it put real clipping back: minimum
+  // surface gaps went from -27/-20/-14/2/-12 across the size bands to
+  // -49/-48/-44/-31/-49, i.e. the reported bug, reintroduced.
+  // The margin was never the problem — using a GLOBAL max as a directional
+  // bound was. world.packBigRock now bounds per direction (util.rockReachAt), so
+  // the spacing is honest at every size and the guarantee survives intact.
+  FIELD_PACK_NESTLE: 0,
+  // ---- SWIMLANES (user design law): routes THROUGH the rock, so that following
+  // the path gives you a better shot of getting out. world.seedLanes draws them;
+  // read the note there for why this reverses the earlier "no carved corridors"
+  // decision and how it avoids the two ways that attempt failed.
+  //
+  // Three per pocket, rim to rim through an off-centre waypoint. Few on purpose:
+  // enough that you find one, not so many that the rock between them stops being
+  // the obstacle. More lanes is not more navigable — past a handful they start
+  // intersecting and the pocket turns back into open space with debris in it.
+  // RIM MOUTHS — where the network opens onto the approach. The road count is
+  // much larger than this: the mouths feed a graph of interior junctions
+  // (FIELD_LANE_NODES) and the edges between them, so a pocket carries roughly
+  // mouths + nodes + chords roads in total.
+  // 5 -> 8. The roads measured genuinely clear (0.013 cover inside against 0.200
+  // outside, a 15x contrast) and still could not be SEEN, because five of them
+  // across a pocket this wide is 9.3% of its area — you have to already be in
+  // one to notice it. More of them, narrower, is the legibility lever: what
+  // reads as a road is the WALL beside it, so the network has to be dense enough
+  // that you are never far from an edge.
+  FIELD_LANES: 8,
+  // Interior junctions, spread from q 0.14 out to 0.76 so the network REACHES
+  // THE MIDDLE. Roads that only ring the core leave it open and undifferentiated
+  // — following one inward just stopped meaning anything.
+  FIELD_LANE_NODES: 5,
+  // Half-width band, world units, BEFORE the per-lane breathing (which runs it
+  // from 0.45x to ~1.7x of the drawn value). At 190 a lane runs from a ~85-unit
+  // squeeze — tight enough that a big load has to be threaded — out to a ~320
+  // unit bay. Against a ~450 unit view radius, you can see a lane's walls on
+  // both sides at its narrowest, which is what makes it read as a route rather
+  // than as absence of rock.
+  // Half-width band, world units, BEFORE the per-road breathing (0.45x-1.7x).
+  // CUT HARD from [150, 230]. Narrow is what lets the network exist at all: a
+  // 70-unit channel THREADS between 300-unit rocks, where a 190-unit one had to
+  // delete them — which is why the wide version had to be routed around the core
+  // and left the middle open. Narrow roads are also the ask ("smaller and more
+  // intricate"): at this width a road is a squeeze you fly, with its walls
+  // visible either side for most of its length.
+  FIELD_LANE_W: [55, 105],
+  // Share of gravel that ignores the lanes entirely. THE EDGE, not a rounding
+  // error: with none of it the channels have a crisp kerb and read as authored,
+  // which is precisely the failure that got corridors cut the first time. Small
+  // rock in a lane is also a fair obstacle — you can see it and shoot it.
+  FIELD_LANE_LEAK: 0.22,
+  // Candidate routes drawn per lane before the quietest is kept. The lanes are
+  // FOUND among the placed rock, not carved through it (world.findLanes), and
+  // this is the search budget for that. 40 is enough to find a genuinely quiet
+  // line through a pocket; it is pure arithmetic over ~300 slots, so it costs
+  // far less than one extra packing pass.
+  // Passable width a lane must retain, world units. A landmark is removed from a
+  // route only if it would leave less than this — a rock at the lane's edge is
+  // the WALL, not an obstruction, and treating contact as blockage clears a
+  // swathe either side of every route (measured: it cost two thirds of the
+  // pocket's largest rocks). At 150 a lane always admits the ship with room to
+  // correct, while still narrowing to something you have to fly rather than
+  // drift through.
+  // Passable width a road must retain. Scaled down with FIELD_LANE_W — a
+  // network of 70-unit channels cannot demand 150 units of clear passage, it
+  // would delete its own walls.
+  FIELD_LANE_MIN: 85,
+  FIELD_LANE_TRIES: 40,
+  // How far apart chosen lanes are pushed, world units. Routes that stack read
+  // as one wide gap and waste the pocket. Scored, not enforced — a crowded
+  // pocket still gets its full count rather than silently dropping a lane.
+  // Down with the lane count — 8 routes cannot be held 420 apart in a pocket
+  // that fitted 5, and forcing it just makes the extra ones fail to place.
+  FIELD_LANE_APART: 300,
   // PER-ROCK SIZE VARIATION on top of the class multiplier — every big rock
   // draws its own factor in this band. Without it the giants all came out
   // within a whisker of the same size (their masses span 14k-60k, but radius
@@ -1051,6 +1248,22 @@ export const CFG = {
   // rest of its try budget looking for better. Without an early-out the greedy
   // search costs every try on every rock, and worldgen runs constantly
   // (freshRun / mechTest).
+  // Share of packing tries drawn on a ring just off an already-placed BIGGER
+  // rock, instead of from the pocket sampler. The landmark equivalent of
+  // FIELD_RUBBLE_LOOSE's inverse — see the note in world.packBigRock for why the
+  // radial biases alone could never fix "the really large ones are all alone":
+  // the bias chooses where candidates fall, the greedy-snug score chooses which
+  // one wins, and the score always prefers wherever rock already is.
+  // Kept well under 1: at 1.0 every rock rings another one and the pocket reads
+  // as clusters of satellites rather than as terrain.
+  FIELD_PACK_BANK: 0.45,
+  // How far into the (size-ordered) slot list a bank draw may pick. This is what
+  // aims the bank at the rocks that actually need company: the pocket has only a
+  // handful of rocks over 250 units, so a uniform pick effectively never lands
+  // on one. Kept a good deal larger than the count of truly huge rocks so the
+  // mid ladder gets banked against too and the result is graded rather than a
+  // ring of satellites around six monoliths.
+  FIELD_PACK_BANK_TOP: 40,
   FIELD_PACK_SNUG: 12,
   FIELD_PACK_TRIES: 170,
   // RUBBLE. The small rock is not scattered across the pocket any more — it is
@@ -1060,7 +1273,13 @@ export const CFG = {
   // Fraction of small rock that is loose scatter instead of skirt: enough to
   // keep the pocket from reading as rings around boulders, few enough that a
   // passage stays a passage.
-  FIELD_RUBBLE_LOOSE: 0.22,
+  // RAISED 0.22 -> 0.65 when the masonry was pulled into the core (FIELD_REACH).
+  // Skirt gravel banks against big rocks, so it inherits wherever they are — and
+  // once they stopped reaching the rim, so did the gravel, and the pocket ENDED
+  // ON AN EDGE. That is the no-hard-edges law, and it is also the approach the
+  // player is supposed to be lulled by: the thin outer haze is what makes a
+  // shoal something you drift into before you notice it.
+  FIELD_RUBBLE_LOOSE: 0.65,
   FIELD_RUBBLE_BAND: [7, 179],   // how far off a host's surface its skirt sits
   // ---- WHERE THE MASS SITS IN A POCKET (user design call: the really large
   // clumped-together rocks belong near the HEART, and it should thin out and
@@ -1078,21 +1297,161 @@ export const CFG = {
   // Grindstones, seed 20260721: rocks per unit area 2.58 / 1.47 / 1.09 / 0.75 /
   // 0.81 across the five bands from heart to rim, against 0.77 / 1.10 / 0.97 /
   // 0.88 / 1.10 before — flat, and if anything edge-heavy.
-  FIELD_CORE_POW: 1.15,     // the biggest landmark: hard into the heart
-  FIELD_EDGE_POW: 0.55,     // the smallest landmark: near enough to uniform
-  FIELD_RUBBLE_POW: 0.85,   // loose gravel (the skirt gravel follows its host)
+  // Both ends were pushed out when the landmark ladder became a graded
+  // continuum (FIELD_GIANT_MASS). They had been doing almost nothing: the range
+  // was narrow AND the rank that indexed it put every giant at one end of it, so
+  // 200 rocks all drew at ~0.55-0.63 and the "gradient" was a rounding error.
+  // With the rank fixed, the range has to be wide enough to be worth indexing —
+  // mean normalised radius runs 0.29 at the core end against 0.77 at the rim,
+  // i.e. the biggest rock genuinely sits in the middle third and the smallest
+  // genuinely prefers the outside. The rim end carries most of the weight, and
+  // that is the point: FIELD_REACH already stops big rock reaching the rim by
+  // fiat, so what is left for these exponents to arrange is where the MANY small
+  // landmarks go. Left near uniform they fill the core's gaps and dilute the
+  // very contrast the grading exists for. FIELD_PACK_BIAS_FRAC is the safety valve
+  // that keeps a strong core bias from silently dropping rocks into a full core.
+  FIELD_CORE_POW: 2.4,      // the biggest landmark: hard into the heart
+  // Back toward uniform from 0.30. Pushing the small landmarks hard at the rim
+  // starved the CORE of anything to pack around the giants: the masonry goes
+  // down first and the greedy-snug rule then crowds each later rock against
+  // whatever is nearest, so rim-drawn candidates crowd against EACH OTHER out
+  // there and the biggest rocks are left sitting in their own clearings.
+  // Measured: mean gap from a 250+ rock to its nearest landmark ran ~3x that of
+  // every other size class, which is "the really large ones are all alone".
+  // FIELD_REACH already bars big rock from the rim, so this exponent no longer
+  // has to do that job and can go back to filling the pocket evenly.
+  // THE SMALLEST ROCK AIMS INWARD, and 0.55 was wrong for a reason the comment
+  // it replaces had backwards. 0.55 is very nearly area-uniform (q = u^0.5 is
+  // exactly uniform per unit area), which SOUNDS like "free to fill the core" —
+  // but the packer runs HEAVIEST FIRST, so by the time small rock is drawn the
+  // core is already saturated and every core candidate is rejected. An
+  // area-uniform sampler aimed into a full core does not spread the small rock
+  // out; it leaves it wherever there is still room, which is the rim. Reported,
+  // correctly and more than once, as the small rocks only being on the outside.
+  // 0.85 — mildly inward of area-uniform, and the pair with FIELD_PACK_FRONT is
+  // the point. Unsaturating the core is what makes room; this only has to cover
+  // the bias the placement ORDER still leaves behind. 1.25 was tried and empties
+  // the rim outright (outer-third coverage fell to 0.007, i.e. nothing to fly in
+  // through), which trades the reported bug for its mirror image — the approach
+  // has to read as a rock field or there is nothing to stumble out of.
+  // Back to 0.55 — area-uniform. 0.85 was set to drag small landmarks inward
+  // when the core was starved of small rock, but PLAIN asteroids are the right
+  // answer to that (FIELD_RUBBLE_POW now aims them at the middle), and leaving
+  // this above area-uniform just re-crowds the core with the exact class asked
+  // to shrink there.
+  FIELD_EDGE_POW: 0.55,
+  // Loose gravel (skirt gravel follows its host instead). Pulled OUT from 0.85
+  // to past area-uniform with FIELD_RUBBLE_LOOSE above and for the same reason:
+  // this is now the only draw that puts anything past the masonry's edge.
+  // 0.28 -> 1.5, and the old value did the OPPOSITE of what its comment claimed.
+  // fieldPoint takes q = pow(rng(), POW) * lobe, so a POW BELOW 1 clusters q
+  // high — i.e. pushes rock OUT to the rim. At 0.28 the loose rubble draw was
+  // shoving plain asteroids to the edge as hard as it could while the note above
+  // it said the knob "pulls inward". Measured: 457 plain asteroids in the outer
+  // third against 21 in the inner. Above 1 it genuinely aims at the middle,
+  // which is where plain rock has to be — the size range WIDENS toward the core
+  // (docs/rock-fracture.md), so the core needs the bottom of the ladder in it,
+  // not just the top.
+  FIELD_RUBBLE_POW: 1.5,
   // Share of the packer's try budget that keeps the centre bias. The rest go
   // back to a uniform draw so a rock that cannot fit in a full core is placed
   // further out instead of being silently dropped — and what gets dropped in a
   // pocket packed from the middle is precisely the biggest rocks.
   FIELD_PACK_BIAS_FRAC: 0.45,
+  // THE AREA RELIEF VALVE under FIELD_REACH below — no longer the primary limit.
+  // It is the packing fraction the masonry is assumed to reach behind its own
+  // growing edge, which is what turns "the area of everything bigger than me"
+  // into "how far out I may go" (world.seedDenseFields takes whichever of the
+  // two allowances is more generous).
+  // Its job now is narrow and worth keeping: if the big rocks genuinely do not
+  // fit inside their size allowance, this grows and lets them spill outward
+  // rather than being silently dropped — and what gets dropped in a pocket
+  // packed from the middle is precisely the biggest rocks. Set it too LOW and
+  // the valve opens early and defeats FIELD_REACH; too HIGH and it never
+  // relieves and the biggest rocks go missing instead.
+  // 0.72 -> 0.60. The area valve is what decides how full the core is allowed to
+  // get, and a saturated core is both halves of the current complaint: there is
+  // no room left for small rock to sit among the big ones, and what does get in
+  // is packed tight enough to seed contacts that overlap and judder. Leaving a
+  // fifth more of the core unclaimed is what makes FIELD_EDGE_POW's inward aim
+  // able to land anywhere.
+  FIELD_PACK_FRONT: 0.60,
+  // HOW FAR OUT A LANDMARK MAY SIT, BY ITS OWN SIZE — [smallest, biggest], in
+  // fieldFrac units. THE knob for "the giant ones should only be near the
+  // middle" (user design law), and the primary limit; FIELD_PACK_FRONT above is
+  // only the relief valve under it (world.seedDenseFields takes whichever is
+  // more generous).
+  //
+  // A shoal is meant to be a place you come into thinking everything is fine and
+  // then STUMBLE INTO. That shape is: an outer approach carrying nothing but
+  // gravel and small rock, and a core you meet all at once. The smallest
+  // landmark may therefore go anywhere at all (past the outline, into the ragged
+  // fringe), and the biggest is held inside the inner 0.45 — a fifth of the
+  // AREA, so the wall is genuinely sudden.
+  //
+  // THE CORE END HAS A FLOOR IT MUST NOT GO UNDER, and it is set by the HEART,
+  // not by taste. The heart's own reach disc plus FIELD_HEART_CLEAR already
+  // covers out to q ~0.29, so an allowance below that leaves the big rocks
+  // literally nowhere to stand: the area valve opens and dumps them into the
+  // middle third instead. Measured at 0.28 — 6.8 rocks over 150 units in the
+  // middle third against 1.3 in the core, i.e. the opposite of the intent.
+  // If FIELD_MONOLITH_R_MUL or FIELD_HEART_CLEAR move, this floor moves.
+  // Do not read the two ends as a gentle ramp between them: the class is skewed
+  // hard toward its small end (FIELD_GIANT_SKEW), so most rocks sit near the
+  // rim value and the tight end governs only the few that are actually huge.
+  FIELD_REACH: [1.15, 0.45],
+  // ...and HOW FAST the allowance falls with radius. See world.seedDenseFields:
+  // allowance = REACH[0] * (smallestLandmark / r) ^ this, floored at REACH[1].
+  // A linear ramp between the two ends was tried first and is far too generous
+  // through the middle of the ladder — a 332-unit rock, 80% of the biggest thing
+  // in the pocket, came out allowed to q 0.63, which put genuinely huge rock in
+  // the outer third and left it reading as "big asteroids the whole way".
+  // At 0.72 the curve is: ~30 units reaches 0.96, ~40 reaches 0.78, ~60 reaches
+  // 0.58, and anything from ~90 up is on the REACH[1] floor. So the exact size
+  // ordering only matters across the small end — above ~90 units every rock is
+  // simply "core", which is the design in one sentence.
+  // Decay rate of the exponential in world.setQMax: allowance goes
+  //   REACH[1] + (REACH[0] - REACH[1]) * exp(-EXP * (r/rMin - 1))
+  // so a rock at the smallest landmark size keeps the whole pocket and the
+  // allowance falls away as it grows. At 0.55 a rock twice the minimum still
+  // reaches ~0.85 of the pocket and one six times it is inside ~0.5 — the small
+  // and mid end keep the run of the place, and only the genuinely large get
+  // squeezed toward the middle.
+  FIELD_REACH_EXP: 0.55,
+  // Superseded by FIELD_REACH_EXP — the old power-law exponent. Kept only
+  // because the measurements quoted in the FIELD_REACH note above were taken
+  // against it; nothing reads it now.
+  FIELD_REACH_FALL: 0.72,
+  // How far past its own allowance a rock may spill once its biased tries are
+  // spent, as a FRACTION of that allowance (see packBigRock — additive slack
+  // conceded far more to a rock capped at 0.30 than to one allowed 1.15, i.e.
+  // it leaked hardest exactly where the cap matters most). The last-resort valve, under FIELD_PACK_FRONT —
+  // it replaces the old "open the whole pocket on the last tries", which
+  // relieved the same pressure by putting the BIGGEST rocks anywhere at all,
+  // undoing the grading precisely where it was tightest.
+  // Cut 0.22 -> 0.10 because at 0.22 it WAS the leak: a 384-unit rock allowed
+  // only to q 0.47 was landing at q 0.65 on slack alone.
+  FIELD_FRONT_SLACK: 0.10,
   // Clearance the HEART holds against the masonry, on top of both radii. The
   // ordinary per-pair gap bottoms out at 4 units, which once the big rocks are
   // drawn inward welds a ring of monoliths onto the one rock the field is named
   // for — and it is the chart entry, the AI anchor and the thing you fly in to
   // reach. Measured before this: a staged shot at a heart lost ~60% of its
   // damage to whatever was parked in front of it.
-  FIELD_HEART_CLEAR: 240,
+  //
+  // THE PRESSURE ON THIS RING TRACKS THE POCKET'S DENSITY, so re-sweep it
+  // whenever that moves. History worth keeping, because it went both ways: at
+  // ~0.7 core coverage the old failure came straight back (a staged shot at the
+  // heart lost 64% of its damage to rock parked in front of it, 294 -> 105) and
+  // it took 560 here to clear it. Once the density came down and the masonry was
+  // spaced by its true reach, the ring stopped mattering at all — swept at
+  // 170 / 260 / 340 the combat rung did not move by a single point. It now sits
+  // BELOW its old value on purpose: it is subtracted from the room the giants
+  // have to ring the heart with (see FIELD_REACH's floor), so every unit here is
+  // taken straight out of the core the design wants packed.
+  // If a future change re-densifies the core, expect this to start binding again
+  // and sweep it rather than assuming it.
+  FIELD_HEART_CLEAR: 180,
   // ...and the SIZE gradient. A rock's mass ladder is drawn against how far out
   // it lands: the chunky tier's share falls from core to rim, and the whole
   // ladder is scaled on top of that. The endpoints are chosen so the pocket's
@@ -1117,7 +1476,11 @@ export const CFG = {
   // position, so biasing the samplers alone leaves the density flat). The count
   // is unchanged — a rejected draw is retried, so the same rocks end up further
   // in rather than fewer of them.
-  FIELD_EDGE_KEEP: 0.30,
+  // Raised 0.30 -> 0.80 with FIELD_RUBBLE_LOOSE / FIELD_RUBBLE_POW: the rim
+  // thinning was tuned when the masonry reached the outline and the gravel had
+  // its density from banking against it. With the big rock pulled inward, the
+  // old value thinned an outer region that had nothing else left in it.
+  FIELD_EDGE_KEEP: 0.80,
   FIELD_CHUNK_CORE: 0.62, FIELD_CHUNK_EDGE: 0.24,
   FIELD_GRAVEL_TAPER: [1.80, 0.87],   // mass scale at the heart / at the rim
   // Field-rock hp ceiling. Without it FIELD_HP_MUL made a monolith ~34,000 hp
@@ -1140,6 +1503,162 @@ export const CFG = {
   // material is that hits SEND ROCKS FLYING, and inheriting the world's
   // deliberately deadened bounce defeated it.
   FIELD_BOUNCE: 0.92,
+  // ---- THE POCKET SETTLES (user design call: "even though we're in space, the
+  // rocks should have friction on them so they eventually slow back down and we
+  // don't end up with everything just breaking").
+  //
+  // Field rock feels no gravity, so before this NOTHING removed energy from a
+  // knocked rock except FIELD_BOUNCE, and 0.92 restitution across a pocket of
+  // 800 touching rocks decays about as fast as it spreads. A cascade therefore
+  // had no end state: rock stirred up in minute one was still crossing the
+  // pocket at damage speed in minute ten, so the shoal ground itself down
+  // instead of returning to being a place.
+  //
+  // The damping is toward THE POCKET'S OWN FLOW, never toward zero. A shoal
+  // orbits — a rock damped toward rest in the sun frame would fall out of the
+  // pocket and the whole field would smear along its lane within minutes. Flow
+  // velocity is the rigid pocket's rail velocity at the rock's position (one
+  // shared f.w — see world.seedDenseFields), so "stopped" means "riding with
+  // its neighbours again", which is the state it was seeded in.
+  // Applied as exp(-k*dt) on the RELATIVE velocity, so it is frame-rate
+  // independent and never overshoots into a reversal.
+  // GENTLE. This governs how long a knocked rock keeps moving, and at 0.34 it
+  // stopped almost immediately — combined with the home spring the pocket read
+  // as glued rather than as heavy. The ask is that a rock moves somewhat and
+  // then works its way back VERY SLOWLY, which is a long, weak return, not a
+  // fast one.
+  FIELD_DRAG: 0.12,
+  // ...but a LIVE PLAYER THROW barely feels it. A throw that visibly bled speed
+  // on its way to the target would make the aim marker lie (tractor.js solves
+  // the lead against a straight line) and quietly nerf every heavy throw. Scoped
+  // to thrownTimer, so it covers exactly the window the throw is credited for.
+  FIELD_DRAG_THROWN: 0.04,
+  // Once a rock is this slow relative to the flow it REJOINS THE RAIL. Drag
+  // alone leaves an asymptotic tail of thousands of nearly-stopped free bodies —
+  // all awake, all integrating, none of them doing anything — and the rigid
+  // pocket is defined by every rock sharing one exact angular rate, which an
+  // asymptote never quite reaches. Re-railing is the actual end state, and it
+  // is the same idiom the installations use when they fly home.
+  // Gated on still being in or near its own pocket (FIELD_SETTLE_FRAC, in
+  // fieldFrac units): a rock knocked clear across the system keeps drifting,
+  // because re-railing that one would snap it onto a circular orbit at whatever
+  // radius it happened to reach and call it shoal.
+  // A settling rock must be CONTACT-FREE for this long before it may go back on
+  // rails. Railing while still touching something freezes the overlap — the
+  // railed-pair pass-through in physics.collide treats two railed rocks of one
+  // pocket as a rigid body, so neither can ever separate again, and the rock's
+  // only escape is to be derailed, drift home and rail into the same occupied
+  // spot once more. That churn is what made a pocket accumulate overlap for as
+  // long as you played in it (seeded at 3 overlapping pairs; 139 after 120s,
+  // every one of them both-railed).
+  //
+  // 0.3s, not a frame or two: the point is that the neighbour has had time to be
+  // pushed clear and STAY clear, not merely that this instant happens to be
+  // quiet. Cheap either way — a rock that fails the test simply stays dynamic,
+  // which is the state it was already in.
+  // HOW HARD THE SHIP CAN SHOVE A LANDMARK. The generic ship-vs-body kick uses
+  // shipM / (shipM + mass), which against a 8,000-460,000 mass landmark is ~0.004
+  // — the rock did not move, derail or spin at any speed. This scales the mass
+  // in that knee instead of bypassing it, so the response still grades with what
+  // you hit: a rim rock is properly shoved, a core monolith gives a couple of
+  // units and stays. Lower = the shoal shrugs the ship off harder.
+  FIELD_SHIP_MASS_K: 0.02,
+  // ABSOLUTE ceiling on what one ram can impart to a landmark, at any tier.
+  // Without it the softened knee above inverts late-game (shipM reaches ~1030
+  // against an effective rock mass of 600) and a single ram launches a monolith
+  // hard enough to break its neighbours, which break theirs — one hit takes the
+  // whole pocket. 55 is comfortably a shove you can see and comfortably under
+  // the speed at which field rock damages field rock, so the shoal answers the
+  // ship without ever being weaponised by it.
+  FIELD_SHIP_KICK_MAX: 55,
+  // How fast a fracture piece leaves its parent's centre. Low on purpose: the
+  // pieces were CUT from that outline and the break reads best when they open
+  // along the seams and drift, so you can still see the rock they came out of.
+  // Fast ejecta reads as a firework and throws away the one thing the baked
+  // fracture tree buys — that the pieces match.
+  // Camera-shake ceiling. physics.addShake approaches this asymptotically rather
+  // than clamping to it — see the note there.
+  SHAKE_MAX: 26,
+  // Floor: an event smaller than this earns no camera shake at all. Ambient
+  // chipping calls addShake continuously with tiny amounts, which summed to a
+  // permanent tremble — most visible at high tier, where the wider view turns
+  // the same world-space wobble into more screen movement.
+  SHAKE_MIN: 1.6,
+  // Distance at which a positioned shake event contributes nothing. Events that
+  // pass no position (hull hits, your own ram) are unaffected and always land at
+  // full strength — this only stops the far side of a pocket from shaking you.
+  SHAKE_RANGE: 2600,
+  // Minimum gap between two POSITIONED shake events. Without it a long cascade
+  // tops the camera up faster than the exp(-7t) decay can drop it and the shake
+  // runs for the whole event. Ship-local hits ignore this.
+  SHAKE_CD: 0.9,
+  // Odds a hard hit on a shaped landmark still sheds a crust slab. 0.05 — the
+  // fracture tree is how a landmark expresses damage now, and the old per-hit
+  // spray was burying a pocket in gravel on top of it. See physics.js.
+  FIELD_CALVE_CHANCE: 0.05,
+  FIELD_BREAK_SPREAD: 26,
+  // Fraction of the parent's velocity a fracture piece inherits at LOW parent
+  // speed, and (FIELD_BREAK_SOFT) the speed above which that fraction starts
+  // falling further still. A rock nudged apart keeps most of its drift — it
+  // should stay with the pocket it belongs to; a rock hit hard enough to
+  // shatter has SPENT that energy on shattering, so its pieces come out far
+  // slower than the thing that broke. Without this one tier-5 throw cascaded
+  // through a whole pocket: a 458,000-mass monolith flung at throw speed became
+  // four pieces each still doing throw speed.
+  FIELD_BREAK_KEEP: 0.55,
+  FIELD_BREAK_SOFT: 220,
+  // Ceiling on the spin a single impact can impart. Landmarks are seeded slow on
+  // purpose (a 300-unit slab whipping round reads as debris, not as terrain), so
+  // a hit must be able to set one turning without letting a fast graze put it
+  // into a spin the drag then takes a minute to bleed off.
+  FIELD_SPIN_MAX: 0.30,
+  FIELD_RAIL_CLEAR: 0.3,
+  FIELD_SETTLE_V: 3,
+  FIELD_SETTLE_FRAC: 1.35,
+  // ...AND IT GOES BACK WHERE IT BELONGS, not merely still (user design law:
+  // "the rocks should slowly revert back to their rail after getting moved
+  // around — we want to keep the swimlanes mostly intact"). Each rock carries
+  // the pocket-frame position it was seeded at (world.setFieldHome) and is
+  // pulled toward it; against FIELD_DRAG that is a damped spring in the pocket's
+  // rotating frame, so it converges instead of ringing.
+  // THE POINT IS THE LANES. Settling wherever a rock happened to stop silts a
+  // route up over a run, and the routes are the one part of the layout that has
+  // to survive being fought in — they are also the first thing a cascade fills.
+  // A (accel cap) is what keeps this from reading as the rock being dragged
+  // home: at 9 u/s^2 a rock 600 units out takes the better part of half a minute
+  // to work its way back, which is "slowly". K is the spring rate that governs
+  // the last stretch, so a rock a few units off does not creep for ever.
+  // Never applied to a live player throw — it would curve the shot.
+  FIELD_HOME_A: 2.2,
+  FIELD_HOME_K: 0.012,
+  // How close to home counts as home for the re-rail. This is a TOLERANCE, not a
+  // target: the rock re-rails where it is, it is not teleported onto its home
+  // (that dropped rocks on top of whatever had drifted into the spot, and two
+  // railed rocks of one pocket never separate). Tightened from 130 with the
+  // teleport removed, so the spring does the work and the layout that comes back
+  // is closer to the one that was seeded — the lanes above all.
+  // TIGHT, and that is a correctness matter rather than a tidiness one: a rock
+  // re-rails where it stands, so a loose tolerance re-rails it into whatever has
+  // drifted into the spot, and a railed pair can never separate. Home itself is
+  // a position the packer proved clear; the closer this is to zero, the closer
+  // re-railing is to landing somewhere known good.
+  FIELD_HOME_SNAP: 20,
+  // ---- BIG-ROCK CONTACT. Tangential friction at the contact, and the spin it
+  // implies — scoped to bigShape pairs (Coulomb friction on every pebble in the
+  // sky is a different, much larger change, and the complaint was about the
+  // landmarks). Without these a landmark collision has NO tangential term at
+  // all: two angular slabs meeting corner-to-face exchanged a pure normal
+  // impulse and slid across each other without either one turning, which is the
+  // single most visible way "the big rocks don't collide correctly".
+  // Friction is a fraction of the normal impulse, Coulomb-clamped to the
+  // tangential velocity so it can never reverse the slide.
+  FIELD_BIG_FRICTION: 0.35,
+  // How much of the implied angular impulse actually lands. A rubble pile is not
+  // a rigid body and these rocks have no real inertia tensor — the moment of
+  // inertia used is the uniform disc's (0.5*m*r^2). Damped so a graze adds a
+  // believable tumble instead of setting a 300-unit monolith spinning like a
+  // top; the cap in physics.applyBigSpin is the hard backstop.
+  FIELD_BIG_SPIN: 0.45,
   FIELD_TOUGH: 0.08,       // x damage on field-vs-field impacts (unless a player throw is involved)
   // ...and the MIRROR of it: shoal rock is tough against its own kind and
   // DANGEROUS TO YOU. The pockets are meant to be high risk / high reward and
@@ -1225,7 +1744,16 @@ export const CFG = {
   // LURKER_HP, is what actually makes it hard to kill: see the note at the cap
   // in physics.collideAlienBody for why hp alone cannot work here.
   LURKER_HIT_CAP: 0.34,    // => 3 hits minimum
-  LURKER_RADIUS: 10,
+  // 10 -> 13, WITH render.js scaling its draw by LURKER_DRAW to hold the on-screen
+  // size exactly where it was. The sprite is a splinter spanning r*1.7 at the
+  // nose to -r*1.3 at the tail — a mean extent about 1.26x the radius — while it
+  // collided as a plain circle of r, so the nose spike and the tail sat visibly
+  // OUTSIDE the hitbox and shots through them missed. The collider now matches
+  // the silhouette instead of the silhouette overhanging the collider.
+  LURKER_RADIUS: 13,
+  // Draw scale that keeps the visual size unchanged across that radius bump
+  // (10/13). Render multiplies the sprite by this; nothing else reads it.
+  LURKER_DRAW: 0.77,
   LURKER_DMG: 16,          // contact damage per slash pass (grabbers hit for 24)
   // x ALIEN_SPEED. Still the quickest thing in the sky up close, but no longer
   // by so much that it is simply everywhere at once: at 1.35 (446, charging at
@@ -1243,7 +1771,14 @@ export const CFG = {
   // Cutting the cap 18% moved the MEAN speed only 200 -> 180: a lurker spends
   // most of its time manoeuvring under ai.steer's arrive damping rather than
   // flat out. The 18% lands in full on the charge, which is the part you feel.
-  LURKER_SPEED: 1.1,
+  // 1.1 -> 0.55, halved. The notes above are kept because their MEASUREMENTS are
+  // still the reference points, but their conclusion no longer holds: at 1.1 a
+  // lurker outran an early hull badly enough that the tell had no time to read
+  // as a tell. The floor those notes name is the thing to watch — the pocket's
+  // own orbital flow runs 103 at The Shoal down to 52 at The Farshoal, and this
+  // is an ABSOLUTE budget rather than a flow-relative one, so halving again from
+  // here would put a lurker below the rock it is supposed to be chasing.
+  LURKER_SPEED: 0.55,
   // The lurker fights like a BRAWLER, not a grabber: it has no beam, it
   // BODY-CHECKS field rocks at you. Ambient rock contact can't hurt it (it
   // lives in the rocks — see the shove branch in physics.collideAlienBody);

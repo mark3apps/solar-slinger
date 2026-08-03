@@ -654,6 +654,74 @@ export function rockShape(id) {
   return { kind, verts, ring, reach, lut, nlx, nly };
 }
 
+// DIRECTIONAL REACH — the max surface radius within each of SECT_N sectors,
+// each widened by half a sector on both sides so the value is a valid upper
+// bound for EVERY bearing that falls in it.
+//
+// `shape.reach` is the max over the whole outline, and using it as a packing
+// bound is what left the biggest landmarks visibly stranded: a rock's corner
+// reaches 1.49x its radius on average, so a 400-unit rock reserves ~196 units of
+// margin in every direction to protect a corner that points ONE way. Measured,
+// mean surface-to-surface gap to the nearest neighbour: ~30 units for every size
+// class except 250+, which sat at 85.
+// Per sector the bound is honest — most directions off a slab are nowhere near
+// its longest corner — so the packing is as tight for a monolith as for a
+// pebble, and it is still a strict upper bound, so nothing can overlap.
+// Cheap: one array of SECT_N floats per shape, built once, one index to query.
+// 32, not 16: the bound is the max over a sector WIDENED by half a sector on
+// each side, so coarse sectors smear one long corner across a 45-degree arc and
+// the biggest rocks pay for it everywhere. Halving the arc measurably tightened
+// their packing; the table is 32 floats built once per shape, so resolution here
+// is nearly free.
+const SECT_N = 32;
+export function rockSectors(shape) {
+  if (shape.sect) return shape.sect;
+  const sect = new Float32Array(SECT_N);
+  const per = LUT_N / SECT_N;
+  for (let k = 0; k < SECT_N; k++) {
+    let m = 0;
+    // Half a sector of overhang on each side: a bearing anywhere inside sector k
+    // must be bounded, and the outline between samples can rise above both.
+    const from = Math.floor(k * per - per / 2), to = Math.ceil((k + 1) * per + per / 2);
+    for (let i = from; i <= to; i++) {
+      const v = shape.lut[((i % LUT_N) + LUT_N) % LUT_N];
+      if (v > m) m = v;
+    }
+    sect[k] = m;
+  }
+  shape.sect = sect;
+  return sect;
+}
+
+// The bound for `shape` toward LOCAL bearing `th`, over a window of +/- `half`
+// radians (callers subtract b.rot, as everywhere else). Fraction of body radius,
+// like rockSurfAt.
+//
+// THE WINDOW IS NOT OPTIONAL WHEN BOTH BODIES ARE LARGE, and getting it wrong
+// reintroduces the exact clipping this bound was brought in to avoid. Bounding
+// only the centre-line direction is the same blindness the old collider had: two
+// star polygons can clear along the line joining their centres and still
+// interlock at a corner off it. The contact between two rocks can happen
+// anywhere within roughly +/- asin(otherReach / distance) of that line, so that
+// is the arc the bound has to cover. For a pebble against a slab the window is a
+// couple of degrees and the bound stays tight; for two monoliths it is wide, and
+// it should be.
+export function rockReachAt(shape, th, half = 0) {
+  const sect = shape.sect || rockSectors(shape);
+  if (!(half > 0)) {
+    const k = Math.floor((th / TAU) * SECT_N);
+    return sect[((k % SECT_N) + SECT_N) % SECT_N];
+  }
+  const lo = Math.floor(((th - half) / TAU) * SECT_N);
+  const hi = Math.ceil(((th + half) / TAU) * SECT_N);
+  let m = 0;
+  for (let k = lo; k <= hi; k++) {
+    const v = sect[((k % SECT_N) + SECT_N) % SECT_N];
+    if (v > m) m = v;
+  }
+  return m;
+}
+
 // Surface reach (fraction of body radius) along a LOCAL bearing — callers
 // subtract b.rot exactly as they do for crystal shards and craters. A plain
 // index plus a lerp, because the profile is already sampled at even bearings:
@@ -682,9 +750,27 @@ export function rockSurfAt(shape, th) {
 // against the wrong face. (Caught in review by Copilot on PR #67. It was
 // inherited from when this table was sampled at bearings rather than built per
 // edge, where a half-cell slip only moved a discontinuity by 0.7 degrees.)
+// SMOOTHED OVER A FEW EDGES, and that is not a softening of the rule above — it
+// is what makes the rule usable on THIS outline. util.rockOutline carries 1/f
+// grain, so at 256 samples (1.4 degrees each) neighbouring edges on a rough
+// stretch can point tens of degrees apart. The resolver takes its bounce
+// direction from whichever single edge the contact bearing lands on, so a rock
+// grinding along a big one draws a new, unrelated normal every substep and
+// caroms off in a different direction each time — reported as rocks bouncing
+// strangely off other rocks.
+// A real FACET spans many samples, so averaging across five of them leaves flat
+// faces and corners exactly where they were (the thing the FLOOR contract above
+// protects) and removes only the per-sample grain, which was never a surface the
+// player could see.
+const NRM_SMOOTH = 2;   // samples either side
 export function rockNormalAt(shape, th) {
-  const i = ((Math.floor((th / TAU) * LUT_N) % LUT_N) + LUT_N) % LUT_N;
-  return Math.atan2(shape.nly[i], shape.nlx[i]);
+  const c = Math.floor((th / TAU) * LUT_N);
+  let sx = 0, sy = 0;
+  for (let k = -NRM_SMOOTH; k <= NRM_SMOOTH; k++) {
+    const i = (((c + k) % LUT_N) + LUT_N) % LUT_N;
+    sx += shape.nlx[i]; sy += shape.nly[i];
+  }
+  return Math.atan2(sy, sx);
 }
 
 // THE BIG-ROCK SURFACE — its broken outline with its impact craters taken out

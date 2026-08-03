@@ -313,6 +313,23 @@ give directions by). Rules that keep it from breaking the invariants above:
       in a pocket built for knocking rocks together would quietly turn the shoal into its own solar
       system. It is also the only reason 2000+ of them are affordable: the hot loop is
       O(bodies x attractors), and field rock adds to neither side of it.
+    - **...but INSIDE ITS OWN POCKET IT HAS FRICTION, AND IT SETTLES** (`CFG.FIELD_DRAG`, user design
+      call). Gravity-free meant nothing at all removed energy from a knocked rock, and `FIELD_BOUNCE`
+      0.92 across 800 touching rocks decays about as slowly as it spreads — so a cascade had no end
+      state and the pocket ground itself down instead of returning to being a place. Rock is damped
+      toward THE POCKET'S OWN FLOW (the rigid `f.w` rotation at its position), never toward rest: a
+      shoal orbits, and damping toward zero in the sun frame drops rock out of its lane and smears
+      the field along it. Below `FIELD_SETTLE_V` relative it REJOINS THE RAIL, because drag alone
+      only asymptotes and leaves thousands of nearly-stopped free bodies awake forever.
+      Three gates, each load-bearing: **only inside the pocket** (`FIELD_SETTLE_FRAC` — `w * r`
+      evaluated out where an escapee flew to is a speed nothing there should have, and damping toward
+      it ACCELERATES the escapee; measured at a fixed 1,479 u/s relative for a whole run before the
+      gate), **barely at all during a live player throw** (`FIELD_DRAG_THROWN` — the aim solver leads
+      against a straight line, so a visibly decaying throw makes the marker lie), and **no re-rail
+      within 1.5s of a knock** (`liveT`, or the rail advance fights the contact resolver and the rock
+      judders). Outside the pocket, the straight-line drift above is unchanged.
+      Measured: 399 rocks kicked to 150 u/s, of which 399 were above the damage gate — under 10 after
+      60s, ~2 after 120s.
     - **Near-elastic bounce**: field-vs-field uses the FLAT `FIELD_BOUNCE` (0.92), not a multiplier
       on the world's deadened `RESTITUTION` (scaling it still thudded). Kept under 1 — at e >= 1
       every hit ADDS energy and the pocket boils itself apart. Field rocks are also EXEMPT from the
@@ -347,16 +364,101 @@ give directions by). Rules that keep it from breaking the invariants above:
       see the billiards depth cap in the design laws. Unbounded, the propagated `thrownBy = 'player'`
       mark defeated this damp across the whole pocket, which is also why the shoal did NOT survive
       being knocked around "indefinitely" as this rule intends.
+    - **THE LANDMARK LADDER IS GRADED BY RADIUS, AND THAT IS A DESIGN LAW** (user: "it should start
+      out with just the little and mid sized rocks and as you get closer to the center, really pack in
+      the large ones"). `FIELD_GIANT_MASS` is `[rim, core]`, walked in LOG space across the sorted
+      list (`FIELD_GIANT_SKEW` weights the count toward the small end), and `FIELD_GIANT_R_MUL` is a
+      `[rim, core]` pair walked with it — density falls with size, which is what buys a mid-size rung
+      without dropping the class's small end below the gravel it has to outweigh.
+      **Four things must move together or the grading silently stops working:**
+      1. **A ROCK'S ALLOWED REACH FALLS AS A POWER OF ITS RADIUS** (`CFG.FIELD_REACH` `[rim, core]`
+         plus `FIELD_REACH_FALL`) — the primary limit and the direct statement of the law. Two
+         things that look adequate and are not: biasing the *sampler* does nothing, because
+         `packBigRock`'s greedy-snug scoring fills outward from whatever is already placed and
+         saturates to one flat coverage everywhere it can reach (measured: mean landmark radius
+         across five equal-AREA bands 165/153/157/153/121, coverage 0.61/0.68/0.66/0.59/0.24 — flat
+         until the rim); and a LINEAR ramp between the two ends is far too generous mid-ladder — a
+         332-unit rock, 80% of the biggest in the pocket, came out allowed to q 0.63, so the outer
+         third still held rock over 300 units.
+      2. **A cumulative-AREA valve sits underneath it** (`FIELD_PACK_FRONT`), and it cannot be the
+         primary limit — it derives reach from TOTAL area, so one shared envelope governs every rock,
+         and tightening it enough to hold giants in the middle confines the SMALL rock there too.
+         Its remaining job is to let big rock spill outward rather than be dropped when it genuinely
+         does not fit. `FIELD_FRONT_SLACK` is proportional, not additive: a flat slack concedes far
+         more to a rock capped at 0.30 than to one allowed 1.15, i.e. it leaks hardest exactly where
+         the cap matters most.
+      3. **The core allowance has a FLOOR set by the heart**, not by taste. The heart's own reach
+         disc plus `FIELD_HEART_CLEAR` already covers out to q ~0.29, so an allowance below that
+         leaves the big rocks nowhere to stand and the area valve dumps them into the middle third
+         instead — measured at 0.28, 6.8 rocks over 150 units in the middle third against 1.3 in the
+         core, the exact opposite of the intent. `FIELD_HEART_CLEAR` is therefore subtracted from the
+         room the giants have, and sits BELOW its historic value on purpose.
+      4. **The OUTER THIRD's mean size is floored by the class's own small end.** That region holds
+         nothing but the bottom of the ladder, so its mean can never fall below the mean of
+         `FIELD_GIANT_R_MUL[0]`-scaled rock. At a 2.4 rim multiplier the floor averaged ~39 and the
+         outer third bottomed out at 48 whatever else moved; 1.9 is what let it reach 37.
+      5. **`FIELD_HEART_CLEAR` tracks the pocket's DENSITY** — re-sweep when that moves. At ~0.7 core
+         coverage the old failure returned exactly (a staged shot at the heart lost 64% of its damage
+         to rock parked in front of it, 294 -> 105) and needed 560; once density came down and the
+         masonry was spaced by its true reach, sweeping 170/260/340 moved the combat rung by nothing.
+
+      Measured shape, in THIRDS BY RADIUS (the terms the design is stated in) — mean landmark radius
+      78 / 62 / 37, coverage 0.19 / 0.41 / 0.05, and rocks at or above 150 units 1.3 / 6.8 / **0**.
+      The outer third contains no large rock at all; its largest is ~54 units.
+    - **THE MASONRY IS PACKED BY ITS REACH, NOT ITS RADIUS, AND THE GAP BAND GOES NEGATIVE.** A
+      landmark's corners reach 1.14–1.62x its nominal radius (`util.rockShape`'s `reach`), so packing
+      on `r` reserved a footprint about half the size of the rock that went into it and the masonry
+      was born INTERLOCKED — visibly overlapping and clipping on every seed, before anything moved.
+      The silhouette and rotation are therefore drawn from the seeded stream BEFORE placement and
+      stamped onto the body as `_shape` / `rot`, which is what every consumer already reads.
+      Spacing uses `reach` rather than the extent along the pair's bearing, because a bearing test
+      fails the same way the old collider did — two star polygons can clear along the centre line and
+      still interlock off it (measured: 60–75 overlapping pairs survived a bearing test, worst 237
+      units) — and probing enough bearings to catch that is not affordable in a packer that runs
+      hundreds of rocks x 170 tries x every placed slot on every worldgen.
+      The bound is DIRECTIONAL (`util.rockReachAt` — the max within a sector, not over the whole
+      outline) and it **must be widened by the arc the other rock subtends**: a centre-line bound is
+      the same blindness the old collider had, and two large rocks interlock at a corner off it
+      (measured: worst 95u of overlap). But a bound safe enough to guarantee that is pessimistic
+      enough to strand the biggest rocks — mean surface gap to the nearest landmark ~30 units for
+      every size class except 250+, which sat at 89. So the bound is used to **accept** (free, always
+      right) and `world.pairClearance` — a 7-sample exact probe, the same idea as
+      `physics.bigPenetration` — arbitrates the near misses. That combination gives zero overlap AND
+      uniform spacing.
+      **Small rock BANKS against big rock** (`FIELD_PACK_BANK`, picking from the size-ordered head of
+      the slot list): the greedy-snug rule is otherwise rich-get-richer — it scores candidates by
+      distance to the nearest neighbour, so every later draw crowds into whatever region already has
+      the most rock, and the biggest rocks, placed first and alone in the core, stay alone. No amount
+      of radial-bias tuning fixes it, because the bias picks where candidates FALL and the score picks
+      which one WINS.
+    - **SWIMLANES** (`world.findLanes`, `CFG.FIELD_LANE_*`) — routes rim to rim so that following one
+      gives a better shot of getting out. They are **found among the placed rock, not carved through
+      it**, which is both why they do not read as authored and why they cost almost nothing: carving
+      first cost two thirds of the pocket's largest rocks (27 -> 8). They **skirt the core** for a
+      geometric reason, not an aesthetic one — a lane is ~180 units of half-width against a ~300-unit
+      core rock, so a core-crossing route would have to thread 960-unit gaps that do not exist, and
+      can only be built by deleting what it crosses. A landmark is removed only if it would leave
+      less than `FIELD_LANE_MIN` of passage: a slab at a lane's edge is the WALL, not an obstruction.
+      Gravel is cleared too — the earlier corridor attempt failed partly because it was not, and
+      "the thing actually blocking you was gravel" — but `FIELD_LANE_LEAK` of it stays, so a route is
+      where rock thins out rather than a channel with a kerb.
     - **GIANTS** (`FIELD_GIANTS` per pocket) shatter into a spray of smaller field rock, and shards
       over 3000 mass are giants themselves — a bounded cascade, not an unbounded chain. This is the
       shoal's chaos engine. The shard budget must stay ABOVE the world's steady-state body count or
       the cascade silently never fires. Above them sit **MONOLITHS** (`FIELD_MONOLITHS` + the named
-      heart, `FIELD_MONOLITH_MASS` 3e5-4.8e5): drawn at `FIELD_MONOLITH_R_MUL` 6.8 for ~258-408
-      units against a giant's ~146-311 (`FIELD_GIANT_R_MUL` 10.2) — RADIUS only, the mass is
-      untouched — the rocks you steer by from across the pocket. Field-rock hp is
+      heart, `FIELD_MONOLITH_MASS`): drawn at `FIELD_MONOLITH_R_MUL` 4.62, against a giant's
+      `FIELD_GIANT_R_MUL` [2.3, 5.53] rim-to-core ramp — RADIUS only, the mass is untouched — the
+      rocks you steer by from across the pocket.
+      **That ceiling is bounded by `TIERS.ceil[5]` (1.2e6)** — the heart takes `MASS[1]`, and a
+      monolith above the ceiling is permanently ungrabbable at every tier, which throws away the
+      payoff the whole landmark is built around. Field-rock hp is
       capped at `FIELD_HP_CAP` (5200) precisely so a monolith stays breakable by a thrown moon-class
       mass — FIELD_HP_MUL alone made one ~34k hp, i.e. unbreakable, contradicting the calving design.
       A thrown monolith IS a rail disturber (mass > 5e4) — that's existing thrown-giant drama.
+      The masses were raised as a whole (user: "much more mass so they don't move nearly as easily"),
+      which is a deliberate, scoped reversal of the radius-not-mass rule: a core giant is now >20x
+      nearly all of the pocket's gravel, so invariant 4 makes it immovable to a pebble, while staying
+      close enough to a large moon that real mass still shifts it.
     - Field rock is why the view-local spawner's global asteroid cap is 9800 (was 380) and the world
       runs ~3,730 bodies (2,960 field rock + 768 non-field, measured). The cap is far above the
       steady state at today's `FIELD_ROCKS` 740; it was sized when a pocket held 1,900. Headless
