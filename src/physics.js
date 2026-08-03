@@ -1699,7 +1699,7 @@ function surfNormal(body, ang) {
 
 function collideBodies(game, a, b) {
   // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
-  // (or gets ground by it) until the flick launches it back into play.
+  // (or gets ground by it) until the window launches it back into play.
   if (a.parryFrozen || b.parryFrozen) return;
   // FRESH FRAGMENTS PASS THROUGH OTHER DEBRIS (CFG.CHUNK_INERT). Rock-on-rock
   // is where the split cascade lived: pieces of a shattered slab landing in a
@@ -2459,28 +2459,31 @@ function collideShipBody(game, s, b, dt) {
 // heading, inside hull + st.deflectReach) and freezes them where they are.
 // Capacity is the rank (rank 2 can hold two rocks mid-freeze, rank 3 three)
 // and late arrivals JOIN the running window rather than restarting it, so a
-// volley of alien throws freezes as a volley. While a session is live: every
+// volley of alien throws freezes as a volley. While a session is live every
 // rock is pinned at its capture bearing/distance riding with the ship (no
-// teleport to the hull — it freezes where the field caught it), the nose is
-// locked (the steering block checks game.parry), and the mouse is repurposed
-// as a FLICK — direction read from RAW SCREEN deltas (game.mouseSX/SY,
-// stashed by main.js), never from game.aim: the camera chases the ship, so
-// world-space aim deltas are contaminated by camera motion and a stationary
-// mouse would read as a flick. Launch fires on a decisive flick (snappy for
-// skilled hands) or at window's end: a flick hurls EVERY held rock that way
-// (the riposte volley); no flick sends each back out along its own capture
-// bearing. Screen axes map to world axes (translate+scale only), so the
-// screen direction IS the world direction. Deflectable = the same loose-rock
-// filter as everywhere (asteroid, never Vesper, not held/own-throw) plus the
-// beam-scale mass cap — render.drawDeflectable mirrors this exactly for the
-// incoming-rock indicator; keep them in sync or the hint lies.
-const PARRY_ARC = 1.05;   // half-angle around the nose (~60°) — "in front of the ship"
-// Screen-pixels of mouse travel that count as a deliberate FLICK (launches
-// early). Tuned UP twice — 46 fired on an ordinary aiming twitch, and even
-// 120 still felt hair-triggered (user: "even further before triggering").
-// Below it, motion only AIMS; the launch then waits for the window.
-// render.drawParry imports this so the arrow fills toward the real threshold.
-export const PARRY_FLICK = 210;
+// teleport to the hull — it freezes where the field caught it) and the mouse
+// keeps doing its ordinary job: the nose tracks it and the volley is AIMED
+// at it. LAUNCH IS ON THE CLOCK, NOT ON THE INPUT — when the window runs out
+// every held rock fires along ship→cursor at that instant (the riposte
+// volley). It used to fire on a mouse FLICK read from raw screen deltas, and
+// that spent the parry on an ordinary aiming twitch; the threshold was raised
+// twice and still misfired, so the flick is GONE. The window is the timer,
+// the cursor is the aim, and the two no longer fight over one input.
+// Ship-relative, NOT rock-relative (the tractor fling's own rule): the field
+// is nose-anchored and the riposte reads as one arrow, and at any real target
+// range the two directions differ by less than the pin radius anyway.
+// Deflectable = the same loose-rock filter as everywhere (asteroid, never
+// Vesper, not held/own-throw) plus the beam-scale mass cap —
+// render.drawDeflectable mirrors this exactly for the incoming-rock
+// indicator; keep them in sync or the hint lies.
+// Half-angle around the nose (~60°) — "in front of the ship". EXPORTED
+// because render draws this exact wedge twice (the armed nose rail and the
+// deflectable-rock hint); a private copy in render.js would drift.
+export const PARRY_ARC = 1.05;
+// How long the "armed again" bloom lasts once the cooldown clears. Purely a
+// render timer, but it decays on the SAME clock as the cooldown that fires
+// it (below) so the pop and the state it announces can never disagree.
+export const PARRY_READY_T = 0.5;
 function parryEligible(game, b) {
   const s = game.ship;
   return b.alive && b.type === 'asteroid' && !b.majorComet && !b.heldBy &&
@@ -2489,7 +2492,15 @@ function parryEligible(game, b) {
     Math.abs(angDiff(Math.atan2(b.y - s.y, b.x - s.x), s.angle)) <= PARRY_ARC;
 }
 function updateParry(game, dt) {
-  if (game.parryCd > 0) game.parryCd -= dt;
+  if (game.parryCd > 0) {
+    game.parryCd -= dt;
+    // ARMED AGAIN. Fired on the CROSSING, so the tell can't retrigger while
+    // the field simply sits ready, and a fresh run (which assigns parryCd = 0
+    // rather than counting it down) never pops on frame one.
+    if (game.parryCd <= 0) game.parryReadyT = PARRY_READY_T;
+  } else if (game.parryReadyT > 0) {
+    game.parryReadyT -= dt;
+  }
   const s = game.ship, st = game.st;
 
   // Field scan: start a session, or grow a live one up to capacity
@@ -2508,10 +2519,7 @@ function updateParry(game, dt) {
       const nx = dx / d, ny = dy / d;
       const closing = -((b.vx - s.vx) * nx + (b.vy - s.vy) * ny);
       if (closing <= 60) continue;               // drifting past, not incoming
-      if (!game.parry) {
-        game.parry = { t: 0, window: st.deflectWindow, rocks: [],
-          mx0: game.mouseSX ?? 0, my0: game.mouseSY ?? 0 };
-      }
+      if (!game.parry) game.parry = { t: 0, window: st.deflectWindow, rocks: [] };
       game.parry.rocks.push({ b, nx, ny, hold: Math.max(d, s.radius + b.radius + 4) });
       b.parryFrozen = true;
       derail(b);
@@ -2541,14 +2549,19 @@ function updateParry(game, dt) {
     r.b.vx = s.vx; r.b.vy = s.vy;
   }
   p.t += dt;
-  const fx = (game.mouseSX ?? 0) - p.mx0, fy = (game.mouseSY ?? 0) - p.my0;
-  const mag = Math.hypot(fx, fy);
-  if (p.t >= p.window || mag > PARRY_FLICK) {
-    const flicked = mag > 12;
-    const fdx = flicked ? fx / mag : 0, fdy = flicked ? fy / mag : 0;
+  if (p.t >= p.window) {
+    // The whole volley leaves along ship→cursor, read at the moment the
+    // window closes. A cursor sitting on the hull carries no direction, so
+    // that degenerate case falls back to each rock's own capture bearing —
+    // straight back the way it came, which is what a parry with nowhere to
+    // aim should do. render.drawParry mirrors this, fallback included.
+    const ax = game.aim.x - s.x, ay = game.aim.y - s.y;
+    const am = Math.hypot(ax, ay);
+    const aimed = am > 1;
+    const adx = aimed ? ax / am : 0, ady = aimed ? ay / am : 0;
     for (const r of p.rocks) {
       const b = r.b;
-      const dx = flicked ? fdx : r.nx, dy = flicked ? fdy : r.ny;
+      const dx = aimed ? adx : r.nx, dy = aimed ? ady : r.ny;
       b.parryFrozen = false;
       b.vx = s.vx + dx * st.deflectPower;
       b.vy = s.vy + dy * st.deflectPower;
@@ -3705,13 +3718,13 @@ export function step(game, dt) {
   let shipAx = 0, shipAy = 0;
   if (s.alive) {
     // The nose tracks the mouse; W thrusts forward, S thrusts backward.
-    // NOSE LOCK during a Deflector parry: the mouse is being read as the
-    // flick (updateParry), so the ship must NOT also turn with it — steering
-    // and flicking off one input at once feels like the ship fighting you.
-    if (!game.parry) {
-      const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
-      s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
-    }
+    // A Deflector parry used to LOCK the nose here, because the mouse was
+    // being read as a flick and steering off the same input felt like the
+    // ship fighting you. The flick is gone (updateParry): the cursor is a
+    // pure aim again, the nose and the riposte both point at it, and locking
+    // steering mid-parry would now be the thing that fights the player.
+    const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
+    s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
 
     let th = game.st.thrust;
     const c = game.controls;
@@ -4177,7 +4190,7 @@ export function step(game, dt) {
     d.life -= dt;
   }
 
-  // Deflector parry: pin/flick/launch — before collisions so the frozen rock
+  // Deflector parry: pin/aim/launch — before collisions so the frozen rock
   // sits at its pinned spot for this substep's pair tests (which skip it).
   updateParry(game, dt);
 

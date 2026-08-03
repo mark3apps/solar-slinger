@@ -107,6 +107,7 @@ const game = {
   dashDir: 0,                           // which way the last dash went (-1 left / +1 right)
   autoEvadeT: 0,                        // Reflex Jink recharge (scout auto-dodge, physics.step)
   jinkT: 0,                             // brief flash ring after an auto-dodge (render)
+  parryReadyT: 0,                       // one-shot bloom when the Deflector re-arms (render)
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
@@ -986,7 +987,7 @@ function resetRun(seed, openCard = true) {
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
-  game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
+  game.parry = null; game.parryCd = 0; game.parryReadyT = 0;   // a parry must never survive into a fresh world
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   // ...and so does the journey: every stop pins to a body in the world that is
@@ -1056,7 +1057,7 @@ const EVENT_MSGS = [
   { flag: 'deadStopWarn', tut: 'deadstop', snd: sfx.sfxChime,
     first: ['DEAD STOP — caught it mid-flight! The rock is primed: fling it back hard.', 5] },
   { flag: 'parryWarn', tut: 'parry', snd: sfx.sfxChime,
-    first: ['DEFLECTED — the rock is frozen! Flick your mouse to hurl it that way.', 5] },
+    first: ['DEFLECTED — the rock is frozen! It fires where your mouse points when the freeze ends.', 5] },
   { flag: 'wallSplatWarn', tut: 'wallsplat', snd: sfx.sfxChime,
     first: ['WALL SPLAT — smashed against the world. Nearby rocks scatter off the impact as yours.', 5] },
   // A worked-out shoal (config.fieldXp spent its run budget). The rocks still
@@ -1347,10 +1348,6 @@ function update(dtReal) {
     const { vw, vh } = view.getView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
-    // Raw SCREEN mouse, stashed for the Deflector parry's flick read
-    // (physics.updateParry): world-space aim deltas are contaminated by the
-    // camera chasing the ship, so the flick must come from screen deltas.
-    game.mouseSX = input.mouseX; game.mouseSY = input.mouseY;
     // World-space radius of the current view — the local asteroid spawner
     // keeps rocks in a ring just beyond this
     game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
