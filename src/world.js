@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass,
-  FIELD_LOBE_MAX,
+  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent,
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
@@ -2107,41 +2107,74 @@ export function replenishWorld(game, dt) {
   // and shoves scrap, and main.js owns exposure/shelter and the payout.
   //
   // The CHARGE is the telegraph, and it is the reason the wave is fair: the
-  // sun visibly loads for CFG.STORM_CHARGE seconds before anything is in
-  // flight, which is the window to put a world between you and it.
+  // sun visibly loads for the class's own `charge` seconds before anything is
+  // in flight, which is the window to put a world between you and it.
+  //
+  // THE CLASS IS ROLLED AT CHARGE TIME, not at launch: the telegraph has to
+  // announce WHICH of the three is coming (a squall and a CME are worth very
+  // different decisions), and the sun's swell, its colour and the screen pulse
+  // all key off it while it loads. So the resolved row is parked on
+  // game.stormCls the moment the charge starts, the wave inherits it, and
+  // NOTHING downstream reads a class-shaped constant off CFG — everything a
+  // live wave does comes off the wave. `Math.random`, never the seeded stream:
+  // weather is runtime, and buying a constant with a seeded draw would move
+  // every spawn after it (see the retrograde-lane note in addPlanet).
+  //
+  // THE CADENCE IS UNTOUCHED BY THE LADDER. This timer and CFG.STORM_EVERY are
+  // exactly what they were when every wave was a CME — three classes means the
+  // sun throws something DIFFERENT each time, never something more often.
   game.stormTimer = (game.stormTimer ?? 240) - dt;
   if (game.stormTimer <= 0 && !game.storm && !(game.stormChargeT > 0)) {
     game.stormTimer = CFG.STORM_EVERY * (0.6 + rng() * 1.0);
-    game.stormChargeT = CFG.STORM_CHARGE;
-    game.stormChargeWarn = true;
+    const cls = stormClass(rng);   // flat pick of the three — see config
+    game.stormCls = cls;
+    game.stormChargeT = cls.charge;
+    game.stormChargeMax = cls.charge;   // the telegraph ramps 0->1 against this
+    game.stormChargeWarn = cls;   // the ROW itself — see EVENT_MSGS in main.js
   }
   if (game.stormChargeT > 0) {
     game.stormChargeT -= dt;
     if (game.stormChargeT <= 0) {
       game.stormChargeT = 0;
-      // `seed` varies the front's lobing and filaments per wave so no two look
-      // alike (render-only — the mechanic is a clean radius either way).
-      game.storm = { r: game.homeStar.radius, prevR: game.homeStar.radius, seed: rng() * 1000 };
-      game.stormWarn = true;
+      // The wave carries its whole class: `seed` varies the front's lobing and
+      // filaments so no two look alike (render-only — the mechanic is a clean
+      // radius either way), and the spread row is what physics/render/main read.
+      const cls = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+      game.storm = {
+        r: game.homeStar.radius, prevR: game.homeStar.radius, seed: rng() * 1000, k: 1, ...cls,
+      };
+      game.stormWarn = cls;
     }
   }
   if (game.storm) {
     const wave = game.storm;
     wave.prevR = wave.r;
-    wave.r += CFG.STORM_SPEED * dt;
+    wave.r += wave.speed * dt;
+    // HOW MUCH OF ITSELF IT HAS LEFT (config.stormStrength): 1 while it is still
+    // climbing, tapering to 0 as it spends itself at its class's reach. Resolved
+    // ONCE here, on the wave, and only READ by physics and render — the same
+    // owner-split as game.stormExposed. It is a property of the WAVE, not of
+    // where the ship is: the whole sheath weakens together as the front tires.
+    wave.k = stormStrength(wave);
     for (const p of game.bodies) {
       if (!p.alive || p.type !== 'planet') continue;
       const pr = Math.hypot(p.x, p.y);
-      if (pr > wave.prevR - CFG.STORM_BAND && pr < wave.r + CFG.STORM_BAND) {
-        // Only announce an aurora the player can actually see light up
-        if (!(p.auroraT > 0) && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
-        p.auroraT = 7;
+      if (pr > wave.prevR - wave.band && pr < wave.r + wave.band) {
+        // Only announce an aurora the player can actually see light up — and
+        // only while the wave still has the punch to light one. Past the taper
+        // the front is shredding, and an aurora over a world a dying squall
+        // merely drifted across is a promise the sky does not keep.
+        if (wave.k > 0.35 && !(p.auroraT > 0)
+            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
+        if (wave.k > 0.35) p.auroraT = 7;
       }
     }
-    // The wave is not over when the SHOCK leaves the system — the sheath is
-    // still washing over everything behind it. Expiring on the front alone
-    // would cut the last ten seconds off every single wave.
-    if (wave.r - CFG.STORM_TAIL > CFG.WORLD_R + CFG.STORM_BAND) game.storm = null;
+    // Gone when the SHOCK has spent itself (config.stormSpent) — the front, not
+    // the tail, because the sheath trails behind it and a front stopped at the
+    // limit is a wave wholly inside it. stormStrength is already 0 by then, so
+    // nothing visible is cut; for a CME the class's reach puts that point out
+    // past WORLD_R + band + tail, exactly where the wave always expired.
+    if (stormSpent(wave)) { game.storm = null; game.stormCls = null; }
   }
 
   // Emberkin creep: infestations deepen over time, and at full bloom seed

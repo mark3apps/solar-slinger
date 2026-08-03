@@ -77,7 +77,11 @@ const SCENARIOS = [
     setup: () => { const p = pick((b) => b.type === 'planet' && b.ptype === 'crystal'); if (!p) return false; window.goto(p); return true; } },
 
   { name: 'solar-storm', what: 'sheath render + per-frame exposure/shelter resolve',
-    setup: () => { window.goto(9000, 0); window.storm('here'); return true; },
+    // PINNED to the top class. An unpinned window.storm() rolls a class now
+    // (CFG.STORM_CLASSES), and a squall draws under half the filaments and motes
+    // of a CME — a scenario that measures a different wave each run is a
+    // stopwatch that lies. The heaviest wave is also the one worth budgeting.
+    setup: () => { window.goto(9000, 0); window.storm('here', 'cme'); return true; },
     teardown: () => window.storm('off') },
 
   { name: 'alien-nest', what: 'AI state machines, fort turrets, alien collision loops',
