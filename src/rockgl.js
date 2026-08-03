@@ -45,11 +45,14 @@ layout(location=1) in vec2 aPos;      // world position of the rock
 layout(location=2) in float aRot;     // rock rotation (radians)
 layout(location=3) in float aHalf;    // half the drawn width, in world units
 layout(location=4) in vec2 aUV;       // top-left of this rock's atlas cell
+layout(location=5) in vec3 aTint;     // per-instance multiply tint (1,1,1 = as baked)
 uniform vec3 uXf;        // world->device: k, e, f (render.js's wt)
 uniform vec2 uViewport;  // device pixels
 uniform vec2 uCell;      // atlas cell size in UV
 out vec2 vUV;
+out vec3 vTint;
 void main() {
+  vTint = aTint;
   // Same composition as the 2D path's setTransform(cs, sn, -sn, cs, ...):
   // a CCW rotation in a y-DOWN frame, then the uniform world scale+translate.
   float c = cos(aRot), s = sin(aRot);
@@ -64,6 +67,7 @@ void main() {
 const FRAG = `#version 300 es
 precision mediump float;
 in vec2 vUV;
+in vec3 vTint;
 uniform sampler2D uTex;
 out vec4 outColor;
 void main() {
@@ -73,10 +77,19 @@ void main() {
   // alpha here as well squares it on every partially-transparent texel, which
   // on a jagged antialiased sprite means most of its EDGE: measured at 0.65-0.95
   // of the 2D path's total rock ink, i.e. a visibly dimmer shoal.
-  outColor = texture(uTex, vUV);
+  //
+  // THE TINT IS A MULTIPLY, and it is correct on premultiplied source without
+  // touching alpha: premultiplied rgb is (colour x a), so (colour x a) x tint
+  // is the premultiplied form of (colour x tint). Scaling alpha too would
+  // square it, which is the same double-premultiply bug described above.
+  // Rock instances pass 1,1,1 and are bit-identical to the untinted path; the
+  // CHUNK family is baked neutral once and tinted to its host world's material
+  // here, which is what keeps a per-world debris colour from costing a whole
+  // atlas row each (see render.js's shard bake).
+  outColor = texture(uTex, vUV) * vec4(vTint, 1.0);
 }`;
 
-const FLOATS = 6;      // x, y, rot, half, u0, v0
+const FLOATS = 9;      // x, y, rot, half, u0, v0, tint r, g, b
 const CAP = 16384;     // instances per batch before it flushes early
 
 let cv = null, gl = null, prog = null, vao = null, instBuf = null;
@@ -158,6 +171,7 @@ export function initRockGL(w, h) {
     attr(2, 1, 8);    // aRot
     attr(3, 1, 12);   // aHalf
     attr(4, 2, 16);   // aUV
+    attr(5, 3, 24);   // aTint
     gl.bindVertexArray(null);
 
     gl.disable(gl.DEPTH_TEST);
@@ -264,8 +278,10 @@ export function rockGLBegin() {
 }
 
 // Queue one rock. `sh` is the atlas sheet it blits from; u0/v0 are its cell's
-// top-left in UV; half is half the drawn width in WORLD units.
-export function rockGLPush(sh, x, y, rot, half, u0, v0) {
+// top-left in UV; half is half the drawn width in WORLD units. tr/tg/tb are the
+// multiply tint — 1,1,1 draws the cell exactly as baked, which is what every
+// rock passes; the chunk family passes its host world's material colour.
+export function rockGLPush(sh, x, y, rot, half, u0, v0, tr = 1, tg = 1, tb = 1) {
   if (!gl || dead) return;
   let b = null;
   for (const q of batches) if (q.sh === sh) { b = q; break; }
@@ -274,6 +290,7 @@ export function rockGLPush(sh, x, y, rot, half, u0, v0) {
   const o = b.n * FLOATS;
   b.data[o] = x; b.data[o + 1] = y; b.data[o + 2] = rot;
   b.data[o + 3] = half; b.data[o + 4] = u0; b.data[o + 5] = v0;
+  b.data[o + 6] = tr; b.data[o + 7] = tg; b.data[o + 8] = tb;
   b.n++;
 }
 

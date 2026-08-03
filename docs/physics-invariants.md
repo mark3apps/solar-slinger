@@ -224,3 +224,265 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
   ACCUMULATES in main.js (`game.compassPhase`) — never derive animation phase as `time * speed`, a
   changing speed teleports the phase.
 
+
+## The gravity loop: the attractor shortlist (added 2026-08)
+
+**Every loose body caches the attractors it is inside cull range of** (`physics.attShortlist`), and
+re-derives that list every `ATT_STALE` seconds, staggered off `b.id`. Celestials are untouched — they
+keep the full weighted walk, because invariant 2's symmetric pairs are defined over every attractor.
+
+The influence cutoff (`GRAV_CULL_A`) already skipped negligible attractors, but `gravityAt` still
+*visited* all ~130 to decide. Measured standing in a planet system: of 122 attractors, **4.8** clear
+the cull at halo range and 1.9 out in the open lanes. A top-6 truncation is bit-exact, because fewer
+than six ever qualify. Clean interleaved A/B at 3,000 loose chunks: **9.39ms → 6.17ms of sim per
+frame, 1.52x**, and `perf[debris-heavy]` sim −37%.
+
+**It is exact, not an approximation**, and two rules keep it that way. The **pad**: the build inflates
+each cull radius by how far the pair could close before the next rebuild (the body's own speed plus
+`ATT_CLOSE_V`), so nothing can enter range unseen. The **cull stays**: `gravityAt` still applies
+`cullR2` to every member, so a padded-in attractor contributes nothing until it genuinely qualifies.
+A shortlist can therefore only differ from the full walk by an attractor under `GRAV_CULL_A`, which
+the cutoff already calls unobservable — so `predictPaths` needs no mirror. Four stability seeds over
+600 sim-seconds: bit-identical.
+
+Invalidation is a generation counter bumped whenever the attractor **count** moves, plus an explicit
+bump in `generateWorld` — a regen usually rebuilds the *same* number of attractors (the layout table
+is fixed), so the count check alone cannot see it.
+
+## The broad phase: why it is still sweep-and-prune
+
+**A uniform spatial grid was built here, measured, and reverted.** Do not re-derive the experiment.
+
+The premise is real: on a clumped cascade — 2,000 chunks inside 150 units — sweep-and-prune visits
+**233,328 candidate pairs a substep**, of which 26,838 pass the y-test and 21,287 actually touch. An
+11x waste ratio. A uniform grid with the cell auto-sized to the population cut that to **51,981
+pairs, 3.6x fewer**.
+
+It still measured **0.977x on wall clock.** The sweep walks a contiguous, x-sorted, temporally
+coherent array at roughly 2ns a visit; a grid pointer-chases through cell lists into a mostly-empty
+table. The algorithmic win is cancelled exactly by locality. (The sort is NOT the cost — on the
+persistent near-sorted list it measures 0.0ms even with thousands awake.)
+
+Three pathologies were found and fixed on the way, and they are the reason this is written down:
+sizing the grid to the bodies' bounding box let one flung rock collapse the whole blob into a single
+clamped edge cell (**378ms a frame**, a 35x regression); walking each big body's footprint in
+debris-sized cells is quadratic in `bigRadius / cell` (a 700-unit planet spans 6,084 cells); and a
+body migrating between grid and sweep must be evicted explicitly, or the membership counts disagree
+every substep and force a full random-order re-sort. Even with all three fixed, the answer was a
+wash. **The lever for a big cascade is fewer bodies, not a different search.**
+
+## Halo packing: a world you left keeps its wounds, not its bodies
+
+`physics.packHalos`, run once a frame at the top of `updateFieldLOD` (before the registries clear —
+it reads `reg.crust`). A settled rubble halo whose host is beyond `HALO_PACK_R x wakeR` collapses
+into a plain record on the host and re-expands inside `HALO_UNPACK_R` (different radii, or a world on
+the boundary would thrash). Every piece returns with its own **id** — so the sprite archetype, seeded
+off `b.id`, is the same stone — plus radius, mass, hp, material, scars and rail phase. Measured
+round-trip: 29 packed, 29 restored, every field identical.
+
+**Why it matters:** the LOD already stopped *simulating* off-view rubble, but the pieces still held
+slots in `reg.nonField`, which IS `CFG.DEBRIS_BUDGET`. Work over a few worlds and the budget that is
+supposed to bound the chaos *around you* instead bounds how much damage you have *ever done*.
+Measured: 62–65 budget slots returned per abandoned halo.
+
+Two scoping rules: **held or thrown disqualifies the whole host's halo** (never collapse what the
+player is acting on), and **field rock is never packed** — a shoal giant calves crust that keeps its
+`b.field`, and that rock answers to the pocket's ceilings, not the debris budget. A piece that
+re-railed around the **star** rather than its host is packed as loose (position and velocity
+round-trip exactly) — restoring a 3,474-unit star rail against a 258-unit crust band would teleport
+it across the system.
+
+## The sweep side-table: the fix was layout, not algorithm (added 2026-08)
+
+The scan reads four fields per candidate — `x`, `y`, `_bp`, `alive`. Those four now live in parallel
+`Float64Array`/`Uint8Array` side-tables filled once per substep in sweep order, and the scan touches
+nothing else (`THE SWEEP SIDE-TABLE` in physics.js).
+
+**Why, in one number: a candidate visit cost 44.8ns.** Five property loads and three compares —
+work that should cost 2-3ns. That ~15-20x gap is cache misses: a `Body` carries ~50 fields, and two
+bodies adjacent in the x-sorted sweep are nowhere near each other in the heap, so every visit drags a
+cache line to read three floats off a cold object. For scale, the same profile put an actual
+**collision** at 261ns — a visit that does almost nothing was costing a sixth of real contact
+resolution.
+
+Measured, same shoal cascade, spans aligned:
+
+| | before | after |
+|---|---|---|
+| collision block | 0.858 ms/frame | **0.500** (−42%) |
+| scan only | 0.703 | **0.329** (−53%) |
+| ns per candidate visit | 44.8 | **20.9** (2.1x) |
+| visits / collide pairs per frame | 15,699 / 594 | 15,785 / 598 (unchanged) |
+
+Identical visit and pair counts: this changed how the data is *reached*, not what is searched. It is
+also the retrospective explanation for why the uniform grid failed — the grid cut visits 3.6x but
+every grid visit chases the same cold pointers, so it hit the identical 45ns wall.
+
+**THE WRITE-BACK IS LOAD-BEARING.** `collideBodies` separates bodies and can kill them, and the
+original loop re-read `a.x`, `b.x`, `b.y` and `b.alive` FRESH every iteration — so a body shoved by an
+earlier contact was seen at its new position by later tests in the same scan. The table is therefore
+written back after every collision that lands, **including the left edge**, or the break test runs on
+stale extents. This is deliberately not "cleaned up" into a snapshot: the sim is tuned against the
+live-read behaviour, and all four stability seeds detect the difference. With the write-back, 600
+sim-seconds x 4 seeds are bit-identical.
+
+`_bp` is stamped once per substep at the top of `step()`, so `swR` alone never needs writing back.
+Float64 rather than Float32 on purpose — world coordinates reach ~1e5, and the scan's compares must
+agree with the f64 arithmetic `collideBodies` does, or a pair could be pruned here and overlapping
+there.
+
+**What this leaves.** The per-frame LOD classification walk is now the largest single phase
+(~0.38 ms/frame over ~3,800 bodies). Ablation could not isolate a dominant sub-cost inside it —
+rail advance ~10%, `regPush` ~2%, the rest diffuse — because it is the same problem: ~3,800 cold
+object reads. Staggering the classification would skip only a minority of that; the registries are
+consumed the same frame and dormant rail advance is those bodies' only motion, so neither can be
+staggered. **The LOD walk wants the body model in typed arrays, not a cheaper schedule.**
+
+## The swept pre-test: a fast rock no longer passes through you (added 2026-08)
+
+`collideShipBody` and `collideAlienBody` were pure OVERLAP tests at one instant, so a projectile that
+crossed the hull between two samples was never seen. `physics.sweptContact` adds a segment-vs-disc
+test on the RELATIVE displacement over the substep, and places the body where it actually touched so
+the normal, the overlap and the impulse all read a genuine contact.
+
+Measured, 220 randomized trials per cell (impact parameter and sample phase both randomized),
+fraction of impacts that register against the ship:
+
+|  | 400 | 800 | 1300 | 1800 | 2500 |
+|---|---|---|---|---|---|
+| 1/120 overlap only | 100% | 100% | 100% | 94% | **76%** |
+| 1/60 overlap only | 100% | 97% | 71% | 57% | **48%** |
+| **1/120 swept** | 100% | 100% | 100% | 100% | **100%** |
+| **1/60 swept** | 100% | 100% | 100% | 100% | **100%** |
+
+This was a live bug at the DEFAULT step, not only a coarse-step one — a quarter of the fastest
+impacts were being missed at 1/120. It also **re-armed `CFG.PACE_COARSE_ENABLED`**, which had been
+disarmed precisely because 1/60 could not survive the overlap-only narrow phase; 1/60 with the
+pre-test now detects everything 1/120 without it was missing.
+
+**Scoped deliberately.** Ship and aliens only — tunnelling between two rocks is off-view and
+cosmetic, and a swept test per candidate pair in the ~8,000-body sweep would cost far more than the
+misses are worth. The `seg2 > rr*rr` gate confines it to pairs that moved further than their contact
+radius in one substep, so celestials (rr ~700 would need 84,000 u/s) never enter it and their
+gas-dive / star-plunge / crater branches are untouched. `shaped` bodies are excluded: their contact
+radius is bearing-dependent, so one segment-vs-disc test does not describe them.
+
+### Two traps when re-measuring this table
+
+Both cost real time; the harness is only meaningful if it can reproduce the old numbers on demand
+(`physics.forceSweptOff(true)` does that).
+
+1. **Count DETECTIONS (`physics.shipContacts`), never deflection.** Invariant 4 makes a 400-mass rock
+   immovable against a 10-mass ship, so a landed hit barely moves the projectile — a deflection-based
+   harness reads near-0% everywhere and looks like total failure.
+2. **Park the test ship well inside `WORLD_R` (46,000).** Outside it the boundary force runs to
+   ~37,750 u/s²; any ship-velocity signal then reads 100% on every trial, swept test or not.
+
+## GRAVEL: small debris lives in typed arrays (added 2026-08)
+
+[gravel.js](../src/gravel.js) is a structure-of-arrays store for rock that is numerous and
+individually anonymous. Not a new kind of rock — **the same rock in a cheaper representation**, which
+is what makes the design law survivable.
+
+**Why, in one number.** A collision-scan candidate visit cost 44.8ns against an arithmetic cost of
+2-3ns; the gap is cache misses on ~50-field `Body` objects scattered through the heap. Moving four
+fields into typed arrays halved it (THE SWEEP SIDE-TABLE). The same shape measured **4.2x on the
+integration loop** and 15x on a pure kernel. A side-table only pays where a body is read many times
+a frame; integration touches each once, so the data has to LIVE in the arrays — hence a store.
+
+**PROMOTION IS THE CONTRACT.** `physics.promoteGravel`, called from `tractor.pickTarget` and nowhere
+else — the one point where the beam has committed to a target. Position, velocity, spin, mass, hp,
+material and the remaining inert window all transfer. Promoting in the hover-ring pass instead would
+mint a `Body` for every grain the cursor sweeps past. Verified end to end: a grain under the cursor
+promotes and ends up `heldBy === 'player'` with mass, radius and position intact; a grain out of
+range is untouched.
+
+**What gravel deliberately does NOT do**, each an accepted cost rather than an omission:
+
+- **Grains do not damage each other.** They carom (see "Grain-on-grain contact" below) but a grain-on-
+  grain hit produces no damage, no scars, no credit and no splitting — everything that makes a
+  collision an EVENT belongs to `Body`. That is what keeps the O(n²) tail off the cascade while still
+  letting a pocket behave like one.
+- **Grains do not damage celestials.** A grain carries ~90-200 mass against a planet's 1e5+; mass
+  dominance already throttled that to nothing, and thousands of `damageBody` calls would reinstate
+  the cascade the debris budget exists to bound.
+- **Ship contact damage is capped hard (12).** A cascade can put hundreds of grains through the hull
+  in a second, and an uncapped per-grain bite makes standing in your own debris cloud lethal in a way
+  no single visible event explains.
+
+**Where grains come from today: the OVERFLOW.** The chunk spray in `damageBody` clamped its yield to
+`debrisRoom`, so a hard hit late in a cascade silently produced less wreckage than the same hit at
+the start. That difference is now minted as gravel. The change is purely additive — no existing
+`Body` spawn was converted — so XP, credit and achievement semantics are untouched, and
+`CFG.DEBRIS_BUDGET` goes back to bounding what the SIM carries rather than what the player is
+allowed to see.
+
+**Five things now die with a world regen** (`world.generateWorld`): the awake list, the frame
+registries, the attractor shortlists, the packed halos, and the gravel store. Every one of them
+holds state that outlives its world otherwise; this is the recurring bug in that neighbourhood.
+
+`GRAVEL_R_MAX` (14) is pinned to the shard atlas's own bucket ceiling — a grain past it has no baked
+sprite and could not draw. Keep the two numbers together.
+
+## The gravel sim runs on another core (added 2026-08)
+
+[gravel-worker.js](../src/gravel-worker.js) advances every grain — gravity, the world edge, the inert
+timer, the integrate — on a worker thread, over the same `SharedArrayBuffer` the store lives in.
+`physics.gravelDispatch` posts the work at the TOP of the substep and `gravelJoin` collects it at the
+bottom, so it overlaps the rails scan, both gravity phases, the Body integrate and the collision
+sweep rather than adding to them.
+
+**Why gravel and nothing else.** It is the only part of the sim that satisfies both conditions: its
+state is in typed arrays rather than an object graph, and its update is a pure function of
+(grain state, attractor snapshot, dt) touching no `game` object, no DOM and no canvas. Contact is
+NOT off-thread — gravel-vs-ship/alien/celestial reads live game state and can damage the ship, so
+`collideGravel` stays on the main thread.
+
+**COOP/COEP is the precondition** and all three hosts must send it: `serve.py`, the Electron shell's
+`app://` handler, and the `run-solar-slinger` driver. Miss one and `SharedArrayBuffer` is undefined
+there and only there — every headless measurement would silently time the main-thread fallback while
+the real game ran the worker. Verified: cross-origin isolation on, and the music beds still load
+(8MB fetch, 405s track) — everything this page loads is same-origin, so `require-corp` costs nothing.
+
+**THE MAIN THREAD MUST NOT `Atomics.wait`.** It throws there by design — blocking the UI thread is
+what it exists to prevent. So the worker blocks (parked in `wait`, costing nothing) and the join
+SPINS. That is only affordable because of the asymmetry it is built on: ~2ms of gravel dispatched
+into a substep that then spends ~25ms on Body physics, so the spin is normally zero iterations. It is
+bounded anyway, and falling past the bound latches `workerDead` and reverts to the inline pass —
+a capability that can hang is not a capability.
+
+**The worker mirrors `physics.stepGravel` exactly**, and must keep doing so: the fallback path runs
+the main-thread version, and the game may not behave differently depending on which one ran. Same
+mirror rule `predictPaths` lives under.
+
+**Fixed capacity, not growth.** `MAX_SLOTS` is allocated once (~3.9MB) because reallocating would
+leave the worker holding views onto a dead buffer. `spawn` returns -1 when full rather than growing.
+
+### Grain-on-grain contact — and why a grid works here when it failed for bodies
+
+Grains now carom off each other, resolved on the worker by a uniform hash grid. **This is not a
+reversal of "the broad phase is still sweep-and-prune"** — read that note's reasoning, not its
+headline. The grid failed for bodies because every visit chased a pointer into a ~50-field object
+scattered through the heap; the algorithmic win was cancelled by locality. None of that is true here:
+grains live in contiguous typed arrays, they are all small, and their sizes sit within one bucket of
+each other — the exact population a uniform grid is built for. It also runs off the frame budget.
+
+**The cell never clamps.** Sizing to a bounding box and clamping outliers into edge cells was the 35x
+regression documented above. The cell OPENS UP instead — a bigger cell costs candidate efficiency and
+nothing else, so the grid always covers the full span and no clamping happens at all.
+
+Resolution is deliberately plain: equal-and-opposite impulse plus mass-split positional separation,
+`e = 0.45`. No damage, no scars, no credit, no splitting — everything that makes a collision an EVENT
+belongs to `Body`. This only has to make a pocket carom.
+
+**Why it had to exist before field rock can ever be gravel.** "FIELD ROCK caroms. Its whole point is
+that a shoal plays like a pinball table" (physics.js). Gravel without self-collision would have
+deleted that outright, so grain contact is the GATE on the field-rock migration, not an optimisation
+alongside it.
+
+**IT LIVES IN A SHARED MODULE, and that is not a tidiness choice.** `gravel-contact.js` is called by
+BOTH the worker and `physics.stepGravel`. It was originally implemented only inside the worker, which
+meant a host without `SharedArrayBuffer` — no cross-origin isolation, a worker that failed to start —
+played a game where debris did not carom. **A capability may change how fast something runs; it may
+never change what the simulation does.** If you add a rule to grain contact, it lands in both paths
+automatically; if you ever split them again, you have reintroduced that bug.

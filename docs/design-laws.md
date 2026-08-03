@@ -771,3 +771,36 @@ so tuning the fraction moves only the hitbox, never the drawn size. (History: th
 to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
 match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with `SHIP_TIERS` proportions;
 the derivation rules live in the config.js comments.
+
+## The crumble layer draws instanced (added 2026-08)
+
+**A piece of a world is a sprite, not a path** — under WebGL2, for pieces under 14 drawn units.
+
+`drawBody`'s `b.chunk` branch sits ahead of the asteroid one, so chunks never reached `blitRock` and
+the whole instanced rock path did not apply to them — which is exactly backwards, because a cascade's
+output *is* chunks, in their thousands. Measured with 2,000 chunks on screen,
+`rockPathStats().rocksLastFrame` reported **1**. They now go through their own archetype family
+(`SHARD_*` in render.js): 2,000 chunks, **2 draw calls, 3.48µs → 0.48µs each, 7.2x**.
+
+Three rules carry it:
+
+- **The bake is NEUTRAL and the colour is a per-instance tint** (`aTint` in rockgl.js, a multiply on
+  premultiplied source). Chunk colour is the host world's own face, so ~30 colours are live in a run;
+  a row per colour would be 120 atlas rows and straight past `ATLAS_BUDGET`. Baked neutral it is
+  **four rows for the entire crumble layer on every world in the sky**. The multiply is exact because
+  every layer of the sub-14 shard is a scale of one colour — face is the colour knocked down 34%, the
+  crust strip is the colour at full. Verified by rendering the same frame both ways: identical.
+- **The bucket cut sits where `drawChunkSprite`'s slab layers switch on** (`R > 14`). Above it a piece
+  is big, rare, and something you fly right up to, so it keeps a unique silhouette exactly as big rock
+  does — and the pale facet wedge would not survive a multiply anyway.
+- **A wounded chunk keeps the vector sprite.** The GL layer composites after the body loop, so a crack
+  web drawn in `drawBody` would land *underneath* the sprite it marks. A size gate ("the wound is
+  sub-pixel, skip it") was tried and rejected: it makes the crack web pop into existence as you fly
+  closer and the piece crosses back to vectors, and a wound on debris is a real signal — it is how you
+  read what you have already hit. Fresh crust is unwounded, so the cascade population is covered.
+
+The shard family has its **own sheet geometry and its own tiers** (12 archetypes x 4 rows, up to a
+32px bake). The rock family's size cap is a *2D-blit* economic rule — past ~25px a rotated, filtered
+`drawImage` costs more raster than a small polygon fill. Instanced GL has no such crossover. Real
+crust debris measures a P50 drawn radius of ~19px at the game's own zoom, right past the rock cap, so
+capping shards there would have rejected the entire layer this path exists for.

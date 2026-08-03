@@ -5,6 +5,7 @@ import {
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick, CRYSTAL_REACH } from './util.js';
+import * as gravel from './gravel.js';
 import { sfxPing } from './sfx.js';
 
 // Recovered echo logs — one-line lore fragments carried by derelicts and
@@ -477,7 +478,7 @@ function spawnVesper(game, sun, th) {
 // ~1.7-3.3 (peer to / smaller than the ship) while boulders stay clearly
 // chunky (~9-12). Mass is untouched, so gravity, grab tiers, hp and scrap
 // are all unchanged — only the drawn/collision disc shrinks.
-function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
+export function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
 
 // Skewed small (down to pebbles), occasionally chunky — and ~12% are
 // BOULDERS, a class between common rocks and moons that keeps the size
@@ -548,6 +549,23 @@ export function generateWorld(game, seed = 20260721) {
   // planets and physics answering to a sun that no longer exists.
   // physics.frameReg rebuilds on demand (see the note above updateFieldLOD).
   game.reg = null;
+  // ...and every cached ATTRACTOR SHORTLIST is retired, for the third time for
+  // the same reason (physics.attShortlist). step() bumps the generation
+  // whenever the attractor COUNT moves, which cannot see a regen that happens
+  // to rebuild the same number of attractors — and the fixed layout table
+  // means it almost always does. Anything that outlives a regen holding a
+  // shortlist (aliens, loose scrap) would keep feeling the dead sun's pull.
+  game._attGen = (game._attGen ?? 0) + 1;
+  game._attN = -1;
+  // ...and the packed-halo host list, fourth of the same family: it holds
+  // REFERENCES to the dead sky's worlds, and physics.packHalos would re-mint a
+  // dead planet's rubble into the new world the moment the ship flew near where
+  // that planet used to be.
+  if (game._packedHosts) game._packedHosts.length = 0;
+  // ...and the gravel store, fifth of the same family. It holds the dead sky's
+  // debris in typed arrays that nothing else clears, so without this a regen
+  // leaves every grain of the previous run drifting through the new one.
+  gravel.reset();
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
