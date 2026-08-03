@@ -746,10 +746,12 @@ export const CFG = {
   // instead (world.fieldMass skews big, few pebbles).
   // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
   // against them (world.seedDenseFields fills the remainder with rubble, so the
-  // small-rock count is this minus however many the packer placed, ~119).
-  // Measured on seed 20260721, pocket 0: 740 = 115 giants + 6 monoliths + 619
-  // rubble. Keep that split and the ~474-landmark world figure below in step —
-  // they are the same measurement read two ways.
+  // small-rock count is this minus however many big rocks landed, 113-122).
+  // Measured across the four pockets on seed 20260721: 740 = 107-116 giants
+  // + 5 packed monoliths + the heart + 618-627 rubble. The packer places all of
+  // those but the HEART, which seedDenseFields pins at the field centre before
+  // packing starts. Keep that split and the 474-landmark world figure below in
+  // step — they are the same measurement read two ways.
   //
   // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
   // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
@@ -806,11 +808,11 @@ export const CFG = {
   // FIELD_SPREAD, because spreading the same rocks over a bigger pocket turns
   // the gaps into open space and there is nothing left to navigate.
   // It is ALSO the budget for the shaped narrow phase: every one carries a real
-  // polygon collider (util.rockShape via world.shapeBig). ~474 in the world
-  // (~119 a pocket, measured — the packer rejects a chunk of the 200 draws), of
-  // which only the awake ones are ever swept.
-  // The packer is best-effort — a full pocket rejects the last dozen draws, so
-  // the placed count runs a little under this.
+  // polygon collider (util.rockShape via world.shapeBig). 474 in the world,
+  // 113-122 a pocket (measured), of which only the awake ones are ever swept.
+  // The packer is best-effort and this is a TARGET, not a count: a pocket fills
+  // up and rejects the rest, so 200 draws place 107-116 giants. Do not read the
+  // constant as the number of colliders you are paying for.
   FIELD_GIANTS: 200,
   FIELD_GIANT_MASS: [14000, 60000],   // the biggest are moon-scale monoliths
   // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL
