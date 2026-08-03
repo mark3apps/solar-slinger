@@ -47,10 +47,16 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   `window.locate('name'|'type')` returns the body itself.
 - `window.god(on)` — ship ignores all damage (`damageShip` early-out) for poking at the corona,
   forts, or gas cores without respawn loops.
-- `window.storm('charge' | 'here' | 'off')` — fire a SOLAR WAVE now instead of waiting out
+- `window.storm('charge' | 'here' | 'off', cls)` — fire a SOLAR WAVE now instead of waiting out
   `CFG.STORM_EVERY`. `'charge'` starts at the telegraph so you see the whole event; `'here'` parks a
   front just inside the ship so the sheath is about to arrive (checking exposure/shelter without a
-  40-second wait); `'off'` clears it.
+  40-second wait); `'off'` clears it. **`cls` pins the intensity** — a `CFG.STORM_CLASSES` key
+  (`'squall'` / `'surge'` / `'cme'`, weakest first) or an index; omit it for the same flat random
+  third-each pick the sky makes. Pin it whenever you are checking one class's numbers or palette, and
+  remember the live wave carries its own stats (`game.storm.dps`, `.tail`, `.blind`, `.k`…) — reading
+  `CFG` for those will mislead you. **The return value reports `k` and `reachR`**, because a class
+  summoned OUTSIDE its reach is already spent and expires on the next frame — correct (a squall
+  cannot exist past half the system) and invisible unless you read it.
 - `window.game` — the live state handle. `game.prog.ach` is the achievement ledger: `.score`,
   `.order` (ids, in the order earned), `.got` (id → seconds), `.stats` (every raw counter). Reading
   `.stats` after a soak is the fastest way to check a new achievement's predicate is fed by anything.

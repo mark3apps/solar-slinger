@@ -395,6 +395,22 @@ The discovery/expedition layer, the solar wave, the four dense fields and their 
 physics is a local privilege — the awake list, the frame registries `game.reg`, the dormant group
 advance), shoal lurkers, glow pockets, and the nine planet archetypes with one mechanic each.
 
+- **The sun throws THREE waves, not one thing on a timer** (`CFG.STORM_CLASSES` — squall / surge /
+  cme, priced on full-pass exposure at ~9 / ~27 / ~68 hull). **The live wave CARRIES its class**
+  (`game.storm` spreads the row), so nothing downstream may read a class-shaped constant off `CFG`.
+  The pick is a **flat random third each** — no weights, no forced-first-wave — and `STORM_EVERY` is
+  unchanged: the sun fires no more often than it ever did, it just throws something different.
+- **A wave's REACH is its geography, and it dissolves rather than stopping** — `reach` caps the
+  squall at **½** of `WORLD_R` and the surge at **⅔** (the cme still crosses the whole sky, its taper
+  starting outside `WORLD_R` so it behaves exactly as before). `config.stormStrength` gives the live
+  0..1 `k` every bite and every alpha is multiplied by; a wave that blinked out at an exact radius
+  would be the in-world hard edge the design laws forbid. Only the big two blind alien senses, and
+  the shorter reaches cut the sense-blind duty cycle to ~12% from ~25% — check that if aliens feel
+  sharp.
+- **Every moon shelters** (`STORM_SHADOW_MIN_R` 24, not 60 — that floor silently failed 40 of 59
+  moons). `config.shelterR` is the ONE lee definition, sim and render both, and its flat pad is what
+  makes a small moon's lee a pocket instead of a razor edge.
+
 ## Testing
 
 **The baseline/diff loop above is the primary check** — it covers worldgen, progression, combat,
@@ -411,7 +427,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |
 | `window.speed(n)` | Live fast-forward of the *visible* game (0.25–50). |
-| `window.goto('vesper')` / `window.god(true)` / `window.storm('charge')` | Teleport / invuln / fire a solar wave now. |
+| `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (2.5s) after any player-facing
 mechanic change; 19/19 must pass. Skills wrapping the standard checks: **`balance-test`** (how to

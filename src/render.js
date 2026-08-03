@@ -1,6 +1,6 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
-  canLift, canStow, liftClass, dockTier, dockPadR, dockDomeR,
+  canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR,
 } from './config.js';
 import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
 import * as gravel from './gravel.js';
@@ -1763,7 +1763,8 @@ function drawBody(game, b) {
       const dSun = Math.hypot(dx, dy) || 1;
       const heat = Math.max(0.05, 1 - dSun / 15000);
       let boost = 1;
-      if (game.storm && Math.abs(dSun - game.storm.r) < CFG.STORM_BAND * 1.4) boost = 1.7;
+      if (game.storm && game.storm.k > 0.35
+          && Math.abs(dSun - game.storm.r) < game.storm.band * 1.4) boost = 1.7;
       const len = b.radius * (5 + 29 * heat) * boost;
       tx = b.x + (dx / dSun) * len; ty = b.y + (dy / dSun) * len;
       alpha = (0.3 + 0.5 * heat) * Math.min(1, boost);
@@ -5233,7 +5234,7 @@ function drawPrediction(game) {
   // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
   if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
-  // ION WASH: a solar wave scrambles the forecast outright (CFG.STORM_ION).
+  // ION WASH: a solar wave scrambles the forecast outright (the class's `ion`).
   // Losing the plotter mid-wave is most of what makes being caught out in one
   // frightening — you are suddenly flying a gravity field you can't read.
   if (game.stormIonT > 0) return;
@@ -5509,20 +5510,26 @@ function drawMinimap(game) {
     // The SHEATH, not just the shock — the dial has to show the thing you can
     // actually be caught in, and the shock alone is a hairline. Three rings
     // stepping back through the tail read as depth without a fill (which the
-    // radial warp would distort into a lie about where the tail ends).
+    // radial warp would distort into a lie about where the tail ends). Both the
+    // depth and the colour are the WAVE'S: the instrument has to say which of
+    // the three is out there, and a squall's sheath is genuinely a thinner band
+    // on the dial because it is a thinner band in the sky.
+    // …and it fades with the wave (st.k), so the dial shows a front SPENDING
+    // ITSELF rather than one that is fine right up until it disappears.
+    const st = game.storm, kk = st.k ?? 1;
     for (let i = 3; i >= 1; i--) {
-      const rr = game.storm.r - CFG.STORM_TAIL * (i / 3.4);
+      const rr = st.r - st.tail * (i / 3.4);
       if (rr <= 0) continue;
-      ctx.strokeStyle = `rgba(255, 170, 90, ${0.06 + 0.04 * (3 - i)})`;
+      ctx.strokeStyle = `rgba(${st.warm}, ${(0.06 + 0.04 * (3 - i)) * kk})`;
       ctx.lineWidth = 5;
       worldCirclePath(0, 0, rr); ctx.stroke();
     }
     ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(255, 180, 80, 0.16)';
-    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
-    ctx.strokeStyle = 'rgba(255, 214, 130, 0.7)';
+    ctx.strokeStyle = `rgba(${st.shock}, ${0.16 * kk})`;
+    worldCirclePath(0, 0, st.r); ctx.stroke();
+    ctx.strokeStyle = `rgba(${st.core}, ${0.7 * kk})`;
     ctx.lineWidth = 1.5;
-    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
+    worldCirclePath(0, 0, st.r); ctx.stroke();
     ctx.lineWidth = 1;
   }
   if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_FAR * 1.2) {
@@ -5725,13 +5732,16 @@ function drawMinimap(game) {
     ctx.globalAlpha = 1;
   }
 
-  // ION WASH (CFG.STORM_ION): a solar wave doesn't dim the radar, it EATS it.
+  // ION WASH: a solar wave doesn't dim the radar, it EATS it.
   // Returns drop out at random and the survivors smear off their true bearing,
   // so the dial is actively lying rather than politely fading — losing the
   // instrument you navigate by is the point of being caught in a wave.
   // Math.random per blip on purpose: the dropout has to boil, and this is
   // render, which is downstream of the sim and owes it no determinism.
-  const ion = Math.min(1, (game.stormIonT || 0) / CFG.STORM_ION);
+  // Normalised against the class that SET it (game.stormIonMax), not a CFG
+  // constant: stormIonT outlives its wave, so a fixed divisor would read a
+  // squall's 2s scramble as 40% of a CME's and start the dial half-eaten.
+  const ion = Math.min(1, (game.stormIonT || 0) / (game.stormIonMax || 1));
 
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
@@ -6293,12 +6303,13 @@ export function drawStarMap(game) {
   // ---- A live solar wave. The chart is where you can actually SEE which side
   // of the system a front has reached, which the ship-centred dial cannot say.
   if (game.storm) {
-    const rp = game.storm.r * s;
+    const st = game.storm, kk = st.k ?? 1;
+    const rp = st.r * s;
     if (rp - sunD < scrR) {
-      ctx.strokeStyle = 'rgba(255, 170, 90, 0.14)';
-      ctx.lineWidth = Math.max(3, CFG.STORM_TAIL * s);
-      ctx.beginPath(); ctx.arc(sunX, sunY, rp - CFG.STORM_TAIL * s * 0.5, 0, TAU); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 214, 130, 0.8)';
+      ctx.strokeStyle = `rgba(${st.warm}, ${0.14 * kk})`;
+      ctx.lineWidth = Math.max(3, st.tail * s);
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp - st.tail * s * 0.5, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = `rgba(${st.core}, ${0.8 * kk})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.stroke();
       ctx.lineWidth = 1;
@@ -7019,6 +7030,12 @@ function drawRouteWorld(game) {
 // view, and every pass is clipped to the bearing window the camera can see —
 // at a normal zoom that is a few degrees of a 40,000-unit circle.
 const STORM_MOTES = 40;
+// The wave's palette arrives as [r,g,b] triples on its CFG.STORM_CLASSES row
+// (see there). mixc is what the filament heat ramp needs — a class is a PAIR of
+// colours to travel between, not one colour to fade — and rgba spares every
+// call site an `| 0` on a lerped channel.
+const mixc = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const rgba = (c, a) => `rgba(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0}, ${a})`;
 function drawStormWave(game) {
   const hs = game.homeStar;
   if (!hs) return;
@@ -7028,8 +7045,15 @@ function drawStormWave(game) {
   // ---- the CHARGE: the sun loading before it fires. This is the telegraph
   // the whole mechanic is fair because of, so it is deliberately loud — the
   // corona swells, prominences whip, and the light hardens toward white.
+  //
+  // HOW HARD IT SWELLS IS THE CLASS. The sun has to look like it is loading a
+  // squall or loading a CME, because that is the one thing worth knowing while
+  // there is still time to fly somewhere: `dens` scales the swell, the
+  // prominence count and their reach, and the class's `core`/`warm` tones carry
+  // the colour, so a squall barely flexes and a CME visibly winds up to throw.
   if (game.stormChargeT > 0) {
-    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;    // 0 -> 1 as it loads
+    const cl = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+    const k = 1 - game.stormChargeT / (game.stormChargeMax || cl.charge);   // 0 -> 1 as it loads
     const dCamS = Math.hypot(view.cx - hs.x, view.cy - hs.y);
     // Kept TIGHT to the limb (~2x radius). A wide corona gradient is a flat
     // additive wash over the entire view at any normal flying distance — it
@@ -7038,23 +7062,27 @@ function drawStormWave(game) {
     if (dCamS - view.r < hs.radius * 2.4) {
       ctx.globalCompositeOperation = 'lighter';
       const puls = 1 + 0.10 * Math.sin(t * (5 + 16 * k)) + 0.05 * Math.sin(t * 27);
-      const rr = hs.radius * (1.12 + 0.95 * k) * puls;
+      const rr = hs.radius * (1.12 + 0.95 * k * cl.dens) * puls;
       const cg = ctx.createRadialGradient(hs.x, hs.y, hs.radius * 0.92, hs.x, hs.y, rr);
-      cg.addColorStop(0, `rgba(255, 252, 240, ${0.4 * k})`);
-      cg.addColorStop(0.35, `rgba(255, 205, 120, ${0.22 * k})`);
-      cg.addColorStop(0.75, `rgba(255, 120, 70, ${0.09 * k})`);
+      cg.addColorStop(0, `rgba(${cl.core}, ${0.4 * k})`);
+      cg.addColorStop(0.35, `rgba(${cl.warm}, ${0.22 * k})`);
+      cg.addColorStop(0.75, `rgba(${cl.sheath}, ${0.09 * k})`);
       cg.addColorStop(1, 'transparent');
       ctx.fillStyle = cg;
       ctx.beginPath(); ctx.arc(hs.x, hs.y, rr, 0, TAU); ctx.fill();
       // Prominences: loops of plasma standing off the limb, reaching further
-      // and whipping faster the closer it gets to firing.
+      // and whipping faster the closer it gets to firing. A weaker class throws
+      // FEWER of them, not fainter ones — the same rule the sheath's filaments
+      // follow, and the reason a squall reads as sparse rather than as a CME
+      // with the brightness turned down.
       ctx.lineCap = 'round';
-      for (let i = 0; i < 7; i++) {
-        const a = (i / 7) * TAU + t * 0.35 + i * 1.7;
-        const reach = hs.radius * (0.18 + 0.75 * k) * (0.6 + 0.6 * Math.abs(Math.sin(t * 2.1 + i)));
+      const nProm = Math.max(3, Math.round(7 * cl.dens));
+      for (let i = 0; i < nProm; i++) {
+        const a = (i / nProm) * TAU + t * 0.35 + i * 1.7;
+        const reach = hs.radius * (0.18 + 0.75 * k * cl.dens) * (0.6 + 0.6 * Math.abs(Math.sin(t * 2.1 + i)));
         const x0 = hs.x + Math.cos(a) * hs.radius * 0.98, y0 = hs.y + Math.sin(a) * hs.radius * 0.98;
         const bow = a + 0.34;
-        ctx.strokeStyle = `rgba(255, 210, 150, ${0.5 * k})`;
+        ctx.strokeStyle = `rgba(${cl.warm}, ${0.5 * k})`;
         ctx.lineWidth = hs.radius * 0.05;
         ctx.beginPath();
         ctx.moveTo(x0, y0);
@@ -7073,7 +7101,18 @@ function drawStormWave(game) {
   if (!st) return;
   const dCam = Math.hypot(view.cx - hs.x, view.cy - hs.y);
   const vR = view.r;
-  const tail = st.r - CFG.STORM_TAIL, lead = st.r + CFG.STORM_BAND;
+  // Every dimension below is the WAVE'S OWN (it carries its CFG.STORM_CLASSES
+  // row), never a CFG constant: the plasma on screen has to be the plasma the
+  // sim is charging you for, and a global would describe whichever class was
+  // authored last rather than the one actually washing over the ship.
+  const tail = st.r - st.tail, lead = st.r + st.band;
+  // …and `kk` is HOW MUCH OF ITSELF THE WAVE HAS LEFT (world.js resolves it once
+  // per frame from the class's reach). It multiplies EVERY alpha below and
+  // nothing else: a wave spending itself has to visibly shred over its last ~10
+  // seconds, because the alternative — full-strength plasma that blinks out at
+  // an exact radius — is the geometric in-world edge the house style forbids.
+  // The sim scales its bite by the same number, so what you see is what it does.
+  const kk = st.k ?? 1;
   // Whole view already swept clean, or the front hasn't reached it yet
   if (dCam + view.r < tail || dCam - view.r > lead) return;
 
@@ -7087,8 +7126,13 @@ function drawStormWave(game) {
   // Bearing displacement of the shock — three harmonics plus a slow churn, in
   // ABSOLUTE units so the front stays equally ragged near the sun and out at
   // the rim (a fraction-of-radius wobble would be invisible early and wild late).
-  const wob = (a) => 250 * Math.sin(a * 3 + sd) + 140 * Math.sin(a * 7 - sd * 1.7)
-    + 80 * Math.sin(a * 13 + sd * 0.6) + 55 * Math.sin(a * 5 + t * 0.7);
+  // …and scaled by the class: a thin front is a less ragged one. Kept a partial
+  // scale (0.5 + 0.5*dens), not the raw `dens` — take the wobble to zero and the
+  // squall's shock comes out a PERFECT CIRCLE, which is the geometric in-world
+  // edge this whole draw exists to avoid.
+  const rag = 0.5 + 0.5 * st.dens;
+  const wob = (a) => rag * (250 * Math.sin(a * 3 + sd) + 140 * Math.sin(a * 7 - sd * 1.7)
+    + 80 * Math.sin(a * 13 + sd * 0.6) + 55 * Math.sin(a * 5 + t * 0.7));
   // Cheap deterministic hash for the filament/mote scatter — seeded off the
   // wave so no two look alike, and stable frame to frame so nothing strobes.
   const hash = (n) => {
@@ -7125,7 +7169,7 @@ function drawStormWave(game) {
     const behind = along - br;
     if (behind < -vR || behind > b.radius * CFG.STORM_SHADOW_LEN + vR) continue;
     const px = view.cx - ux * along, py = view.cy - uy * along;
-    const reach = b.radius * CFG.STORM_SHADOW * 1.4 + vR;
+    const reach = shelterR(b) * 1.4 + vR;
     if (px * px + py * py > reach * reach) continue;
     lees.push({ b, ux, uy });
   }
@@ -7133,8 +7177,13 @@ function drawStormWave(game) {
   // A teardrop: full width at the limb, bulging a little in the near wake,
   // then closing as the plasma folds back in behind the world. Shared by the
   // clip and the edge spill below so the two can never drift apart.
+  // (shelterR is the SIM's own half-width — config owns the one definition, and
+  // the 0.9 here is the documented shrink, not a second opinion about the shape.
+  // It is also what makes a MOON'S lee draw at all: shelterR's flat pad is most
+  // of a small moon's shadow, and a bare radius multiple would paint a slit a
+  // pilot cannot see to aim at.)
   const leePath = ({ b, ux, uy }) => {
-    const w = b.radius * CFG.STORM_SHADOW * 0.9;
+    const w = shelterR(b) * 0.9;
     const L = b.radius * CFG.STORM_SHADOW_LEN * 0.8;
     const px = -uy, py = ux;   // across the sun->body ray
     ctx.moveTo(b.x + px * w, b.y + py * w);
@@ -7173,14 +7222,14 @@ function drawStormWave(game) {
   // violet haze as the tail dissolves. Kept LOW: this covers the entire screen
   // when you are inside it, and the texture passes are what carry the drama.
   {
-    const shockAt = CFG.STORM_TAIL / (CFG.STORM_TAIL + CFG.STORM_BAND);
+    const shockAt = st.tail / (st.tail + st.band);
     const g = ctx.createRadialGradient(hs.x, hs.y, Math.max(0, tail), hs.x, hs.y, lead);
-    g.addColorStop(0, 'rgba(110, 50, 200, 0)');
-    g.addColorStop(0.45, 'rgba(120, 55, 210, 0.045)');
-    g.addColorStop(0.78, 'rgba(215, 70, 160, 0.06)');
-    g.addColorStop(shockAt * 0.985, 'rgba(255, 130, 50, 0.10)');
-    g.addColorStop(shockAt, 'rgba(255, 220, 170, 0.14)');
-    g.addColorStop(1, 'rgba(190, 235, 255, 0)');
+    g.addColorStop(0, rgba(st.haze, 0));
+    g.addColorStop(0.45, rgba(st.haze, 0.045 * kk));
+    g.addColorStop(0.78, rgba(st.sheath, 0.06 * kk));
+    g.addColorStop(shockAt * 0.985, rgba(st.shock, 0.10 * kk));
+    g.addColorStop(shockAt, rgba(mixc(st.shock, st.core, 0.5), 0.14 * kk));
+    g.addColorStop(1, rgba(st.core, 0));
     ctx.fillStyle = g;
     ctx.fillRect(view.x0 - 40, view.y0 - 40, view.x1 - view.x0 + 80, view.y1 - view.y0 + 80);
   }
@@ -7190,7 +7239,11 @@ function drawStormWave(game) {
   // Sized off the view, so they read as driving rain whether you are inside
   // the wave or watching it cross the system. `flow` walks each streak
   // outward and wraps it, which is the whole sense of motion — the sheath
-  // itself only creeps at 950 u/s and would otherwise look static up close.
+  // itself only creeps at ~1000 u/s and would otherwise look static up close.
+  //
+  // COUNT is what carries the class, not alpha: 72 streaks for a CME down to 32
+  // for a squall. Fading them instead would just grey the wave out — see the
+  // SATURATED note below, which is the same failure from the other direction.
   {
     const near = Math.max(tail, dCam - vR * 1.3);
     const far = Math.min(lead, dCam + vR * 1.3);
@@ -7198,7 +7251,12 @@ function drawStormWave(game) {
       const span = far - near;
       const flow = t * 620;
       ctx.lineCap = 'round';
-      for (let i = 0; i < 72; i++) {
+      // Thinned by kk as well as dimmed, exactly as `dens` thins a weak class:
+      // a spent wave is a SPARSER one, and fading alone would leave a full grid
+      // of ghost streaks that reads as a screen effect rather than as plasma
+      // coming apart.
+      const nFil = Math.round(72 * st.dens * (0.35 + 0.65 * kk));
+      for (let i = 0; i < nFil; i++) {
         const a = midA + (hash(i * 1.7) * 2 - 1) * halfA;
         const len = vR * (0.12 + 0.5 * hash(i * 3.1 + 5));
         // wrap through the visible depth, offset per streak
@@ -7213,16 +7271,18 @@ function drawStormWave(game) {
         // band) the raw term runs past 1 and pushed every channel to white —
         // the whole wave came out grey, which is what a low-alpha additive
         // near-white over black looks like. Plasma has to stay SATURATED.
-        const heat = Math.max(0, Math.min(1, 1 - (st.r - rr) / CFG.STORM_TAIL));
+        const heat = Math.max(0, Math.min(1, 1 - (st.r - rr) / st.tail));
         const fg = ctx.createLinearGradient(x0, y0, x1, y1);
         // BOTH TIPS FADE TO NOTHING. Starting at full alpha put a hard chop
         // across the leading end of every streak, and a field of hard-topped
         // radial bars reads as architecture — the "columns" look — not as
         // plasma blowing past. The peak sits just behind the tip.
-        fg.addColorStop(0, 'rgba(255, 190, 130, 0)');
-        fg.addColorStop(0.16, `rgba(255, ${(105 + 95 * heat) | 0}, ${(55 + 70 * heat) | 0}, ${(0.10 + 0.34 * heat) * flick})`);
-        fg.addColorStop(0.5, `rgba(220, 90, 170, ${0.09 * heat * flick})`);
-        fg.addColorStop(1, 'rgba(130, 60, 215, 0)');
+        // filLo -> filHi IS the class: amber for a CME, rose for a surge, blue
+        // for a squall, each ramping the same way from tail to shock.
+        fg.addColorStop(0, rgba(st.filHi, 0));
+        fg.addColorStop(0.16, rgba(mixc(st.filLo, st.filHi, heat), (0.10 + 0.34 * heat) * flick * kk));
+        fg.addColorStop(0.5, rgba(st.sheath, 0.09 * heat * flick * kk));
+        fg.addColorStop(1, rgba(st.haze, 0));
         ctx.strokeStyle = fg;
         ctx.lineWidth = vR * (0.006 + 0.03 * hash(i * 7.3 + 1));
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
@@ -7250,20 +7310,25 @@ function drawStormWave(game) {
     // px across at gameplay zoom, i.e. a full-screen fill, and the sheath
     // gradient above already peaks at exactly this radius. Pure fill-rate for
     // a picture that was already there.)
-    ctx.strokeStyle = 'rgba(255, 185, 105, 0.17)';
-    ctx.lineWidth = CFG.STORM_BAND * 0.34;
+    // Brightness rides `dens` alongside the colour: a squall's edge is not just
+    // bluer than a CME's, it is a fainter line in the sky. Kept a partial scale
+    // so the weakest class still reads as a FRONT — the shock is the one part
+    // of a wave you have to be able to see coming.
+    const bri = (0.55 + 0.45 * st.dens) * kk;
+    ctx.strokeStyle = rgba(st.shock, 0.17 * bri);
+    ctx.lineWidth = st.band * 0.34;
     trace(0); ctx.stroke();
     // The incandescent leading edge, riding a little ahead of the glow, with
     // a hot bloom under it. Sized off the view so it stays a bright LINE at
     // any zoom rather than vanishing zoomed out or becoming a slab zoomed in.
-    const edge = CFG.STORM_BAND * 0.24;
-    ctx.strokeStyle = `rgba(255, 140, 40, ${0.3 + 0.1 * Math.sin(t * 9)})`;
+    const edge = st.band * 0.24;
+    ctx.strokeStyle = rgba(st.filLo, (0.3 + 0.1 * Math.sin(t * 9)) * bri);
     ctx.lineWidth = Math.max(30, vR * 0.13);
     trace(edge); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 205, 130, ${0.45 + 0.12 * Math.sin(t * 9)})`;
+    ctx.strokeStyle = rgba(mixc(st.shock, st.core, 0.5), (0.45 + 0.12 * Math.sin(t * 9)) * bri);
     ctx.lineWidth = Math.max(14, vR * 0.055);
     trace(edge); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 250, 240, ${0.6 + 0.15 * Math.sin(t * 13)})`;
+    ctx.strokeStyle = rgba(st.core, (0.6 + 0.15 * Math.sin(t * 13)) * bri);
     ctx.lineWidth = Math.max(4, vR * 0.014);
     trace(edge); ctx.stroke();
   }
@@ -7277,8 +7342,9 @@ function drawStormWave(game) {
     if (far > near) {
       const span = far - near;
       const flow = t * 780;
-      ctx.fillStyle = 'rgba(255, 240, 210, 0.8)';
-      for (let i = 0; i < STORM_MOTES; i++) {
+      ctx.fillStyle = rgba(st.core, 0.8 * kk);
+      const nMote = Math.round(STORM_MOTES * st.dens * (0.35 + 0.65 * kk));
+      for (let i = 0; i < nMote; i++) {
         const a = midA + (hash(i * 2.7) * 2 - 1) * halfA;
         const rr = near + ((hash(i * 5.1 + 1) * span + flow) % span);
         const tw = Math.sin(t * (7 + 9 * hash(i + 31)) + i * 2.3);
@@ -7304,13 +7370,18 @@ function drawStormWave(game) {
     ctx.globalCompositeOperation = 'lighter';
     for (const lee of lees) {
       const rel = st.r - Math.hypot(lee.b.x, lee.b.y);
-      if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
-      const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
-      ctx.strokeStyle = `rgba(230, 140, 210, ${0.13 * k})`;
-      ctx.lineWidth = lee.b.radius * 0.85;
+      if (rel < -st.band || rel > st.tail) continue;
+      const k = rel < 0 ? 1 : 1 - rel / st.tail;
+      // Widths ride shelterR, not the bare radius: on a small MOON a
+      // radius-scaled stroke is thinner than the pad that makes its lee usable,
+      // so the soft edge fell inside the shadow and left the cut showing as the
+      // hard line this pass exists to erase.
+      const lw = shelterR(lee.b);
+      ctx.strokeStyle = rgba(mixc(st.sheath, st.core, 0.35), 0.13 * k * kk);
+      ctx.lineWidth = lw * 0.6;
       ctx.beginPath(); leePath(lee); ctx.stroke();
-      ctx.strokeStyle = `rgba(255, 190, 140, ${0.11 * k})`;
-      ctx.lineWidth = lee.b.radius * 0.3;
+      ctx.strokeStyle = rgba(mixc(st.warm, st.core, 0.35), 0.11 * k * kk);
+      ctx.lineWidth = lw * 0.21;
       ctx.beginPath(); leePath(lee); ctx.stroke();
     }
     ctx.globalCompositeOperation = 'source-over';
@@ -7326,16 +7397,16 @@ function drawStormWave(game) {
     if (!bodyOnScreen(b)) continue;
     const br = Math.hypot(b.x, b.y);
     const rel = st.r - br;
-    if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
-    const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
+    if (rel < -st.band || rel > st.tail) continue;
+    const k = rel < 0 ? 1 : 1 - rel / st.tail;
     const sunAng = Math.atan2(-uy, -ux);   // bearing from the body back to the sun
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(255, 218, 170, ${0.5 * k})`;
+    ctx.strokeStyle = rgba(mixc(st.shock, st.core, 0.5), 0.5 * k * kk);
     ctx.lineWidth = b.radius * 0.1;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.radius * 1.06, sunAng - 1.15, sunAng + 1.15);
     ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 255, 245, ${0.35 * k})`;
+    ctx.strokeStyle = rgba(st.core, 0.35 * k * kk);
     ctx.lineWidth = b.radius * 0.03;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.radius * 1.1, sunAng - 0.85, sunAng + 0.85);
@@ -7767,9 +7838,14 @@ export function render(game) {
   //    reach a pilot who is 40,000 units out with the sun behind a gas giant,
   //    and the message line alone can be missed. It quickens as it loads.
   if (game.stormChargeT > 0) {
-    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;
+    const cl = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+    const k = 1 - game.stormChargeT / (game.stormChargeMax || cl.charge);
     const beat = 0.5 + 0.5 * Math.sin(game.time * (3 + 12 * k));
-    ctx.fillStyle = `rgba(255, 170, 90, ${0.02 + 0.055 * k * beat})`;
+    // THE PULSE IS THE CLASS, at the one moment the player can still act on it:
+    // its COLOUR is the class's warm tone (cool blue for a squall through to the
+    // CME's amber) and its strength scales with `dens`, so the telegraph says
+    // how hard to run before the message line has finished typing.
+    ctx.fillStyle = `rgba(${cl.warm}, ${(0.02 + 0.055 * k * beat) * (0.5 + 0.5 * cl.dens)})`;
     ctx.fillRect(0, 0, vw, vh);
   }
 
@@ -7780,7 +7856,7 @@ export function render(game) {
   //    everything scales with `wash`, so ducking into shelter visibly calms it
   //    instead of switching it off.
   if (game.stormIonT > 0 && game.ship.alive) {
-    const ionK = Math.min(1, game.stormIonT / CFG.STORM_ION);
+    const ionK = Math.min(1, game.stormIonT / (game.stormIonMax || 1));
     const wash = game.stormExposed ? ionK : ionK * 0.35;
     const jit = 1 + 0.25 * Math.sin(game.time * 31) + 0.15 * Math.sin(game.time * 67);
     // A flat full-screen haze is nearly all cost and no signal: laid over the

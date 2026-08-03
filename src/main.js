@@ -1,7 +1,8 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, pickIsMilestone, tierChoices,
-  consumePickCost, applyAbility, applySpec, applyTierUp, canStow,
+  consumePickCost, applyAbility, applySpec, applyTierUp, canStow, shelterR, stormClass,
+  stormStrength,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
@@ -96,10 +97,17 @@ const game = {
   // ---- THE SOLAR WAVE (CFG.STORM_*). world.js owns the wave's geometry;
   // these are the SHIP's relationship to it, resolved once per frame in
   // updateStorm and read by physics/render/ai — never re-derived there.
+  stormCls: null,          // the CFG.STORM_CLASSES row charging or in flight
   stormChargeT: 0,         // sun loading before the front fires (the telegraph)
+  stormChargeMax: 0,       // …what it started at, so the telegraph can ramp 0->1
   stormExposed: false,     // in the sheath with no world between us and the sun
   stormShelter: null,      // the world whose lee we're in, when we are in one
   stormIonT: 0,            // seconds of sensor scramble left (outlives exposure)
+  // …what stormIonT was last SET to (the class's `ion` scaled by the wave's
+  // remaining strength, refreshed every exposed frame), NOT the class maximum.
+  // It exists because stormIonT outlives the wave that set it, so render has to
+  // normalise the wash against the thing that actually set it.
+  stormIonMax: 0,
   stormBlind: false,       // alien senses are down system-wide (util.senseBlind)
   stormRode: 0,            // seconds ridden exposed this wave (capped payout)
   evadeT: 0,                            // Dash Jets cooldown (scout, A/D)
@@ -1012,6 +1020,7 @@ function resetRun(seed, openCard = true) {
   // exposure flag surviving into a fresh world would cook a ship with no wave
   // anywhere near it, and a stale stormBlind would leave the aliens deaf.
   game.storm = null; game.stormTimer = undefined; game.stormChargeT = 0;
+  game.stormCls = null; game.stormChargeMax = 0; game.stormIonMax = 0;
   game.stormExposed = false; game.stormShelter = null; game.stormIonT = 0;
   game.stormBlind = false; game.stormRode = 0;
   game.visitor = null; game.visitorDone = false;
@@ -1160,17 +1169,29 @@ const EVENT_MSGS = [
     first: ['The interstellar visitor has left the system — forever.', 5.5] },
   // ---- the solar wave: charge (telegraph) -> launch -> caught out -> receipt.
   // Alarm on the two that mean "act now", chime on the two that mean "you did".
+  //
+  // EVERY LINE NAMES THE CLASS, because the class IS the decision: a squall is
+  // worth flying straight through and a CME is worth crossing the system to
+  // hide from, and the telegraph is where a pilot finds out which one is
+  // loading. These three carry the CFG.STORM_CLASSES row itself as their value
+  // — the full `name` on the telegraph, the short `tag` for anything in flight
+  // (radio traffic, not a title card), and the class's own `blurb` for what it
+  // will actually do to you. Passing the row rather than a pre-baked string is
+  // what keeps the wording of a class in ONE place with its numbers, so a
+  // squall can never inherit the CME's promise of a system-wide blackout.
   { flag: 'stormChargeWarn', tut: 'stormCharge', snd: sfx.sfxAlarm,
-    first: ['CORONAL MASS EJECTION — the sun is charging. Put a world between you and it, or ride it out in the open.', 7],
-    repeat: ['CME CHARGING — the sun is loading another wave.', 3.5] },
+    first: [(v) => `${v.name} — the sun is charging. Put a world between you and it, or ride it out in the open.`, 7],
+    repeat: [(v) => `${v.name} CHARGING — the sun is loading another wave.`, 3.5] },
   { flag: 'stormWarn', tut: 'storm', snd: sfx.sfxAlarm,
-    first: ['WAVE AWAY — a plasma front is sweeping outward. Nothing alien can see you while it passes.', 6],
-    repeat: ['SOLAR WAVE inbound — the front is climbing out through the system.', 3.5] },
+    first: [(v) => `${v.tag} AWAY — a plasma front is sweeping outward: ${v.blurb}`, 6],
+    repeat: [(v) => `${v.tag} AWAY — ${v.blurb}`, 3.5] },
   { flag: 'stormHitWarn', tut: 'stormHit', snd: sfx.sfxAlarm,
     first: ['ION WASH — sensors blind, engines choking, hull cooking. Break for a world\'s lee, or hold and take the charge!', 6.5],
-    repeat: ['ION WASH — you are caught in the open.', 3] },
+    repeat: [(v) => `ION WASH — caught in the open, ${v.tag} passing.`, 3] },
+  // "around IT", not "around the world": a moon's lee shelters you exactly as a
+  // planet's does, and moons are the shelter you will usually reach first.
   { flag: 'stormLeeName', tut: 'stormLee', snd: sfx.sfxChime,
-    first: [(v) => `IN THE LEE OF ${v} — the wave breaks around the world. Nothing reaches you here.`, 5.5] },
+    first: [(v) => `IN THE LEE OF ${v} — the wave breaks around it. Nothing reaches you here.`, 5.5] },
   { flag: 'stormRideWarn', snd: sfx.sfxLife,
     first: [(v) => `WAVE RIDDEN — ${v}s in the open, and the banks are charged.`, 4] },
   { flag: 'auroraName', tut: 'aurora', snd: sfx.sfxChime,
@@ -1790,10 +1811,19 @@ function updateLifePods(dt) {
 // Which world, if any, is casting its lee over this point. The sun is pinned
 // at the origin, so a shadow is just the cylinder running anti-sunward from a
 // body: project onto the sun->body ray and you are sheltered if you are PAST
-// the body, within STORM_SHADOW x its radius of that ray, and not so far
-// behind that the lee has thinned out. Deliberately forgiving — the shelter
-// has to be somewhere a pilot can actually reach under pressure — and render
-// feathers the wedge so the boundary never reads as a drawn line.
+// the body, within config.shelterR of that ray, and not so far behind that the
+// lee has thinned out. Deliberately forgiving — the shelter has to be somewhere
+// a pilot can actually reach under pressure — and render feathers the wedge so
+// the boundary never reads as a drawn line.
+//
+// PLANETS AND MOONS BOTH, and the moons are the point: STORM_SHADOW_MIN_R used
+// to sit at 60, which quietly failed two thirds of the sky's moons, so "duck
+// behind that moon" was a move that worked or didn't with nothing to tell you
+// which. The floor is 24 now — every real moon casts a lee, the ring shepherd
+// moonlet still doesn't — and shelterR's flat pad is what makes the small ones
+// a pocket rather than a razor edge. Shelter geometry is a property of the BODY,
+// deliberately NOT of the wave: all three classes break around the same lee, so
+// what a pilot learns behind one world holds behind every world in every storm.
 //
 // Over reg.nonField (physics.frameReg), not game.bodies: nothing that casts a
 // lee is field rock, so walking the pockets to reject ~15,000 rocks one at a
@@ -1811,7 +1841,7 @@ function shelterBody(x, y) {
     const behind = along - br;
     if (behind < 0 || behind > b.radius * CFG.STORM_SHADOW_LEN) continue;
     const px = x - ux * along, py = y - uy * along;   // offset across the ray
-    const rr = b.radius * CFG.STORM_SHADOW;
+    const rr = shelterR(b);
     if (px * px + py * py < rr * rr) return b;
   }
   return null;
@@ -1822,34 +1852,59 @@ function shelterBody(x, y) {
 // afterburner tank). Everything the wave does to the player hangs off here.
 function updateStorm(dtReal) {
   const s = game.ship;
+  const st = game.storm;
   // A live wave floods the whole system with noise — nothing can pick the ship
   // out of it. That blackout IS the wave's reward: for its ~60-second passage
   // every nest and lurker is deaf, so a storm is the window to move.
-  game.stormBlind = !!game.storm;
+  //
+  // ONLY THE BIG TWO (cls.blind). A squall is a ripple, not a flood, and it is
+  // also the class that costs almost nothing — handing it the free blackout as
+  // well would make the cheapest weather the best weather, and would push the
+  // system's sense-blind duty cycle well past where the stealth layer was
+  // balanced (see the BLINDING note on CFG.STORM_CLASSES).
+  game.stormBlind = !!st && !!st.blind;
 
   const wasExposed = game.stormExposed;
   game.stormExposed = false;
   game.stormShelter = null;
-  if (game.storm && s.alive) {
+  if (st && s.alive) {
     const hr = Math.hypot(s.x, s.y);
-    const lead = game.storm.r - hr;   // >0 once the shock has swept past us
-    if (lead > -CFG.STORM_BAND && lead < CFG.STORM_TAIL) {
+    const lead = st.r - hr;   // >0 once the shock has swept past us
+    if (lead > -st.band && lead < st.tail) {
       game.stormShelter = shelterBody(s.x, s.y);
       game.stormExposed = !game.stormShelter;
-      if (game.stormShelter && !game.tut.stormLee) game.stormLeeName = game.stormShelter.name;
+      // The lesson has to survive sheltering behind an UNNAMED body, and now
+      // that every moon casts a lee that is the common case — most moons carry
+      // no name at all, and `game.stormLeeName = ''` is falsy, so the message
+      // table would drop the one message that teaches the counterplay. Same
+      // fallback shape starmap.contactLabel uses for a nameless moon.
+      if (game.stormShelter && !game.tut.stormLee) {
+        const b = game.stormShelter;
+        game.stormLeeName = b.name
+          || (b.type === 'moon' && b.parent && b.parent.name ? `a moon of ${b.parent.name}` : 'this world');
+      }
     }
   }
 
   if (game.stormExposed) {
-    game.stormIonT = CFG.STORM_ION;
-    if (!wasExposed) game.stormHitWarn = true;
+    // stormIonT outlives the wave that set it, so the scale it is read against
+    // has to outlive the wave too — render normalises the wash by stormIonMax,
+    // never by a CFG constant that may describe a different class entirely.
+    // Scaled by st.k with everything else the wave does: a front shredding at
+    // the end of its reach scrambles proportionally less. Both are written
+    // together every exposed frame, so the ratio render reads stays honest.
+    game.stormIonT = st.ion * st.k;
+    game.stormIonMax = st.ion * st.k;
+    if (!wasExposed) game.stormHitWarn = st;
     // Riding it out in the open is a wager that pays: XP per second exposed,
-    // CAPPED per wave (see PROG.STORM_RIDE_MAX) so chasing the front outward
-    // to stretch the timer can't turn weather into a farm.
+    // scaled by the class's own `pay` (a squall's sheath costs a tenth of a
+    // CME's hull and must not pay a CME's rate), and CAPPED per wave (see
+    // PROG.STORM_RIDE_MAX) so chasing the front outward to stretch the timer
+    // can't turn weather into a farm.
     const pay = Math.min(dtReal, Math.max(0, PROG.STORM_RIDE_MAX - game.stormRode));
     if (pay > 0) {
       game.stormRode += pay;
-      addXp(game, pay * PROG.XP_STORM_RIDE);
+      addXp(game, pay * PROG.XP_STORM_RIDE * st.pay * st.k);
     }
     bump(game, 'stormExposedT', dtReal);
   } else if (game.stormIonT > 0) {
@@ -2054,29 +2109,47 @@ window.goto = (target, y) => {
 // without respawn loops resetting the scene under you.
 window.god = (on = true) => { game.godMode = !!on; return game.godMode; };
 
-// window.storm(where): fire a SOLAR WAVE on demand instead of waiting out
+// window.storm(where, cls): fire a SOLAR WAVE on demand instead of waiting out
 // CFG.STORM_EVERY. 'charge' (default) starts at the telegraph, so you see the
 // whole event; 'here' skips straight to a front already climbing toward the
 // ship, which is how you check exposure/shelter without a 40-second wait;
 // 'off' clears the wave outright. Returns the live wave state.
-window.storm = (where = 'charge') => {
+//
+// `cls` picks the intensity — a CFG.STORM_CLASSES key ('squall'/'surge'/'cme')
+// or an index — and defaults to a fair roll, exactly as the sky rolls one. Pin
+// it when you are checking a class's own numbers or palette; a random draw is
+// the wrong tool for "does the squall read as a squall".
+window.storm = (where = 'charge', cls) => {
   if (where === 'off') {
-    game.storm = null; game.stormChargeT = 0;
+    game.storm = null; game.stormChargeT = 0; game.stormCls = null;
     game.stormExposed = false; game.stormBlind = false; game.stormIonT = 0;
     return null;
   }
+  const c = (typeof cls === 'number' ? CFG.STORM_CLASSES[cls]
+    : cls ? CFG.STORM_CLASSES.find((k) => k.key === cls) : null) || stormClass(Math.random);
   game.stormChargeT = 0;
+  game.stormCls = c;
   if (where === 'charge') {
     game.storm = null;
-    game.stormChargeT = CFG.STORM_CHARGE;
-    game.stormChargeWarn = true;
-    return { charging: CFG.STORM_CHARGE };
+    game.stormChargeT = c.charge;
+    game.stormChargeMax = c.charge;
+    game.stormChargeWarn = c;
+    return { charging: c.charge, cls: c.key };
   }
   // Park the shock just inside the ship so the sheath is about to arrive.
   const r0 = Math.max(game.homeStar.radius, Math.hypot(game.ship.x, game.ship.y) - 1200);
-  game.storm = { r: r0, prevR: r0, seed: Math.random() * 1000 };
-  game.stormWarn = true;
-  return { r: Math.round(r0), shipR: Math.round(Math.hypot(game.ship.x, game.ship.y)) };
+  game.storm = { r: r0, prevR: r0, seed: Math.random() * 1000, k: 1, ...c };
+  game.storm.k = stormStrength(game.storm);
+  game.stormWarn = c;
+  // `k` and `reachR` in the return value because parking a class OUTSIDE its
+  // reach is the easy way to waste ten minutes wondering why nothing happened:
+  // a squall cannot exist past half the system, so asking for one out at the
+  // ice worlds hands back a wave that is already spent (k 0) and expires on the
+  // next frame. That is correct, and it is invisible unless it is reported.
+  return {
+    r: Math.round(r0), shipR: Math.round(Math.hypot(game.ship.x, game.ship.y)),
+    cls: c.key, k: +game.storm.k.toFixed(2), reachR: Math.round(CFG.WORLD_R * c.reach),
+  };
 };
 
 // window.freshRun(specIdx, seed): repeatable fresh run for dev/testing — a

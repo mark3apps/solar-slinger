@@ -47,7 +47,7 @@ immediately, so the arrival renders populated rather than empty for a frame.
 
 | Want | Do |
 |---|---|
-| a solar wave | `window.storm('charge')` for the full telegraph, `window.storm('here')` to park a front just about to arrive, `window.storm('off')` to clear |
+| a solar wave | `window.storm('charge')` for the full telegraph, `window.storm('here')` to park a front just about to arrive, `window.storm('off')` to clear. Add a class to pin the intensity: `window.storm('here', 'squall' \| 'surge' \| 'cme')` — a random roll is the wrong tool for "does the squall read as a squall" |
 | a specific build | assign `game.prog` wholesale (`{ xp, level, tier, picksThisTier, spec, upgrades: { abilityId: rank }, lives }`) then `window.tick(1/60)` once to rebuild `game.st` |
 | to blast past pick cards | `game.autoUpgrade = true` |
 | time to pass | `window.speed(10)` live (0.25–50), or `window.tick(60)` headless then look |
