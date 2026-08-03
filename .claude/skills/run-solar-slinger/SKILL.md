@@ -381,7 +381,8 @@ eval ({ awake: game.bodies._awake.length, bodies: game.bodies.length, sim:+game.
 Two real runs gave `{"awake":1269,…,"sim":2.77,"draw":1.88}` and `{"awake":1342,…,"sim":3.55,"draw":1.76}`
 — the spread is the random seed, so **compare only within one pinned seed**. What matters is the shape:
 open space sits at `awake: 168`, and the jump past 1,000 is the field LOD engaging. Other hooks:
-`window.god(true)`, `window.storm('charge')`, `window.speed(n)` (needs `--show`), `window.locate('gas')`.
+`window.god(true)`, `window.storm('charge'[, 'squall'|'surge'|'cme'])`, `window.speed(n)` (needs
+`--show`), `window.locate('gas')`.
 
 ## Direct invocation — no app at all
 

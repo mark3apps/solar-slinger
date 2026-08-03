@@ -24,31 +24,99 @@ give directions by). Rules that keep it from breaking the invariants above:
   cleared the moment the player catches it. Don't put `noBoundary` on anything else without a reason
   this strong.
 - **THE SOLAR WAVE** (`CFG.STORM_*`) — system-wide weather with a telegraph, a bite, a counterplay
-  and a payday. The sun CHARGES visibly for `STORM_CHARGE` seconds, then fires a shock front sweeping
-  out at `STORM_SPEED` trailing a `STORM_TAIL`-deep **plasma sheath**. **The sheath is the whole
-  mechanic**: the front alone is a 1400u ring that crosses any radius in ~1.5s — too brief to notice,
-  which is exactly what the storm used to be (decorative). The sheath takes ~10s to pass, so being
-  caught out in one is a situation you answer. Force-wise NOTHING CHANGED: it still pushes SCRAP
-  DEBRIS ONLY, never bodies, celestials, or rails — a wave touching those is an invariant-3-style
-  regression. What it does instead lands on the ship, on scrap, and on sensors:
-  - **Caught EXPOSED** (in the sheath, no world between you and the sun): `STORM_DPS` directionless
-    hull damage (no `hitAng` — no facing dodges a wave, so a partial shield soaks only its coverage
-    share, and the continuous damage means the regen delay never elapses mid-wave), engines derated
-    to `STORM_THRUST`, and **sensors scrambled** for `STORM_ION` seconds past the last exposure —
-    the trajectory forecast and lead markers go dark and the radar drops/smears its returns.
-    Measured at tier 0: ~55 hull on a BRAWLER (27%), ~63 on HAULER/SCOUT (53%). Kept FLAT, not
+  and a payday. The sun CHARGES visibly, then fires a shock front sweeping outward trailing a deep
+  **plasma sheath**. **The sheath is the whole mechanic**: the front alone is a thin ring that crosses
+  any radius in ~1.5s — too brief to notice, which is exactly what the storm used to be (decorative).
+  The sheath takes seconds to pass, so being caught out in one is a situation you answer. Force-wise
+  NOTHING CHANGED: it still pushes SCRAP DEBRIS ONLY, never bodies, celestials, or rails — a wave
+  touching those is an invariant-3-style regression. What it does instead lands on the ship, on
+  scrap, and on sensors:
+  - **THE SUN THROWS THREE DIFFERENT THINGS** (`CFG.STORM_CLASSES`, weakest first: `squall`, `surge`,
+    `cme`). Every number a wave runs on — charge, speed, band, tail, reach, dps, thrust derate, ion
+    seconds, shove, whether it blinds, its payday weight and its whole palette — is a row in that
+    table, and the live wave CARRIES its row (`game.storm` is `{r, prevR, seed, k, ...row}`).
+    **Nothing downstream may read a class-shaped constant off `CFG`**: physics, render and main all
+    read the wave, so the plasma on screen is always the plasma the sim is charging you for. The class
+    is picked at CHARGE time (`config.stormClass`, off `Math.random` — never the seeded stream) and
+    parked on `game.stormCls`, because the telegraph has to announce WHICH one is loading.
+  - **The pick is FLAT RANDOM — one of the three, equal odds, no weights and no special cases.**
+    Weighting the table, or forcing the first wave of a run to the gentle row, are both tempting and
+    both were deliberately declined: a third each is what makes the telegraph worth reading every
+    time, because there is never a class you can assume it probably is.
+  - **`CFG.STORM_EVERY` IS UNCHANGED AT 300** (and the first-wave timer at 240). Adding classes must
+    not make the sky stormier — the sun fires no more often than it ever did; what changed is what it
+    throws, not how often.
+  - **HOW FAR IT CLIMBS gives the system a geography.** `reach` is the fraction of `CFG.WORLD_R` the
+    shock can climb to before it has spent itself, and past `fade` (a fraction of that reach) it
+    DISSOLVES rather than running at full strength and then blinking out — `config.stormStrength`
+    returns the live 0..1 the wave carries as **`k`**, and every bite (dps, shove, thrust derate, ion
+    seconds, ride XP, ionization) and every render alpha is multiplied by it. A wave that vanished at
+    an exact radius would be the geometric in-world edge the house style forbids; each class instead
+    spends its last ~10s visibly shredding, and the filaments and motes THIN OUT as well as dim (fade
+    alone leaves a full grid of ghost streaks that reads as a screen effect). Measured:
+    | class | full strength to | gone at | of the system |
+    |---|---|---|---|
+    | `squall` | ~18,500 | **29,900** | **½** — inner system only; never reaches the amber giant |
+    | `surge` | ~27,100 | **39,900** | **⅔** |
+    | `cme` | ~59,800 | 69,730 | the whole sky |
+    The `cme` row's `fade` puts its taper's start at **exactly `WORLD_R`** — entirely outside the
+    world — so the top class behaves precisely as it always did (full strength everywhere anything
+    lives, and its 69,730 matches the 69,700 the old expiry let the front travel to). `stormSpent`
+    ends a wave on the FRONT, not the tail: the sheath trails behind the shock, so a front stopped at
+    the limit is a wave wholly inside it, which is what "a squall never reaches the outer system" has
+    to mean. `k` is already ~0 by then, so nothing visible is cut.
+  - **The ladder is priced on FULL-PASS EXPOSURE, not dps** — standing still, a sheath washes over you
+    for `tail/speed` seconds, so the real cost is that times dps: **squall 3.5s × 2.5 ≈ 9 hull**,
+    **surge 6.1s × 4.5 ≈ 27**, **cme 9.7s × 7 ≈ 68** (the CME row is the wave's original numbers,
+    unchanged — measured at tier 0: BRAWLER 27%, HAULER/SCOUT 53% of their thinner hulls). ~3× per
+    step, so the classes are told apart by CONSEQUENCE rather than by reading a label. Those figures
+    are for a wave at full strength; scale by `k` for one that is spending itself.
+  - **Caught EXPOSED** (in the sheath, no world between you and the sun): directionless hull damage
+    (no `hitAng` — no facing dodges a wave, so a partial shield soaks only its coverage share, and the
+    continuous damage means the regen delay never elapses mid-wave), engines derated to the class's
+    `thrust`, and **sensors scrambled** for its `ion` seconds past the last exposure — the trajectory
+    forecast and lead markers go dark and the radar drops/smears its returns. All three stay FLAT, not
     hull-scaled, like every other environmental hazard, and under the gas cloud tops (9 dps).
-  - **SHELTER is the counterplay** (`main.shelterBody`, `STORM_SHADOW_*`): the sun is pinned at the
-    origin, so a world's lee is just the cylinder running anti-sunward from it. Render CUTS that lee
-    out of the plasma with an even-odd clip — the shadow isn't painted on, the plasma simply isn't
-    there — and the drawn lee is deliberately NARROWER/SHORTER than the mechanical one, so anywhere
-    that LOOKS sheltered is sheltered (the dust-halo safe-direction rule). Its outline is re-stroked
-    soft afterwards: a clip cuts with a knife, and a hard in-world edge is against the house style.
-  - **The payoff**: a live wave BLINDS ALIEN SENSES system-wide for its whole ~56s passage (the
-    window to move), it IONIZES the scrap it sweeps (`PROG.ION_SCRAP_MUL`, drawn charged blue), and
-    riding it out exposed pays `PROG.XP_STORM_RIDE`/sec, **capped per wave** at `STORM_RIDE_MAX` —
-    the front outruns any ship but you can still ride it outward, and an uncapped per-second payout
-    would reward exactly that (the same rate-independence argument as the fields' `xpLeft`).
+    `game.stormIonMax` records the class that set the scramble, since `stormIonT` outlives its wave
+    and render normalises the wash against it — a fixed divisor would read a squall's 2s as 40% of a
+    CME's and open the dial half-eaten.
+  - **SHELTER is the counterplay** (`main.shelterBody`, `config.shelterR`, `STORM_SHADOW_*`): the sun
+    is pinned at the origin, so a world's lee is just the cylinder running anti-sunward from it.
+    Shelter geometry is a property of the BODY, deliberately **not** of the wave — all three classes
+    break around the same lee, so what a pilot learns behind one world holds everywhere. Render CUTS
+    that lee out of the plasma with an even-odd clip — the shadow isn't painted on, the plasma simply
+    isn't there — and the drawn lee is deliberately NARROWER/SHORTER than the mechanical one, so
+    anywhere that LOOKS sheltered is sheltered (the dust-halo safe-direction rule). Its outline is
+    re-stroked soft afterwards: a clip cuts with a knife, and a hard in-world edge is against the
+    house style.
+  - **MOONS SHELTER — all but the very smallest.** The type test always read planet/moon/rogue, but
+    `STORM_SHADOW_MIN_R` sat at 60 and the sky's moons run 25–84 (median 52.5), so **40 of 59 moons
+    silently failed**: "duck behind that moon" worked two times in three with nothing to tell you
+    which. The floor is **24** — every real moon casts a lee, the ring shepherd moonlet at 18 still
+    doesn't (a moonlet the size of the ship shelters nobody). `config.shelterR` adds a **flat
+    `STORM_SHADOW_PAD`** on top of the radius multiple, because forgiveness has to be measured in
+    ship-widths: `1.15 ×` a 26-radius moon is a 30-unit half-width, which a TITAN (`SHIP_RADIUS` 44.2)
+    does not fit through. `shelterR` is the ONE definition — `shelterBody` decides with it and
+    `drawStormWave` punches the plasma out with it, and the two drifting apart is a pilot sitting in
+    visible shadow taking damage. The lee-edge stroke widths ride it too, or on a small moon the soft
+    edge falls inside the shadow and the clip shows as a hard line.
+  - **The payoff, and it SCALES**: a wave BLINDS ALIEN SENSES system-wide for its whole passage (the
+    window to move) — but **only the classes with `blind: true`**. A squall is a ripple, not a flood,
+    and it is also the class that costs almost nothing; handing it the free blackout would make the
+    cheapest weather the best weather. It also holds the stealth layer where it was balanced: at the
+    reach limits the system is sense-blind **~12%** of the time, against ~25% when every wave was a
+    CME that crossed the whole sky — a shorter-reaching wave is a shorter-LIVED one, so the ladder
+    roughly halves the window to move. **If the aliens start feeling too sharp, this is the first
+    place to look**; giving the squall `blind` would only take it to ~15%. The wave
+    also IONIZES the scrap it sweeps (drawn charged blue) and riding it out exposed pays
+    `PROG.XP_STORM_RIDE`/sec, **capped per wave** at `STORM_RIDE_MAX` — the front outruns any ship but
+    you can still ride it outward, and an uncapped per-second payout would reward exactly that (the
+    same rate-independence argument as the fields' `xpLeft`). Both halves of that payday ride the
+    class's single **`pay`** weight (0.45 / 0.72 / 1): `d.ion` stores how far toward
+    `PROG.ION_SCRAP_MUL` a chunk was charged rather than a bare flag, so the multiplier lerps and the
+    big wave's salvage is the good salvage — and it stays truthy at every class, which is what keeps
+    every `if (d.ion)` working. It is stamped with `Math.max`, so a squall trailing a CME can never
+    DISCHARGE salvage the big wave already charged. Risk and reward move together or the ladder lies.
   - **Ionization must never touch FIELD scrap.** A shoal chunk's XP was already priced against the
     pocket budget by `fieldXp` at DROP time, so `dropScrap` stamps `d.field` and the pickup multiplier
     skips it — otherwise the field farm launders itself back through the weather.
@@ -56,14 +124,33 @@ give directions by). Rules that keep it from breaking the invariants above:
     in `updateStorm` before both consumers (`updateAliens` and the substeps); physics/render/ai only
     READ them — the same owner-split as the afterburner tank and `game.burnerOn`. `driftSplash` clears
     them (a wave left standing when you back out to the menu would cook the parked ship forever), and
-    `resetRun` clears the geometry with them.
+    `resetRun` clears the geometry, the class and the two `*Max` scales with them.
+  - **The lee message must survive an UNNAMED shelter.** Most moons carry no name, and
+    `game.stormLeeName = ''` is falsy — the EVENT_MSGS table would drop the one message that teaches
+    the counterplay, which now that every moon casts a lee is the common case. `updateStorm` falls
+    back to `a moon of <parent>` / `this world`, the same shape `starmap.contactLabel` uses.
   - **Render sizes STRUCTURE in wave units and TEXTURE off `view.r`.** A gameplay view is ~900u wide
     against a 9200u sheath, so anything sized in wave units is bigger than the screen and collapses to
     a flat wash — the first cut's 220u filaments drew as screen-filling columns. Streaks/motes scale
     with the view, fade at BOTH tips (a hard leading tip reads as architecture, not plasma), and
     stay saturated (low-alpha additive near-white over black is just grey). ~0.4ms while it crosses
     the view, nothing at all otherwise.
-  - `window.storm('charge'|'here'|'off')` fires one on demand instead of waiting out `STORM_EVERY`.
+  - **A weak class is a SPARSER wave, never a dimmer one.** `dens` thins the filaments, the motes and
+    the sun's prominences; fading a full-density wave instead just desaturates it, and a low-alpha
+    additive over black is grey — the same failure the filament note above warns about. Colour rides
+    the game's EXISTING heat grammar (hot = amber-to-white, cool = violet-to-blue): a squall is a pale
+    cyan ripple over blue-violet haze, a surge burns rose, only a CME earns the white-hot core, and
+    the `cme` row's colours are the wave's originals so the top of the ladder still looks like itself.
+    Six `[r,g,b]` triples per class (`core`/`shock`/`warm`/`sheath`/`haze`/`filLo`+`filHi`) — triples
+    because the filament ramp INTERPOLATES (`mixc`), and they still stringify into `rgba(${c}, a)`.
+    The front's raggedness scales too, but only partway (`0.5 + 0.5 × dens`): take the wobble to zero
+    and the squall's shock draws a PERFECT CIRCLE, which is the geometric in-world edge the whole pass
+    exists to avoid. The radar rings, the chart arc and the far-field screen pulse all take the class
+    colour as well — the instruments have to say which of the three is out there.
+  - `window.storm('charge'|'here'|'off', cls)` fires one on demand instead of waiting out
+    `STORM_EVERY`; `cls` pins the intensity by key (`'squall'`/`'surge'`/`'cme'`) or index and
+    defaults to a fair roll. Pin it when checking a class's own numbers or palette — a random draw is
+    the wrong tool for "does the squall read as a squall".
 - **Survey/CHART**: flying into a world's nameplate zone charts it (`replenishWorld` scan) and pays
   `PROG.XP_SURVEY`. That zone is widened by the SCOUT **Recon Drone** ability (`st.recon`), which charts
   worlds from far outside it. Forecast horizon (`st.predictBoost`) and sensor/minimap reach

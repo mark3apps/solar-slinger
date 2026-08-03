@@ -3723,7 +3723,12 @@ export function step(game, dt) {
     // re-derives either, or the flag and what it drives quietly disagree.
     // Keyed to EXPOSURE, not the ion afterglow: reaching a world's lee gives
     // the engines straight back, which is how the counterplay teaches itself.
-    if (game.stormExposed) th *= CFG.STORM_THRUST;
+    // The derate is the WAVE'S, off the class row it carries (a squall barely
+    // leans on you; a CME takes 40% of the engines) — never a CFG constant,
+    // which would describe whichever class was authored last. Scaled by how much
+    // of itself the wave has left (storm.k), so it EASES back to full thrust as
+    // a front spends itself rather than snapping when the wave finally expires.
+    if (game.stormExposed && game.storm) th *= 1 - (1 - game.storm.thrust) * game.storm.k;
     // AFTERBURNER (scout): a FUEL-TANK burn, not a free hold — main.js drains
     // game.burnerFuel and sets game.burnerOn (never read raw Shift here, or
     // thrust and the BURN bar disagree). The burn is much harder than the old
@@ -3859,8 +3864,12 @@ export function step(game, dt) {
     // and the crush below: there is no facing that dodges a wave, so a partial
     // shield soaks only its coverage share (see damageShip). Sheltering behind
     // a world stops it dead — that is the entire counterplay.
-    if (game.stormExposed && s.invuln <= 0) {
-      damageShip(game, CFG.STORM_DPS * dt, 'Cooked by a solar wave.');
+    // The dps is the WAVE'S OWN (CFG.STORM_CLASSES): ~2.5 for a squall through
+    // to 7 for a CME, which with each class's sheath depth is the ~9 / ~27 / ~68
+    // hull ladder the classes are actually told apart by — times storm.k, so a
+    // front out at the edge of its reach is already shredding and barely bites.
+    if (game.stormExposed && game.storm && s.invuln <= 0) {
+      damageShip(game, game.storm.dps * game.storm.k * dt, 'Cooked by a solar wave.');
       // Hull sparks off the sunward side, like the corona's — the plasma is
       // stripping the plating and you can see which way it is coming from.
       if (Math.random() < dt * 26) {
@@ -3988,15 +3997,26 @@ export function step(game, dt) {
         const hx = d.x - game.homeStar.x, hy = d.y - game.homeStar.y;
         const hr = Math.hypot(hx, hy) || 1;
         const lead = storm.r - hr;   // >0 once the shock has swept past this chunk
-        if (lead > -CFG.STORM_BAND && lead < CFG.STORM_TAIL) {
-          const k = lead < 0 ? 1 : 1 - lead / CFG.STORM_TAIL;
-          d.ax += (hx / hr) * CFG.STORM_SHOVE * k;
-          d.ay += (hy / hr) * CFG.STORM_SHOVE * k;
-          // …and the wave leaves it IONIZED: it glows, and it pays
-          // ION_SCRAP_MUL more when collected. Never field-sourced scrap —
-          // that chunk's XP was already charged against the pocket's budget
-          // at drop time and must not be re-inflated here (see config).
-          if (!d.field) d.ion = 1;
+        if (lead > -storm.band && lead < storm.tail) {
+          // TWO different fades, and they multiply. `depth` is WHERE IN THE
+          // SHEATH this chunk is (hardest at the shock, dying off through the
+          // tail); storm.k is HOW MUCH OF ITSELF THE WHOLE WAVE HAS LEFT as it
+          // spends itself against its class's reach. Same distinction the ship's
+          // dps makes above.
+          const depth = lead < 0 ? 1 : 1 - lead / storm.tail;
+          d.ax += (hx / hr) * storm.shove * depth * storm.k;
+          d.ay += (hy / hr) * storm.shove * depth * storm.k;
+          // …and the wave leaves it IONIZED: it glows, and it pays more when
+          // collected. d.ion stores HOW CHARGED (the sweeping wave's `pay`,
+          // 0..1) rather than a bare flag, so a squall's salvage is worth
+          // visibly less than a CME's while every `if (d.ion)` still reads
+          // true. Never field-sourced scrap — that chunk's XP was already
+          // charged against the pocket's budget at drop time and must not be
+          // re-inflated here (see config).
+          // MAX, not assignment: two waves can wash the same chunk, and the
+          // stronger one has to win — otherwise a squall trailing a CME would
+          // DISCHARGE salvage the big wave had already charged.
+          if (!d.field) d.ion = Math.max(d.ion || 0, storm.pay * storm.k);
         }
       }
     }
@@ -4326,8 +4346,10 @@ export function step(game, dt) {
         // do NOT heal the hull (hull only resets on respawn; shield recharges).
         // A chunk the solar wave swept comes out IONIZED and pays more (never
         // field scrap — dropScrap's fromField flag keeps the pocket budget
-        // honest, see config.ION_SCRAP_MUL).
-        addXp(game, d.value * PROG.XP_SCRAP * (d.ion ? PROG.ION_SCRAP_MUL : 1));
+        // honest, see config.ION_SCRAP_MUL). d.ion is HOW CHARGED, 0..1, so the
+        // multiplier lerps 1 -> ION_SCRAP_MUL with the class that swept it: the
+        // big wave's salvage is the good salvage.
+        addXp(game, d.value * PROG.XP_SCRAP * (1 + (PROG.ION_SCRAP_MUL - 1) * (d.ion || 0)));
         if (d.ion) bump(game, 'ionScrap');
         bump(game, 'scrap');
         sfx.sfxCollect();
