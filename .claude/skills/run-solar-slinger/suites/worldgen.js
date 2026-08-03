@@ -26,7 +26,10 @@
 // diff that cries wolf trains you to stop reading it. It had already spoiled
 // stored data too — the saved 3827467762 baseline was captured 86 asteroids
 // into that erosion (8219/7514 where generation gives 8305/7600), so the
-// suite was diffing an eroded sky against an eroded record.
+// suite was diffing an eroded sky against an eroded record. (Those counts are
+// from the 1,900-rock pocket era; a pocket is CFG.FIELD_ROCKS 740 now and the
+// world censuses 3,728 / 2,960. The failure mode is what matters here, not the
+// absolutes.)
 //
 // `window.freshRun(0, seed)` rebuilds the world through the game's own
 // regenWorld path and returns with ZERO sim time on it, on the same seed the

@@ -148,8 +148,9 @@ give directions by). Rules that keep it from breaking the invariants above:
     Grindstones, The Hushfield) and one on the outer band's frost fringe (authored 44300, The
     Farshoal). Every one of those is an authored radius spread by `CFG.SYS_R_MUL` at seed time
     (world.js's module-local `SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
-    sits — the gaps are the point, not the numbers. Each is ~1900 rocks
-    across a roughly 5900 x 4400 pocket (mean nearest-neighbour spacing ~58u — the density the
+    sits — the gaps are the point, not the numbers. Each is 740 rocks (`CFG.FIELD_ROCKS`)
+    across a roughly 6520 x 4860 pocket (`FIELD_LEN`/`FIELD_SPREAD` are HALF-extents), mean
+    nearest-neighbour spacing ~148u centre-to-centre and ~26u surface-to-surface — the density the
     user signed off on; SIZE and COUNT are separate knobs and must move together, or you are
     re-tuning the feel rather than the size). **The pocket is close to ROUND on purpose** (`FIELD_LEN` /
     `FIELD_SPREAD`, physical units converted to an angle per radius — an angular width turned the
@@ -234,7 +235,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       `FIELD_TOUGH` below, applied in `collideShipBody`). The pockets are meant to be **high risk /
       high reward** and were reading as pure reward, because a rigid pocket is SAFE: match its orbit
       and every rock is nearly stationary relative to you, so the `closing > 25` gate left a farmer
-      sitting inside 1900 rocks barely scratched. The multiplier rides `closing`, so it weights the
+      sitting inside 740 rocks barely scratched. The multiplier rides `closing`, so it weights the
       danger toward LOOSE, stirred-up rock — the mess you made — while ambient jostling stays minor.
       Hull does not self-heal, so that attrition is the real price of working a shoal.
       **Field rock also keeps the BASE mass-saturation knee at every tier**, which mattered far more
@@ -263,14 +264,16 @@ give directions by). Rules that keep it from breaking the invariants above:
       over 3000 mass are giants themselves — a bounded cascade, not an unbounded chain. This is the
       shoal's chaos engine. The shard budget must stay ABOVE the world's steady-state body count or
       the cascade silently never fires. Above them sit **MONOLITHS** (`FIELD_MONOLITHS` + the named
-      heart, `FIELD_MONOLITH_MASS` 3e5-4.8e5): twice the drawn RADIUS of the biggest giant (8x the
-      mass — radius goes with cbrt), the rocks you steer by from across the pocket. Field-rock hp is
+      heart, `FIELD_MONOLITH_MASS` 3e5-4.8e5): drawn at `FIELD_MONOLITH_R_MUL` 6.8 for ~258-408
+      units against a giant's ~146-311 (`FIELD_GIANT_R_MUL` 10.2) — RADIUS only, the mass is
+      untouched — the rocks you steer by from across the pocket. Field-rock hp is
       capped at `FIELD_HP_CAP` (5200) precisely so a monolith stays breakable by a thrown moon-class
       mass — FIELD_HP_MUL alone made one ~34k hp, i.e. unbreakable, contradicting the calving design.
       A thrown monolith IS a rail disturber (mass > 5e4) — that's existing thrown-giant drama.
     - Field rock is why the view-local spawner's global asteroid cap is 9800 (was 380) and the world
-      runs ~8000 bodies. Headless `tick` calls at this scale can exceed a 30s console eval budget:
-      run soaks in chunks.
+      runs ~3,730 bodies (2,960 field rock + 768 non-field, measured). The cap is far above the
+      steady state at today's `FIELD_ROCKS` 740; it was sized when a pocket held 1,900. Headless
+      `tick` calls at this scale can exceed a 30s console eval budget: run soaks in chunks.
   - **THE FIELD LOD** (`physics.updateFieldLOD`, called once per FRAME from main.update AND
     driftSplash — never per substep) is what makes those bodies affordable: **full physics is a
     LOCAL privilege.** Every field rock is classified AWAKE (its field is the one the ship is at,
@@ -304,7 +307,7 @@ give directions by). Rules that keep it from breaking the invariants above:
     newcomers (`physics.frameReg` covers the cold start with a one-off walk).
     Three follow-on optimizations ride the same classification:
     - **THE AWAKE LIST** (`game.bodies._awake`, built in the same LOD pass): every per-substep loop
-      in `step()` iterates it instead of the full array — walking ~8000 bodies 10-15x per frame just
+      in `step()` iterates it instead of the full array — walking ~3,700 bodies 10-15x per frame just
       to skip dormants measured ~1.4ms (~40% of sim). It holds REFERENCES (compaction-proof), lives
       ON the bodies array so `generateWorld`'s clear invalidates it (`bodies._awake = null`; step()
       falls back to the full array while null), and `spawnAsteroid` registers spawns eagerly; any
@@ -314,10 +317,11 @@ give directions by). Rules that keep it from breaking the invariants above:
       camera and the screen edge is at 1.0x viewR, so a dormant rock CANNOT be on screen. Teleports
       (Slipstream warp, dev goto) reclassify the LOD immediately (`updateFieldLOD(game, 0)`) or the
       arrival would render empty for one frame.
-    - **The minimap dot layer is cached**: ~1900 in-range rocks x (hypot+atan2+fillRect) per frame
+    - **The minimap dot layer is cached**: ~740 in-range rocks x (hypot+atan2+fillRect) per frame
       bakes into an offscreen canvas at ~15Hz (rebaked on origin jumps, fog flips, or the sim clock
       rewinding = resetRun) and composites as one drawImage; the sweep line stays live.
-    Measured at ~8000 bodies, in-field: sim 3.6 -> 2.3ms, draw 2.2 -> 1.6ms, locked 120 fps.
+    Measured at ~8000 bodies (the pre-740 pocket size), in-field: sim 3.6 -> 2.3ms, draw 2.2 ->
+    1.6ms, locked 120 fps. The world is ~3,730 bodies now, so those absolutes are an upper bound.
   - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
     BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
     one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at

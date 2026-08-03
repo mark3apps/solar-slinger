@@ -371,11 +371,20 @@ initInput(canvas, {
     }
   },
   onFling: () => {
-    if (menuBlocking()) return;
     // Letting go mid-winch abandons it — the winch is a HELD commitment, and
     // banking partial progress would turn "hold to take a moon" back into a
     // click you repeat.
+    //
+    // ABOVE THE MENU GATE, and it has to stay there. mouseup is a WINDOW
+    // listener (input.js), so a release while paused / in settings / on an
+    // upgrade card still clears input.mouseDown — and game.held is null during
+    // a winch, so openUpgrade() is unblocked mid-winch and the click that
+    // dismisses the card is exactly such a release. Behind the gate that
+    // release was banked: updateLatch never reads the mouse, so game.latch
+    // survived the freeze and completed itself on resume, handing the player a
+    // moon they had let go of.
     cancelLatch(game);
+    if (menuBlocking()) return;
     if (game.held) {
       releaseHeld(game, true);
       if (!game.tut.flung) {
@@ -450,6 +459,21 @@ initInput(canvas, {
     const dist = game.st.warpDist;
     s.x += Math.cos(ang) * dist; s.y += Math.sin(ang) * dist;
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
+    // A WARP PAYS THE ROPE OUT; IT DOES NOT DRAG THE LOAD THROUGH THE JUMP.
+    //
+    // The ship just moved 950-1300 units in zero time. A held rock that is
+    // already at full power has a LIVE rope (tractor.springHeld) sized to the
+    // gap it engaged at, and the backstop there acts against that length — so
+    // without this the next substep saw `over = d - lim` of several hundred
+    // units and applied the whole warp as a one-frame position snap to the ship
+    // and the rock both. That is precisely the bug b.ropeL was added to kill.
+    // Clearing it re-seeds the rope at the new distance and hauls it in at the
+    // bounded CFG.TETHER_REEL: light loads are back in the beam almost at once
+    // (the spring outruns the reel), and a moon stays where it was and gets
+    // TOWED, which is the honest answer — a warp is a ship ability, not free
+    // transport for a world.
+    if (game.held) game.held.ropeL = null;
+    if (game.held2) game.held2.ropeL = null;
     s.invuln = Math.max(s.invuln, game.st.warpInvuln);
     game.warpT = game.st.warpCool;
     // Reclassify the field LOD at the exit point (dt 0 = no rail advance):
@@ -1355,7 +1379,11 @@ function update(dtReal) {
     const camK = 1 - Math.exp(-6 * dt);
     let simSteps = 0;   // substeps taken THIS call — the field LOD advances by the same clock
     while (acc >= dt && simSteps < CFG.SUBSTEP_MAX) {
-      updateLatch(game, dt);     // the winch on a moon/world — gameplay timing, so fixed-step
+      // The winch on a moon/world — gameplay timing, so fixed-step. The button
+      // goes in because the winch is a HELD commitment: onFling ends it on the
+      // release, and this is the backstop for a release that never arrives as
+      // one (see updateLatch).
+      updateLatch(game, dt, input.mouseDown);
       updateTractor(game, dt);
       updateOrbit(game, dt);
       updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)

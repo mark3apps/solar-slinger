@@ -768,8 +768,10 @@ export function shatter(game, body, credit = null) {
   if (body.fieldRock && body.giant) {
     const lo = CFG.FIELD_GIANT_SHARDS[0], hi = CFG.FIELD_GIANT_SHARDS[1];
     // Budget headroom must sit ABOVE the world's steady-state body count
-    // (~9700 with four pockets) or the cascade silently never fires — keep it
-    // in step with the caps in world.replenishWorld.
+    // (~3,730 with four pockets at CFG.FIELD_ROCKS 740) or the cascade silently
+    // never fires — keep it in step with the caps in world.replenishWorld. The
+    // margin is wide at today's counts; it was not when the pockets held 1,900
+    // each, which is why the ceiling is written down rather than assumed.
     const n = Math.min(lo + Math.floor(Math.random() * (hi - lo + 1)),
       Math.max(0, 11200 - game.bodies.length));
     const share = (body.mass * 0.72) / Math.max(1, n);

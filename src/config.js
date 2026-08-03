@@ -746,7 +746,12 @@ export const CFG = {
   // instead (world.fieldMass skews big, few pebbles).
   // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
   // against them (world.seedDenseFields fills the remainder with rubble, so the
-  // small-rock count is this minus however many the packer placed, ~74).
+  // small-rock count is this minus however many big rocks landed, 113-122).
+  // Measured across the four pockets on seed 20260721: 740 = 107-116 giants
+  // + 5 packed monoliths + the heart + 618-627 rubble. The packer places all of
+  // those but the HEART, which seedDenseFields pins at the field centre before
+  // packing starts. Keep that split and the 474-landmark world figure below in
+  // step — they are the same measurement read two ways.
   //
   // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
   // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
@@ -803,16 +808,17 @@ export const CFG = {
   // FIELD_SPREAD, because spreading the same rocks over a bigger pocket turns
   // the gaps into open space and there is nothing left to navigate.
   // It is ALSO the budget for the shaped narrow phase: every one carries a real
-  // polygon collider (util.rockShape via world.shapeBig). ~350 in the world, of
-  // which only the awake ones are ever swept.
-  // The packer is best-effort — a full pocket rejects the last dozen draws, so
-  // the placed count runs a little under this.
+  // polygon collider (util.rockShape via world.shapeBig). 474 in the world,
+  // 113-122 a pocket (measured), of which only the awake ones are ever swept.
+  // The packer is best-effort and this is a TARGET, not a count: a pocket fills
+  // up and rejects the rest, so 200 draws place 107-116 giants. Do not read the
+  // constant as the number of colliders you are paying for.
   FIELD_GIANTS: 200,
   FIELD_GIANT_MASS: [14000, 60000],   // the biggest are moon-scale monoliths
   // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL
   // below, and for the same reasons (grab class, damage ladder and payout all
   // key off mass and none of them are what "bigger" is asking for).
-  // 12x puts a giant at 185-296 units — four to six ship-lengths of rock, and
+  // 10.2x puts a giant at 146-311 units — four to six ship-lengths of rock, and
   // the size at which a rock stops being an obstacle you dodge and becomes a
   // wall you route around. That is what makes the packing a maze: at the old
   // 2.4x the gaps between neighbours were wider than the view and there was
@@ -845,8 +851,8 @@ export const CFG = {
   // sim reads. Applied in world.seedDenseFields to radius AND baseRadius, or
   // the first chip would snap it back to its mass-derived size (physics
   // eases radiusT off baseRadius * cbrt(mass / baseMass)).
-  // 8x puts a monolith at ~340-390 units, keeping it clearly the biggest thing
-  // in the pocket now that FIELD_GIANT_R_MUL has taken the giants to ~185-296.
+  // 6.8x puts a monolith at ~258-408 units, keeping it clearly the biggest thing
+  // in the pocket now that FIELD_GIANT_R_MUL has taken the giants to ~146-311.
   // A monolith is most of a screen of solid rock: the thing you round and find
   // the way blocked by.
   FIELD_MONOLITH_R_MUL: 6.8,

@@ -702,12 +702,29 @@ function bigRockSil(b) {
   const sh = (b._shape ||= rockShape(b.id));
   const scars = b.scars;
   const newest = scars && scars.length ? scars[scars.length - 1].t : -1;
+  // THE RADIUS KEY IS QUANTIZED, because b.radius is not a settled number.
+  // damageBody sets a radius TARGET and the integrate loop eases the live radius
+  // toward it every substep for ~1.5s afterwards — which now includes the gentle
+  // contacts big shoal rocks absorb constantly. Keyed on the exact value, this
+  // could not hit for the whole of that ramp: 128 bigRockSurfAt samples and a
+  // fresh Float32Array, per drawn frame, on every recently-touched rock on
+  // screen. A cache keyed finer than the thing it protects is not a cache.
+  // The dependency itself is real (scarSurfaceAt scales with the radius), so it
+  // is quantized rather than dropped — at a quarter unit a 300-unit giant still
+  // resolves its craters to well under a pixel, and an easing chip is a no-op.
+  // The BUILD reads the same quantized value, so the table stays a pure function
+  // of its own key rather than drifting from it by up to an eighth of a unit.
+  // AND IT ONLY CARRIES THE RADIUS WHEN THERE ARE SCARS TO SCALE: bigRockSurfAt
+  // returns the bare shape profile on an unscarred rock without ever reading the
+  // radius, so keying on one there invalidated a table the radius could not have
+  // changed. An unmarked rock now rides the whole ease on one build.
+  const rq = scars && scars.length ? Math.round(b.radius * 4) / 4 : 0;
   let s = b._rsil;
-  if (!s || s.n !== (scars ? scars.length : 0) || s.t !== newest || s.r !== b.radius) {
-    s = b._rsil = { n: scars ? scars.length : 0, t: newest, r: b.radius,
+  if (!s || s.n !== (scars ? scars.length : 0) || s.t !== newest || s.r !== rq) {
+    s = b._rsil = { n: scars ? scars.length : 0, t: newest, r: rq,
       rr: new Float32Array(ROCK_SIL_N) };
     for (let i = 0; i < ROCK_SIL_N; i++) {
-      s.rr[i] = bigRockSurfAt(sh, scars, b.radius, (i / ROCK_SIL_N) * TAU);
+      s.rr[i] = bigRockSurfAt(sh, scars, rq, (i / ROCK_SIL_N) * TAU);
     }
   }
   return s;
@@ -731,9 +748,15 @@ function traceAsteroid(b) {
     ctx.closePath();
     // The crack clip and the scar edge sampler index b.jag as `i/n * TAU`, so
     // hand them the same samples rather than a second, separate shape.
-    if (!b.jag || b.jag.length !== ROCK_SIL_N || b.jagR !== b.radius) {
+    // KEYED ON THE SILHOUETTE OBJECT, not on the radius: this copy has to
+    // refresh exactly when the table it copies does, and never otherwise. The
+    // radius test managed to be wrong in both directions — it re-ran the
+    // Array.from on every eased radius chip (the ramp bigRockSil now quantizes
+    // away), and it MISSED a rebuild triggered by a fresh scar at an unchanged
+    // radius, leaving the crack clip tracing a ring the rock no longer has.
+    if (b._jagSrc !== s || !b.jag || b.jag.length !== ROCK_SIL_N) {
       b.jag = Array.from(s.rr);
-      b.jagR = b.radius;
+      b._jagSrc = s;
     }
     return;
   }
@@ -1279,9 +1302,20 @@ function drawRock(game, b) {
 // the ones near you are drawn at all.
 // ---------------------------------------------------------------------------
 function bigRockDetail(b) {
+  // ROUNDED TO THE UNIT, for the same reason bigRockSil's key is quantized: the
+  // integrate loop eases b.radius every substep for ~1.5s after any mass change,
+  // so an exact key meant this entire build — up to 42 craters behind an O(n^2)
+  // rejection loop, 70 grain dots, 7 seams and five fresh arrays — ran once per
+  // drawn frame per recently-touched rock, allocating, inside a draw path. The
+  // cost note below reasons about a build that happens ONCE per rock, and that
+  // is only true if the key can actually hold still. Nothing stored here depends
+  // on the exact radius: `r` is read by the three count expressions and nowhere
+  // else, so a sub-unit chip cannot change the result and rounding makes it a
+  // no-op. The counts read the rounded value, so the record stays a pure
+  // function of its key.
+  const r = Math.round(b.radius);
   let d = b._bigDet;
-  if (d && d.r === b.radius) return d;
-  const r = b.radius;
+  if (d && d.r === r) return d;
   const rng = mulberry32(b.id * 2654435761 + 77);
   // Broad tonal variation, and it has to stay BROAD: the first cut ran these
   // at 0.13 alpha across 0.64r, which on a 98-unit monolith is a 60-unit

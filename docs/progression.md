@@ -130,7 +130,7 @@
   **`ABIL_XP_TOTAL` moves with the climb TOTAL** (6500 → 6900), not with the curve's shape — every
   ability pool receives the achievement XP too. See the ratio rule above.
 - **XP INCOME IN THE DENSE FIELDS IS GATED TWICE, and both gates are load-bearing.** Four pockets of
-  ~1900 rocks each meant parking in a shoal out-earned every aimed, risky thing in the game — the
+  ~740 rocks each meant parking in a shoal out-earned every aimed, risky thing in the game — the
   optimal play was the least interesting one. **`config.fieldXp(game, b, xp)` is the ONE resolver**;
   every award sourced from a shoal rock goes through it and nothing else may pay one. Call sites:
   catch and orbit-stow (tractor.js), smash / ram / parry and BOTH scrap drops incl. the combo bonus
@@ -141,7 +141,7 @@
      its ACHIEVEMENT, which pays XP of its own.
   2. **`PROG.FIELD_XP_BUDGET` (150/field, `f.xpLeft`)** — what the SHOAL is worth, for the whole run.
      **This is the gate that actually holds.** A multiplier prices a rock, and the problem is that a
-     pocket holds 1900 of them, so any trick that raises the rocks-per-minute rate simply outruns it;
+     pocket holds 740 of them, so any trick that raises the rocks-per-minute rate simply outruns it;
      a budget is rate-independent. Deliberately the same shape as `FIELD_BROOD`: finite per run, no
      refill, so working a shoal dry is a CHOICE whose consequence traces to the player. All four
      fields together cap at ~600 XP, under 8% of the climb. A dried pocket announces itself once
@@ -152,7 +152,7 @@
 - **BILLIARDS CREDIT IS DEPTH-CAPPED INSIDE A POCKET** (`CFG.FIELD_CHAIN_MAX` 2, `physics.chainOk`,
   `b.chainN`). This was the actual exploit, and it was a physics bug wearing an economy costume: the
   gravity-billiards rule stamps `thrownBy = 'player'` onto any rock your throw knocks hard, and among
-  1900 TOUCHING rocks that mark spread outward forever (every fresh contact refreshed the 1.4s timer).
+  740 TOUCHING rocks that mark spread outward forever (every fresh contact refreshed the 1.4s timer).
   Because the `FIELD_TOUGH` damp exempts "a player throw", **the entire shoal took full lethal damage
   and paid full credit off one fling** — measured at 245 XP in 30s and still climbing, most of it
   chip-scrap from thousands of laundered impacts. Capped, the trick shot survives and the cascade

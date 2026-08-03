@@ -361,7 +361,7 @@ disarmed precisely because 1/60 could not survive the overlap-only narrow phase;
 pre-test now detects everything 1/120 without it was missing.
 
 **Scoped deliberately.** Ship and aliens only — tunnelling between two rocks is off-view and
-cosmetic, and a swept test per candidate pair in the ~8,000-body sweep would cost far more than the
+cosmetic, and a swept test per candidate pair in the ~3,700-body sweep would cost far more than the
 misses are worth. The `seg2 > rr*rr` gate confines it to pairs that moved further than their contact
 radius in one substep, so celestials (rr ~700 would need 84,000 u/s) never enter it and their
 gas-dive / star-plunge / crater branches are untouched. `shaped` bodies are excluded: their contact
