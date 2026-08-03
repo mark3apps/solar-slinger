@@ -1823,7 +1823,7 @@ export const PROG = {
   XP_SCRAP: 0.5,           // per unit of debris-chunk value collected
   XP_ORBIT: 8,             // stow a rock into the orbit shield
   XP_BLOCK: 14,            // a shield rock intercepts an alien throw
-  XP_PARRY: 14,            // a Deflector parry launches its rock (paid at the flick, not the catch)
+  XP_PARRY: 14,            // a Deflector parry launches its rock (paid at the launch, not the catch)
   XP_RAM: 7,               // a ram KILL (shatter credit 'ram') — kills only, chip damage pays nothing
   XP_SURVEY: 40,           // chart a world
   XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
@@ -2037,7 +2037,7 @@ export const ABILITIES = [
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
-  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull — flick the mouse to hurl it that way. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
+  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull, then hurls itself wherever your mouse points when the freeze ends. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
   { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 6, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
@@ -2566,15 +2566,15 @@ export function shipStats(prog) {
     demolition: demoC,                            // AoE damage on a throw-kill
     wallSplat: wallsplatC,                        // Wall Splat: kills AGAINST a world blast nearby rocks
     // DEFLECTOR (the parry, brawler kit): rocks closing on the NOSE freeze on
-    // contact for the window; the player's mouse FLICK picks the hurl
-    // direction (physics.updateParry owns the whole flow: scan, pin, flick,
-    // launch). Rank 1 catches at the HULL — the rock must actually hit you
+    // contact for the window, then launch along ship→cursor when it runs out
+    // (physics.updateParry owns the whole flow: scan, pin, aim, launch).
+    // Rank 1 catches at the HULL — the rock must actually hit you
     // (user design rule: no catching out in space) — and each of the SIX
     // ranks widens the catch bubble, adds a slot (cap = rank, so a maxed
     // deflector freezes a six-rock volley), lengthens the freeze, and hardens
     // the hurl; the cooldown is fixed. Per-rank growth is sized for the long
     // track — rank 6 tops out near the old 3-rank ceiling. The base window is
-    // long on purpose: enough time to read the freeze and aim the flick.
+    // long on purpose: it is the aiming time, so it can't be short.
     deflect: deflectC,
     deflectWindow: deflectC > 0 ? 0.5 + 0.09 * (deflectC - 1) : 0,
     deflectPower: deflectC > 0 ? 520 + 80 * (deflectC - 1) : 0,

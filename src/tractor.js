@@ -279,7 +279,7 @@ function pickTarget(game) {
     // never re-grab a rock you're already holding.
     if (!b.alive || b.type === 'star' || b.type === 'nest' || b.fort || b.tinker ||
         b.heldBy === 'orbit' || b === game.held || b === game.held2 ||
-        b.parryFrozen ||           // mid-parry rock belongs to the flick, not the beam
+        b.parryFrozen ||           // mid-parry rock belongs to the parry, not the beam
         throwLocked(b)) continue;  // just launched it — not a target at all yet
     const dCursor = Math.hypot(b.x - game.aim.x, b.y - game.aim.y);
     const dShip = Math.hypot(b.x - s.x, b.y - s.y);
