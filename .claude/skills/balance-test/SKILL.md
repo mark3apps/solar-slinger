@@ -63,7 +63,7 @@ Read them in this order — most load-bearing first:
 | `nanEvents` | **must be 0 on every seed.** Any firing is a real upstream bug, even though the tripwire contained it |
 | `planetsOffRail` | **must be 0.** A planet alive but off-rail is a deorbit in progress the alive-count cannot see |
 | `worstPlanetDriftPct` | healthy seeds read 0 to -0.03%. Anything past ~1% wants explaining |
-| `planetsAlive` | 21 on every seed, hard |
+| `planetsAlive` | 17 on every seed, hard |
 | `nonAsteroidDeaths` | **cumulative and cause-classified** — compare the SHAPE across seeds, not one number |
 | `firstWorldLossAt` | dropping sharply vs a baseline sweep = something got more fragile |
 | `moonsAlive` vs `moonsAtStart` | a trend, NOT a pass/fail — see the moon caveat in the criteria below |
@@ -72,17 +72,17 @@ Read them in this order — most load-bearing first:
 layout; that is the whole reason the sweep is cheap now. One outlier seed = investigate that seed.
 All four moving together = a real regression.
 
-`strip:true` removes dormant FIELD ROCK before running (~7,600 of ~8,400 bodies). Use `strip:false`
-when the dense fields themselves are what you changed.
+`strip:true` removes dormant FIELD ROCK before running (2,960 of 3,728 bodies, leaving 768). Use
+`strip:false` when the dense fields themselves are what you changed.
 
 ### Why the fast path (measured, not assumed)
 
-- **Only 138 of 8,404 bodies are awake in an idle soak, yet the 7,600 dormant field rocks cost ~78%
-  of the runtime** in pure LOD classification + dormant rail advance. They are gravity-free in both
-  directions and can never touch a planet, so they cannot affect the sky verdict.
-- **Equivalence proved, same seed, 300 sim-seconds:** stripped 4,516ms vs intact 23,373ms (5.2x), and
-  every verdict field identical — planets 21/0 off-rail, moons 48/48, `{moon:absorbed:1}`,
-  `firstWorldLossAt` 128. Re-run that A/B if you ever doubt the strip.
+- **Only ~230 of 3,728 bodies are awake in an idle soak, yet the 2,960 dormant field rocks cost
+  ~64% of the runtime** in pure LOD classification + dormant rail advance. They are gravity-free in
+  both directions and can never touch a planet, so they cannot affect the sky verdict.
+- **Equivalence proved, seed 20260721, 300 sim-seconds:** stripped 4,390ms vs intact 12,322ms (2.8x),
+  and every verdict field identical — planets 17 / 0 off-rail, moons 59/59, `nonAsteroidDeaths` {},
+  `firstWorldLossAt` null. Re-run that A/B if you ever doubt the strip.
 - **Parallelism is near-linear** (each process is single-threaded): 4 concurrent seeds cost 18.9s
   versus ~11s for one alone.
 - **Never use `window.speed(20)` to hurry a soak.** That is the live rAF path — it renders every frame
@@ -139,6 +139,9 @@ together = a real regression. Run the sweep before AND after a change; the numbe
 "after" of a known-good branch, not a universal constant.
 
 ### History — why `moonsAlive` was NOT trustworthy before 2026-08
+
+> The readings in this section are from the **48-moon** era. The sky censuses **59 moons** today —
+> read the 48s as history, never as a pass criterion.
 
 `moonsAlive` is a **live census with re-accretion** (`replenishWorld` rebuilds moons), so it was a
 wobbling snapshot rather than a loss count and could read a perfect 48/48 while nine moons had died.

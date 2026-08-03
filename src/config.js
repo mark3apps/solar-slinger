@@ -221,8 +221,25 @@ export const CFG = {
   // captures and orbits circularize on their own. Outward radial velocity
   // is exempt ON PURPOSE: an assist must never become an escape jail.
   // Mirrored in predictPaths like the long arms.
+  //
+  // MOSTLY REMOVED (2026-08, user call: "it kinda breaks things"). DAMP was
+  // 1.2, and the damage was structural rather than a matter of degree: the
+  // brake ramps with `t`, which is 0 at the band's edge and 1 AT THE SURFACE —
+  // so the assist was strongest at exactly the place the player is trying to
+  // arrive. Terminal descent speed is g_surface / DAMP, which at 1.2 is about
+  // 5 u/s: a descent from 120 units up took nearly half a minute of the ship
+  // apparently refusing to fall, and it read as gravity being broken rather
+  // than as an assist. The wider cost was the same everywhere — the band
+  // quietly cancelled the inward half of every approach, so a world's well
+  // never really felt like one however hard PLANET_GRAV_SHIP pulled.
+  //
+  // At 0.3 the same descent is ~20 u/s and takes a few seconds, while a
+  // genuine PLUNGE (200+ u/s inbound) still gets a meaningful 60 u/s² of
+  // softening on the way in, which is the case the band was written for.
+  // Kept rather than deleted: killing it outright makes every near-miss a
+  // hyperbolic slingshot and there is no capture arc left at all.
   SHIP_BAND_RANGE: 4,
-  SHIP_BAND_DAMP: 1.2,
+  SHIP_BAND_DAMP: 0.3,
   SHIP_BAND_MAX: 130,
   // SURFACE SKIMMING: grinding tangentially along a body while in contact
   // chews the hull (collideShipBody) — a gentle landing is free below
@@ -231,6 +248,137 @@ export const CFG = {
   // off in a few substeps and only takes a scratch — both are intended.)
   SKIM_SPEED: 100,
   SKIM_DPS_K: 0.09,
+
+  // ---- PLANET SPIN (entities.Body) ----------------------------------------
+  // A WORLD'S DAY IS LONGER THE BIGGER IT IS (user call: "planets, especially
+  // large ones, rotate slower"). Planets used to draw one flat rate regardless
+  // of size, so a 1,290-unit gas giant swept its cloud bands past at the same
+  // angular rate as a 180-unit rock — and angular rate is not what the eye
+  // reads. It reads the SURFACE going by, which is `spin x radius`, so the flat
+  // rate made every big world look like it was visibly spinning rather than
+  // turning. It also gave the biggest worlds the fastest ground to land on,
+  // which is the wrong way round for the thing you most want to set down on.
+  //
+  // Two knobs, deliberately separate. PLANET_SPIN_SLOW is the flat "everything
+  // is calmer now" factor; PLANET_SPIN_REF/POW is the SIZE falloff on top of
+  // it, and only bites above the reference radius (`max(REF, radius)`), so the
+  // small worlds take the flat slowdown alone and are not sped up by the curve.
+  //
+  // Measured across the sky at these values: a 180-unit world goes from a
+  // ~78-210s day to ~157-419s, and the 1,290-unit giant from the same ~78-210s
+  // to ~9-25 MINUTES. MOONS ARE DELIBERATELY UNTOUCHED — the request named
+  // planets, moons are all well under the reference radius anyway, and their
+  // quicker turn is what makes a moon read as a small body next to a world.
+  PLANET_SPIN_SLOW: 0.5,
+  PLANET_SPIN_REF: 300,
+  PLANET_SPIN_POW: 0.85,
+
+  // ---- LANDING: SURFACE FRICTION (physics.collideShipBody) ----------------
+  // A world is a TURNING body, and until this existed the hull touching one was
+  // a purely elastic event: nothing in contact took energy out tangentially, so
+  // a graze skated across a planet at the speed it arrived with until the grind
+  // killed the ship. Contact now drags the ship toward the velocity of THE
+  // PATCH OF GROUND UNDER IT — the world's own motion plus the tangential speed
+  // of its spin at that radius — as an exponential rate, so a skid matches the
+  // surface it is skidding on in well under a second.
+  //
+  // Applied to the WHOLE relative velocity, not just the tangential half, and
+  // that is what makes a landing possible at all: the radial part cancels the
+  // gravity the ship keeps falling in with, so it settles against the
+  // resolver's push-out instead of chattering on it. Residual drift is
+  // g_surface / SURF_FRICTION — under 1 u/s on a mid world, ~4 u/s under the
+  // deepest LONG ARMS amplification, i.e. far inside DOCK_SPEED either way.
+  //
+  // It never touches the BOUNCE: the kick below is an impulse applied in the
+  // same substep, and at 1/120s this rate removes 3.7% of a velocity. A hard
+  // arrival still bounces exactly as invariants 3-5 tune it; only a ship that
+  // STAYS down is slowed. Thrust wins easily (180 u/s² against 4.5/s is a
+  // 40 u/s terminal, and clearing the hull ends contact anyway), so the pad
+  // never becomes flypaper.
+  //
+  // PLANETS AND MOONS ONLY. A rock is not a place you land on, and rock contact
+  // is long-tuned against every dense field in the game.
+  SURF_FRICTION: 4.5,      // 1/s — 95% of the difference gone in 0.67s
+
+  // ---- DOCKING (physics.updateDock) ---------------------------------------
+  // Set the ship down on a world ROCKETS-DOWN and hold still and it BERTHS.
+  // Three gates, all true together for DOCK_TIME, and then one of two things
+  // happens: you berth at a station that is already standing there, or you
+  // start BUILDING one.
+  //
+  // THE GATES ARE DELIBERATELY GENEROUS (widened 2026-08 — the first pass was
+  // too fiddly to land with). A landing is meant to be a thing you decide to
+  // do, not a trick you execute; the interesting part of this feature is what
+  // a dock IS, not how tight the approach window is.
+  DOCK_ARC: 1.0,           // rad of slop on "rockets down" — the nose has to sit
+                           //   within ~57° of straight up off the surface. Still
+                           //   a real requirement (a belly flop or a nose-in
+                           //   crash is not a docking) but forgiving of drift.
+  DOCK_SPEED: 60,          // u/s of SURFACE-RELATIVE speed that still reads as
+                           //   stopped. Under SKIM_SPEED (100) on purpose:
+                           //   anything still GRINDING is not parked.
+  DOCK_TIME: 0.5,          // s all three gates must hold before the clamps bite
+  // The latch timer DRAINS this many times faster than it fills once the hull
+  // leaves the surface, which is the whole of the berth's hysteresis: a berthed
+  // ship gets DOCK_TIME / DOCK_DRAIN (~0.17s) of grace so a bump across a
+  // crater lip cannot flicker the clamps, and a deliberate lift-off still
+  // reads as leaving almost at once.
+  //
+  // ATTITUDE AND STILLNESS ARE ENTRY GATES, NOT HOLDING ONES — only CONTACT
+  // holds a berth. (The ship is held UPRIGHT while berthed anyway, so the
+  // attitude gate could not fail; the rule still matters for the moment
+  // between the clamps letting go and the helm coming back.)
+  DOCK_DRAIN: 3,
+  // ---- Building a station -------------------------------------------------
+  // A DOCK IS A STRUCTURE, NOT A STATE. Berthing at a bare patch of ground
+  // starts a build that takes DOCK_BUILD seconds of staying put — and none of
+  // what a dock gives you (the shield, the repair) arrives until it is
+  // finished, so those ten seconds are a real exposed commitment rather than a
+  // loading bar. Once built the station STAYS on that world for the rest of the
+  // run: fly away, come back, and you berth at it immediately with everything
+  // live from the first moment.
+  //
+  // Progress is kept if you leave mid-build (`d.t` lives on the station, not on
+  // the berth), so an interrupted build resumes rather than being thrown away.
+  // It only advances while you are actually berthed — you are the one building it.
+  DOCK_BUILD: 10,
+  DOCK_BERTH_R: 90,        // world units: land this close to a standing station
+                           //   and you berth at IT instead of starting a second
+                           //   one beside it. Comfortably wider than the pad
+                           //   sprite at every tier.
+  // Cap on standing stations per run. Not a balance number — a bound, so the
+  // list, the two instruments and the draw can never grow without limit. Well
+  // above any plausible play pattern; the oldest NON-HOME station retires when
+  // it binds, and the home port is never retired.
+  DOCK_MAX: 8,
+  DOCK_HEAL: 6,            // hull/s while berthed at a FINISHED station (see the
+                           //   design law note in docs/design-laws.md — this is
+                           //   the second sanctioned exception to "the hull
+                           //   never heals")
+  DOCK_UPRIGHT: 6,         // 1/s the helm eases the nose to the surface normal
+                           //   while berthed — the ship stands up and stays up
+  DOCK_LIFT: 1.6,          // hull radii a respawn is placed above the pad, so
+                           //   the ship never materializes inside the crust
+  // ---- LAUNCH (physics.updateLaunch) --------------------------------------
+  // LEAVING A DOCK IS A SEQUENCE, NOT A KEYPRESS. Thrust from a berth and the
+  // station runs a release: the clamps swing back, the engine spools against
+  // them, and only then does it let go. The ship is PINNED to the pad's own
+  // velocity for the whole of it (so the sequence cannot be steered or shoved
+  // out of), and it commits once started — a launch you can abort halfway is a
+  // stutter, not a moment.
+  //
+  // The point is the WEIGHT. A dock you can leave instantly is a parking space;
+  // one that takes a second to release makes berthing feel like a real
+  // commitment, which is what earns the protection it gives.
+  LAUNCH_HOLD: 0.5,        // s of CLAMPS RELEASING — arms swing out, glow builds
+  LAUNCH_TIME: 1.25,       // s total; HOLD..TIME is the IGNITION hold (plume,
+                           //   rising shake) before the pad lets go
+  LAUNCH_KICK: 300,        // u/s straight up as the clamps release — the shove
+                           //   off the pad, so a launch clears the structure
+                           //   without needing the player to fight gravity
+  // The dome does not just absorb, it PUSHES: anything crossing it is thrown
+  // back out at no less than this, so a berth can never be crowded or shoved.
+  DOCK_REPEL_MIN: 210,
 
   // Solar flares: the sun RARELY erupts plasma at ships that fly close.
   // A direct hit is a real event now: EMP kills the engines for
@@ -750,7 +898,12 @@ export const CFG = {
   // instead (world.fieldMass skews big, few pebbles).
   // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
   // against them (world.seedDenseFields fills the remainder with rubble, so the
-  // small-rock count is this minus however many the packer placed, ~74).
+  // small-rock count is this minus however many big rocks landed, 113-122).
+  // Measured across the four pockets on seed 20260721: 740 = 107-116 giants
+  // + 5 packed monoliths + the heart + 618-627 rubble. The packer places all of
+  // those but the HEART, which seedDenseFields pins at the field centre before
+  // packing starts. Keep that split and the 474-landmark world figure below in
+  // step — they are the same measurement read two ways.
   //
   // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
   // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
@@ -834,176 +987,56 @@ export const CFG = {
   // FIELD_SPREAD, because spreading the same rocks over a bigger pocket turns
   // the gaps into open space and there is nothing left to navigate.
   // It is ALSO the budget for the shaped narrow phase: every one carries a real
-  // polygon collider (util.rockShape via world.shapeBig). ~350 in the world, of
-  // which only the awake ones are ever swept.
-  // The packer is best-effort — a full pocket rejects the last dozen draws, so
-  // the placed count runs a little under this.
+  // polygon collider (rockshape.js via world.shapeBig), of which only the awake
+  // ones are ever swept.
   // A REQUEST, NOT A GUARANTEE — world.packBigRock is best-effort and reports
   // what it actually placed. What bounds the real number is the packing rule
-  // (FIELD_PACK_GAP, now measured between REACH circles), and that is
-  // deliberate: the count should be limited by whether the rock physically
-  // fits, not by a number picked to approximate whether it fits.
-  // ~316 of these land per pocket. Raised a long way with FIELD_GIANT_SKEW and
-  // the R_MUL floor: nearly all of the addition is SMALL rock, which is what
-  // fills the outer approach once big rock is barred from it. Measured in
-  // thirds by radius — inner / middle / outer — mean landmark radius runs
-  // 78 / 62 / 37 and coverage 0.19 / 0.41 / 0.05.
-  // Back to 450 alongside FIELD_ROCKS, and for the same reason — 760 was the
-  // other half of the unmeasured body-count bump.
-  // 450 -> 300. The pocket read as TOO TIGHT, and the density a player feels is
-  // the MASONRY — the shaped landmarks — not the gravel drifting between it.
-  // Cutting here rather than at FIELD_ROCKS is the whole point: the small rock
-  // is the haze that makes the outer approach read as a rock field at all, and
-  // it is also what gives a road its edges. Fewer landmarks, same haze.
-  // 300 -> 230. Raising FIELD_GIANT_SKEW to fix the size gradient moved the
-  // whole ladder up, and coverage goes as radius SQUARED — so the same count of
-  // landmarks now paints far more of the pocket and it read tighter than before,
-  // not looser. This takes the count back down to hold the area roughly where it
-  // was while keeping the new, properly graded ladder.
-  // 230 -> 140. The small and mid landmarks are what was crowding the core, and
-  // they are the wrong thing to fill it with: the bottom of the size ladder
-  // should be PLAIN asteroids, which cost a circle collider instead of a polygon
-  // one and are what makes a pocket feel occupied rather than built. Cutting the
-  // landmark count takes it off the small and mid end first (the ramp is
-  // rank-based and skewed small), which is exactly the class asked to shrink,
-  // and it frees the room the rubble loop needs to place anything in the middle
-  // at all.
-  // 140 -> 100, a 29% cut that lands almost entirely on the SMALL and MID end:
-  // the ramp is rank-based and skewed small, so trimming the count takes the
-  // bottom rungs first and leaves the handful of genuinely large rocks intact.
-  // That is the requested "30% less small and mid at the core" — and it is the
-  // right class to cut, because the bottom of a shoal's size ladder should be
-  // PLAIN asteroids (a circle collider and an atlas sprite) rather than small
-  // landmarks paying for a polygon narrow phase nobody can see at that size.
+  // (FIELD_PACK_GAP, measured between REACH circles): the count should be
+  // limited by whether the rock physically fits, not by a number picked to
+  // approximate whether it fits.
+  //
+  // 100, down a long way. The class was crowding the core with exactly the wrong
+  // thing: the bottom of a shoal's size ladder should be PLAIN asteroids — a
+  // circle collider and an atlas sprite — not small landmarks paying for a
+  // polygon narrow phase nobody can see at that size. The ramp is rank-based and
+  // skewed small, so trimming the count takes the bottom rungs first and leaves
+  // the handful of genuinely large rocks intact.
+  // (main took this to 200 with a flat FIELD_GIANT_R_MUL of 10.2; that predates
+  // the graded ladder below and would undo it — see FIELD_GIANT_SKEW.)
   FIELD_GIANTS: 100,
-  // HOW THE COUNT IS SPREAD ALONG THAT LADDER — the exponent on rank position,
-  // below 1 to weight the population toward the SMALL end.
+  // The mass ladder the class is drawn from — low end to high end. Walked by
+  // rank through FIELD_GIANT_SKEW below, so this is a CONTINUUM of sizes rather
+  // than a band.
+  FIELD_GIANT_MASS: [8000, 130000],
+  // Drawn size only — the same radius-not-mass rule as FIELD_MONOLITH_R_MUL, and
+  // for the same reasons (grab class, damage ladder and payout all key off mass,
+  // and none of them is what "bigger" is asking for).
   //
-  // This is the knob that decides whether the pocket reads as graded, and it
-  // took two rounds of measurement to place. With the ranks spread evenly (1.0)
-  // the ladder puts equal numbers in every octave of size, which sounds neutral
-  // and is not: area goes with the SQUARE, so half the rocks being large means
-  // the masonry's total area is ~80% of the pocket and large rock ends up
-  // everywhere — the original complaint, with a gradient bolted on top that has
-  // no room left to act in.
-  // 0.26 puts ~93% of the class in the smaller half of the size range, leaving
-  // ~8 rocks per pocket at or above 150 units. That is few enough to FIT inside
-  // FIELD_REACH's core allowance — and fitting is the whole game here, because
-  // if they do not fit, the area valve under it grows and spills them outward,
-  // which is "the giant ones are everywhere" returning by the back door.
-  // Measured with a linear reach ramp and skew 0.45, the biggest were pushed out
-  // to q ~0.65 and the outer third still held rocks over 300 units.
-  // Skew, count and FIELD_REACH move TOGETHER.
-  // FAR down, to 0.14: ~97% of the class now sits in the smaller half of the
-  // size range. The ladder was top-heavy — too much large rock, not enough mid,
-  // small and very small — and the shortage of small rock is also why the ROADS
-  // did not read. A road is only visible if the material either side of it is
-  // dense enough to form a wall, and the only material fine enough to build a
-  // wall out of at road scale is small rock. So the two complaints share a fix:
-  // many more small rocks makes the roads legible AND leaves the few big ones
-  // reading as the monolithic structures they are meant to be.
-  // 0.14 -> 0.72. THIS IS THE GRADIENT, and at 0.14 there wasn't one.
+  // A [rim, core] RAMP, not a scalar, and world.js destructures it as one. The
+  // multiplier rides the same `t` as the mass, so density falls with size — that
+  // is what gives the class a populated mid-size rung instead of jumping from
+  // gravel to monolith. The core end came down 30% (7.9 -> 5.53) because the
+  // biggest rocks were too big on screen; the rim end is untouched, since moving
+  // both would flatten the ladder that makes a shoal read as graded at all.
+  FIELD_GIANT_R_MUL: [2.3, 5.53],
+  // HOW THE COUNT IS SPREAD ALONG THAT LADDER — the exponent on rank position.
   //
+  // THIS IS THE GRADIENT, and it is the single most misread knob in the file.
   // `t = pow(u, SKEW)` and mass runs from the HIGH end at t=0 to the LOW end at
   // t=1, so a skew far below 1 drives t toward 1 for nearly every rank and piles
-  // the whole class into its smallest bucket. Measured across four pockets at
-  // 0.14: 843 rocks between 24 and 48 units, 53 between 64 and 96, ONE between
-  // 96 and 128, and NOTHING between 128 and 160 — then the monoliths appearing
-  // from nowhere at 160+. That is not a gentle ramp with a heavy small end, it
-  // is two separate populations with a hole between them, which is why flying in
-  // never felt graded: there are no intermediate sizes to read the change by,
-  // just small rock and then, abruptly, a monolith.
+  // the whole class into its smallest bucket. At 0.14 that measured, across four
+  // pockets: 843 rocks between 24 and 48 units, 53 between 64 and 96, ONE
+  // between 96 and 128, and NOTHING between 128 and 160 — then the monoliths
+  // appearing from nowhere at 160+. That is not a gentle ramp with a heavy small
+  // end, it is two populations with a hole between them, which is why flying in
+  // never felt graded.
   //
   // 0.42 is where the two requirements meet, and they pull opposite ways: the
   // ramp has to reach high enough to leave no gap, while the large end stays
-  // THIN. The share of the class above any rung is T^(1/skew), so the knob moves
-  // the tail hard — 0.72 closed the hole but doubled rock over 160 units (23 to
-  // 45), and 0.42 keeps the ladder continuous while cutting that tail to about a
-  // third of it. Measured: a populated rung at every size, declining all the way
-  // up, and no bucket left empty between the gravel and the monoliths.
+  // THIN. The share of the class above any rung is T^(1/skew), so this moves the
+  // tail hard — 0.72 closed the hole but doubled rock over 160 units, and 0.42
+  // keeps the ladder continuous while cutting that tail to about a third.
   FIELD_GIANT_SKEW: 0.42,
-  // THE MASS LADDER IS GRADED BY RADIUS: [rim, core] (user design law).
-  //
-  // This was a FLAT band (14,000-60,000) and it was the whole reason a shoal
-  // read as "extra large rocks everywhere". Two separate things made it flat:
-  // every giant drew from the same band, and the centre bias below keyed off
-  // each rock's rank across the COMBINED giant+monolith mass span — where a
-  // 14k-60k giant scores 0.00-0.14 out of 1, so every one of them came out at
-  // pow ~0.55-0.63, i.e. area-uniform. Two hundred near-identical 185-296 unit
-  // rocks, scattered evenly, with nothing smaller between them.
-  //
-  // Now world.seedDenseFields interpolates this band in LOG space across the
-  // sorted list, so the class is a continuum from mid-size rock at the rim to
-  // packed masonry at the heart, and each rock's centre bias comes from where
-  // it sits on that ramp instead of from a span it barely registers on. Log,
-  // not linear: radius goes with cbrt(mass), so a linear ramp spends most of
-  // its length on sizes the eye cannot tell apart.
-  //
-  // AND THE MASS WENT UP (user design call: "much more mass so they don't move
-  // nearly as easily"). The core end is 6x the old ceiling. This deliberately
-  // reverses the radius-not-mass rule for THIS class — that rule exists so a
-  // "make it bigger" request doesn't silently re-price grab class and damage,
-  // and here the weight IS the request. What it buys, and what it costs:
-  //   - a core giant is >20x nearly all of the pocket's gravel, so the mass-
-  //     dominance rule (physics invariant 4) makes it immovable to a pebble.
-  //     Being shovable by anything at all was the complaint.
-  //   - it stays UNDER 20x a large moon (360k vs 17k is 21x — just past it, and
-  //     a thrown moon is exempt anyway via thrownTimer), so throwing something
-  //     heavy at the heart still moves it. That is the line: gravel bounces off,
-  //     real mass shifts it.
-  //   - grab class: every giant is now liftClass 5. It was already 4-5, and the
-  //     capacity gate (TIERS.caps) was over the light end anyway.
-  //   - hp is unaffected — FIELD_HP_CAP was already binding well below this.
-  // The rim end sits ABOVE the gravel ceiling on purpose. Gravel tops out at
-  // 6,400 x FIELD_GRAVEL_TAPER[0] = 11,520, and a landmark that weighs less than
-  // the pebbles around it while being four times their size is incoherent in
-  // every system that reads mass — it would grab at the belt-rock tier, pay
-  // belt-rock scrap, and be shoved around by rocks a sixth its width.
-  // PULLED BACK OFF THE IMMOVABILITY CUTOFF. The raise to 360000 answered "much
-  // more mass so they don't move nearly as easily" and overshot into "glued":
-  // physics invariant 4 is a HARD rule, not a curve — a body more than 20x
-  // heavier than what hits it does not move AT ALL. At 360k a core giant was
-  // past 20x against every rock in the pocket and against a thrown large moon
-  // (17k), so nothing the player could do would shift it by a pixel.
-  // At 130k the ratio lands under 20x for a heavy throw and well over it for
-  // gravel, which is the actual ask: unmoved by the ambient, moved SOMEWHAT by a
-  // real hit. Drawn size is unchanged — FIELD_GIANT_R_MUL below absorbs the
-  // whole change, since radius goes with cbrt.
-  FIELD_GIANT_MASS: [8000, 130000],
-  // Drawn size only — and GRADED ALONG THE SAME RAMP, [rim, core].
-  //
-  // Cut from a flat 10.2 with the mass raise above: radius goes with cbrt(mass),
-  // so a 6x heavier core rock is already 1.8x bigger at the same multiplier.
-  // But a flat multiplier could not close the hole this change is mostly about.
-  // Gravel stops at ~15 units (it has NO multiplier — it must stay inside
-  // render's atlas buckets, which end at radius 11, or the whole shoal falls off
-  // the instanced GL path) and any flat multiplier big enough to make a core
-  // giant a wall also drags the class's small end far above that. Measured with
-  // 5.6 flat: nothing at all between 16 and 47 units, and the two populations
-  // read as two unrelated materials with a gap in the middle — which is exactly
-  // what "the whole thing is just extra large rocks" describes from inside.
-  //
-  // Interpolated, the multiplier IS the material story the file already tells: a
-  // 300-unit giant is a loose rubble pile (see FIELD_BIG_DOM_EXP, which softens
-  // dominance for the same reason), and the small end is more consolidated rock.
-  // So density falls with size, the ladder runs 36-325 units against masses that
-  // stay strictly ordered, and the pocket has a mid-size rung for the first time.
-  // The rim end at 1.9 puts the smallest landmark at 23-38 units — which lands
-  // it directly ON the gravel's ceiling (~15) rather than an octave above it, so
-  // the ladder is finally continuous. It is also the only way to get the OUTER
-  // THIRD's mean landmark size down: that region holds nothing but the bottom of
-  // this class, so its mean can never fall below the class floor's own mean. At
-  // 2.4 the floor averaged ~39 and the outer third bottomed out at 48 no matter
-  // what else moved.
-  // THE CORE END CAME DOWN 30% (7.9 -> 5.53) — the biggest rocks were simply
-  // too big on screen. The RIM end is untouched: the request was about the
-  // largest versions, and moving both would have flattened the ladder that
-  // makes a shoal read as graded rather than uniform.
-  // Like PLANET_R_MUL / MOON_R_MUL this grows DRAWN RADIUS ONLY — mass is
-  // untouched — so shrinking it makes the monoliths denser rather than lighter,
-  // which is the intended relationship (a monolith should be heavy for its
-  // size, not merely large).
-  FIELD_GIANT_R_MUL: [2.3, 5.53],
   FIELD_GIANT_SHARDS: [5, 9],   // pieces a giant breaks into (big shards re-flag as giants — one more cascade level)
   // Both lurker ranges are sized OFF the pocket, not absolutely: the wake
   // must reach past the far end (FIELD_LEN) or you could sit deep inside the
@@ -1802,60 +1835,164 @@ export const CFG = {
   LURKER_GUIDE_T: 1.3,     // seconds of guidance after the body-check
   LURKER_GUIDE_A: 700,     // steering accel during that window
 
-  // THE SOLAR WAVE — the sun's coronal mass ejections, and the one piece of
-  // weather the whole system feels at once. The sun CHARGES visibly for
-  // STORM_CHARGE seconds (a telegraph you can act on), then fires a shock
-  // front that sweeps outward at STORM_SPEED trailing a STORM_TAIL-deep
-  // SHEATH of charged plasma.
+  // THE SOLAR WAVE — the sun's coronal weather, and the one event the whole
+  // system feels at once. The sun CHARGES visibly (a telegraph you can act on),
+  // then fires a shock front that sweeps outward trailing a deep SHEATH of
+  // charged plasma.
   //
-  // THE SHEATH IS THE WHOLE MECHANIC. The front alone is a 2 x STORM_BAND
-  // ring, which crosses any given radius in ~1.5s — far too brief to be
-  // anything but scenery, which is exactly what the storm used to be. The
-  // sheath trailing behind it takes ~10s to pass, so being caught out in one
-  // is a situation you have to answer rather than a flicker you never noticed.
+  // THE SHEATH IS THE WHOLE MECHANIC. The front alone is a 2 x band ring, which
+  // crosses any given radius in ~1.5s — far too brief to be anything but
+  // scenery, which is exactly what the storm used to be. The sheath trailing
+  // behind it takes seconds to pass, so being caught out in one is a situation
+  // you have to answer rather than a flicker you never noticed.
   //
   // IT STILL NEVER TOUCHES BODIES, CELESTIALS OR RAILS (the storm-shove law —
   // a force on any of those is an invariant-3 regression waiting to happen).
   // Everything it does lands on the SHIP, on loose SCRAP, and on SENSORS:
   //   - caught exposed: hull dps, engines derated, sensors scrambled
   //   - SHELTER is the counterplay — a world's lee blocks it (STORM_SHADOW_*)
-  //   - it blinds ALIEN senses system-wide for the whole passage (the window)
+  //   - the big ones blind ALIEN senses system-wide for the passage (the window)
   //   - it ionizes the scrap it sweeps (PROG.ION_SCRAP_MUL — the payday)
+  //
+  // THE SUN THROWS THREE DIFFERENT THINGS, not one thing on a timer. Every
+  // number a wave runs on is a property of the WAVE, carried on game.storm, so
+  // there is exactly one place a class is described and nothing downstream can
+  // read a global that no longer matches the plasma actually on screen. See
+  // STORM_CLASSES below; the per-wave constants that used to live here are
+  // rows in that table now.
+  // UNCHANGED BY THE INTENSITY LADDER, deliberately: adding classes must not
+  // make the sky stormier. The sun fires no more often than it ever did — what
+  // changed is WHAT it throws, not how often it throws.
   STORM_EVERY: 300,        // average seconds between waves — weather, not a metronome
-  STORM_CHARGE: 7,         // seconds the sun visibly loads before the front fires
-  STORM_SPEED: 950,        // shock-front expansion speed (u/s)
-  STORM_BAND: 700,         // half-thickness of the bright leading shock
-  STORM_TAIL: 9200,        // depth of the plasma sheath trailing the shock (~10s to pass)
-  // Hull damage/sec while caught EXPOSED in the sheath. Directionless (no
-  // hitAng) like heat and gas crush, so a partial shield soaks only its
-  // coverage share — see damageShip. And because the damage is CONTINUOUS the
-  // regen delay never elapses mid-wave: whatever shield you had is spent, and
-  // it does not come back until the wave is off you.
-  // MEASURED against the thing that matters — a full pass is TAIL/SPEED ≈ 9.7s
-  // of exposure, so this number times ten is the real cost. At 16 that was 160
-  // against a tier-0 hull of 205: 78% of a fresh ship, for weather that fires
-  // every ~5 minutes and that a player far from any world cannot dodge. Hull
-  // does not self-heal, so that is very close to run-ending on a first
-  // encounter. 7 costs ~55-64 (measured, tier 0: BRAWLER 27% of its hull,
-  // HAULER/SCOUT 53% of their thinner ones) — a price you feel and weigh,
-  // which is what makes sheltering a decision rather than a formality. Kept
-  // FLAT rather than scaled to hull, like every other environmental hazard
-  // here (Oort grind, corona heat, gas crush at 9), and deliberately under the
-  // gas cloud tops: a wave is 10 seconds you were handed, not a dive you chose.
-  STORM_DPS: 7,
-  STORM_THRUST: 0.6,       // engine derate while exposed: you are flying into the wind.
-                           // Keyed to EXPOSURE, not the ion afterglow — ducking behind a
-                           // world gives the engines back at once, which is the lesson.
-  STORM_ION: 5,            // seconds of sensor scramble after the last exposed moment
-  STORM_SHOVE: 150,        // radiation pressure on loose SCRAP DEBRIS. Debris only. Always.
+  // THE INTENSITY LADDER, weakest first. Each row is a complete wave: its
+  // telegraph, its geometry, its bite, its payday and its palette. The top row
+  // (cme) holds the numbers the wave shipped with and is still the reference
+  // every other row is priced against — the two below it are NOT a CME with the
+  // damage turned down, they are shorter, faster, cooler events that cost a
+  // fraction as much and give a fraction as much back.
+  //
+  // FULL-PASS EXPOSURE is the figure that matters, not dps: standing still, a
+  // sheath washes over you for tail/speed seconds, so the real price of being
+  // caught is dps x that. The ladder is deliberately ~3x per step —
+  //   squall 3.5s x 2.5 =   ~9 hull   (a scratch; the class that TEACHES the
+  //                                    mechanic at a price nobody fears)
+  //   surge  6.1s x 4.5 =  ~27 hull   (a real bite — 13% of a tier-0 hull)
+  //   cme    9.7s x 7   =  ~68 hull   (measured: BRAWLER 27%, HAULER/SCOUT 53%
+  //                                    of their thinner hulls — the one that
+  //                                    can end a run, kept exactly as it was)
+  // — so the classes are told apart by CONSEQUENCE, not by reading a label.
+  // Damage is directionless (no hitAng) like heat and gas crush at every class,
+  // so a partial shield soaks only its coverage share; and because it is
+  // continuous the regen delay never elapses mid-wave. All three stay FLAT
+  // rather than hull-scaled, like every other environmental hazard here.
+  //
+  // HOW FAR IT CLIMBS is the second axis, and the one that gives the system a
+  // GEOGRAPHY. A wave is not just weaker, it is more local: `reach` is the
+  // fraction of CFG.WORLD_R its shock can climb to before it has spent itself,
+  // and past `fade` (a fraction of that reach) it DISSOLVES rather than
+  // travelling at full strength and then blinking out — `config.stormStrength`
+  // returns the live 0..1 the wave carries as `k`, and every bite and every
+  // alpha is multiplied by it. A wave that vanished at an exact radius would be
+  // the geometric in-world edge the house style forbids; each class instead
+  // spends its last ~10 seconds visibly shredding.
+  //   squall  reach 0.5   — the inner system only. Full strength to ~18,500,
+  //                         gone by ~29,900: it never touches the amber giant.
+  //   surge   reach 0.667 — out through the mid system, gone by ~39,900.
+  //   cme     reach 1.17  — the whole sky. Its `fade` puts the taper's start at
+  //                         exactly WORLD_R, i.e. entirely OUTSIDE the world, so
+  //                         the top class behaves precisely as it always did:
+  //                         full strength everywhere anything lives, and the old
+  //                         expiry (front out past WORLD_R + band + tail) falls
+  //                         out of the same arithmetic.
+  //
+  // BLINDING IS THE CLASS DIVIDE, and it is why a big wave is worth WANTING. A
+  // live wave floods the band and nothing alien can pick the ship out of it —
+  // but a squall is a ripple, not a flood (`blind: false`), so the only class
+  // that costs nothing is also the only one that hands you nothing.
+  // THIS IS THE KNOB THAT MOVES THE STEALTH LAYER. A shorter-reaching wave is a
+  // shorter-LIVED wave, so the ladder cuts the system's sense-blind duty cycle
+  // to ~12% from the ~25% it ran at when every wave was a CME and every wave
+  // crossed the whole sky. Handing `blind` to the squall would only take it to
+  // ~15%. If the aliens start feeling too sharp, this is the first place to
+  // look — every nest and lurker answers to it.
+  //
+  // `pay` is the payday in one knob: it scales BOTH the per-second ride XP
+  // (PROG.XP_STORM_RIDE) and how far the scrap it sweeps is charged toward
+  // PROG.ION_SCRAP_MUL. Risk and reward move together or the ladder is a lie.
+  //
+  // WHICH CLASS FIRES IS A FLAT RANDOM PICK — one of the three, equal odds, no
+  // weights and no special cases (`config.stormClass`). Weighting them is the
+  // obvious next idea and it was deliberately NOT taken: a third each is what
+  // makes the telegraph worth reading every single time, because there is never
+  // a class you can assume it probably is.
+  //
+  // COLOUR IS THE OTHER TELL, and it rides the game's EXISTING heat grammar
+  // rather than inventing a second one: hot reads amber-to-white, cool reads
+  // violet-to-blue, exactly as it does on a wounded giant's storm eyes and in
+  // the corona. So intensity climbs that ramp — a squall is a pale cyan ripple
+  // over a blue-violet haze, a surge burns rose, and only a CME earns the
+  // white-hot core. The cme row's colours are the ones the wave shipped with,
+  // unchanged, so the top of the ladder still looks like itself.
+  //
+  // `dens` is the OTHER half of looking weaker, and it matters more than the
+  // palette: it thins the filaments, the motes and the sun's prominences, so a
+  // squall is a SPARSER wave rather than a dimmed CME. Fading a full-density
+  // wave just desaturates it, and a low-alpha additive over black is grey —
+  // which is the exact failure the filament comment in render.js warns about.
+  //
+  // Six colours per class, each named for its job in drawStormWave:
+  //   core   incandescent leading edge, and the brightest thing in the wave
+  //   shock  the broad glow riding on that edge
+  //   warm   the telegraph/instrument tone (screen pulse, radar, chart)
+  //   sheath the body of the plasma behind the shock
+  //   haze   the deep tail, where it dissolves into nothing
+  //   filLo/filHi  the two ends of the streaming filaments' heat ramp
+  // Plain [r,g,b] triples: they interpolate (render's mixc), and they still
+  // stringify straight into an `rgba(${c}, a)` template.
+  STORM_CLASSES: [
+    { key: 'squall', name: 'SOLAR SQUALL', tag: 'SQUALL',
+      charge: 3.5, speed: 1200, band: 380, tail: 4200, reach: 0.5, fade: 0.62,
+      dps: 2.5, thrust: 0.85, ion: 2.0, shove: 60, blind: false, pay: 0.45,
+      blurb: 'a thin front, and it will not reach the outer system.',
+      dens: 0.45, core: [215, 245, 255], shock: [120, 195, 255], warm: [150, 205, 255],
+      sheath: [95, 120, 235], haze: [70, 90, 210], filLo: [70, 130, 235], filHi: [170, 225, 255] },
+    { key: 'surge', name: 'SOLAR SURGE', tag: 'SURGE',
+      charge: 5, speed: 1050, band: 520, tail: 6400, reach: 0.667, fade: 0.68,
+      dps: 4.5, thrust: 0.72, ion: 3.4, shove: 100, blind: true, pay: 0.72,
+      blurb: 'deep enough to hurt — and nothing alien can see you while it passes.',
+      dens: 0.72, core: [255, 228, 246], shock: [255, 140, 200], warm: [255, 150, 190],
+      sheath: [225, 80, 190], haze: [135, 55, 215], filLo: [235, 70, 140], filHi: [255, 180, 215] },
+    { key: 'cme', name: 'CORONAL MASS EJECTION', tag: 'CME',
+      charge: 7, speed: 950, band: 700, tail: 9200, reach: 1.166, fade: 0.858,
+      dps: 7, thrust: 0.6, ion: 5, shove: 150, blind: true, pay: 1,
+      blurb: 'a deep sheath, it crosses the whole sky, and it bites — but nothing alien can see you while it passes.',
+      dens: 1, core: [255, 250, 240], shock: [255, 185, 105], warm: [255, 170, 90],
+      sheath: [215, 70, 160], haze: [120, 55, 210], filLo: [255, 105, 55], filHi: [255, 200, 125] },
+  ],
   // SHELTER: the sun sits at the origin, so a world's shadow is just the
   // cylinder running anti-sunward from it. Forgiving on purpose — the lee has
   // to be somewhere a pilot can fly to under pressure, not a razor edge (and a
   // hard geometric boundary is against the house style anyway; render feathers
-  // the wedge). Moons and up only: a pebble shelters nobody.
+  // the wedge). Shelter geometry is a property of the BODY, not of the wave:
+  // every class breaks around the same lee, so what a pilot learns once holds.
+  //
+  // MOONS SHELTER. They always could in principle — the type test has read
+  // planet/moon/rogue from the start — but MIN_R at 60 quietly failed 40 of the
+  // sky's 59 moons (median radius 52.5), so "duck behind that moon" was a move
+  // that worked two times in three and there was no way to tell which. 24 clears
+  // every real moon (the smallest a seed can roll is ~25.5) and still refuses
+  // the ring shepherd at 18: a moonlet the size of the ship shelters nobody, and
+  // that is the pebble line the floor exists to draw.
   STORM_SHADOW: 1.15,      // shadow cylinder radius, x the sheltering body's radius
+  // …plus a FLAT pad, because forgiveness has to be measured in ship-widths and
+  // a pure multiple is not: 1.15x a 26-radius moon is a 30-unit half-width — a
+  // slot a TITAN (SHIP_RADIUS 44.2) does not fit through, let alone thread under
+  // fire with the sensors out. The pad is sized off the largest hull in the game
+  // for exactly that reason: at 45 the smallest moon in the sky shelters even
+  // the biggest ship, while a 500-radius planet barely notices the +8%.
+  STORM_SHADOW_PAD: 45,
   STORM_SHADOW_LEN: 30,    // how far that lee reaches behind it, x radius
-  STORM_SHADOW_MIN_R: 60,  // smallest body that casts one
+  STORM_SHADOW_MIN_R: 24,  // smallest body that casts one — see MOONS SHELTER above
 
   PREDICT_STEPS: 200,      // trajectory forecast resolution (ship path)
   PREDICT_DT: 1 / 30,
@@ -2002,6 +2139,104 @@ export function worldDebris(ptype, hostColor, mix = 0.5) {
     // Everything solid keeps its parent's face.
     default: return { color: hostColor };
   }
+}
+
+// ---------------------------------------------------------------------------
+// ---- THE SOLAR WAVE: the two derivations every consumer has to share -------
+
+// Pick a wave class off CFG.STORM_CLASSES — a FLAT random pick, equal odds, no
+// weights and no special cases. That evenness is the point: weight the table (or
+// force the first wave of a run to the gentle row, which is the other tempting
+// special case) and the telegraph stops being worth reading, because there is a
+// class you can assume it probably is.
+//
+// `roll` is the caller's rng — always Math.random in practice, because a wave is
+// RUNTIME weather and must never buy a draw off the seeded world stream (the
+// same rule the retrograde-lane note in world.js states).
+export function stormClass(roll) {
+  const cs = CFG.STORM_CLASSES;
+  return cs[Math.min(cs.length - 1, (roll() * cs.length) | 0)];
+}
+
+// HOW FAR OUT THE WAVE HAS LEFT TO GIVE, 0..1, from the shock's current radius.
+// Full strength until `fade` of the way to `reach`, then dissolving to nothing
+// at the limit — physics scales its bite by this and render scales every alpha,
+// so a spent wave SHREDS instead of blinking out at an exact radius (which is
+// the geometric in-world edge the house style will not have). A class's whole
+// geography lives in these two numbers; see the STORM_CLASSES notes.
+export function stormStrength(wave) {
+  const reachR = CFG.WORLD_R * wave.reach;
+  const fadeR = reachR * wave.fade;
+  if (wave.r <= fadeR) return 1;
+  return Math.max(0, 1 - (wave.r - fadeR) / (reachR - fadeR));
+}
+
+// …and when there is nothing left of it. The front, not the tail: the sheath
+// trails BEHIND the shock, so a front stopped at the limit is a wave entirely
+// inside it — which is what "a squall never reaches the outer system" has to
+// mean. By here stormStrength is already 0, so nothing visible is being cut.
+export function stormSpent(wave) { return wave.r > CFG.WORLD_R * wave.reach; }
+
+// Half-width of the lee a body casts. THE ONE definition: main.shelterBody
+// decides shelter with it and render.drawStormWave punches the plasma out with
+// it (shrunk, the safe direction — see there). The two drifting apart is a pilot
+// sitting in visible shadow taking damage, or worse, the reverse.
+export function shelterR(b) { return b.radius * CFG.STORM_SHADOW + CFG.STORM_SHADOW_PAD; }
+
+// ---------------------------------------------------------------------------
+// DOCK STATIONS: the tier ladder, and the two radii both readers need.
+//
+// THE ART TABLE LIVES HERE, not in render.js, for one reason: the shield dome
+// is a REAL COLLIDER (physics.updateDomeShield throws rock and aliens off it)
+// as well as a drawn arc, and a field whose pushing edge and drawn edge came
+// from two different expressions is the exact mirror-drift trap this codebase
+// keeps warning about. One source, both readers — render.drawPad for the
+// structure, physics for the push.
+//
+// One row per beam tier (0-5), read from the ship's CURRENT tier and not the
+// one a station was laid down at: a dock is infrastructure you keep improving,
+// so tiering up refits every station you own. The progression is a SILHOUETTE,
+// not a detail pass — landing slab, gantry, second clamp pair, control block,
+// dish, working spaceport — and each row only ever ADDS, so the thing you
+// learned to recognize at tier 0 is still the thing in the middle at tier 5.
+//
+// `w` tracks WHAT IS STANDING ON THE DECK rather than growing for its own sake:
+// a tier-0 pad is a narrow slab because a slab is all it is. A deck sized for
+// the top tier at tier 0 reads as a derelict apron with a toy in the middle.
+export const DOCK_TIERS = [
+  { w: 0.86, pairs: 1, mast: 0,    tower: 0, dish: 0, lights: 2 },   // 0 — a landing slab and two clamps
+  { w: 0.95, pairs: 1, mast: 0.8,  tower: 0, dish: 0, lights: 2 },   // 1 — a gantry mast goes up
+  { w: 1.04, pairs: 2, mast: 0.95, tower: 0, dish: 0, lights: 3 },   // 2 — a second pair of clamps
+  { w: 1.13, pairs: 2, mast: 1.1,  tower: 1, dish: 0, lights: 3 },   // 3 — a control block
+  { w: 1.22, pairs: 2, mast: 1.25, tower: 1, dish: 1, lights: 4 },   // 4 — a comms dish
+  { w: 1.32, pairs: 2, mast: 1.4,  tower: 2, dish: 1, lights: 4 },   // 5 — a working spaceport
+];
+
+// How big a station is. THE BERTH SETS THE SCALE — a dock is sized by the thing
+// that parks in it, so this tracks the hull, not the world. The tier table then
+// widens it only modestly, because the SHIP is already growing underneath
+// (radius 4 at tier 0, ~44 at tier 5): multiplying the two growth curves
+// together put a tier-5 port at two thirds of its planet's radius, which read
+// as a megastructure the world was orbiting rather than a building on it.
+//
+// The host cap keeps a port from swallowing a small moon, and the berth floor
+// WINS over it — a pad the ship does not fit on is not a pad, and on a moonlet
+// a titan-class hull genuinely is most of the horizon.
+export function dockTier(st) {
+  return DOCK_TIERS[Math.min(DOCK_TIERS.length - 1, st.tier || 0)];
+}
+export function dockPadR(st, hostR) {
+  const want = Math.max(16, st.radius * 2.2) * dockTier(st).w;
+  return Math.max(Math.max(14, st.radius * 1.9), Math.min(want, hostR * 0.42));
+}
+// The dome, measured FROM THE SURFACE POINT under the pad (not the pad origin,
+// which sits a hull-radius above the crust — `groundY` is that lift). Sized to
+// ENCLOSE the station at whatever tier it is, so it tracks the mast height: a
+// shield with the gantry poking out of the top is not a shield, and a flat
+// multiple would leave tier 0 (no mast at all) under a dome three times taller
+// than the thing it covers.
+export function dockDomeR(st, hostR, groundY) {
+  return dockPadR(st, hostR) * (1.15 + dockTier(st).mast * 0.24) + groundY;
 }
 
 // ---------------------------------------------------------------------------
@@ -2328,7 +2563,7 @@ export const PROG = {
   XP_SCRAP: 0.5,           // per unit of debris-chunk value collected
   XP_ORBIT: 8,             // stow a rock into the orbit shield
   XP_BLOCK: 14,            // a shield rock intercepts an alien throw
-  XP_PARRY: 14,            // a Deflector parry launches its rock (paid at the flick, not the catch)
+  XP_PARRY: 14,            // a Deflector parry launches its rock (paid at the launch, not the catch)
   XP_RAM: 7,               // a ram KILL (shatter credit 'ram') — kills only, chip damage pays nothing
   XP_SURVEY: 40,           // chart a world
   XP_SKIM: 0.7,            // per hull-point ground off while skimming a surface
@@ -2351,13 +2586,41 @@ export const PROG = {
   // that — the same rate-independence argument as the dense fields' xpLeft.
   // ~10s of sheath at 5/s is ~50 XP a wave against a 303-XP tier 0: worth
   // taking the hits for, nowhere near worth farming.
+  //
+  // THIS IS THE CME RATE, and every class scales it by its own `pay` (0.45 /
+  // 0.72 / 1). A squall costs a tenth as much hull as a CME, so paying it the
+  // same per second would make the cheap wave the efficient farm and quietly
+  // invert the whole ladder. The cap is left FLAT at 14s: the weak classes have
+  // shallow sheaths and never come near it anyway, so scaling it would only
+  // punish a pilot for chasing a squall outward — the one skilled thing you can
+  // do with one.
   XP_STORM_RIDE: 5,
   STORM_RIDE_MAX: 14,      // seconds of exposure paid per wave
   // Scrap the wave sweeps comes out IONIZED and pays more. Never field-sourced
   // scrap: that chunk's XP was already charged against the pocket's budget at
   // drop time (fieldXp), and re-inflating it at pickup would launder the field
   // farm straight back through the weather.
+  //
+  // THIS IS THE CEILING, reached only by a CME at full strength. `d.ion` stores
+  // how far toward it the chunk was charged — the sweeping wave's `pay` times
+  // its remaining `k` — rather than a bare flag, so the pickup multiplier lerps
+  // 1 -> ION_SCRAP_MUL and a squall's salvage is worth visibly less than a CME's.
+  //
+  // 0 MEANS UNCHARGED, and that is a state the scalar really can reach now that
+  // a spending wave scales `pay` by `k`. Everything downstream still tests
+  // `if (d.ion)` — the charged-blue draw, the ionScrap stat — so the value has
+  // to be either a MEANINGFUL charge or none at all: see STORM_ION_FLOOR, which
+  // is what keeps those truthiness tests honest rather than merely defined.
   ION_SCRAP_MUL: 1.7,
+  // The least a wave may charge a chunk and still mark it. Below this it stamps
+  // NOTHING, because render's rule is that the colour IS the price tag and has
+  // to be unmistakable at a glance — and a chunk burning full charged-blue for a
+  // 1.03x payout is that tag lying. The floor sits well under the weakest real
+  // charge (a squall at full strength is `pay` 0.45), so it only ever catches a
+  // front already shredding at the end of its reach: squall stops charging below
+  // k~0.44, surge below k~0.28, CME below k 0.2. A wave too spent to bite is too
+  // spent to ionize.
+  STORM_ION_FLOOR: 0.2,
   // FIELD ROCK PAYS A FRACTION (fieldXp below). A dense field is ~1900 rocks
   // in one pocket and there are four of them: at full rates parking inside one
   // and grinding the nearest gravel out-earned every aimed, risky thing in the
@@ -2514,7 +2777,7 @@ export const ABILITIES = [
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
-  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull — flick the mouse to hurl it that way. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
+  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull, then hurls itself wherever your mouse points when the freeze ends. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
   { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 6, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
@@ -3043,15 +3306,15 @@ export function shipStats(prog) {
     demolition: demoC,                            // AoE damage on a throw-kill
     wallSplat: wallsplatC,                        // Wall Splat: kills AGAINST a world blast nearby rocks
     // DEFLECTOR (the parry, brawler kit): rocks closing on the NOSE freeze on
-    // contact for the window; the player's mouse FLICK picks the hurl
-    // direction (physics.updateParry owns the whole flow: scan, pin, flick,
-    // launch). Rank 1 catches at the HULL — the rock must actually hit you
+    // contact for the window, then launch along ship→cursor when it runs out
+    // (physics.updateParry owns the whole flow: scan, pin, aim, launch).
+    // Rank 1 catches at the HULL — the rock must actually hit you
     // (user design rule: no catching out in space) — and each of the SIX
     // ranks widens the catch bubble, adds a slot (cap = rank, so a maxed
     // deflector freezes a six-rock volley), lengthens the freeze, and hardens
     // the hurl; the cooldown is fixed. Per-rank growth is sized for the long
     // track — rank 6 tops out near the old 3-rank ceiling. The base window is
-    // long on purpose: enough time to read the freeze and aim the flick.
+    // long on purpose: it is the aiming time, so it can't be short.
     deflect: deflectC,
     deflectWindow: deflectC > 0 ? 0.5 + 0.09 * (deflectC - 1) : 0,
     deflectPower: deflectC > 0 ? 520 + 80 * (deflectC - 1) : 0,

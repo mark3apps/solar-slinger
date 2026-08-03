@@ -1,8 +1,8 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
-  canLift, canStow, liftClass,
+  canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR,
 } from './config.js';
-import { predictPaths, PARRY_FLICK, frameReg } from './physics.js';
+import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T } from './physics.js';
 import * as gravel from './gravel.js';
 import {
   chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
@@ -11,7 +11,7 @@ import {
 import { volleyPick, isOwnShot, throwLocked } from './tractor.js';
 import {
   TAU, angDiff, lerp, clamp, mulberry32, shellModal, senseBlind, crystalShards, scarSurfaceAt,
-  rockJagRing, jagSamples, JAG_PEAK,
+  rockJagRing, jagSamples, JAG_PEAK, padPos,
 } from './util.js';
 import { rockShapeOf, rockSurfAt } from './rockshape.js';
 import {
@@ -1321,9 +1321,20 @@ function drawRock(game, b) {
 // the ones near you are drawn at all.
 // ---------------------------------------------------------------------------
 function bigRockDetail(b) {
+  // ROUNDED TO THE UNIT, for the same reason bigRockSil's key is quantized: the
+  // integrate loop eases b.radius every substep for ~1.5s after any mass change,
+  // so an exact key meant this entire build — up to 42 craters behind an O(n^2)
+  // rejection loop, 70 grain dots, 7 seams and five fresh arrays — ran once per
+  // drawn frame per recently-touched rock, allocating, inside a draw path. The
+  // cost note below reasons about a build that happens ONCE per rock, and that
+  // is only true if the key can actually hold still. Nothing stored here depends
+  // on the exact radius: `r` is read by the three count expressions and nowhere
+  // else, so a sub-unit chip cannot change the result and rounding makes it a
+  // no-op. The counts read the rounded value, so the record stays a pure
+  // function of its key.
+  const r = Math.round(b.radius);
   let d = b._bigDet;
-  if (d && d.r === b.radius) return d;
-  const r = b.radius;
+  if (d && d.r === r) return d;
   const rng = mulberry32(b.id * 2654435761 + 77);
   // Broad tonal variation, and it has to stay BROAD: the first cut ran these
   // at 0.13 alpha across 0.64r, which on a 98-unit monolith is a 60-unit
@@ -1771,7 +1782,8 @@ function drawBody(game, b) {
       const dSun = Math.hypot(dx, dy) || 1;
       const heat = Math.max(0.05, 1 - dSun / 15000);
       let boost = 1;
-      if (game.storm && Math.abs(dSun - game.storm.r) < CFG.STORM_BAND * 1.4) boost = 1.7;
+      if (game.storm && game.storm.k > 0.35
+          && Math.abs(dSun - game.storm.r) < game.storm.band * 1.4) boost = 1.7;
       const len = b.radius * (5 + 29 * heat) * boost;
       tx = b.x + (dx / dSun) * len; ty = b.y + (dy / dSun) * len;
       alpha = (0.3 + 0.5 * heat) * Math.min(1, boost);
@@ -3495,19 +3507,524 @@ function drawApproach(game) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE DOCK, on the world it is clamped to. A pad is a REAL OBJECT, not helper
+// UI, so it obeys the object half of the visual grammar: solid strokes only, no
+// dash, and its line widths are WORLD units that scale with the camera rather
+// than the /zoom idiom the overlays use — it is a structure standing on a
+// planet, and a structure whose girders stay 2 screen-pixels wide as you pull
+// away is a HUD element pretending to be scenery.
+//
+// TWO COLOURS, and they say two different things. A plain dock is STEEL: a
+// service you are using right now. A HOME PORT is the lives ROSE (style.css
+// #ff5c7a, the colour of the life pips) because that is precisely what it is —
+// the place a death hands the ship back. Reusing the lives hue rather than
+// inventing a marker colour is the point: the two instruments already agree
+// about what rose means.
+const DOCK_STEEL = '207, 228, 255';
+const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (style.css)
+
+// THE STATION GROWS WITH THE SHIP. One row per beam tier (0-5), the same shape
+// of table as SHIP_TIERS and read the same way — from `game.st.tier`, i.e. your
+// CURRENT tier and not the tier the station was laid down at. A dock is
+// infrastructure you keep improving, so tiering up refits every station you own
+// rather than leaving your first pad looking like a shack forever.
+//
+// The progression is a silhouette, not a detail pass: a bare landing slab
+// becomes a gantry, then a serviced berth, then a control block, then a proper
+// port. Each row only ever ADDS, so the thing you learned to recognize at tier 0
+// is still the thing in the middle at tier 5.
+// `w` scales the whole structure, and it tracks WHAT IS STANDING ON THE DECK
+// rather than growing for its own sake: a tier-0 pad is a narrow slab because a
+// slab is all it is, and the deck widens exactly as the gantry, the blocks and
+// the second clamp pair arrive to fill it. A deck sized for the top tier at
+// tier 0 reads as a derelict apron with a toy in the middle of it.
+// The table and the size maths live in config.js — the SHIELD DOME is a real
+// collider now (physics.updateDomeShield repels rock and aliens off it), and a
+// field whose drawn edge and pushing edge came from two different expressions
+// would be the exact mirror-drift trap this codebase keeps warning about. One
+// source, both readers.
+
+// A station under construction REVEALS ITSELF PIECE BY PIECE, heaviest
+// structure first, so the ten seconds read as building rather than as waiting
+// for a bar. Each element fades in over a slice of the build instead of
+// popping. Returns 0..1.
+function built(prog, at, span = 0.14) {
+  return clamp((prog - at) / span, 0, 1);
+}
+
+// One station. `up` is the world bearing of the surface normal under it, which
+// is also the bearing the ship parks along — so the pad is drawn in a frame
+// where +y is DOWN into the crust and the whole sprite is authored upright.
+//
+// `release` (0..1) is the launch sequence swinging the clamps open; `dome` asks
+// for the shield bubble (berthed at a finished station).
+function drawPad(game, pad, ink, home, flash, release, dome) {
+  const p = padPos(pad);
+  if (p.x < view.x0 - 500 || p.x > view.x1 + 500 ||
+      p.y < view.y0 - 500 || p.y > view.y1 + 500) return;
+  // Sized off the SHIP, not the world: a pad is a BERTH, and a berth is only
+  // ever meaningful at the scale of the thing that parks in it. A world-scaled
+  // pad would be a continent on a planet and a speck on a moonlet.
+  //
+  // THE ORIGIN IS WHERE THE SHIP'S CENTRE SAT WHEN THE CLAMPS BIT, which is the
+  // constraint the whole sprite is composed around: the parked ship is drawn
+  // ON TOP OF this point every frame, so anything put NEAR it is simply hidden.
+  // The deck therefore sits BELOW the origin (down into the crust, which is
+  // also what "seated" should look like) and the masts stand OUTBOARD of it, so
+  // the berth frames the ship rather than fighting it. An earlier pass put a
+  // beacon at the origin and it vanished under the hull.
+  const T = dockTier(game.st);
+  const R = dockPadR(game.st, pad.b.radius);
+  const up = pad.ang + pad.b.rot;
+  const prog = clamp(pad.t / CFG.DOCK_BUILD, 0, 1);
+  const ready = prog >= 1;
+
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(up + Math.PI / 2);   // +y now points down into the surface
+
+  // WHERE THE GROUND IS, in this frame. The pad's origin is the ship's centre
+  // at the moment the clamps bit, i.e. about a hull-radius ABOVE the crust, and
+  // +y here runs down into it — so the surface is this far below the origin.
+  // Everything that has to LOOK like it is standing on the planet (the deck's
+  // pylons, the shield dome's foot) measures from here rather than from the
+  // origin, which is what stops the structure floating over its own world.
+  const groundY = pad.b.radius * (pad.rf - 1);
+
+  // DECK: a slab bridging the berth, carried on pylons that run down into the
+  // crust. The pylons are what seat it — a slab alone reads as a decal lying on
+  // the ground, and the moment there is daylight under it, it is a building.
+  const a0 = 0.35 + 0.65 * built(prog, 0);
+  const deckY = R * 0.22;
+  // SUBSTRUCTURE — the body of the thing. A central block sunk into the crust
+  // with splayed legs either side of it: this is what carries the visual mass,
+  // and without it the station is a line with sticks on it. Filled dark and
+  // outlined rather than glowing, so it reads as MATERIAL against a lit deck.
+  const baseTop = deckY, baseBot = groundY + R * 0.1;
+  ctx.fillStyle = `rgba(10, 8, 20, ${0.75 * a0})`;
+  ctx.beginPath();
+  ctx.moveTo(-R * 0.46, baseTop); ctx.lineTo(R * 0.46, baseTop);
+  ctx.lineTo(R * 0.32, baseBot); ctx.lineTo(-R * 0.32, baseBot);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = `rgba(${ink}, ${0.55 * a0})`;
+  ctx.lineWidth = R * 0.04;
+  ctx.stroke();
+  // Ribbing across the block — machinery, not a box.
+  ctx.lineWidth = R * 0.025;
+  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
+  for (let i = 1; i <= 2; i++) {
+    const y = baseTop + (baseBot - baseTop) * (i / 3);
+    const w = lerp(0.46, 0.32, i / 3);
+    ctx.beginPath(); ctx.moveTo(-R * w, y); ctx.lineTo(R * w, y); ctx.stroke();
+  }
+  // Splayed legs outboard of the block, planted on the crust.
+  ctx.strokeStyle = `rgba(${ink}, ${0.6 * a0})`;
+  ctx.lineWidth = R * 0.05;
+  for (const f of [-0.88, 0.88]) {
+    ctx.beginPath();
+    ctx.moveTo(f * R, deckY); ctx.lineTo(f * R * 0.7, baseBot);
+    ctx.stroke();
+  }
+  // The slab itself: a SOLID body with real thickness, not a line. A deck drawn
+  // as a stroke is a decal; a deck you can see the depth of is a structure, and
+  // that difference is most of whether the whole thing reads as built.
+  const deckG = ctx.createLinearGradient(0, deckY, 0, deckY + R * 0.24);
+  deckG.addColorStop(0, `rgba(${ink}, ${0.5 * a0})`);
+  deckG.addColorStop(1, `rgba(${ink}, ${0.1 * a0})`);
+  ctx.fillStyle = deckG;
+  ctx.beginPath();
+  ctx.moveTo(-R, deckY + R * 0.24); ctx.lineTo(-R * 0.97, deckY);
+  ctx.lineTo(R * 0.97, deckY); ctx.lineTo(R, deckY + R * 0.24);
+  ctx.closePath(); ctx.fill();
+  // The lit top edge — the surface the ship actually stands on.
+  ctx.strokeStyle = `rgba(${ink}, ${0.95 * a0})`;
+  ctx.lineWidth = R * 0.07;
+  ctx.beginPath();
+  ctx.moveTo(-R, deckY); ctx.lineTo(R, deckY);
+  ctx.stroke();
+  // Raised lips at each end, so the deck has a silhouette from the side.
+  ctx.lineWidth = R * 0.05;
+  for (const sx of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(sx * R, deckY); ctx.lineTo(sx * R * 0.99, deckY - R * 0.16);
+    ctx.stroke();
+  }
+  // TOUCHDOWN MARKINGS: a bullseye you land in the middle of, drawn on the deck
+  // and mostly framed by the parked hull rather than hidden under it.
+  ctx.lineWidth = R * 0.035;
+  ctx.strokeStyle = `rgba(${ink}, ${0.4 * a0})`;
+  ctx.beginPath(); ctx.arc(0, deckY, R * 0.34, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, deckY, R * 0.2, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
+  // Hazard chevrons along the deck edge — the detail that makes it read as a
+  // working surface instead of a plate.
+  ctx.lineWidth = R * 0.03;
+  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
+  for (let i = -4; i <= 4; i++) {
+    const x = i * R * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(x - R * 0.05, deckY + R * 0.14); ctx.lineTo(x + R * 0.05, deckY + R * 0.05);
+    ctx.stroke();
+  }
+
+  // CLAMP ARMS: struts rising OUTBOARD of the berth and leaning in over it —
+  // the thing that actually holds a ship down, and what makes the silhouette
+  // read as a dock rather than as a platform. THE LAUNCH SWINGS THEM OPEN: the
+  // lean flips from inboard to outboard across `release`, which is the visible
+  // half of the release sequence and the reason it doesn't read as a pause.
+  // THE DECK IS DIVIDED INTO ZONES and every tier's additions stay in theirs,
+  // so a port that grows never turns into a pile: the CENTRE is the berth (the
+  // ship is drawn there), the clamps are INBOARD of it, the gantry is the LEFT
+  // outboard end and the control blocks are the RIGHT one. Everything lives
+  // inside +/-1.0R, which is what lets the rings below enclose the structure at
+  // every tier instead of slicing through it.
+  ctx.lineCap = 'round';
+  const armA = built(prog, 0.16);
+  if (armA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.8 * armA})`;
+    for (let i = 0; i < T.pairs; i++) {
+      const base = 0.5 + i * 0.22;                     // outer pairs step outward
+      const h = 0.62 - i * 0.13;
+      ctx.lineWidth = R * (0.1 - i * 0.018);
+      for (const sx of [-1, 1]) {
+        // the tip travels from leaning IN over the berth to thrown wide open
+        const tipX = sx * R * lerp(base * 0.72, base * 1.75, release);
+        const tipY = -R * lerp(h, h * 0.3, release);
+        const kx = sx * R * base * 1.12, ky = -R * (h * 0.55);
+        ctx.beginPath();
+        ctx.moveTo(sx * R * base, deckY);
+        ctx.lineTo(kx, ky);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+        // A JOINT at the elbow and a GRIP PAD at the tip — an arm that is just
+        // a bent line is a stick; the two nodes are what make it read as a
+        // mechanism that could actually hold something down.
+        ctx.fillStyle = `rgba(${ink}, ${0.9 * armA})`;
+        ctx.beginPath(); ctx.arc(kx, ky, R * 0.055, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx * R * base, deckY, R * 0.05, 0, TAU); ctx.fill();
+        ctx.save();
+        ctx.translate(tipX, tipY);
+        ctx.rotate(Math.atan2(tipY - ky, tipX - kx));
+        ctx.fillRect(-R * 0.03, -R * 0.09, R * 0.06, R * 0.18);
+        ctx.restore();
+      }
+    }
+  }
+
+  // GANTRY MAST + SERVICE BOOM — the left outboard end.
+  const mastA = T.mast ? built(prog, 0.42) : 0;
+  const mx = -R * 0.9, mt = deckY - R * T.mast;
+  if (mastA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.72 * mastA})`;
+    ctx.lineWidth = R * 0.06;
+    ctx.beginPath(); ctx.moveTo(mx, deckY); ctx.lineTo(mx, mt); ctx.stroke();
+    ctx.lineWidth = R * 0.035;
+    for (let i = 1; i <= 3; i++) {                     // cross-bracing
+      const y = deckY + (mt - deckY) * (i / 4);
+      ctx.beginPath(); ctx.moveTo(mx, y); ctx.lineTo(mx + R * 0.13, y - R * 0.08); ctx.stroke();
+    }
+    // A SERVICE BOOM reaches back over the berth from the mast head — the piece
+    // that makes a gantry look like it is doing something to the ship. It
+    // withdraws with the clamps on a launch.
+    ctx.lineWidth = R * 0.05;
+    ctx.beginPath();
+    ctx.moveTo(mx, mt); ctx.lineTo(mx + R * lerp(0.5, 0.14, release), mt + R * 0.12);
+    ctx.stroke();
+  }
+  // CONTROL BLOCKS — the right outboard end. Lit windows are the one thing on
+  // this structure that says CREWED, so they only come on with the station.
+  const towerA = T.tower ? built(prog, 0.62) : 0;
+  if (towerA > 0) {
+    ctx.lineWidth = R * 0.045;
+    for (let i = 0; i < T.tower; i++) {
+      const bx = R * (0.52 + i * 0.26), by = deckY;
+      const bw = R * 0.22, bh = R * (0.4 + i * 0.18);
+      ctx.fillStyle = `rgba(${ink}, ${0.26 * towerA})`;
+      ctx.strokeStyle = `rgba(${ink}, ${0.75 * towerA})`;
+      ctx.beginPath(); ctx.rect(bx, by - bh, bw, bh);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = `rgba(${ink}, ${(ready ? 0.85 : 0.2) * towerA})`;
+      for (let w = 0; w < 2; w++) {
+        ctx.fillRect(bx + bw * 0.24, by - bh + R * (0.08 + w * 0.14), bw * 0.22, R * 0.06);
+      }
+    }
+  }
+  // COMMS DISH, on the mast head.
+  const dishA = T.dish ? built(prog, 0.78) : 0;
+  if (dishA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.8 * dishA})`;
+    ctx.lineWidth = R * 0.045;
+    ctx.beginPath(); ctx.arc(mx, mt - R * 0.15, R * 0.17, Math.PI * 0.12, Math.PI * 0.88, true); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(mx, mt); ctx.lineTo(mx, mt - R * 0.15); ctx.stroke();
+  }
+
+  // BEACONS: lamps along the deck edge, clear of where the hull sits. STEADY,
+  // never blinking — the calm rule the ship's own shield rim obeys. Motion on
+  // this structure belongs to the build, the launch and the one-shot bloom, and
+  // nowhere else. They are DARK until the station is live, which is the single
+  // clearest read of "is this thing finished".
+  // SMALL AND CRISP — a bright core with a tight halo. An earlier pass used wide
+  // soft blooms and they washed out the whole structure they were meant to be
+  // lighting: at close zoom the pad was two glowing blobs with some sticks
+  // between them. A runway light is a POINT.
+  ctx.lineCap = 'butt';
+  const lampA = ready ? 1 : 0.18;
+  for (let i = 0; i < T.lights; i++) {
+    const f = T.lights === 1 ? 0 : (i / (T.lights - 1)) * 2 - 1;   // -1..1 across the deck
+    const lx = f * R * 0.88, ly = deckY - R * 0.06;
+    ctx.fillStyle = `rgba(${ink}, ${0.95 * lampA})`;
+    ctx.beginPath(); ctx.arc(lx, ly, R * 0.05, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    const rr = R * 0.2;
+    const lamp = ctx.createRadialGradient(lx, ly, 0, lx, ly, rr);
+    lamp.addColorStop(0, `rgba(${ink}, ${(home ? 0.7 : 0.5) * lampA})`);
+    lamp.addColorStop(1, `rgba(${ink}, 0)`);
+    ctx.fillStyle = lamp;
+    ctx.beginPath(); ctx.arc(lx, ly, rr, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // UNDER CONSTRUCTION: a solid progress arc closing over the berth — the same
+  // helper-UI idiom as the winch (drawLatch) and the shotgun charge ring, solid
+  // and never dashed. Ten seconds of nothing visible is how a feature gets
+  // reported as broken.
+  if (!ready) {
+    ctx.strokeStyle = `rgba(${ink}, 0.30)`;
+    ctx.lineWidth = R * 0.06;
+    ctx.beginPath(); ctx.arc(0, 0, R * 1.2, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.beginPath();
+    ctx.arc(0, 0, R * 1.2, -Math.PI / 2, -Math.PI / 2 + TAU * prog);
+    ctx.stroke();
+  }
+
+  // A HOME PORT FLIES A BEACON, not a ring. It used to wear a full circle and
+  // that was a mistake twice over: it sat concentric-ish with the shield dome
+  // and the two read as a lens of overlapping circles rather than as a mark on
+  // a structure, and a ring says nothing about WHAT a home port is. A lit spire
+  // does — it is the thing you can see from orbit, it caps the gantry at the
+  // tiers that have one, and it competes with nothing.
+  if (home && ready) {
+    const hx = T.mast ? mx : -R * 0.9;
+    const hy = T.mast ? mt : deckY;
+    const tip = hy - R * (T.mast ? 0.3 : 0.62);
+    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.lineWidth = R * 0.05;
+    ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx, tip); ctx.stroke();
+    // The pennant, so the mark has a SHAPE and not just a colour.
+    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.beginPath();
+    ctx.moveTo(hx, tip); ctx.lineTo(hx + R * 0.34, tip + R * 0.11);
+    ctx.lineTo(hx, tip + R * 0.22);
+    ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    const bg = ctx.createRadialGradient(hx, tip, 0, hx, tip, R * 0.55);
+    bg.addColorStop(0, `rgba(${ink}, 0.85)`);
+    bg.addColorStop(1, `rgba(${ink}, 0)`);
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.arc(hx, tip, R * 0.55, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // THE SHIELD DOME. Up only while the ship is berthed at a FINISHED station —
+  // it is the thing the ten-second build bought, and it is what makes the berth
+  // read as safe rather than merely occupied.
+  //
+  // IT STANDS ON THE GROUND, and getting that right is the whole job. Centred
+  // on the SURFACE POINT under the pad (groundY), not on the pad origin, and
+  // CLIPPED against the planet's own disc — so its foot follows the world's
+  // curvature instead of cutting a straight chord across it. A dome sized in
+  // pad units alone is fine on a big planet and wider than the whole body on a
+  // moonlet; clipping is what makes one expression correct at both. (On a
+  // crystal or heavily cratered world the true surface is not the mean disc, so
+  // the foot can sit a hull-radius off the real ground — the pad's own rf is
+  // measured from where the ship actually sat, which keeps that within a hull.)
+  //
+  // Calm and steady, exactly like the ship's own shield rim: no dashes, no idle
+  // motion, because a protective field that pulses reads as an alarm. The
+  // detail is STRUCTURE — ribs, bands, emitter nodes — never animation.
+  if (dome) {
+    const Rc = pad.b.radius * pad.rf;            // body centre, in this frame
+    // config.dockDomeR — the SAME expression physics.updateDomeShield pushes
+    // things off. See the note on the table: drawn edge and pushing edge must
+    // never be two expressions.
+    const dr = dockDomeR(game.st, pad.b.radius, groundY);
+    const box = dr * 2;
+    ctx.save();
+    // Clip to everything OUTSIDE the world: rect minus the planet disc.
+    ctx.beginPath();
+    ctx.rect(-box, groundY - box, box * 2, box * 2);
+    ctx.arc(0, Rc, pad.b.radius, 0, TAU, true);
+    ctx.clip();
+
+    ctx.globalCompositeOperation = 'lighter';
+    const g2 = ctx.createRadialGradient(0, groundY, dr * 0.2, 0, groundY, dr);
+    g2.addColorStop(0, 'rgba(110, 200, 255, 0.015)');
+    g2.addColorStop(0.7, 'rgba(120, 210, 255, 0.06)');
+    g2.addColorStop(0.93, 'rgba(150, 226, 255, 0.16)');
+    g2.addColorStop(1, 'rgba(190, 240, 255, 0.30)');
+    ctx.fillStyle = g2;
+    ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.fill();
+    // RIBS + BANDS: the field is panelled, which is what makes it read as
+    // engineered rather than as a blur. Static geometry, never motion.
+    ctx.strokeStyle = 'rgba(168, 232, 255, 0.13)';
+    ctx.lineWidth = R * 0.022;
+    for (let i = 1; i < 6; i++) {
+      const a = Math.PI + (i / 6) * Math.PI;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(Math.cos(a) * dr, groundY + Math.sin(a) * dr);
+      ctx.stroke();
+    }
+    for (const f of [0.45, 0.75]) {
+      ctx.beginPath(); ctx.arc(0, groundY, dr * f, Math.PI, TAU); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    // The rim: a hard bright edge over a softer inner line, so the field has a
+    // definite SURFACE. A single hairline reads as a drawn circle; two weights
+    // read as something with thickness that light is catching.
+    ctx.strokeStyle = 'rgba(120, 200, 240, 0.3)';
+    ctx.lineWidth = R * 0.1;
+    ctx.beginPath(); ctx.arc(0, groundY, dr * 0.985, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = 'rgba(206, 245, 255, 0.9)';
+    ctx.lineWidth = R * 0.035;
+    ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.stroke();
+    // THE BITE. Where the field just threw something off, it flares — an EVENT,
+    // which is the one thing this otherwise-calm surface is allowed to animate
+    // for. Without it the dome silently deflects and the push reads as rocks
+    // behaving oddly rather than as the shield doing its job.
+    if ((game.domeHitT || 0) > 0) {
+      const k = clamp(game.domeHitT / 0.3, 0, 1);
+      const a = (game.domeHitA || 0) - up - Math.PI / 2;   // world bearing -> pad frame
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k})`;
+      ctx.lineWidth = R * 0.09 * k;
+      ctx.beginPath();
+      ctx.arc(0, groundY, dr, a - 0.5 * (1 - k) - 0.18, a + 0.5 * (1 - k) + 0.18);
+      ctx.stroke();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.restore();
+
+    // EMITTER POSTS: the dome has to come FROM something, so the field's feet
+    // are short lit posts on the deck where the arc lands. Outside the clip —
+    // they are hardware standing on the pad, not part of the field. Kept small
+    // and cool: an earlier pass had them as wide hot blooms that washed out the
+    // whole structure they were supposed to be standing on.
+    for (const sx of [-1, 1]) {
+      const ex = sx * R * 0.94;
+      ctx.strokeStyle = 'rgba(178, 236, 255, 0.85)';
+      ctx.lineWidth = R * 0.05;
+      ctx.beginPath();
+      ctx.moveTo(ex, deckY); ctx.lineTo(ex, deckY - R * 0.26);
+      ctx.stroke();
+      ctx.globalCompositeOperation = 'lighter';
+      const eg = ctx.createRadialGradient(ex, deckY - R * 0.26, 0, ex, deckY - R * 0.26, R * 0.2);
+      eg.addColorStop(0, 'rgba(206, 245, 255, 0.55)');
+      eg.addColorStop(1, 'rgba(206, 245, 255, 0)');
+      ctx.fillStyle = eg;
+      ctx.beginPath(); ctx.arc(ex, deckY - R * 0.26, R * 0.2, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  // THE CLAMPS BITING / THE STATION GOING LIVE — a one-shot bloom, which is an
+  // EVENT and therefore the one place this structure is allowed to move.
+  if (flash > 0) {
+    const k = 1 - flash / 0.9;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(${ink}, ${0.6 * (1 - k)})`;
+    ctx.lineWidth = R * 0.16 * (1 - k);
+    ctx.beginPath(); ctx.arc(0, 0, R * (0.4 + 2.4 * k), 0, TAU); ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.restore();
+}
+
+// Every station standing this run. At most CFG.DOCK_MAX of them and each is
+// off-screen-culled inside drawPad, so this is a walk of a handful.
+function drawDocks(game) {
+  const docks = game.docks;
+  if (!docks || !docks.length) return;
+  const flash = game.dockFlashT || 0;
+  const L = game.launch;
+  // The release eases over the sequence's FIRST act (LAUNCH_HOLD): the clamps
+  // are wide open before the engine lights, which is the order the sequence
+  // has to happen in for it to read as machinery rather than as an effect.
+  const release = L ? clamp(L.t / CFG.LAUNCH_HOLD, 0, 1) : 0;
+  for (const d of docks) {
+    if (!d.b.alive) continue;
+    const berthed = game.dock === d;
+    drawPad(game, d, game.home === d ? DOCK_HOME : DOCK_STEEL, game.home === d,
+      berthed ? flash : 0,
+      berthed ? release : 0,
+      berthed && d.t >= CFG.DOCK_BUILD);
+  }
+}
+
+// ---- THE APPROACH. A landing that silently declines to latch is this
+// feature's worst failure mode: the player is doing something reasonable, the
+// game is refusing, and nothing says why. So while the hull is on a dockable
+// world, the berth shows its state right where the player is looking — a solid
+// arc filling as the latch takes, and the name of the gate that is refusing.
+//
+// Helper UI, so it is drawn in SCREEN-CONSTANT widths (the /zoom idiom) unlike
+// the station itself, which is a real structure. Suppressed the moment the
+// berth takes: from then on the pad's own art is the readout.
+function drawDockGuide(game) {
+  const s = game.ship;
+  if (!s.alive || game.dock || !game.dockCand) return;
+  const b = game.dockCand;
+  const z = Math.max(game.cam.zoom, 0.25);
+  const f = clamp(game.dockT || 0, 0, 1);
+  const rr = s.radius * 2.6 + 10 / z;
+  const gate = game.dockGate;
+  const col = gate ? '255, 190, 120' : '150, 230, 255';   // amber = refusing, cyan = taking
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = `rgba(${col}, 0.22)`;
+  ctx.lineWidth = 2.5 / z;
+  ctx.beginPath(); ctx.arc(s.x, s.y, rr, 0, TAU); ctx.stroke();
+  if (f > 0) {
+    ctx.strokeStyle = `rgba(${col}, 0.95)`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, rr, -Math.PI / 2, -Math.PI / 2 + TAU * f);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+  // One short line, above the ship so the hull never sits on it. The wording is
+  // an INSTRUCTION, not a diagnosis — "LEVEL OFF" tells you what to do; "bad
+  // attitude" tells you what you did.
+  const label = gate === 'level' ? 'LEVEL OFF — ROCKETS DOWN'
+    : gate === 'fast' ? 'TOO FAST — SETTLE'
+    : 'DOCKING';
+  const fs = 11 / z;
+  ctx.font = `600 ${fs}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = `rgba(${col}, ${gate ? 0.9 : 0.5 + 0.5 * f})`;
+  ctx.fillText(label, s.x, s.y - rr - fs * 0.7);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
 // DEFLECTOR PARRY: every frozen rock charges up. Aiming/helper UI, so DASHED
 // strokes are correct here (design law): a charge ring contracting onto each
-// rock over the window, and a flick arrow per rock showing the current hurl
-// direction. The energy glow itself is a solid additive gradient (event
+// rock over the window, and an aim arrow per rock showing where the volley
+// is about to go. The energy glow itself is a solid additive gradient (event
 // motion — the parry IS an event, so animation is allowed).
 function drawParry(game) {
   const p = game.parry;
   if (!p || !p.rocks.length) return;
-  const z = game.cam.zoom;
+  const z = game.cam.zoom, s = game.ship;
   const prog = Math.min(1, p.t / Math.max(0.01, p.window));
-  const fx = (game.mouseSX ?? 0) - p.mx0, fy = (game.mouseSY ?? 0) - p.my0;
-  const mag = Math.hypot(fx, fy);
-  const flicked = mag > 12;   // matches updateParry's aim dead-zone
+  // Every rock launches along ship→cursor when the window closes — MIRROR
+  // physics.updateParry, degenerate-cursor fallback included, or the arrow
+  // promises a throw the sim won't make.
+  const ax = game.aim.x - s.x, ay = game.aim.y - s.y;
+  const am = Math.hypot(ax, ay);
+  const aimed = am > 1;
+  const adx = aimed ? ax / am : 0, ady = aimed ? ay / am : 0;
 
   for (const r of p.rocks) {
     const b = r.b;
@@ -3530,14 +4047,13 @@ function drawParry(game) {
     ctx.setLineDash([6 / z, 5 / z]);
     ctx.beginPath(); ctx.arc(b.x, b.y, ringR, 0, TAU); ctx.stroke();
 
-    // Flick arrow: where THIS rock goes right now (flick = all together;
-    // no flick = back out along its own capture bearing)
-    const dx = flicked ? fx / mag : r.nx, dy = flicked ? fy / mag : r.ny;
-    // Arrow length fills toward the REAL launch threshold — the player can
-    // see how close their motion is to firing the throw.
-    const len = b.radius + 34 / z + (Math.min(mag, PARRY_FLICK) / PARRY_FLICK) * 30 / z;
+    // Aim arrow: where the volley goes when the window closes. The launch is
+    // on the clock now, so the arrow LENGTHENS AND BRIGHTENS with the charge
+    // — reaching full is the countdown, and there is no threshold to hunt.
+    const dx = aimed ? adx : r.nx, dy = aimed ? ady : r.ny;
+    const len = b.radius + 34 / z + prog * 30 / z;
     const tipX = b.x + dx * len, tipY = b.y + dy * len;
-    ctx.strokeStyle = flicked ? 'rgba(159, 214, 255, 0.95)' : 'rgba(159, 214, 255, 0.45)';
+    ctx.strokeStyle = `rgba(159, 214, 255, ${0.45 + 0.5 * prog})`;
     ctx.lineWidth = 2.5 / z;
     ctx.setLineDash([8 / z, 6 / z]);
     ctx.beginPath();
@@ -3578,7 +4094,7 @@ function drawDeflectable(game) {
     const d = Math.hypot(dx, dy) || 0.001;
     const nx = dx / d, ny = dy / d;
     if (-((b.vx - s.vx) * nx + (b.vy - s.vy) * ny) <= 60) continue;         // not incoming
-    if (Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) > 1.05) continue;    // not in the front arc (PARRY_ARC)
+    if (Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) > PARRY_ARC) continue;   // not in the front arc
     ctx.strokeStyle = `rgba(159, 214, 255, ${0.25 + 0.45 * pulse})`;
     ctx.lineWidth = 1.5 / z;
     ctx.setLineDash([4 / z, 4 / z]);
@@ -4442,6 +4958,58 @@ function drawShip(game) {
     }
   }
 
+  // DEFLECTOR ARMED RAIL: a thin bracketed arc across the nose, spanning the
+  // exact wedge the parry field scans (PARRY_ARC). This is the reload tell,
+  // and it is a STATE, not a meter — no bar, no sweep, no countdown to read.
+  // Present = the field can catch; ABSENT ENTIRELY while it reloads or while
+  // every slot is full, which is the downed-shield law: the bare nose IS the
+  // indicator. It is ship hardware, not aiming UI, so the stroke is SOLID
+  // (dashes stay reserved for helper/aiming overlays) and it never moves
+  // while it just sits there. The one piece of motion is the POP on the
+  // frame it re-arms — one bloom that expands and fades, so "good to go"
+  // lands in peripheral vision the way the throw-charge bloom does.
+  if (game.st.deflect > 0 && s.invuln <= 0) {
+    const z = game.cam.zoom;
+    const armed = !(game.parryCd > 0) &&
+      !(game.parry && game.parry.rocks.length >= game.st.deflect);
+    if (armed) {
+      const pop = game.parryReadyT > 0 ? game.parryReadyT / PARRY_READY_T : 0;   // 1 -> 0
+      // THE RAIL IS THE FIELD EDGE, not decoration near it. updateParry
+      // catches at s.radius + b.radius + deflectReach, so drawing the rail at
+      // s.radius + deflectReach means a rock's own SURFACE meets the rail on
+      // exactly the frame the sim freezes it — the rock stops AT the line
+      // instead of hanging in space short of it. It also makes every rank-up
+      // of the catch bubble something you can see on the ship.
+      // The floor keeps the rail off the drawn art: the sprite reaches
+      // further than the collision radius, so at rank 1 (field AT the hull,
+      // by design) an honest radius would bury the tell inside the hull.
+      const R = Math.max(s.radius + game.st.deflectReach, visR * morphScale * 1.06 + 3 / z);
+      const a0 = s.angle - PARRY_ARC, a1 = s.angle + PARRY_ARC;
+      ctx.strokeStyle = `rgba(159, 214, 255, ${0.5 + 0.45 * pop})`;
+      ctx.lineWidth = (1.6 + 2.4 * pop) / z;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R, a0, a1); ctx.stroke();
+      // End ticks — they turn the arc into a piece of equipment instead of
+      // yet another bubble around the ship.
+      const tick = 3 / z + R * 0.12;
+      for (const a of [a0, a1]) {
+        const cx = Math.cos(a), cy = Math.sin(a);
+        ctx.beginPath();
+        ctx.moveTo(s.x + cx * (R - tick * 0.5), s.y + cy * (R - tick * 0.5));
+        ctx.lineTo(s.x + cx * (R + tick * 0.5), s.y + cy * (R + tick * 0.5));
+        ctx.stroke();
+      }
+      if (pop > 0) {   // the re-arm bloom, expanding outward as it dies
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(205, 240, 255, ${0.8 * pop})`;
+        ctx.lineWidth = 2.5 / z;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, R * (1 + (1 - pop) * 0.55), a0, a1);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+  }
+
   // REFLEX JINK flash: one expanding mint ring the instant the auto-dodge
   // fires — EVENT motion, like the absorb ripple (game.jinkT, main.js decay).
   if (game.jinkT > 0) {
@@ -4744,7 +5312,7 @@ function drawPrediction(game) {
   // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
   if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
-  // ION WASH: a solar wave scrambles the forecast outright (CFG.STORM_ION).
+  // ION WASH: a solar wave scrambles the forecast outright (the class's `ion`).
   // Losing the plotter mid-wave is most of what makes being caught out in one
   // frightening — you are suddenly flying a gravity field you can't read.
   if (game.stormIonT > 0) return;
@@ -5020,20 +5588,26 @@ function drawMinimap(game) {
     // The SHEATH, not just the shock — the dial has to show the thing you can
     // actually be caught in, and the shock alone is a hairline. Three rings
     // stepping back through the tail read as depth without a fill (which the
-    // radial warp would distort into a lie about where the tail ends).
+    // radial warp would distort into a lie about where the tail ends). Both the
+    // depth and the colour are the WAVE'S: the instrument has to say which of
+    // the three is out there, and a squall's sheath is genuinely a thinner band
+    // on the dial because it is a thinner band in the sky.
+    // …and it fades with the wave (st.k), so the dial shows a front SPENDING
+    // ITSELF rather than one that is fine right up until it disappears.
+    const st = game.storm, kk = st.k ?? 1;
     for (let i = 3; i >= 1; i--) {
-      const rr = game.storm.r - CFG.STORM_TAIL * (i / 3.4);
+      const rr = st.r - st.tail * (i / 3.4);
       if (rr <= 0) continue;
-      ctx.strokeStyle = `rgba(255, 170, 90, ${0.06 + 0.04 * (3 - i)})`;
+      ctx.strokeStyle = `rgba(${st.warm}, ${(0.06 + 0.04 * (3 - i)) * kk})`;
       ctx.lineWidth = 5;
       worldCirclePath(0, 0, rr); ctx.stroke();
     }
     ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(255, 180, 80, 0.16)';
-    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
-    ctx.strokeStyle = 'rgba(255, 214, 130, 0.7)';
+    ctx.strokeStyle = `rgba(${st.shock}, ${0.16 * kk})`;
+    worldCirclePath(0, 0, st.r); ctx.stroke();
+    ctx.strokeStyle = `rgba(${st.core}, ${0.7 * kk})`;
     ctx.lineWidth = 1.5;
-    worldCirclePath(0, 0, game.storm.r); ctx.stroke();
+    worldCirclePath(0, 0, st.r); ctx.stroke();
     ctx.lineWidth = 1;
   }
   if (Math.abs(dSun - CFG.WORLD_R) < MINIMAP_FAR * 1.2) {
@@ -5236,13 +5810,16 @@ function drawMinimap(game) {
     ctx.globalAlpha = 1;
   }
 
-  // ION WASH (CFG.STORM_ION): a solar wave doesn't dim the radar, it EATS it.
+  // ION WASH: a solar wave doesn't dim the radar, it EATS it.
   // Returns drop out at random and the survivors smear off their true bearing,
   // so the dial is actively lying rather than politely fading — losing the
   // instrument you navigate by is the point of being caught in a wave.
   // Math.random per blip on purpose: the dropout has to boil, and this is
   // render, which is downstream of the sim and owes it no determinism.
-  const ion = Math.min(1, (game.stormIonT || 0) / CFG.STORM_ION);
+  // Normalised against the class that SET it (game.stormIonMax), not a CFG
+  // constant: stormIonT outlives its wave, so a fixed divisor would read a
+  // squall's 2s scramble as 40% of a CME's and start the dial half-eaten.
+  const ion = Math.min(1, (game.stormIonT || 0) / (game.stormIonMax || 1));
 
   // Blips glow — shadowBlur is fine at these counts (a few dozen, once/frame)
   ctx.shadowBlur = 5;
@@ -5440,6 +6017,48 @@ function drawMinimap(game) {
       ctx.fillText('DOCK', lx, ly + 2.5);
       ctx.textAlign = 'left';
     }
+  }
+
+  // YOUR DOCKS, on the dial. They break the radar's forgetting rule the way the
+  // rescue dock and the journey do, and for the same reason: a station is not a
+  // CONTACT, it is a place you built, and a bearing home that blinked out with
+  // every sweep would be useless. RIM-PINNED past the dial's reach — the whole
+  // value of the mark is "which way is it from here", and it is usually well
+  // outside 7,800 units.
+  //
+  // The HOME PORT is loud (rose, labelled, matching the pad sprite and the life
+  // pips — see DOCK_HOME); every other station is a small steel berth glyph, so
+  // the dial says "you have somewhere to go" without four docks competing with
+  // the one that matters. Drawn before the journey so an active route's next
+  // stop stays the loudest thing on the instrument.
+  if (game.docks) for (const dk of game.docks) {
+    if (!dk.b.alive) continue;
+    const isHome = game.home === dk;
+    const done = dk.t >= CFG.DOCK_BUILD;
+    const p = padPos(dk);
+    const dx = p.x - fx, dy = p.y - fy;
+    const d = Math.hypot(dx, dy) || 1;
+    const rr = Math.min(radarR(d), r - 9);
+    const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+    const ink = isHome ? DOCK_HOME : DOCK_STEEL;
+    // The berth glyph, not a blip: a ring under a roof, solid — a real
+    // structure on the map draws like one. Dim while it is still going up.
+    const a = done ? 1 : 0.4;
+    const sc = isHome ? 1 : 0.72;
+    ctx.strokeStyle = `rgba(${ink}, ${0.95 * a})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 3.4 * sc, 0, TAU); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 4.6 * sc, y + 1.4 * sc); ctx.lineTo(x, y - 3 * sc);
+    ctx.lineTo(x + 4.6 * sc, y + 1.4 * sc);
+    ctx.stroke();
+    if (!isHome) continue;                                 // only home is worth a word
+    const lx = x - (dx / d) * 13, ly = y - (dy / d) * 13;  // tag pulled inward, never clipped
+    ctx.font = '600 7px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(${ink}, 0.8)`;
+    ctx.fillText('HOME', lx, ly + 2.5);
+    ctx.textAlign = 'left';
   }
 
   // THE JOURNEY, on the dial. The chart is where a route is PLOTTED; the radar
@@ -5762,12 +6381,13 @@ export function drawStarMap(game) {
   // ---- A live solar wave. The chart is where you can actually SEE which side
   // of the system a front has reached, which the ship-centred dial cannot say.
   if (game.storm) {
-    const rp = game.storm.r * s;
+    const st = game.storm, kk = st.k ?? 1;
+    const rp = st.r * s;
     if (rp - sunD < scrR) {
-      ctx.strokeStyle = 'rgba(255, 170, 90, 0.14)';
-      ctx.lineWidth = Math.max(3, CFG.STORM_TAIL * s);
-      ctx.beginPath(); ctx.arc(sunX, sunY, rp - CFG.STORM_TAIL * s * 0.5, 0, TAU); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 214, 130, 0.8)';
+      ctx.strokeStyle = `rgba(${st.warm}, ${0.14 * kk})`;
+      ctx.lineWidth = Math.max(3, st.tail * s);
+      ctx.beginPath(); ctx.arc(sunX, sunY, rp - st.tail * s * 0.5, 0, TAU); ctx.stroke();
+      ctx.strokeStyle = `rgba(${st.core}, ${0.8 * kk})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(sunX, sunY, rp, 0, TAU); ctx.stroke();
       ctx.lineWidth = 1;
@@ -6028,6 +6648,43 @@ export function drawStarMap(game) {
   }
   ctx.textAlign = 'left';
   chart.marks = marks;
+
+  // ---- YOUR DOCKS. A chart is the instrument that REMEMBERS, so the places in
+  // the system you have BUILT belong on it — and unlike every other mark here
+  // they are not contacts at all: they are decisions, like a journey. They ride
+  // their world's charted position (a docked world is charted by construction —
+  // you flew there and landed on it), and they are drawn UNDER the route so an
+  // active journey's next stop stays the loudest thing on screen.
+  //
+  // Rose for HOME, and deliberately against this file's "a UI construct is
+  // painted in chrome ink" note: HOME already means rose on the pad sprite and
+  // on the dial, and one meaning wearing three colours across three instruments
+  // is worse than one construct borrowing a semantic hue. Other stations get
+  // the steel ring with no label — findable, not shouting.
+  if (game.docks) for (const dk of game.docks) {
+    if (!dk.b.alive) continue;
+    const isHome = game.home === dk;
+    const hb = dk.b;
+    const hx = toX(hb.x), hy = toY(hb.y);
+    const rr = Math.max(isHome ? 9 : 7, hb.radius * s + 5);
+    const ink = isHome ? DOCK_HOME : DOCK_STEEL;
+    ctx.strokeStyle = `rgba(${ink}, ${isHome ? 0.8 : 0.42})`;
+    ctx.lineWidth = isHome ? 1.4 : 1;
+    ctx.beginPath(); ctx.arc(hx, hy, rr, 0, TAU); ctx.stroke();
+    // The same roof-over-a-berth glyph the dial uses, seated on the ring.
+    ctx.beginPath();
+    ctx.moveTo(hx - 5, hy - rr - 2.5); ctx.lineTo(hx, hy - rr - 7);
+    ctx.lineTo(hx + 5, hy - rr - 2.5);
+    ctx.stroke();
+    if (!isHome) continue;
+    ctx.font = '600 8.5px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
+    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.fillText('HOME PORT', hx, hy + rr + 12);
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'left';
+  }
 
   drawChartRoute(game, ctx, s, toX, toY);
 
@@ -6451,6 +7108,12 @@ function drawRouteWorld(game) {
 // view, and every pass is clipped to the bearing window the camera can see —
 // at a normal zoom that is a few degrees of a 40,000-unit circle.
 const STORM_MOTES = 40;
+// The wave's palette arrives as [r,g,b] triples on its CFG.STORM_CLASSES row
+// (see there). mixc is what the filament heat ramp needs — a class is a PAIR of
+// colours to travel between, not one colour to fade — and rgba spares every
+// call site an `| 0` on a lerped channel.
+const mixc = (a, b, k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const rgba = (c, a) => `rgba(${c[0] | 0}, ${c[1] | 0}, ${c[2] | 0}, ${a})`;
 function drawStormWave(game) {
   const hs = game.homeStar;
   if (!hs) return;
@@ -6460,8 +7123,15 @@ function drawStormWave(game) {
   // ---- the CHARGE: the sun loading before it fires. This is the telegraph
   // the whole mechanic is fair because of, so it is deliberately loud — the
   // corona swells, prominences whip, and the light hardens toward white.
+  //
+  // HOW HARD IT SWELLS IS THE CLASS. The sun has to look like it is loading a
+  // squall or loading a CME, because that is the one thing worth knowing while
+  // there is still time to fly somewhere: `dens` scales the swell, the
+  // prominence count and their reach, and the class's `core`/`warm` tones carry
+  // the colour, so a squall barely flexes and a CME visibly winds up to throw.
   if (game.stormChargeT > 0) {
-    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;    // 0 -> 1 as it loads
+    const cl = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+    const k = 1 - game.stormChargeT / (game.stormChargeMax || cl.charge);   // 0 -> 1 as it loads
     const dCamS = Math.hypot(view.cx - hs.x, view.cy - hs.y);
     // Kept TIGHT to the limb (~2x radius). A wide corona gradient is a flat
     // additive wash over the entire view at any normal flying distance — it
@@ -6470,23 +7140,27 @@ function drawStormWave(game) {
     if (dCamS - view.r < hs.radius * 2.4) {
       ctx.globalCompositeOperation = 'lighter';
       const puls = 1 + 0.10 * Math.sin(t * (5 + 16 * k)) + 0.05 * Math.sin(t * 27);
-      const rr = hs.radius * (1.12 + 0.95 * k) * puls;
+      const rr = hs.radius * (1.12 + 0.95 * k * cl.dens) * puls;
       const cg = ctx.createRadialGradient(hs.x, hs.y, hs.radius * 0.92, hs.x, hs.y, rr);
-      cg.addColorStop(0, `rgba(255, 252, 240, ${0.4 * k})`);
-      cg.addColorStop(0.35, `rgba(255, 205, 120, ${0.22 * k})`);
-      cg.addColorStop(0.75, `rgba(255, 120, 70, ${0.09 * k})`);
+      cg.addColorStop(0, `rgba(${cl.core}, ${0.4 * k})`);
+      cg.addColorStop(0.35, `rgba(${cl.warm}, ${0.22 * k})`);
+      cg.addColorStop(0.75, `rgba(${cl.sheath}, ${0.09 * k})`);
       cg.addColorStop(1, 'transparent');
       ctx.fillStyle = cg;
       ctx.beginPath(); ctx.arc(hs.x, hs.y, rr, 0, TAU); ctx.fill();
       // Prominences: loops of plasma standing off the limb, reaching further
-      // and whipping faster the closer it gets to firing.
+      // and whipping faster the closer it gets to firing. A weaker class throws
+      // FEWER of them, not fainter ones — the same rule the sheath's filaments
+      // follow, and the reason a squall reads as sparse rather than as a CME
+      // with the brightness turned down.
       ctx.lineCap = 'round';
-      for (let i = 0; i < 7; i++) {
-        const a = (i / 7) * TAU + t * 0.35 + i * 1.7;
-        const reach = hs.radius * (0.18 + 0.75 * k) * (0.6 + 0.6 * Math.abs(Math.sin(t * 2.1 + i)));
+      const nProm = Math.max(3, Math.round(7 * cl.dens));
+      for (let i = 0; i < nProm; i++) {
+        const a = (i / nProm) * TAU + t * 0.35 + i * 1.7;
+        const reach = hs.radius * (0.18 + 0.75 * k * cl.dens) * (0.6 + 0.6 * Math.abs(Math.sin(t * 2.1 + i)));
         const x0 = hs.x + Math.cos(a) * hs.radius * 0.98, y0 = hs.y + Math.sin(a) * hs.radius * 0.98;
         const bow = a + 0.34;
-        ctx.strokeStyle = `rgba(255, 210, 150, ${0.5 * k})`;
+        ctx.strokeStyle = `rgba(${cl.warm}, ${0.5 * k})`;
         ctx.lineWidth = hs.radius * 0.05;
         ctx.beginPath();
         ctx.moveTo(x0, y0);
@@ -6505,7 +7179,18 @@ function drawStormWave(game) {
   if (!st) return;
   const dCam = Math.hypot(view.cx - hs.x, view.cy - hs.y);
   const vR = view.r;
-  const tail = st.r - CFG.STORM_TAIL, lead = st.r + CFG.STORM_BAND;
+  // Every dimension below is the WAVE'S OWN (it carries its CFG.STORM_CLASSES
+  // row), never a CFG constant: the plasma on screen has to be the plasma the
+  // sim is charging you for, and a global would describe whichever class was
+  // authored last rather than the one actually washing over the ship.
+  const tail = st.r - st.tail, lead = st.r + st.band;
+  // …and `kk` is HOW MUCH OF ITSELF THE WAVE HAS LEFT (world.js resolves it once
+  // per frame from the class's reach). It multiplies EVERY alpha below and
+  // nothing else: a wave spending itself has to visibly shred over its last ~10
+  // seconds, because the alternative — full-strength plasma that blinks out at
+  // an exact radius — is the geometric in-world edge the house style forbids.
+  // The sim scales its bite by the same number, so what you see is what it does.
+  const kk = st.k ?? 1;
   // Whole view already swept clean, or the front hasn't reached it yet
   if (dCam + view.r < tail || dCam - view.r > lead) return;
 
@@ -6519,8 +7204,13 @@ function drawStormWave(game) {
   // Bearing displacement of the shock — three harmonics plus a slow churn, in
   // ABSOLUTE units so the front stays equally ragged near the sun and out at
   // the rim (a fraction-of-radius wobble would be invisible early and wild late).
-  const wob = (a) => 250 * Math.sin(a * 3 + sd) + 140 * Math.sin(a * 7 - sd * 1.7)
-    + 80 * Math.sin(a * 13 + sd * 0.6) + 55 * Math.sin(a * 5 + t * 0.7);
+  // …and scaled by the class: a thin front is a less ragged one. Kept a partial
+  // scale (0.5 + 0.5*dens), not the raw `dens` — take the wobble to zero and the
+  // squall's shock comes out a PERFECT CIRCLE, which is the geometric in-world
+  // edge this whole draw exists to avoid.
+  const rag = 0.5 + 0.5 * st.dens;
+  const wob = (a) => rag * (250 * Math.sin(a * 3 + sd) + 140 * Math.sin(a * 7 - sd * 1.7)
+    + 80 * Math.sin(a * 13 + sd * 0.6) + 55 * Math.sin(a * 5 + t * 0.7));
   // Cheap deterministic hash for the filament/mote scatter — seeded off the
   // wave so no two look alike, and stable frame to frame so nothing strobes.
   const hash = (n) => {
@@ -6557,7 +7247,7 @@ function drawStormWave(game) {
     const behind = along - br;
     if (behind < -vR || behind > b.radius * CFG.STORM_SHADOW_LEN + vR) continue;
     const px = view.cx - ux * along, py = view.cy - uy * along;
-    const reach = b.radius * CFG.STORM_SHADOW * 1.4 + vR;
+    const reach = shelterR(b) * 1.4 + vR;
     if (px * px + py * py > reach * reach) continue;
     lees.push({ b, ux, uy });
   }
@@ -6565,8 +7255,13 @@ function drawStormWave(game) {
   // A teardrop: full width at the limb, bulging a little in the near wake,
   // then closing as the plasma folds back in behind the world. Shared by the
   // clip and the edge spill below so the two can never drift apart.
+  // (shelterR is the SIM's own half-width — config owns the one definition, and
+  // the 0.9 here is the documented shrink, not a second opinion about the shape.
+  // It is also what makes a MOON'S lee draw at all: shelterR's flat pad is most
+  // of a small moon's shadow, and a bare radius multiple would paint a slit a
+  // pilot cannot see to aim at.)
   const leePath = ({ b, ux, uy }) => {
-    const w = b.radius * CFG.STORM_SHADOW * 0.9;
+    const w = shelterR(b) * 0.9;
     const L = b.radius * CFG.STORM_SHADOW_LEN * 0.8;
     const px = -uy, py = ux;   // across the sun->body ray
     ctx.moveTo(b.x + px * w, b.y + py * w);
@@ -6605,14 +7300,14 @@ function drawStormWave(game) {
   // violet haze as the tail dissolves. Kept LOW: this covers the entire screen
   // when you are inside it, and the texture passes are what carry the drama.
   {
-    const shockAt = CFG.STORM_TAIL / (CFG.STORM_TAIL + CFG.STORM_BAND);
+    const shockAt = st.tail / (st.tail + st.band);
     const g = ctx.createRadialGradient(hs.x, hs.y, Math.max(0, tail), hs.x, hs.y, lead);
-    g.addColorStop(0, 'rgba(110, 50, 200, 0)');
-    g.addColorStop(0.45, 'rgba(120, 55, 210, 0.045)');
-    g.addColorStop(0.78, 'rgba(215, 70, 160, 0.06)');
-    g.addColorStop(shockAt * 0.985, 'rgba(255, 130, 50, 0.10)');
-    g.addColorStop(shockAt, 'rgba(255, 220, 170, 0.14)');
-    g.addColorStop(1, 'rgba(190, 235, 255, 0)');
+    g.addColorStop(0, rgba(st.haze, 0));
+    g.addColorStop(0.45, rgba(st.haze, 0.045 * kk));
+    g.addColorStop(0.78, rgba(st.sheath, 0.06 * kk));
+    g.addColorStop(shockAt * 0.985, rgba(st.shock, 0.10 * kk));
+    g.addColorStop(shockAt, rgba(mixc(st.shock, st.core, 0.5), 0.14 * kk));
+    g.addColorStop(1, rgba(st.core, 0));
     ctx.fillStyle = g;
     ctx.fillRect(view.x0 - 40, view.y0 - 40, view.x1 - view.x0 + 80, view.y1 - view.y0 + 80);
   }
@@ -6622,7 +7317,11 @@ function drawStormWave(game) {
   // Sized off the view, so they read as driving rain whether you are inside
   // the wave or watching it cross the system. `flow` walks each streak
   // outward and wraps it, which is the whole sense of motion — the sheath
-  // itself only creeps at 950 u/s and would otherwise look static up close.
+  // itself only creeps at ~1000 u/s and would otherwise look static up close.
+  //
+  // COUNT is what carries the class, not alpha: 72 streaks for a CME down to 32
+  // for a squall. Fading them instead would just grey the wave out — see the
+  // SATURATED note below, which is the same failure from the other direction.
   {
     const near = Math.max(tail, dCam - vR * 1.3);
     const far = Math.min(lead, dCam + vR * 1.3);
@@ -6630,7 +7329,12 @@ function drawStormWave(game) {
       const span = far - near;
       const flow = t * 620;
       ctx.lineCap = 'round';
-      for (let i = 0; i < 72; i++) {
+      // Thinned by kk as well as dimmed, exactly as `dens` thins a weak class:
+      // a spent wave is a SPARSER one, and fading alone would leave a full grid
+      // of ghost streaks that reads as a screen effect rather than as plasma
+      // coming apart.
+      const nFil = Math.round(72 * st.dens * (0.35 + 0.65 * kk));
+      for (let i = 0; i < nFil; i++) {
         const a = midA + (hash(i * 1.7) * 2 - 1) * halfA;
         const len = vR * (0.12 + 0.5 * hash(i * 3.1 + 5));
         // wrap through the visible depth, offset per streak
@@ -6645,16 +7349,18 @@ function drawStormWave(game) {
         // band) the raw term runs past 1 and pushed every channel to white —
         // the whole wave came out grey, which is what a low-alpha additive
         // near-white over black looks like. Plasma has to stay SATURATED.
-        const heat = Math.max(0, Math.min(1, 1 - (st.r - rr) / CFG.STORM_TAIL));
+        const heat = Math.max(0, Math.min(1, 1 - (st.r - rr) / st.tail));
         const fg = ctx.createLinearGradient(x0, y0, x1, y1);
         // BOTH TIPS FADE TO NOTHING. Starting at full alpha put a hard chop
         // across the leading end of every streak, and a field of hard-topped
         // radial bars reads as architecture — the "columns" look — not as
         // plasma blowing past. The peak sits just behind the tip.
-        fg.addColorStop(0, 'rgba(255, 190, 130, 0)');
-        fg.addColorStop(0.16, `rgba(255, ${(105 + 95 * heat) | 0}, ${(55 + 70 * heat) | 0}, ${(0.10 + 0.34 * heat) * flick})`);
-        fg.addColorStop(0.5, `rgba(220, 90, 170, ${0.09 * heat * flick})`);
-        fg.addColorStop(1, 'rgba(130, 60, 215, 0)');
+        // filLo -> filHi IS the class: amber for a CME, rose for a surge, blue
+        // for a squall, each ramping the same way from tail to shock.
+        fg.addColorStop(0, rgba(st.filHi, 0));
+        fg.addColorStop(0.16, rgba(mixc(st.filLo, st.filHi, heat), (0.10 + 0.34 * heat) * flick * kk));
+        fg.addColorStop(0.5, rgba(st.sheath, 0.09 * heat * flick * kk));
+        fg.addColorStop(1, rgba(st.haze, 0));
         ctx.strokeStyle = fg;
         ctx.lineWidth = vR * (0.006 + 0.03 * hash(i * 7.3 + 1));
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
@@ -6682,20 +7388,25 @@ function drawStormWave(game) {
     // px across at gameplay zoom, i.e. a full-screen fill, and the sheath
     // gradient above already peaks at exactly this radius. Pure fill-rate for
     // a picture that was already there.)
-    ctx.strokeStyle = 'rgba(255, 185, 105, 0.17)';
-    ctx.lineWidth = CFG.STORM_BAND * 0.34;
+    // Brightness rides `dens` alongside the colour: a squall's edge is not just
+    // bluer than a CME's, it is a fainter line in the sky. Kept a partial scale
+    // so the weakest class still reads as a FRONT — the shock is the one part
+    // of a wave you have to be able to see coming.
+    const bri = (0.55 + 0.45 * st.dens) * kk;
+    ctx.strokeStyle = rgba(st.shock, 0.17 * bri);
+    ctx.lineWidth = st.band * 0.34;
     trace(0); ctx.stroke();
     // The incandescent leading edge, riding a little ahead of the glow, with
     // a hot bloom under it. Sized off the view so it stays a bright LINE at
     // any zoom rather than vanishing zoomed out or becoming a slab zoomed in.
-    const edge = CFG.STORM_BAND * 0.24;
-    ctx.strokeStyle = `rgba(255, 140, 40, ${0.3 + 0.1 * Math.sin(t * 9)})`;
+    const edge = st.band * 0.24;
+    ctx.strokeStyle = rgba(st.filLo, (0.3 + 0.1 * Math.sin(t * 9)) * bri);
     ctx.lineWidth = Math.max(30, vR * 0.13);
     trace(edge); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 205, 130, ${0.45 + 0.12 * Math.sin(t * 9)})`;
+    ctx.strokeStyle = rgba(mixc(st.shock, st.core, 0.5), (0.45 + 0.12 * Math.sin(t * 9)) * bri);
     ctx.lineWidth = Math.max(14, vR * 0.055);
     trace(edge); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 250, 240, ${0.6 + 0.15 * Math.sin(t * 13)})`;
+    ctx.strokeStyle = rgba(st.core, (0.6 + 0.15 * Math.sin(t * 13)) * bri);
     ctx.lineWidth = Math.max(4, vR * 0.014);
     trace(edge); ctx.stroke();
   }
@@ -6709,8 +7420,9 @@ function drawStormWave(game) {
     if (far > near) {
       const span = far - near;
       const flow = t * 780;
-      ctx.fillStyle = 'rgba(255, 240, 210, 0.8)';
-      for (let i = 0; i < STORM_MOTES; i++) {
+      ctx.fillStyle = rgba(st.core, 0.8 * kk);
+      const nMote = Math.round(STORM_MOTES * st.dens * (0.35 + 0.65 * kk));
+      for (let i = 0; i < nMote; i++) {
         const a = midA + (hash(i * 2.7) * 2 - 1) * halfA;
         const rr = near + ((hash(i * 5.1 + 1) * span + flow) % span);
         const tw = Math.sin(t * (7 + 9 * hash(i + 31)) + i * 2.3);
@@ -6736,13 +7448,18 @@ function drawStormWave(game) {
     ctx.globalCompositeOperation = 'lighter';
     for (const lee of lees) {
       const rel = st.r - Math.hypot(lee.b.x, lee.b.y);
-      if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
-      const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
-      ctx.strokeStyle = `rgba(230, 140, 210, ${0.13 * k})`;
-      ctx.lineWidth = lee.b.radius * 0.85;
+      if (rel < -st.band || rel > st.tail) continue;
+      const k = rel < 0 ? 1 : 1 - rel / st.tail;
+      // Widths ride shelterR, not the bare radius: on a small MOON a
+      // radius-scaled stroke is thinner than the pad that makes its lee usable,
+      // so the soft edge fell inside the shadow and left the cut showing as the
+      // hard line this pass exists to erase.
+      const lw = shelterR(lee.b);
+      ctx.strokeStyle = rgba(mixc(st.sheath, st.core, 0.35), 0.13 * k * kk);
+      ctx.lineWidth = lw * 0.6;
       ctx.beginPath(); leePath(lee); ctx.stroke();
-      ctx.strokeStyle = `rgba(255, 190, 140, ${0.11 * k})`;
-      ctx.lineWidth = lee.b.radius * 0.3;
+      ctx.strokeStyle = rgba(mixc(st.warm, st.core, 0.35), 0.11 * k * kk);
+      ctx.lineWidth = lw * 0.21;
       ctx.beginPath(); leePath(lee); ctx.stroke();
     }
     ctx.globalCompositeOperation = 'source-over';
@@ -6758,16 +7475,16 @@ function drawStormWave(game) {
     if (!bodyOnScreen(b)) continue;
     const br = Math.hypot(b.x, b.y);
     const rel = st.r - br;
-    if (rel < -CFG.STORM_BAND || rel > CFG.STORM_TAIL) continue;
-    const k = rel < 0 ? 1 : 1 - rel / CFG.STORM_TAIL;
+    if (rel < -st.band || rel > st.tail) continue;
+    const k = rel < 0 ? 1 : 1 - rel / st.tail;
     const sunAng = Math.atan2(-uy, -ux);   // bearing from the body back to the sun
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = `rgba(255, 218, 170, ${0.5 * k})`;
+    ctx.strokeStyle = rgba(mixc(st.shock, st.core, 0.5), 0.5 * k * kk);
     ctx.lineWidth = b.radius * 0.1;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.radius * 1.06, sunAng - 1.15, sunAng + 1.15);
     ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 255, 245, ${0.35 * k})`;
+    ctx.strokeStyle = rgba(st.core, 0.35 * k * kk);
     ctx.lineWidth = b.radius * 0.03;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.radius * 1.1, sunAng - 0.85, sunAng + 0.85);
@@ -6853,6 +7570,8 @@ export function render(game) {
     }
   }
   drawGlow(game);
+  drawDocks(game);
+  drawDockGuide(game);
   drawApproach(game);
   drawRouteWorld(game);
   drawDeflectable(game);
@@ -7197,9 +7916,14 @@ export function render(game) {
   //    reach a pilot who is 40,000 units out with the sun behind a gas giant,
   //    and the message line alone can be missed. It quickens as it loads.
   if (game.stormChargeT > 0) {
-    const k = 1 - game.stormChargeT / CFG.STORM_CHARGE;
+    const cl = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+    const k = 1 - game.stormChargeT / (game.stormChargeMax || cl.charge);
     const beat = 0.5 + 0.5 * Math.sin(game.time * (3 + 12 * k));
-    ctx.fillStyle = `rgba(255, 170, 90, ${0.02 + 0.055 * k * beat})`;
+    // THE PULSE IS THE CLASS, at the one moment the player can still act on it:
+    // its COLOUR is the class's warm tone (cool blue for a squall through to the
+    // CME's amber) and its strength scales with `dens`, so the telegraph says
+    // how hard to run before the message line has finished typing.
+    ctx.fillStyle = `rgba(${cl.warm}, ${(0.02 + 0.055 * k * beat) * (0.5 + 0.5 * cl.dens)})`;
     ctx.fillRect(0, 0, vw, vh);
   }
 
@@ -7210,7 +7934,7 @@ export function render(game) {
   //    everything scales with `wash`, so ducking into shelter visibly calms it
   //    instead of switching it off.
   if (game.stormIonT > 0 && game.ship.alive) {
-    const ionK = Math.min(1, game.stormIonT / CFG.STORM_ION);
+    const ionK = Math.min(1, game.stormIonT / (game.stormIonMax || 1));
     const wash = game.stormExposed ? ionK : ionK * 0.35;
     const jit = 1 + 0.25 * Math.sin(game.time * 31) + 0.15 * Math.sin(game.time * 67);
     // A flat full-screen haze is nearly all cost and no signal: laid over the

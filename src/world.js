@@ -1,12 +1,10 @@
 import {
   CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass,
-  FIELD_LOBE_MAX,
+  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent,
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
 import { seedGlowPockets } from './glow.js';
-import {
-  TAU, mulberry32, rand, pick, CRYSTAL_REACH,
-} from './util.js';
+import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel } from './util.js';
 import { pickShapeId, reachAt, shapeReach, rockOverlap, rockReach } from './rockshape.js';
 import * as gravel from './gravel.js';
 import { sfxPing } from './sfx.js';
@@ -1245,7 +1243,8 @@ const FIELD_DEFS = [
 // small tier's floor 120 -> 220): the shoal reads as terrain made of rock you
 // thread between, and the smallest grade was carrying too much of the count
 // for how little it contributes to that. Trading specks for chunk keeps the
-// pocket's nearest-neighbour spacing where it was (~59u at FIELD_ROCKS 1800)
+// pocket's nearest-neighbour spacing where it was (~148u centre-to-centre, ~26u
+// surface-to-surface, measured on seed 20260721 at FIELD_ROCKS 740)
 // while the visible material in it goes up — LESS gravel, MORE rock, which is
 // a different thing from "denser".
 //
@@ -1680,8 +1679,9 @@ function pairOverlaps(gx, gy, gr, gShape, gRot, px, py, pr, pShape, pRot) {
 // silent-deorbit failure the balance baseline exists to catch, and it only
 // appeared when the rocks got big enough to reach.
 // The shortlist is built once per pocket rather than scanned per try: the
-// packer runs ~93 rocks x 60 tries x 4 fields per worldgen, and freshRun /
-// mechTest regenerate the world constantly.
+// packer runs ~205 rocks (CFG.FIELD_GIANTS 200 + FIELD_MONOLITHS 5) x
+// CFG.FIELD_PACK_TRIES 170 x 4 fields per worldgen, and freshRun / mechTest
+// regenerate the world constantly.
 function pocketKeepOut(game, f) {
   const reach = CFG.FIELD_LEN * FIELD_LOBE_MAX + 1200;
   const out = [];
@@ -2347,8 +2347,39 @@ export function spawnLifePod(game, x, y) {
 
 export function respawnShip(game) {
   const s = game.ship;
-  s.x = game.spawn.x; s.y = game.spawn.y;
-  s.vx = game.spawn.vx; s.vy = game.spawn.vy;
+  // A RESPAWN CLEARS THE BERTH, and this is load-bearing rather than tidiness.
+  // The clamps are an exact pin (physics.updateDock): while game.dock is set,
+  // every substep snaps the hull to THAT station's pad. Death and respawn both
+  // happen between substeps, so updateDock never sees the dead ship and the
+  // berth survives — and a pilot who dies berthed at one station with the home
+  // port at another gets placed correctly here and then dragged back to the
+  // station they died at on the very next step (measured 537 units off). The
+  // berth is re-earned in about half a second from the pad you land on, which
+  // at home is immediate.
+  game.dock = null;
+  game.launch = null;   // …and a release sequence never survives its ship
+  // A HOME PORT IS THE RESPAWN POINT. Falls back to the run's opening orbit
+  // whenever there isn't one — never docked, never chose one, or the world it
+  // was on came apart (physics.updateDock clears game.home with its body, so a
+  // dead reference can't reach here).
+  const h = game.home && game.home.b.alive ? game.home : null;
+  if (h) {
+    // Placed a hull's height ABOVE the pad rather than on it: materializing
+    // flush with the crust puts the ship inside the collider on frame one,
+    // which the resolver answers with a shove — a respawn that starts by
+    // launching you off your own dock. It comes in RIDING THE SURFACE (the
+    // same surfaceVel the friction and the stillness gate use), so a home world
+    // that is orbiting at 700 u/s doesn't hand the ship back standing still in
+    // front of it.
+    const p = padPos(h, undefined, s.radius * CFG.DOCK_LIFT);
+    const v = surfaceVel(h.b, p.x, p.y);
+    s.x = p.x; s.y = p.y;
+    s.vx = v.vx; s.vy = v.vy;
+    s.angle = h.ang + h.b.rot;   // rockets down, exactly as it was parked
+  } else {
+    s.x = game.spawn.x; s.y = game.spawn.y;
+    s.vx = game.spawn.vx; s.vy = game.spawn.vy;
+  }
   s.hull = game.st.hullMax;
   s.shield = game.st.shieldMax;
   s.alive = true;
@@ -2768,8 +2799,8 @@ export function replenishWorld(game, dt) {
   // spawn ring's disturb annulus) and a slow trickle leaves a pocket visibly
   // thin for minutes, so the batch is generous — but it is DERIVED from
   // FIELD_ROCKS rather than a constant. It used to be a hardcoded 55 under a
-  // comment claiming it scaled; when the pocket dropped to 690 that same 55
-  // would have refilled it eight times faster than intended.
+  // comment claiming it scaled; at today's FIELD_ROCKS 740 that same 55 would
+  // refill a pocket several times faster than intended.
   game.fieldTimer = (game.fieldTimer ?? 30) - dt;
   if (game.fieldTimer <= 0 && game.fields) {
     game.fieldTimer = 30;
@@ -2849,41 +2880,74 @@ export function replenishWorld(game, dt) {
   // and shoves scrap, and main.js owns exposure/shelter and the payout.
   //
   // The CHARGE is the telegraph, and it is the reason the wave is fair: the
-  // sun visibly loads for CFG.STORM_CHARGE seconds before anything is in
-  // flight, which is the window to put a world between you and it.
+  // sun visibly loads for the class's own `charge` seconds before anything is
+  // in flight, which is the window to put a world between you and it.
+  //
+  // THE CLASS IS ROLLED AT CHARGE TIME, not at launch: the telegraph has to
+  // announce WHICH of the three is coming (a squall and a CME are worth very
+  // different decisions), and the sun's swell, its colour and the screen pulse
+  // all key off it while it loads. So the resolved row is parked on
+  // game.stormCls the moment the charge starts, the wave inherits it, and
+  // NOTHING downstream reads a class-shaped constant off CFG — everything a
+  // live wave does comes off the wave. `Math.random`, never the seeded stream:
+  // weather is runtime, and buying a constant with a seeded draw would move
+  // every spawn after it (see the retrograde-lane note in addPlanet).
+  //
+  // THE CADENCE IS UNTOUCHED BY THE LADDER. This timer and CFG.STORM_EVERY are
+  // exactly what they were when every wave was a CME — three classes means the
+  // sun throws something DIFFERENT each time, never something more often.
   game.stormTimer = (game.stormTimer ?? 240) - dt;
   if (game.stormTimer <= 0 && !game.storm && !(game.stormChargeT > 0)) {
     game.stormTimer = CFG.STORM_EVERY * (0.6 + rng() * 1.0);
-    game.stormChargeT = CFG.STORM_CHARGE;
-    game.stormChargeWarn = true;
+    const cls = stormClass(rng);   // flat pick of the three — see config
+    game.stormCls = cls;
+    game.stormChargeT = cls.charge;
+    game.stormChargeMax = cls.charge;   // the telegraph ramps 0->1 against this
+    game.stormChargeWarn = cls;   // the ROW itself — see EVENT_MSGS in main.js
   }
   if (game.stormChargeT > 0) {
     game.stormChargeT -= dt;
     if (game.stormChargeT <= 0) {
       game.stormChargeT = 0;
-      // `seed` varies the front's lobing and filaments per wave so no two look
-      // alike (render-only — the mechanic is a clean radius either way).
-      game.storm = { r: game.homeStar.radius, prevR: game.homeStar.radius, seed: rng() * 1000 };
-      game.stormWarn = true;
+      // The wave carries its whole class: `seed` varies the front's lobing and
+      // filaments so no two look alike (render-only — the mechanic is a clean
+      // radius either way), and the spread row is what physics/render/main read.
+      const cls = game.stormCls || CFG.STORM_CLASSES[CFG.STORM_CLASSES.length - 1];
+      game.storm = {
+        r: game.homeStar.radius, prevR: game.homeStar.radius, seed: rng() * 1000, k: 1, ...cls,
+      };
+      game.stormWarn = cls;
     }
   }
   if (game.storm) {
     const wave = game.storm;
     wave.prevR = wave.r;
-    wave.r += CFG.STORM_SPEED * dt;
+    wave.r += wave.speed * dt;
+    // HOW MUCH OF ITSELF IT HAS LEFT (config.stormStrength): 1 while it is still
+    // climbing, tapering to 0 as it spends itself at its class's reach. Resolved
+    // ONCE here, on the wave, and only READ by physics and render — the same
+    // owner-split as game.stormExposed. It is a property of the WAVE, not of
+    // where the ship is: the whole sheath weakens together as the front tires.
+    wave.k = stormStrength(wave);
     for (const p of game.bodies) {
       if (!p.alive || p.type !== 'planet') continue;
       const pr = Math.hypot(p.x, p.y);
-      if (pr > wave.prevR - CFG.STORM_BAND && pr < wave.r + CFG.STORM_BAND) {
-        // Only announce an aurora the player can actually see light up
-        if (!(p.auroraT > 0) && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
-        p.auroraT = 7;
+      if (pr > wave.prevR - wave.band && pr < wave.r + wave.band) {
+        // Only announce an aurora the player can actually see light up — and
+        // only while the wave still has the punch to light one. Past the taper
+        // the front is shredding, and an aurora over a world a dying squall
+        // merely drifted across is a promise the sky does not keep.
+        if (wave.k > 0.35 && !(p.auroraT > 0)
+            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
+        if (wave.k > 0.35) p.auroraT = 7;
       }
     }
-    // The wave is not over when the SHOCK leaves the system — the sheath is
-    // still washing over everything behind it. Expiring on the front alone
-    // would cut the last ten seconds off every single wave.
-    if (wave.r - CFG.STORM_TAIL > CFG.WORLD_R + CFG.STORM_BAND) game.storm = null;
+    // Gone when the SHOCK has spent itself (config.stormSpent) — the front, not
+    // the tail, because the sheath trails behind it and a front stopped at the
+    // limit is a wave wholly inside it. stormStrength is already 0 by then, so
+    // nothing visible is cut; for a CME the class's reach puts that point out
+    // past WORLD_R + band + tail, exactly where the wave always expired.
+    if (stormSpent(wave)) { game.storm = null; game.stormCls = null; }
   }
 
   // Emberkin creep: infestations deepen over time, and at full bloom seed

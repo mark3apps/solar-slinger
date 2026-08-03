@@ -11,11 +11,12 @@
 //   * soak()'s `deaths` are pre-formatted strings, which don't aggregate.
 //
 // ARGS: { seconds=600, strip=true, chunk=60 }
-//   strip:true removes DORMANT FIELD ROCK before running. Those ~7,600 rocks are
+//   strip:true removes DORMANT FIELD ROCK before running. Those 2,960 rocks are
 //   gravity-free in both directions and can never touch a planet, but they cost
-//   ~78% of an idle soak's runtime in pure LOD + rail bookkeeping. Stripping them
-//   is a ~4.6x speedup that provably does not change the sky verdict. Use
-//   strip:false when the field itself is what you changed.
+//   ~64% of an idle soak's runtime in pure LOD + rail bookkeeping. Stripping them
+//   is a ~2.8x speedup that provably does not change the sky verdict (measured
+//   seed 20260721, 300s: 4,390ms stripped vs 12,322ms intact, verdicts
+//   identical). Use strip:false when the field itself is what you changed.
 
 const A = globalThis.ARGS || {};
 const seconds = A.seconds ?? 600;
@@ -150,7 +151,7 @@ const landmarks = {
 // FIELD POCKET INTEGRITY — only meaningful when the fields were not stripped.
 // Three rules from the design laws: field rock never attracts (at ANY mass,
 // giants included), the pocket is RIGID (one shared rail.w — mixed rates shear
-// it apart), and the reknit holds the census near CFG.FIELD_ROCKS (1900).
+// it apart), and the reknit holds the census near CFG.FIELD_ROCKS (740).
 let fieldChecks = null;
 if (!strip && g.fields && g.fields.length) {
   fieldChecks = g.fields.map((f, i) => {
@@ -158,7 +159,7 @@ if (!strip && g.fields && g.fields.length) {
     const railed = rocks.filter((b) => b.onRails && b.rail);
     return {
       field: i,
-      rocks: rocks.length,                                        // want ~1900
+      rocks: rocks.length,                                        // want ~740
       anyAttractor: rocks.some((b) => b.attractor),               // must be false
       wMismatch: railed.filter((b) => Math.abs(b.rail.w - f.w) > 1e-9).length,  // must be 0
     };

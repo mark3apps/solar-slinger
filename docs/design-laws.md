@@ -724,10 +724,16 @@ code "works."
   consequence traces to a player choice). Aliens are territorial (grabbers leashed to `ALIEN_TERRITORY`
   of their nest; lurkers to `FIELD_TERRITORY` of their field anchor — they never leave the shoal).
 - **The shield is an ABILITY, not base — and its SHAPE is spec DNA:** you start with NO shield — the
-  whole health pool is hull, which does NOT self-heal (it mends ONLY by collecting glow-pocket motes,
-  below, and otherwise resets to full on respawn — with ONE sanctioned exception: any pick that
-  RAISES hullMax heals the gain +20%, `main.healOnHullGain`, so a hull upgrade never just widens an
-  empty bar). A `shield`-channel ability UNLOCKS the regenerating
+  whole health pool is hull, which does NOT self-heal. It otherwise resets to full on respawn, and it
+  mends in exactly three sanctioned places, each of which costs something:
+  1. **Glow-pocket motes** (below) — you have to fly to the pocket, and pockets never refill in place.
+  2. **A DOCK** (`CFG.DOCK_HEAL`, 6 hull/s — see *Docking* below) — you have to land on a world and
+     stop, which means being out of the fight while the clamps are on. This is the exception that
+     makes putting the ship down a real decision rather than a stunt.
+  3. Any pick that RAISES hullMax heals the gain +20% (`main.healOnHullGain`), so a hull upgrade
+     never just widens an empty bar.
+
+  A `shield`-channel ability UNLOCKS the regenerating
   shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
   quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
   - **BRAWLER (War Plating)** — a THIN, FAST-RE-FORMING FRONT PLATE (12%→26% of the pool) covering
@@ -753,6 +759,132 @@ code "works."
   - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
     Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
+
+
+## Docking, stations and the home port (added 2026-08)
+
+**A world is somewhere you can STOP.** Everything else in this game treats a planet as an obstacle,
+a resource or a weapon; this is the one verb that treats it as a place. It rests on
+`CFG.SURF_FRICTION` (docs/physics-invariants.md) — without contact friction a world cannot be landed
+on at all, only bounced off.
+
+**A DOCK IS A STRUCTURE, NOT A STATE.** That is the load-bearing decision and everything else follows
+from it. Three pieces of state, and keeping them separate is the design:
+
+- `game.docks` — every station standing (or half-built) this run, `{ b, ang, rf, t }`. Bounded by
+  `CFG.DOCK_MAX`; the oldest NON-HOME station retires when it binds (losing the place you respawn at
+  because you built a shed somewhere would be the worst thing that cap could do).
+- `game.dock` — the station the ship is BERTHED at right now. A **reference into `game.docks`**,
+  never a copy: the build clock ticks on the station, and a copy would bank the seconds somewhere
+  that is thrown away on lift-off.
+- `game.home` — the RESPAWN POINT. Promoted from the current berth by the **H key**, and never by
+  landing alone. Berthing somewhere to patch the hull must not silently move where a death puts you
+  back; that is the one thing in a run worth a deliberate keypress. Only a FINISHED station may be
+  promoted. One at a time, and **it dies with its world** (`updateDock` clears it with its body, and
+  says so — `homeLostName`; losing your home port must never be something the player discovers by
+  dying).
+
+**BUILDING IT IS THE COST, AND IT IS PAID EXPOSED.** Berth on bare ground and a station starts going
+up: `CFG.DOCK_BUILD` (10s) of staying put, and until it is finished you get *nothing* — the shield
+dome, the damage immunity and the repair all gate on `physics.dockReady`, never on merely being
+berthed. A station that protected you while it was still going up would make its own cost free. Once
+built it **stands there for the rest of the run**: fly away, come back, berth immediately with
+everything live from the first moment. Progress banks on the station, so an interrupted build resumes
+rather than being discarded, and it only advances while you are berthed — you are the one building it.
+
+**Stations are `{ b, ang, rf, t }` — a body, a SURFACE-LOCAL bearing, a fraction of that body's radius**
+(`util.padPos`), never a world coordinate. The same law as a chart waypoint (starmap.js) and then
+some, because a world both ORBITS and SPINS: a coordinate pair is stale within a frame, and a bearing
+that didn't subtract `b.rot` would leave the pad sliding across the surface as the world turned. The
+radius is a FRACTION so a world chipped down under fire keeps its pad on the crust rather than
+floating where the crust used to be. `world.respawnShip` places the ship `DOCK_LIFT` hull-radii ABOVE
+the pad (materializing flush with the collider means being shoved off your own dock on frame one) and
+riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the ship back standing
+still in front of it.
+
+**A DOCK IS WHERE YOU STOP WORKING.** The beam, the orbit ring, the Recovery Tether, the shotgun and
+the mobility abilities are all inert while berthed — `main.dockBlocking` refuses their inputs and
+update() skips their per-substep work outright. Half-disabling them was the trap: a beam you can
+still fire from a pad re-fills a ring the dock just emptied, and a warp tears the hull off a station
+it is clamped into without ever running the release. Anything still in hand is let go AT THE BERTH
+(`tractor.standDown`, before the station finishes building) — rocks left welded to a parked ship
+would orbit a structure they also phase through, with no input able to clear them. It is a DROP, not
+a volley: firing your whole shield across the landscape because you touched down would be the landing
+doing something violent nobody asked for, and it earns nothing (the `drops` counter belongs to
+deliberate gentle put-downs). `dockBlocking` is deliberately separate from `menuBlocking`: H, M, V, P
+and R all still work at a dock, because standing at your own home port unable to open the chart
+would be absurd.
+
+**THE PAD RE-SEATS TO THE SHIP USING IT.** `rf` is the hull's standoff, measured off whatever ship
+built the station — but the ship grows from radius 4 to ~44 across the tiers, and the clamps pin the
+hull to exactly that height. Left at its build-time value, returning to an early pad in a bigger ship
+parks the hull short of contact or buries it in the crust. Re-measured on every berth, which is also
+honest about what a station is: the art already refits to your current tier, and so does the berth.
+
+**THE SHIP IS HELD, AND LEAVING IS A SEQUENCE.** A berthed ship stands UPRIGHT (`DOCK_UPRIGHT`) and
+is pinned EXACTLY to its pad: the clamps own the attitude and the position, the mouse stops steering,
+and W therefore always points straight off the pad. That is what makes a berth read as *held* rather
+than as hovering — and aiming is unaffected,
+since the beam and every throw go at the cursor and never along the nose. Thrust from a berth does
+not drive the ship either; it CALLS A RELEASE (`CFG.LAUNCH_*`): clamps swing open, the engine lights
+against them with exhaust washing sideways off the deck (it has nowhere else to go while the ship is
+pinned, which is exactly what makes a held burn look held), the shake climbs, and then the pad lets
+go. It commits once started — a launch you can abort halfway is a stutter, not a moment.
+
+**HOME IS THE LIVES ROSE, on all three surfaces** — the in-world pad, the radar and the chart
+(`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker colour: rose already means
+"a life" in this cockpit, and a home port is exactly the place a life hands the ship back. Other
+stations are steel — somewhere you can go, not the place you have committed to. The home port also
+flies a **lit beacon spire with a pennant**, so the two are told apart by shape and not by hue alone.
+(It used to wear a full RING and that was wrong twice over: the ring sat concentric-ish with the
+shield dome and the two read as a lens of overlapping circles rather than as a mark on a structure,
+and a ring says nothing about what a home port *is*. A spire does — it caps the gantry at the tiers
+that have one, and it competes with nothing.)
+
+**THE STATION'S ART TRACKS THE SHIP'S TIER** (`config.DOCK_TIERS`, six rows read via `dockTier(st)` off `game.st.tier`,
+i.e. your CURRENT tier and not the one it was laid down at). A dock is infrastructure you keep
+improving, so tiering up refits every station you own rather than leaving your first pad looking like
+a shack forever. The ladder is a SILHOUETTE, not a detail pass — landing slab → gantry mast → second
+clamp pair → control block → comms dish → working spaceport — and each row only ever ADDS, so the
+thing you learned to recognize at tier 0 is still the thing in the middle at tier 5. The deck's width
+tracks *what is standing on it*: a deck sized for the top tier at tier 0 reads as a derelict apron
+with a toy in the middle. And `padSize` caps the whole structure against the HOST body with a berth
+floor underneath the cap — multiplying the tier curve by the ship's own growth put a tier-5 port at
+two thirds of its planet's radius, which read as a megastructure the world was orbiting.
+
+The sprite is a REAL OBJECT (solid strokes, world-space line widths that scale with the camera — a
+structure whose girders stay 2 screen-pixels wide as you pull away is a HUD element pretending to be
+scenery) and it is CALM: steady lamps, no idle motion. Motion belongs to the build, the launch and
+the one-shot bloom, all of which are events. It is composed around one constraint: **the origin is
+where the ship parks**, so the parked hull is drawn over that point every frame. The deck sits BELOW
+the origin (down into the crust, which is also what "seated" should look like) and the gantry and
+blocks stand OUTBOARD in their own zones — the berth frames the ship instead of fighting it. An early
+pass put a beacon at the origin and it simply vanished under the hull; another used wide soft blooms
+for the deck lamps and they washed out the structure they were meant to be lighting (a runway light
+is a POINT). The substructure block under the deck is what carries the visual mass — without it the
+station is a line with sticks on it.
+
+**THE SHIELD DOME IS A REAL FIELD, NOT A DECAL.** It repels loose rock and aliens
+(`physics.updateDomeShield`) as well as blocking damage — immunity alone is half a shield, and a hull
+sitting inside a heap of debris it happens to be invulnerable to reads as a bug rather than as
+protection. That is also why the tier table lives in **config.js**: its drawn edge and its pushing
+edge must come from one expression (`dockDomeR`), never two. Where it throws something off, the rim
+flares — an EVENT, the one thing this otherwise-calm surface animates for.
+
+**IT STANDS ON THE GROUND**, and getting that right is the whole job of drawing it. It
+is centred on the SURFACE POINT under the pad — not the pad origin, which sits a hull-radius above
+the crust — and CLIPPED against the planet's own disc, so its foot follows the world's curvature
+instead of cutting a straight chord across it. A dome sized in pad units alone is fine on a big
+planet and wider than the whole body on a moonlet; the clip is what makes one expression correct at
+both. It is sized to ENCLOSE the station at whatever tier it is (it tracks the mast height) — a
+shield with the gantry poking out of the top is not a shield. Calm and steady like the ship's own
+shield rim; its detail is STRUCTURE (ribs, bands, emitter posts), never animation.
+
+On the two instruments the marks obey each one's own grammar: the radar RIM-PINS them past the dial's
+reach like the rescue dock and the journey do (the whole value is "which way is it from here", and
+home is usually well outside 7,800 units), and the chart carries them under the route, since an
+active journey's next stop stays the loudest thing on screen. Home is labelled on both; other
+stations are findable, not shouting.
 
 
 ## Ship hull art

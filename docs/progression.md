@@ -130,7 +130,7 @@
   **`ABIL_XP_TOTAL` moves with the climb TOTAL** (6500 → 6900), not with the curve's shape — every
   ability pool receives the achievement XP too. See the ratio rule above.
 - **XP INCOME IN THE DENSE FIELDS IS GATED TWICE, and both gates are load-bearing.** Four pockets of
-  ~1900 rocks each meant parking in a shoal out-earned every aimed, risky thing in the game — the
+  ~740 rocks each meant parking in a shoal out-earned every aimed, risky thing in the game — the
   optimal play was the least interesting one. **`config.fieldXp(game, b, xp)` is the ONE resolver**;
   every award sourced from a shoal rock goes through it and nothing else may pay one. Call sites:
   catch and orbit-stow (tractor.js), smash / ram / parry and BOTH scrap drops incl. the combo bonus
@@ -141,7 +141,7 @@
      its ACHIEVEMENT, which pays XP of its own.
   2. **`PROG.FIELD_XP_BUDGET` (150/field, `f.xpLeft`)** — what the SHOAL is worth, for the whole run.
      **This is the gate that actually holds.** A multiplier prices a rock, and the problem is that a
-     pocket holds 1900 of them, so any trick that raises the rocks-per-minute rate simply outruns it;
+     pocket holds 740 of them, so any trick that raises the rocks-per-minute rate simply outruns it;
      a budget is rate-independent. Deliberately the same shape as `FIELD_BROOD`: finite per run, no
      refill, so working a shoal dry is a CHOICE whose consequence traces to the player. All four
      fields together cap at ~600 XP, under 8% of the climb. A dried pocket announces itself once
@@ -152,7 +152,7 @@
 - **BILLIARDS CREDIT IS DEPTH-CAPPED INSIDE A POCKET** (`CFG.FIELD_CHAIN_MAX` 2, `physics.chainOk`,
   `b.chainN`). This was the actual exploit, and it was a physics bug wearing an economy costume: the
   gravity-billiards rule stamps `thrownBy = 'player'` onto any rock your throw knocks hard, and among
-  1900 TOUCHING rocks that mark spread outward forever (every fresh contact refreshed the 1.4s timer).
+  740 TOUCHING rocks that mark spread outward forever (every fresh contact refreshed the 1.4s timer).
   Because the `FIELD_TOUGH` damp exempts "a player throw", **the entire shoal took full lethal damage
   and paid full credit off one fling** — measured at 245 XP in 30s and still climbing, most of it
   chip-scrap from thousands of laundered impacts. Capped, the trick shot survives and the cascade
@@ -202,16 +202,30 @@
     FREEZES them where caught. At rank 1 the reach is a hair past the hull — the rock must
     actually HIT the ship (user design rule: no catching out in space); ranks widen the bubble.
     Capacity is the RANK (SIX ranks — a maxed deflector freezes a six-rock volley) and late
-    arrivals JOIN the running window. While a session is live the nose is LOCKED (the steering block checks
-    `game.parry`) and the mouse is a FLICK read from RAW SCREEN deltas (`game.mouseSX/SY`, stashed
-    in main.js — world-aim deltas are camera-contaminated); a decisive flick or window end hurls
-    EVERY held rock player-thrown at `st.deflectPower` (flick = volley one way; no flick = each
-    back along its capture bearing), paying `XP_PARRY` per rock. Fixed 2.5s cooldown; ranks buy
+    arrivals JOIN the running window. **The launch is on the CLOCK, never on the input**: at window
+    end EVERY held rock fires player-thrown at `st.deflectPower` along **ship→cursor** (`game.aim`
+    minus the ship, read at that instant; a cursor on the hull falls back to each rock's own capture
+    bearing), paying `XP_PARRY` per rock. It used to fire on a mouse FLICK off raw screen deltas —
+    an ordinary aiming twitch spent the parry, and raising the threshold twice never fixed it, so
+    the flick, `game.mouseSX/SY` and the mid-parry NOSE LOCK are all gone: the window is the timer
+    and the cursor is the aim, so nothing fights over one input. Fixed 2.5s cooldown; ranks buy
     field width + slots + window + power. Eligibility (`parryEligible`): loose asteroids only,
     beam-scale mass cap, `!majorComet`, never held/own-throws — `render.drawDeflectable` MIRRORS it
     for the incoming-rock indicator (pulsing cyan circlet on catchable rocks), keep them in sync;
     `parryFrozen` is skipped by `collideBodies`/`collideShipBody`/`tryGrab`; `resetRun` clears
-    `game.parry`. Render: `drawParry` — dashed charge ring + per-rock flick arrow (helper UI),
+    `game.parry`. **The reload tell is ship hardware, never a bar**: `drawShip` paints a thin
+    bracketed arc across the nose spanning `PARRY_ARC` (exported from physics.js so the rail, the
+    deflectable hint and the sim all read ONE constant). **The rail IS the field edge** — drawn at
+    `s.radius + st.deflectReach`, so a rock's own surface meets it on the frame `updateParry`
+    freezes it (the sim's test adds `b.radius`) and the catch never happens out in space short of a
+    visible line; it is floored at the drawn hull, which only binds at rank 1 where the field sits
+    on the hull by design. It shows whenever the field can catch, draws NOTHING
+    while it reloads or runs out of slots (the bare-nose grammar of a downed shield), and POPS once
+    on the re-arm — `game.parryReadyT`, set on the cooldown CROSSING in `updateParry` and decayed on
+    that same fixed step so the pop and the state can't disagree; `PARRY_READY_T` is its length.
+    Solid stroke: it is equipment, not aiming UI. Render: `drawParry` — dashed charge ring +
+    per-rock aim arrow that lengthens and brightens with the charge (helper UI; it mirrors the
+    ship→cursor direction and its fallback),
     additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
     protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
     NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots

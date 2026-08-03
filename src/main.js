@@ -1,11 +1,12 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, pickIsMilestone, tierChoices,
-  consumePickCost, applyAbility, applySpec, applyTierUp, canStow,
+  consumePickCost, applyAbility, applySpec, applyTierUp, canStow, shelterR, stormClass,
+  stormStrength,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD, frameReg } from './physics.js';
+import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -96,10 +97,17 @@ const game = {
   // ---- THE SOLAR WAVE (CFG.STORM_*). world.js owns the wave's geometry;
   // these are the SHIP's relationship to it, resolved once per frame in
   // updateStorm and read by physics/render/ai — never re-derived there.
+  stormCls: null,          // the CFG.STORM_CLASSES row charging or in flight
   stormChargeT: 0,         // sun loading before the front fires (the telegraph)
+  stormChargeMax: 0,       // …what it started at, so the telegraph can ramp 0->1
   stormExposed: false,     // in the sheath with no world between us and the sun
   stormShelter: null,      // the world whose lee we're in, when we are in one
   stormIonT: 0,            // seconds of sensor scramble left (outlives exposure)
+  // …what stormIonT was last SET to (the class's `ion` scaled by the wave's
+  // remaining strength, refreshed every exposed frame), NOT the class maximum.
+  // It exists because stormIonT outlives the wave that set it, so render has to
+  // normalise the wash against the thing that actually set it.
+  stormIonMax: 0,
   stormBlind: false,       // alien senses are down system-wide (util.senseBlind)
   stormRode: 0,            // seconds ridden exposed this wave (capped payout)
   evadeT: 0,                            // Dash Jets cooldown (scout, A/D)
@@ -107,6 +115,7 @@ const game = {
   dashDir: 0,                           // which way the last dash went (-1 left / +1 right)
   autoEvadeT: 0,                        // Reflex Jink recharge (scout auto-dodge, physics.step)
   jinkT: 0,                             // brief flash ring after an auto-dodge (render)
+  parryReadyT: 0,                       // one-shot bloom when the Deflector re-arms (render)
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
@@ -142,6 +151,21 @@ const game = {
   launchFx: [],
   // The WINCH in progress on a moon/world: { body, t, need } (tractor.updateLatch).
   latch: null,
+  // ---- DOCKING (physics.updateDock owns all of it; util.padPos reads it) ----
+  // A DOCK IS A STRUCTURE, NOT A STATE — see the section comment in physics.js.
+  docks: [],               // every station standing (or half-built) this run:
+                           //   { b, ang, rf, t }, t = build seconds banked.
+  dock: null,              // the station the ship is BERTHED at right now, or null.
+                           //   A REFERENCE into docks, never a copy — the build
+                           //   clock ticks on the station itself.
+  home: null,              // the station a respawn uses. Also a reference into docks.
+  launch: null,            // { t } while the release sequence is running (CFG.LAUNCH_*)
+  dockFlashT: 0,           // one-shot bloom on the pad as a station goes live (render)
+  domeHitT: 0,             // …and a rim flare where the shield last threw something off
+  domeHitA: 0,             //   (world bearing of that bite)
+  dockT: 0,                // approach guidance, published per substep: latch fill 0..1,
+  dockCand: null,          //   the world being landed on,
+  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast')
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
@@ -277,6 +301,11 @@ function regenWorld(seed) {
   game.orbit.length = 0; game.pickups.length = 0;
   game.held = null; game.held2 = null;
   sfx.setBeam(false);   // the hum is edge-triggered — a reset must drop it too
+  // The dock and the home port pin to BODIES, so they die with the world the
+  // way a chart route's stops do — and this has to happen BEFORE generateWorld,
+  // which respawns the ship: a home port left pointing into the dead system
+  // would place the fresh run's ship on a planet that no longer exists.
+  clearDocks(game);
   game.worldSeed = seed ?? pickSeed();
   generateWorld(game, game.worldSeed);   // clears game.bodies itself, then respawns the ship
   game.cam.x = game.ship.x; game.cam.y = game.ship.y;
@@ -338,10 +367,24 @@ function fireVolley() {
 // The player may only touch the sim while actually flying — not on the splash,
 // in the pause menu, mid-settings, or while an upgrade card is open.
 const menuBlocking = () => !game.started || game.paused || shellModal(game) || game.choosingUpgrade;
+// A BERTHED SHIP IS PARKED, NOT FLYING. The clamps hold it, the engine answers
+// to the launch sequence and nothing else, and the beam has stood down
+// (tractor.standDown at the berth) — so the tractor, the orbit ring, the
+// shotgun and the mobility abilities all refuse while docked, and update()
+// skips their per-substep work entirely. Half-disabling them was the trap: a
+// beam you can still fire from a pad would re-fill a ring the dock just
+// emptied, and a warp would tear the hull off a station it is clamped into
+// without ever running the release.
+//
+// Separate from menuBlocking on purpose — this blocks GAMEPLAY verbs, not the
+// shell. H (home port), M (chart), V, P and R must all still work at a dock;
+// standing at your own home port and being unable to open the chart would be
+// absurd.
+const dockBlocking = () => !!game.dock;
 
 initInput(canvas, {
   onGrab: () => {
-    if (menuBlocking() || !game.ship.alive) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive) return;
     // tryGrab reports WHAT THE CLICK DID, not a boolean (see its doc comment).
     // The orbit-retrieve fallback below is for an EMPTY click only: a click the
     // beam answered — a winch it just started, or a refusal it just sounded —
@@ -371,11 +414,20 @@ initInput(canvas, {
     }
   },
   onFling: () => {
-    if (menuBlocking()) return;
     // Letting go mid-winch abandons it — the winch is a HELD commitment, and
     // banking partial progress would turn "hold to take a moon" back into a
     // click you repeat.
+    //
+    // ABOVE THE MENU GATE, and it has to stay there. mouseup is a WINDOW
+    // listener (input.js), so a release while paused / in settings / on an
+    // upgrade card still clears input.mouseDown — and game.held is null during
+    // a winch, so openUpgrade() is unblocked mid-winch and the click that
+    // dismisses the card is exactly such a release. Behind the gate that
+    // release was banked: updateLatch never reads the mouse, so game.latch
+    // survived the freeze and completed itself on resume, handing the player a
+    // moon they had let go of.
     cancelLatch(game);
+    if (menuBlocking()) return;
     if (game.held) {
       releaseHeld(game, true);
       if (!game.tut.flung) {
@@ -385,7 +437,7 @@ initInput(canvas, {
     }
   },
   onRmbDown: () => {
-    if (menuBlocking()) return;
+    if (menuBlocking() || dockBlocking()) return;
     if (game.held) {
       // Send the held rock (back) into your orbit; too big -> gentle drop
       if (!addToOrbit(game)) releaseHeld(game, false);
@@ -431,7 +483,7 @@ initInput(canvas, {
   // brief i-frames. Sideways relative to the NOSE (angle ± 90°), not the
   // cursor — a positioning twitch, not a lunge.
   onDash: (dir) => {
-    if (menuBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
     const s = game.ship;
     const ang = s.angle + dir * Math.PI / 2;
     const burst = 380 + 35 * game.st.evasion;
@@ -444,12 +496,27 @@ initInput(canvas, {
   },
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
   onWarp: () => {
-    if (menuBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
+    if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
     const s = game.ship;
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     const dist = game.st.warpDist;
     s.x += Math.cos(ang) * dist; s.y += Math.sin(ang) * dist;
     game.cam.x = s.x; game.cam.y = s.y;   // snap the camera to the exit point
+    // A WARP PAYS THE ROPE OUT; IT DOES NOT DRAG THE LOAD THROUGH THE JUMP.
+    //
+    // The ship just moved 950-1300 units in zero time. A held rock that is
+    // already at full power has a LIVE rope (tractor.springHeld) sized to the
+    // gap it engaged at, and the backstop there acts against that length — so
+    // without this the next substep saw `over = d - lim` of several hundred
+    // units and applied the whole warp as a one-frame position snap to the ship
+    // and the rock both. That is precisely the bug b.ropeL was added to kill.
+    // Clearing it re-seeds the rope at the new distance and hauls it in at the
+    // bounded CFG.TETHER_REEL: light loads are back in the beam almost at once
+    // (the spring outruns the reel), and a moon stays where it was and gets
+    // TOWED, which is the honest answer — a warp is a ship ability, not free
+    // transport for a world.
+    if (game.held) game.held.ropeL = null;
+    if (game.held2) game.held2.ropeL = null;
     s.invuln = Math.max(s.invuln, game.st.warpInvuln);
     game.warpT = game.st.warpCool;
     // Reclassify the field LOD at the exit point (dt 0 = no rail advance):
@@ -459,6 +526,27 @@ initInput(canvas, {
     updateFieldLOD(game, 0);
     bump(game, 'warps');
     sfx.sfxWarp();
+  },
+  // HOME PORT (H): promote the pad the ship is currently docked at to the
+  // run's respawn point. The DOCK is earned by flying (physics.updateDock);
+  // making it home is a CHOICE, and a deliberate one — it is the only thing in
+  // the game that moves where a death puts you back, so it must never happen
+  // as a side effect of landing somewhere to patch the hull.
+  onHome: () => {
+    if (menuBlocking() || !game.ship.alive) return;
+    const d = game.dock;
+    if (!d) { game.homeNoDockWarn = true; return; }
+    // Only a FINISHED station can be a home port — a respawn puts the ship on
+    // a pad that has to actually be there and actually work.
+    if (!dockReady(d)) { game.homeBuildingWarn = true; return; }
+    if (game.home === d) { game.homeSameWarn = true; return; }
+    // THE STATION ITSELF, not a copy of it. `home` and `dock` are both
+    // references into game.docks, so promoting one is a pointer — a copy would
+    // fork the build clock and leave the home port frozen at whatever progress
+    // it happened to be at.
+    game.home = d;
+    game.homeSetName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+    game.dockFlashT = 0.9;
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
   // 1x. They only set the multiplier — updateScaled applies it — so they're
@@ -947,6 +1035,7 @@ function resetRun(seed, openCard = true) {
   // exposure flag surviving into a fresh world would cook a ship with no wave
   // anywhere near it, and a stale stormBlind would leave the aliens deaf.
   game.storm = null; game.stormTimer = undefined; game.stormChargeT = 0;
+  game.stormCls = null; game.stormChargeMax = 0; game.stormIonMax = 0;
   game.stormExposed = false; game.stormShelter = null; game.stormIonT = 0;
   game.stormBlind = false; game.stormRode = 0;
   game.visitor = null; game.visitorDone = false;
@@ -960,9 +1049,10 @@ function resetRun(seed, openCard = true) {
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
+  game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
-  game.parry = null; game.parryCd = 0;   // a parry must never survive into a fresh world
+  game.parry = null; game.parryCd = 0; game.parryReadyT = 0;   // a parry must never survive into a fresh world
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   // ...and so does the journey: every stop pins to a body in the world that is
@@ -1032,7 +1122,7 @@ const EVENT_MSGS = [
   { flag: 'deadStopWarn', tut: 'deadstop', snd: sfx.sfxChime,
     first: ['DEAD STOP — caught it mid-flight! The rock is primed: fling it back hard.', 5] },
   { flag: 'parryWarn', tut: 'parry', snd: sfx.sfxChime,
-    first: ['DEFLECTED — the rock is frozen! Flick your mouse to hurl it that way.', 5] },
+    first: ['DEFLECTED — the rock is frozen! It fires where your mouse points when the freeze ends.', 5] },
   { flag: 'wallSplatWarn', tut: 'wallsplat', snd: sfx.sfxChime,
     first: ['WALL SPLAT — smashed against the world. Nearby rocks scatter off the impact as yours.', 5] },
   // A worked-out shoal (config.fieldXp spent its run budget). The rocks still
@@ -1094,17 +1184,29 @@ const EVENT_MSGS = [
     first: ['The interstellar visitor has left the system — forever.', 5.5] },
   // ---- the solar wave: charge (telegraph) -> launch -> caught out -> receipt.
   // Alarm on the two that mean "act now", chime on the two that mean "you did".
+  //
+  // EVERY LINE NAMES THE CLASS, because the class IS the decision: a squall is
+  // worth flying straight through and a CME is worth crossing the system to
+  // hide from, and the telegraph is where a pilot finds out which one is
+  // loading. These three carry the CFG.STORM_CLASSES row itself as their value
+  // — the full `name` on the telegraph, the short `tag` for anything in flight
+  // (radio traffic, not a title card), and the class's own `blurb` for what it
+  // will actually do to you. Passing the row rather than a pre-baked string is
+  // what keeps the wording of a class in ONE place with its numbers, so a
+  // squall can never inherit the CME's promise of a system-wide blackout.
   { flag: 'stormChargeWarn', tut: 'stormCharge', snd: sfx.sfxAlarm,
-    first: ['CORONAL MASS EJECTION — the sun is charging. Put a world between you and it, or ride it out in the open.', 7],
-    repeat: ['CME CHARGING — the sun is loading another wave.', 3.5] },
+    first: [(v) => `${v.name} — the sun is charging. Put a world between you and it, or ride it out in the open.`, 7],
+    repeat: [(v) => `${v.name} CHARGING — the sun is loading another wave.`, 3.5] },
   { flag: 'stormWarn', tut: 'storm', snd: sfx.sfxAlarm,
-    first: ['WAVE AWAY — a plasma front is sweeping outward. Nothing alien can see you while it passes.', 6],
-    repeat: ['SOLAR WAVE inbound — the front is climbing out through the system.', 3.5] },
+    first: [(v) => `${v.tag} AWAY — a plasma front is sweeping outward: ${v.blurb}`, 6],
+    repeat: [(v) => `${v.tag} AWAY — ${v.blurb}`, 3.5] },
   { flag: 'stormHitWarn', tut: 'stormHit', snd: sfx.sfxAlarm,
     first: ['ION WASH — sensors blind, engines choking, hull cooking. Break for a world\'s lee, or hold and take the charge!', 6.5],
-    repeat: ['ION WASH — you are caught in the open.', 3] },
+    repeat: [(v) => `ION WASH — caught in the open, ${v.tag} passing.`, 3] },
+  // "around IT", not "around the world": a moon's lee shelters you exactly as a
+  // planet's does, and moons are the shelter you will usually reach first.
   { flag: 'stormLeeName', tut: 'stormLee', snd: sfx.sfxChime,
-    first: [(v) => `IN THE LEE OF ${v} — the wave breaks around the world. Nothing reaches you here.`, 5.5] },
+    first: [(v) => `IN THE LEE OF ${v} — the wave breaks around it. Nothing reaches you here.`, 5.5] },
   { flag: 'stormRideWarn', snd: sfx.sfxLife,
     first: [(v) => `WAVE RIDDEN — ${v}s in the open, and the banks are charged.`, 4] },
   { flag: 'auroraName', tut: 'aurora', snd: sfx.sfxChime,
@@ -1179,6 +1281,49 @@ const EVENT_MSGS = [
     first: ['FLARE STRIKE — the surge fries your engines! Half your shield rocks are blown loose.', 4.5] },
   { flag: 'scrapeWarn', tut: 'scrape', snd: sfx.sfxWarnLow,
     first: ["HULL SCRAPING — you're grinding along the surface. Pull up!", 4.5] },
+  // ---- DOCKING. Three separate moments, because they mean three different
+  // things and collapsing them into one message is how a ten-second build
+  // reads as a hang. No `snd` on any of them: physics plays the mechanical
+  // catch (sfxOrbitCapture) at the clamps and again when the station goes
+  // live, and a chime layered on top turns a machine into a notification.
+  //
+  // BUILDING — the first landing has to TEACH the whole verb, because nothing
+  // else in this game says a world is somewhere you can stop. It must also say
+  // STAY, or a player who lifts off after two seconds never learns the feature
+  // exists.
+  { flag: 'dockBuildName', tut: 'dockBuild',
+    first: [(v) => `BUILDING A DOCK ON ${v.toUpperCase()} — hold position. It takes ${CFG.DOCK_BUILD}s, and nothing protects you until it is up.`, 6],
+    repeat: [(v) => `BUILDING A DOCK ON ${v.toUpperCase()} — hold position.`, 3] },
+  // LIVE — the payoff, and the moment the H key first becomes worth knowing about.
+  { flag: 'dockReadyName', tut: 'dockReady',
+    first: [(v) => `DOCK LIVE ON ${v.toUpperCase()} — shielded and repairing. Press H to make it your home port. It stays here; come back any time.`, 7],
+    repeat: [(v) => `DOCK LIVE ON ${v.toUpperCase()} — shielded and repairing.`, 3] },
+  // RETURNING to a station you already built. Says the thing that makes the
+  // build worth having: no wait this time.
+  { flag: 'dockedName', tut: 'docked',
+    first: [(v) => `BERTHED AT ${v.toUpperCase()} — your dock is still standing. Shielded and repairing at once.`, 5],
+    repeat: [(v) => `BERTHED AT ${v.toUpperCase()} — shielded and repairing.`, 2.5] },
+  { flag: 'dockRetiredName', snd: sfx.sfxWarnLow,
+    first: [(v) => `OLDEST DOCK ABANDONED — you can keep ${CFG.DOCK_MAX} standing, and the one on ${v.toUpperCase()} was the oldest.`, 5] },
+  { flag: 'launchName', tut: 'launch',
+    first: ['LAUNCH — clamps releasing. The dock stays; fly back to it whenever you want.', 4.5] },
+  // Choosing a home port is the one act that moves where a death puts you back.
+  // sfxLife — it is the closest thing this game has to banking progress.
+  { flag: 'homeSetName', snd: sfx.sfxLife,
+    first: [(v) => `HOME PORT SET — ${v.toUpperCase()}. You will respawn here.`, 5] },
+  // Two refusals for H, each naming the thing that is actually missing. No
+  // `snd` on either: a key that did nothing is not an event.
+  { flag: 'homeNoDockWarn', tut: 'homeNoDock',
+    first: ['NO DOCK — land on a world rockets-down and come to a stop first, then press H.', 5],
+    repeat: ['NO DOCK — you have to be berthed at a dock.', 2.5] },
+  { flag: 'homeBuildingWarn',
+    first: ['STILL BUILDING — wait for the dock to go live, then press H.', 3] },
+  { flag: 'homeSameWarn',
+    first: ['This is already your home port.', 2.5] },
+  // Losing the home world is real bad news, and it must never be something the
+  // player only finds out about by dying.
+  { flag: 'homeLostName', snd: sfx.sfxWarnLow,
+    first: [(v) => `HOME PORT LOST — ${v.toUpperCase()} is gone, and the dock with it. You respawn at your starting orbit.`, 6] },
 ];
 
 let last = performance.now();
@@ -1323,10 +1468,6 @@ function update(dtReal) {
     const { vw, vh } = view.getView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
-    // Raw SCREEN mouse, stashed for the Deflector parry's flick read
-    // (physics.updateParry): world-space aim deltas are contaminated by the
-    // camera chasing the ship, so the flick must come from screen deltas.
-    game.mouseSX = input.mouseX; game.mouseSY = input.mouseY;
     // World-space radius of the current view — the local asteroid spawner
     // keeps rocks in a ring just beyond this
     game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
@@ -1355,10 +1496,22 @@ function update(dtReal) {
     const camK = 1 - Math.exp(-6 * dt);
     let simSteps = 0;   // substeps taken THIS call — the field LOD advances by the same clock
     while (acc >= dt && simSteps < CFG.SUBSTEP_MAX) {
-      updateLatch(game, dt);     // the winch on a moon/world — gameplay timing, so fixed-step
-      updateTractor(game, dt);
-      updateOrbit(game, dt);
-      updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
+      // The winch on a moon/world — gameplay timing, so fixed-step. The button
+      // goes in because the winch is a HELD commitment: onFling ends it on the
+      // release, and this is the backstop for a release that never arrives as
+      // one (see updateLatch).
+      // THE BEAM IS OFF AT A BERTH. Everything the tractor owns — the winch,
+      // the hold, the orbit ring, the Recovery Tether — is skipped outright
+      // while docked rather than merely refusing input, because these run on
+      // state the berth has already cleared (tractor.standDown) and a half-live
+      // system is how a ring gets re-welded to a parked ship. The dock stands
+      // the beam down; this is what keeps it down.
+      if (!game.dock) {
+        updateLatch(game, dt, input.mouseDown);
+        updateTractor(game, dt);
+        updateOrbit(game, dt);
+        updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
+      }
       step(game, dt);
       game.cam.x = lerp(game.cam.x, game.ship.x, camK);
       game.cam.y = lerp(game.cam.y, game.ship.y, camK);
@@ -1467,13 +1620,28 @@ function update(dtReal) {
       game.sling = null;
     }
 
-    // Shield recharges after a quiet spell; the hull never self-heals (it mends
-    // only at glow pockets — glow.js). Scout's Phase Screen recharges faster
+    // Shield recharges after a quiet spell; the hull mends only at glow pockets
+    // (glow.js) and ON A DOCK. Scout's Phase Screen recharges faster
     // (spec-derived st.regen / st.regenDelay — see config.shipStats).
     if (s.alive && game.time - game.lastDamage > game.st.regenDelay && s.shield < game.st.shieldMax) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
     if (s.shieldHitT > 0) s.shieldHitT -= dtReal;
+
+    // DOCKED REPAIR — the second sanctioned exception to "the hull never
+    // self-heals" (docs/design-laws.md). It is what makes putting the ship
+    // down a real decision rather than a stunt: a dock is a place you stop
+    // being in the fight to get the hull back. Rides dtReal like the shield
+    // regen it sits beside — a heal has no quantized target to beat against.
+    //
+    // A FINISHED station only (dockReady), the same gate the shield dome uses:
+    // the ten seconds spent building one are meant to be exposed, and a
+    // building site that repaired you would pay the reward before the cost.
+    if (s.alive && dockReady(game.dock)) {
+      s.hull = Math.min(game.st.hullMax, s.hull + CFG.DOCK_HEAL * dtReal);
+    }
+    if (game.dockFlashT > 0) game.dockFlashT -= dtReal;
+    if (game.domeHitT > 0) game.domeHitT -= dtReal;   // dome deflection flare
 
     replenishWorld(game, dtReal);
     updateLifePods(dtReal);
@@ -1662,10 +1830,19 @@ function updateLifePods(dt) {
 // Which world, if any, is casting its lee over this point. The sun is pinned
 // at the origin, so a shadow is just the cylinder running anti-sunward from a
 // body: project onto the sun->body ray and you are sheltered if you are PAST
-// the body, within STORM_SHADOW x its radius of that ray, and not so far
-// behind that the lee has thinned out. Deliberately forgiving — the shelter
-// has to be somewhere a pilot can actually reach under pressure — and render
-// feathers the wedge so the boundary never reads as a drawn line.
+// the body, within config.shelterR of that ray, and not so far behind that the
+// lee has thinned out. Deliberately forgiving — the shelter has to be somewhere
+// a pilot can actually reach under pressure — and render feathers the wedge so
+// the boundary never reads as a drawn line.
+//
+// PLANETS AND MOONS BOTH, and the moons are the point: STORM_SHADOW_MIN_R used
+// to sit at 60, which quietly failed two thirds of the sky's moons, so "duck
+// behind that moon" was a move that worked or didn't with nothing to tell you
+// which. The floor is 24 now — every real moon casts a lee, the ring shepherd
+// moonlet still doesn't — and shelterR's flat pad is what makes the small ones
+// a pocket rather than a razor edge. Shelter geometry is a property of the BODY,
+// deliberately NOT of the wave: all three classes break around the same lee, so
+// what a pilot learns behind one world holds behind every world in every storm.
 //
 // Over reg.nonField (physics.frameReg), not game.bodies: nothing that casts a
 // lee is field rock, so walking the pockets to reject ~15,000 rocks one at a
@@ -1683,7 +1860,7 @@ function shelterBody(x, y) {
     const behind = along - br;
     if (behind < 0 || behind > b.radius * CFG.STORM_SHADOW_LEN) continue;
     const px = x - ux * along, py = y - uy * along;   // offset across the ray
-    const rr = b.radius * CFG.STORM_SHADOW;
+    const rr = shelterR(b);
     if (px * px + py * py < rr * rr) return b;
   }
   return null;
@@ -1694,34 +1871,59 @@ function shelterBody(x, y) {
 // afterburner tank). Everything the wave does to the player hangs off here.
 function updateStorm(dtReal) {
   const s = game.ship;
+  const st = game.storm;
   // A live wave floods the whole system with noise — nothing can pick the ship
   // out of it. That blackout IS the wave's reward: for its ~60-second passage
   // every nest and lurker is deaf, so a storm is the window to move.
-  game.stormBlind = !!game.storm;
+  //
+  // ONLY THE BIG TWO (cls.blind). A squall is a ripple, not a flood, and it is
+  // also the class that costs almost nothing — handing it the free blackout as
+  // well would make the cheapest weather the best weather, and would push the
+  // system's sense-blind duty cycle well past where the stealth layer was
+  // balanced (see the BLINDING note on CFG.STORM_CLASSES).
+  game.stormBlind = !!st && !!st.blind;
 
   const wasExposed = game.stormExposed;
   game.stormExposed = false;
   game.stormShelter = null;
-  if (game.storm && s.alive) {
+  if (st && s.alive) {
     const hr = Math.hypot(s.x, s.y);
-    const lead = game.storm.r - hr;   // >0 once the shock has swept past us
-    if (lead > -CFG.STORM_BAND && lead < CFG.STORM_TAIL) {
+    const lead = st.r - hr;   // >0 once the shock has swept past us
+    if (lead > -st.band && lead < st.tail) {
       game.stormShelter = shelterBody(s.x, s.y);
       game.stormExposed = !game.stormShelter;
-      if (game.stormShelter && !game.tut.stormLee) game.stormLeeName = game.stormShelter.name;
+      // The lesson has to survive sheltering behind an UNNAMED body, and now
+      // that every moon casts a lee that is the common case — most moons carry
+      // no name at all, and `game.stormLeeName = ''` is falsy, so the message
+      // table would drop the one message that teaches the counterplay. Same
+      // fallback shape starmap.contactLabel uses for a nameless moon.
+      if (game.stormShelter && !game.tut.stormLee) {
+        const b = game.stormShelter;
+        game.stormLeeName = b.name
+          || (b.type === 'moon' && b.parent && b.parent.name ? `a moon of ${b.parent.name}` : 'this world');
+      }
     }
   }
 
   if (game.stormExposed) {
-    game.stormIonT = CFG.STORM_ION;
-    if (!wasExposed) game.stormHitWarn = true;
+    // stormIonT outlives the wave that set it, so the scale it is read against
+    // has to outlive the wave too — render normalises the wash by stormIonMax,
+    // never by a CFG constant that may describe a different class entirely.
+    // Scaled by st.k with everything else the wave does: a front shredding at
+    // the end of its reach scrambles proportionally less. Both are written
+    // together every exposed frame, so the ratio render reads stays honest.
+    game.stormIonT = st.ion * st.k;
+    game.stormIonMax = st.ion * st.k;
+    if (!wasExposed) game.stormHitWarn = st;
     // Riding it out in the open is a wager that pays: XP per second exposed,
-    // CAPPED per wave (see PROG.STORM_RIDE_MAX) so chasing the front outward
-    // to stretch the timer can't turn weather into a farm.
+    // scaled by the class's own `pay` (a squall's sheath costs a tenth of a
+    // CME's hull and must not pay a CME's rate), and CAPPED per wave (see
+    // PROG.STORM_RIDE_MAX) so chasing the front outward to stretch the timer
+    // can't turn weather into a farm.
     const pay = Math.min(dtReal, Math.max(0, PROG.STORM_RIDE_MAX - game.stormRode));
     if (pay > 0) {
       game.stormRode += pay;
-      addXp(game, pay * PROG.XP_STORM_RIDE);
+      addXp(game, pay * PROG.XP_STORM_RIDE * st.pay * st.k);
     }
     bump(game, 'stormExposedT', dtReal);
   } else if (game.stormIonT > 0) {
@@ -1926,29 +2128,47 @@ window.goto = (target, y) => {
 // without respawn loops resetting the scene under you.
 window.god = (on = true) => { game.godMode = !!on; return game.godMode; };
 
-// window.storm(where): fire a SOLAR WAVE on demand instead of waiting out
+// window.storm(where, cls): fire a SOLAR WAVE on demand instead of waiting out
 // CFG.STORM_EVERY. 'charge' (default) starts at the telegraph, so you see the
 // whole event; 'here' skips straight to a front already climbing toward the
 // ship, which is how you check exposure/shelter without a 40-second wait;
 // 'off' clears the wave outright. Returns the live wave state.
-window.storm = (where = 'charge') => {
+//
+// `cls` picks the intensity — a CFG.STORM_CLASSES key ('squall'/'surge'/'cme')
+// or an index — and defaults to a fair roll, exactly as the sky rolls one. Pin
+// it when you are checking a class's own numbers or palette; a random draw is
+// the wrong tool for "does the squall read as a squall".
+window.storm = (where = 'charge', cls) => {
   if (where === 'off') {
-    game.storm = null; game.stormChargeT = 0;
+    game.storm = null; game.stormChargeT = 0; game.stormCls = null;
     game.stormExposed = false; game.stormBlind = false; game.stormIonT = 0;
     return null;
   }
+  const c = (typeof cls === 'number' ? CFG.STORM_CLASSES[cls]
+    : cls ? CFG.STORM_CLASSES.find((k) => k.key === cls) : null) || stormClass(Math.random);
   game.stormChargeT = 0;
+  game.stormCls = c;
   if (where === 'charge') {
     game.storm = null;
-    game.stormChargeT = CFG.STORM_CHARGE;
-    game.stormChargeWarn = true;
-    return { charging: CFG.STORM_CHARGE };
+    game.stormChargeT = c.charge;
+    game.stormChargeMax = c.charge;
+    game.stormChargeWarn = c;
+    return { charging: c.charge, cls: c.key };
   }
   // Park the shock just inside the ship so the sheath is about to arrive.
   const r0 = Math.max(game.homeStar.radius, Math.hypot(game.ship.x, game.ship.y) - 1200);
-  game.storm = { r: r0, prevR: r0, seed: Math.random() * 1000 };
-  game.stormWarn = true;
-  return { r: Math.round(r0), shipR: Math.round(Math.hypot(game.ship.x, game.ship.y)) };
+  game.storm = { r: r0, prevR: r0, seed: Math.random() * 1000, k: 1, ...c };
+  game.storm.k = stormStrength(game.storm);
+  game.stormWarn = c;
+  // `k` and `reachR` in the return value because parking a class OUTSIDE its
+  // reach is the easy way to waste ten minutes wondering why nothing happened:
+  // a squall cannot exist past half the system, so asking for one out at the
+  // ice worlds hands back a wave that is already spent (k 0) and expires on the
+  // next frame. That is correct, and it is invisible unless it is reported.
+  return {
+    r: Math.round(r0), shipR: Math.round(Math.hypot(game.ship.x, game.ship.y)),
+    cls: c.key, k: +game.storm.k.toFixed(2), reachR: Math.round(CFG.WORLD_R * c.reach),
+  };
 };
 
 // window.freshRun(specIdx, seed): repeatable fresh run for dev/testing — a
