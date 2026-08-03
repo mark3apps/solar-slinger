@@ -178,11 +178,23 @@ export function computeFlingVelocity(game, body) {
 // where their momentum left them, which is the point.
 //
 // Cheap enough to run on every grab: it is one pass over the body array per
-// grab (not per frame), and the type guard means a pebble never pays for it.
-// The crust halo is the one binding NOT cut here — physics.updateCrust stands
-// its assist down while the host is held, and the pieces resettle after.
+// grab (not per frame), and the guard means a pebble never pays for it.
+//
+// THE GUARD ASKS WHAT CAN HAVE RAILS ANCHORED TO IT, not what is a world, and
+// that is the whole reason `bigShape` is in it. A LANDMARK ROCK calves a real
+// crust halo now (physics.calveCrust fires on body.bigShape), and
+// physics.updateCrust rails the settled pieces to it with the same
+// railBody(b, h) a planet's rubble gets. While the three world types were the
+// whole test, grabbing a giant or a monolith left that shell welded to the
+// beam — this function's exact failure mode, arriving by the one route
+// updateCrust's own stand-down cannot cover: its host-held bail sits ABOVE the
+// `b.onRails` check, so a piece that had already railed is never looked at
+// again. Standing the assist down only stops NEW rails; cutting the live ones
+// is this pass's job. The pieces resettle after the drop on the free window
+// updateCrust holds open.
 function unglue(game, host) {
-  if (host.type !== 'planet' && host.type !== 'moon' && host.type !== 'rogue') return;
+  if (host.type !== 'planet' && host.type !== 'moon' && host.type !== 'rogue' &&
+      !host.bigShape) return;
   for (const b of game.bodies) {
     if (b.alive && b.onRails && b.rail.parent === host) derail(b);
   }
@@ -319,12 +331,22 @@ function pickTarget(game) {
 // you could not line up the throw you were winching up for. Releasing the
 // button is the only way to abandon it (main.onFling -> cancelLatch), and
 // nothing is banked for next time.
-export function updateLatch(game, dt) {
+//
+// `btn` MAKES THAT CONTRACT LOAD-BEARING instead of assumed. The winch used to
+// trust main.onFling alone to end it, and onFling sat behind the menu gate:
+// mouseup is a WINDOW listener, so a release while paused / in settings / on an
+// upgrade card cleared the button and never reached cancelLatch, while this
+// function — which reads alive / heldBy / range and nothing about the mouse —
+// carried the winch across the freeze and finished it with no button held.
+// onFling is fixed, but the rule belongs where the winch lives too. Passed in
+// rather than read here: tractor.js does not import input.js, and reaching into
+// raw input state from the sim would be the wrong direction for that edge.
+export function updateLatch(game, dt, btn = true) {
   const L = game.latch;
   if (!L) return;
   const b = L.body, s = game.ship, st = game.st;
   const canSecond = st.twinGrip && game.held && !game.held2;
-  if (!b.alive || !s.alive || b.heldBy === 'orbit' || b.parryFrozen ||
+  if (!btn || !b.alive || !s.alive || b.heldBy === 'orbit' || b.parryFrozen ||
       (game.held && !canSecond) || !canLift(st, b) ||
       Math.hypot(b.x - s.x, b.y - s.y) > st.range + b.radius) {
     cancelLatch(game);
