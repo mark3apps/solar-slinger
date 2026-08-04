@@ -6,7 +6,7 @@ import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
-import { setDeathVisible } from './hud.js';
+import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
 import { mulberry32, surfaceVel } from './util.js';
 import { input } from './input.js';
@@ -20,16 +20,34 @@ import { input } from './input.js';
 // makes the whole suite bit-identical run to run, and the finally-restore
 // keeps that convention intact afterward). This is a MECHANICS smoke suite;
 // long-horizon stability/balance is window.soak + the balance-test skill.
+//
+// TWO THINGS HAD TO BE TRUE FOR "bit-identical run to run" TO ACTUALLY HOLD,
+// and neither was, until issue #96 (both are fixed at the source, not here):
+//   1. Nothing outside the sim may draw from the swapped stream. sfx.js took
+//      a wildly variable number of draws depending on whether an AudioContext
+//      existed and whether samples had decoded — so a single real keydown in
+//      the suite moved a later pick onto a different ability. sfx/music/hud
+//      now own private streams.
+//   2. Nothing seeded off a body id may outlive its world. `NEXT_ID` was
+//      session-monotonic while rockshape.rockShapeOf keys the baked silhouette
+//      off it, so a re-run built the same layout wearing DIFFERENT rock and
+//      diverged within half a second. world.generateWorld resets it.
+// `draws` on every result is the tripwire for a recurrence: it is the RNG
+// draw count at that test's boundary, and two runs of the same seed must
+// produce the same sequence of them. A drifting draws column localises the
+// culprit to one test in a single diff, which is how both of the above were
+// found.
 
 // Assertion helper: numbers land in the detail string so a failure is
 // diagnosable straight from the report, without re-running.
+let draws = 0;   // RNG draws taken so far this run (see the note above)
 function makeT(results) {
   return (name, fn) => {
     try {
       const detail = fn();
-      results.push({ name, pass: true, detail: detail == null ? '' : String(detail) });
+      results.push({ name, pass: true, detail: detail == null ? '' : String(detail), draws });
     } catch (e) {
-      results.push({ name, pass: false, detail: String((e && e.message) || e) });
+      results.push({ name, pass: false, detail: String((e && e.message) || e), draws });
     }
   };
 }
@@ -73,7 +91,8 @@ export function runMechTest(game, hooks, opts = {}) {
   // ---- determinism + quiet: seeded RNG swap, sound off, picks auto-resolved
   const realRandom = Math.random;
   const rng = mulberry32(seed ^ 0x5f3759df);
-  Math.random = () => rng();
+  draws = 0;
+  Math.random = () => { draws++; return rng(); };
   const wasAuto = game.autoUpgrade;
   game.autoUpgrade = true;
   // THE INPUT DEVICE IS SHARED STATE, and the suite drives it: the docking and
@@ -805,36 +824,83 @@ export function runMechTest(game, hooks, opts = {}) {
       return `rank ${rank}, launched at ${Math.round(sp)} u/s toward the cursor`;
     });
 
-    // ---- PILOT CARD (PR #82) — DELIBERATELY NOT COVERED HERE ---------------
-    // Issue #96 asked for a scripted case that drives an inline offer with
-    // `autoUpgrade` off and answers it through the real UI paths. It was
-    // written, it passed, and it was REMOVED, because it cost the suite the
-    // one property the whole thing rests on: bit-repeatability.
+    // ---- PILOT CARD (PR #82) ------------------------------------------------
+    // T23 — the inline offer, answered through the REAL UI paths. Everything
+    // else in this suite runs with `autoUpgrade` on, so `applyPick` is only
+    // ever reached by the headless resolve: until this case, neither the digit
+    // keys, nor the #offerBox click delegate, nor the guard that stops a digit
+    // spending a pick into a paused run was touched by anything at all.
     //
-    // Measured, on this file with nothing else changed. A case that merely
-    // OPENS an inline offer is repeatable across five consecutive
-    // `window.mechTest()` calls. Add the one line that ANSWERS it — a real
-    // `Digit1` keydown into `pickFromUi` — and consecutive runs stop matching:
-    // the delivery check drifts (+95 / +83 / +107 xp) because an earlier
-    // auto-pick is handed a different ability, i.e. the seeded stream has
-    // shifted. HEAD is stable over the same five runs, and stays stable with
-    // 2.6s of idle inserted between them, so it is not wall-clock or stray
-    // frames — answering a pick through the UI leaves something behind that
-    // `resetRun` does not clear.
-    //
-    // Two known contributors, neither of which is the whole story:
-    //   * the offerBox click delegate routes to hud's `onUpgradePick`, which
-    //     calls `sfx.initAudio()`; `sfx.play()` draws a Math.random() to pick a
-    //     sample variant, but ONLY once a context exists and a buffer has
-    //     decoded — so bringing audio up mid-suite silently shifts every later
-    //     draw. (Headless, audio never comes up, which is why the suite is
-    //     deterministic today largely by accident.)
-    //   * the keydown path alone still drifts, with audio never initialised.
-    //
-    // A suite that quietly stopped being repeatable would be worse than this
-    // gap, so the gap is documented instead. Root-causing the second one is
-    // tracked separately; do not re-add a case that answers a pick until it is
-    // fixed and five consecutive runs compare equal.
+    // THIS CASE IS WHY sfx.js AND music.js DRAW FROM THEIR OWN STREAMS. A real
+    // keydown brings the AudioContext up (input.js calls initAudio on ANY key),
+    // and sfx's synth fallback burns ~29,000 draws per noiseSweep in the window
+    // where a context exists but the samples have not decoded — three different
+    // draw counts for the same gameplay, chosen by a user gesture and a fetch.
+    // On the shared stream that moved a later pick onto a different ability and
+    // the suite stopped being repeatable, which is why this case was written,
+    // reverted once, and only now lands. If it ever drifts again, do NOT delete
+    // it: check first that nothing new has started drawing gameplay randoms off
+    // an initialise-once capability, and read the `draws` column to find where.
+    t('pilot card: keydown, click, and the paused-run guard', () => {
+      hooks.freshRun(0, seed);
+      game.autoUpgrade = false;
+      const offer = () => {
+        game.flingDelayT = 0;   // the post-fling deferral is T5's subject, not this one
+        game.prog.xp = xpForPick(game.prog) + 1;
+        hooks.stepSim(0.2);
+      };
+      const digit = (code) =>
+        window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+
+      offer();
+      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+        'no inline offer stood up with autoUpgrade off');
+      expect(!game.choosingUpgrade,
+        'an ability offer froze the sim — only the spec card is a modal');
+
+      // The markup the delegate reads. It routes off `data-i`, so a card that
+      // lost its index is a dead card that silently swallows the click.
+      updateHud(game);
+      const rows = [...document.querySelectorAll('#offerBox .ofrow')];
+      expect(rows.length === game.upgradeChoices.length,
+        `offer drew ${rows.length} cards for ${game.upgradeChoices.length} choices`);
+      expect(rows.every((r, i) => +r.dataset.i === i), 'offer card data-i is not 0..n-1');
+      expect(rows[0].textContent.includes(game.upgradeChoices[0].name),
+        'the drawn card does not name the choice it stands for');
+
+      // GUARD: the digits are a WINDOW listener and fire whatever is on screen,
+      // so a pick must not be spendable into a paused run.
+      const want0 = game.upgradeChoices[0].id;
+      game.paused = true;
+      digit('Digit1');
+      game.paused = false;
+      expect(game.upgradeChoices, 'a digit spent the pick while the run was paused');
+      expect(!game.prog.upgrades[want0], `paused Digit1 still granted ${want0}`);
+
+      // KEYDOWN answers it...
+      digit('Digit1');
+      input.keys.delete('Digit1');   // no keyup is dispatched; do not leave it held
+      expect(!game.upgradeChoices, 'the offer survived the keypress');
+      expect(game.prog.upgrades[want0] >= 1, `Digit1 did not grant ${want0}`);
+      // ...and an answered INLINE offer holds the next card back, so it cannot
+      // land under a finger still on the button (the flingDelayT reuse).
+      expect(game.flingDelayT >= 0.8, 'answering an inline offer armed no deferral');
+
+      // CLICK answers the next one, through the delegate rather than the key.
+      offer();
+      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+        'no second offer to answer by mouse');
+      const want1 = game.upgradeChoices[1].id;
+      updateHud(game);
+      const row1 = document.querySelector('#offerBox .ofrow[data-i="1"]');
+      expect(row1, 'the second offer drew no card at data-i=1');
+      row1.click();
+      expect(!game.upgradeChoices, 'the offer survived the click');
+      expect(game.prog.upgrades[want1] >= 1, `the click did not grant ${want1}`);
+
+      game.autoUpgrade = true;
+      return `key -> ${want0}, click -> ${want1}, paused digit refused`;
+    });
 
     // T19 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {

@@ -22,7 +22,7 @@
 // while the sim is frozen (menus just duck the level — the duck rides
 // musicBus, so per-track gains carry only the crossfade envelopes).
 import { getAudio } from './sfx.js';
-import { lerp, shellModal } from './util.js';
+import { lerp, shellModal, mulberry32 } from './util.js';
 
 const DIR = 'assets/audio/music/';
 // Every playlist needs at least TWO tracks: nextTrack can only avoid a repeat
@@ -114,12 +114,19 @@ function getPlayer(a, file) {
   return p;
 }
 
+// Its own stream, not Math.random — for sfx.js's reason (see the note at the
+// top of that file): this is reached only once an AudioContext exists, so
+// whether it draws at all depends on a user gesture rather than on anything
+// the sim did. Sharing the gameplay stream would mean a run's spawns differed
+// depending on whether the player had clicked yet.
+const mrnd = mulberry32(0x4d5531);
+
 function nextTrack(name) {
   const list = PLAYLISTS[name].files;
   const avoid = new Set([current, lastInBucket[name]]);
   const fresh = list.filter((f) => !avoid.has(f));
   const pool = fresh.length ? fresh : list.filter((f) => f !== current);
-  return (pool.length ? pool : list)[(Math.random() * (pool.length || list.length)) | 0];
+  return (pool.length ? pool : list)[(mrnd() * (pool.length || list.length)) | 0];
 }
 
 // Crossfade the current track out (if any) and `file` in over `fade` seconds.

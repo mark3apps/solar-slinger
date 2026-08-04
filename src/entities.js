@@ -1,7 +1,21 @@
 import { CFG } from './config.js';
 import { TAU, CRYSTAL_REACH } from './util.js';
 
+// A body's id is not just an identity — it is a SEED. rockshape.rockShapeOf
+// picks the baked silhouette off `b.id % ROCK_ROOTS.length`, and render.js
+// seeds the shard arch, the jag ring, the crystal shards and half a dozen
+// sprite details off it too. So the counter has to restart with the world, or
+// two runs of the same seed are not the same sky: the rock at a given position
+// wears a different shape on the second run (the counter had advanced ~4,400),
+// which changes its reach, its SAT contacts and therefore which ambient
+// collisions happen. Measured: window.mechTest's own contract is to be
+// bit-repeatable, and freshRun(0, seed) + tick(0.5) — identical worldgen
+// checksum in — landed on 4,409 / 4,410 / 4,411 live bodies across four
+// consecutive in-session runs, purely from this. RESET WITH THE WORLD, in the
+// same block as gravel.reset() and the registries (world.js) — it is the same
+// family of bug: state that outlives its world. (Issue #96.)
 let NEXT_ID = 1;
+export function resetBodyIds() { NEXT_ID = 1; }
 
 export function massToHp(mass) { return Math.max(4, mass * 0.012); }
 
