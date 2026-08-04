@@ -25,6 +25,13 @@ import { ROCK_SHAPES, ROCK_ROOTS } from './rockdata.js';
 // as the old per-id generation did. A body may also name one outright
 // (`b.shapeId`), which is how a fracture piece keeps the identity the bake gave
 // it rather than re-rolling into an unrelated silhouette.
+//
+// "SURVIVES A HEADLESS RE-RUN" IS A CLAIM ON entities.js, not just on this line:
+// it holds only because `generateWorld` resets the id counter, so a seed's ids
+// are a pure function of the seed. While `NEXT_ID` was session-monotonic this
+// was quietly false — same layout, different rock, and therefore different
+// reach, different SAT contacts and different collisions on the second run of
+// the same seed. Don't make the counter monotonic again. (Issue #96.)
 export function rockShapeOf(b) {
   if (b._rs) return b._rs;
   const id = b.shapeId || ROCK_ROOTS[Math.abs(b.id | 0) % ROCK_ROOTS.length];

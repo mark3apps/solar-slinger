@@ -185,7 +185,14 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
   is FIXED, so the seed varies placement, masses and features, never the structural counts: the
   balance baseline holds on any seed. (It censuses as **17 planets / 59 moons** — the layout's 15
   plus the crystal binary's companion and The Wanderer's Star, and the ring shepherd moonlet.) Runtime spawns/spall/AI intentionally use `Math.random`.
-  Procedural sprite geometry is seeded off `b.id` and cached.
+  Procedural sprite geometry is seeded off `b.id` and cached — and **`b.id` restarts with the
+  world** (`entities.resetBodyIds`, called from `generateWorld`), because `rockshape.rockShapeOf`
+  picks the baked silhouette off it: a session-monotonic counter built the same layout wearing
+  different rock on a re-run, which changed reach, contacts and therefore collisions.
+  **Cosmetic subsystems draw from their OWN streams, never `Math.random`** — `sfx.js`, `music.js`
+  and `hud.js` each hold a private `mulberry32`. Their draw counts depend on whether an
+  AudioContext exists and whether samples have decoded, i.e. on a user gesture and a fetch, so on
+  the shared stream a keypress could move a spawn.
 ### Canvas discipline
 
 - Pair every `translate`/`rotate`/`clip` with `save()`/`restore()`.
@@ -475,7 +482,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; 28/28 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; 29/29 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 
