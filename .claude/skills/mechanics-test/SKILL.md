@@ -7,8 +7,10 @@ description: Run Solar Slinger's scripted, fixed-seed mechanics suite (window.me
 
 `window.mechTest()` scripts a fixed set of player actions against a **fixed-seed** fresh run and asserts
 each core mechanic — and several design laws — still behaves. It is **bit-repeatable**: the world seed is
-fixed and `Math.random` is swapped for a seeded RNG for the duration, so two runs on the same code return
-identical reports. A run takes ~4s wall (the docking cases fly real approaches).
+fixed, `Math.random` is swapped for a seeded RNG, and the view is pinned to 1920x1080 for the duration,
+so two runs on the same code return identical reports — on any machine, at any window size (the pin is
+what makes the window-independence a guarantee rather than a float coincidence; see issue #104 below).
+A run takes ~4s wall (the docking cases fly real approaches).
 
 This is the fast "did I break the game loop?" check. It complements, not replaces, the `balance-test`
 skill: mechanics-test proves the verbs work; balance-test proves the sky survives an hour.
@@ -66,11 +68,13 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | storm: every moon casts a lee | **"every moon shelters"** — counts real moons against `STORM_SHADOW_MIN_R` (the floor was 60 and quietly failed 40 of 59); the ring shepherd moonlet is the one documented exception |
 | parry: the riposte flies at the cursor | the aimed-deflection direction — ship→cursor, not back along the capture bearing |
 | pilot card: keydown, click, and the paused-run guard | the inline offer's three real answer paths — the `Digit1` keydown, the `#offerBox` click delegate (and the `data-i` wiring it reads), and the guard that refuses a digit into a paused run; plus the `flingDelayT` deferral an answered inline offer arms |
+| harness view is pinned | **bit-repeatability across window sizes** (issue #104) — `game.viewPin` is in force and the sim is reading it, asserted as exact equality (`cam.zoom === zoomCur`, `viewR === VIEW_REF_DIAG/2/zoomCur`) |
 | sky intact after suite | the suite's own actions must not shred planets/moons |
 
 **The pilot card's answer paths ARE covered now** (issue #96), and the story is worth knowing before
 you touch this suite. That case was written once, passed, and was reverted, because answering a pick
-made consecutive runs diverge. Two independent defects, both since fixed at the source:
+made consecutive runs diverge. Two independent defects (both since fixed at the source), plus a third
+that is latent rather than observed:
 
 - **Audio was drawing from the gameplay stream.** `input.js` calls `initAudio()` on ANY keydown, and
   `sfx.play()` plus its synth fallback take a wildly different number of `Math.random` draws
@@ -82,6 +86,16 @@ made consecutive runs diverge. Two independent defects, both since fixed at the 
   keys the baked silhouette off `b.id`, so a re-run of the same seed built the same layout wearing
   DIFFERENT rock — identical worldgen checksum in, 4,409 / 4,410 / 4,411 live bodies out half a
   second later. `world.generateWorld` resets it now.
+- **The window could reach the sim** (issue #104) — closed STRUCTURALLY, not because it was caught
+  misbehaving. `game.viewR` sizes the spawn ring and the leashes in `world.replenishWorld`, and the
+  `continue` past a leash SKIPS the `rng()` draws behind it — so viewR gates draw COUNTS, and
+  `cam.zoom` turns the suite's parked 300px cursor into a world distance. main.js's fair view folds
+  the canvas-size normalization into `cam.zoom`, which cancels the window out of viewR. **That
+  cancellation was measured to be exact, not merely algebraic**: viewR is byte-identical
+  (7867.525607436779) at 1024x736 / 1440x868 / 1920x1018 and the whole report — `draws` and details —
+  matches across all three even BEFORE the pin. So this defect is latent, not observed. `runMechTest`
+  pins `game.viewPin` anyway, honoured by `main.simView`, so the property is guaranteed rather than
+  inherited from a float coincidence; the "harness view is pinned" case asserts it.
 
 **Every result carries a `draws` field** — the RNG draw count at that test's boundary. It is the
 tripwire: two runs of the same seed must produce the same sequence of them, and a drifting column
@@ -104,6 +118,7 @@ check whether something has started drawing gameplay randoms off an initialise-o
 
 Checks live in [src/devtest.js](../../../src/devtest.js) — one `t('name', () => { ... })` block each,
 using `expect(cond, msg)` and returning a short detail string. Keep new checks deterministic (no wall
-clock, no unseeded randomness), park the ship with `parkShip` first, and leave the world census intact
+clock, no unseeded randomness, and **no raw `window.innerWidth/Height`** — read `VIEW_PIN`, the view
+the suite pins), park the ship with `parkShip` first, and leave the world census intact
 or the final "sky intact" check will flag you. devtest.js is lazy-loaded (only `window.mechTest` imports
 it), so it costs normal play nothing — keep it that way.
