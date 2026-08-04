@@ -10,18 +10,18 @@
 > works out are still the reasoning behind those tables.
 
 Ready-to-paste GPT Image 2 prompts for reference sprite sheets, which get hand-converted into
-procedural path tables (`SCOUT_TIERS` / `BRAWLER_TIERS`) alongside the existing `SHIP_TIERS`
-(→ `HAULER_TIERS`) in render.js. The images are **reference, not shipped assets** — the same route
-the current hull took (see the note above `drawShipHull`, render.js:4514).
+procedural path tables (`SCOUT_TIERS` / `BRAWLER_TIERS`) alongside `HAULER_TIERS` in render.js.
+The images are **reference, not shipped assets** — the same route the hauler hull took (see the
+note above `drawShipHull`).
 
 **Two prompts, one per spec.** Each yields one sheet carrying the full 6-tier ladder, so the whole
 class shares a design language by construction rather than by luck across separate generations.
 
 ## No damage states
 
-Damage is already procedural. `shipScars()` (render.js:4525) seeds scorch gouges, rust streaks and
+Damage is already procedural. `shipScars()` seeds scorch gouges, rust streaks and
 rim bites off `(tier, dmg)` and is driven by the damage level, not the hull design — it applies to a
-new spec table for free. Thresholds, for reference (render.js:5156): clean > 66% hull, damaged
+new spec table for free. Thresholds, for reference (see `drawShip`): clean > 66% hull, damaged
 33–66%, critical < 33%.
 
 **Known follow-up:** scar placement currently samples a circle of radius `bR` around the body disc
@@ -50,7 +50,7 @@ ladder sheet.
 
 Drawn from what the code already enforces, so the art doesn't fight the sim:
 
-- **Symmetry is mandatory.** Every feature in `SHIP_TIERS` is mirrored at draw time
+- **Symmetry is mandatory.** Every feature in the hull tables is mirrored at draw time
   (`for (const m of [1, -1])`); an asymmetric reference costs a redesign to port.
 - **Scout is a winged gun platform.** It arms itself by swallowing rock: intake maw at the bow →
   hopper amidships → feed conduits running outboard along the wings → weapons on wing hardpoints.
@@ -129,7 +129,7 @@ Style: flat vector game sprite art, top-down orthographic view seen from directl
 
 ## What happens to the images
 
-They get traced by eye into per-tier spec tables shaped like `SHIP_TIERS` (render.js:4565) — body
+They get traced by eye into per-tier spec tables shaped like `HAULER_TIERS` — body
 radius, nose length, plate arcs, pod bearings, engine count — not embedded as bitmaps. So the useful
 properties of a generation are, in order:
 
