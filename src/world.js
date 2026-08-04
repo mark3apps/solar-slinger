@@ -1819,7 +1819,7 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
       let clash = false, near = Infinity;
       for (const g of slots) {
         // SPACED BY THE SHAPE'S REACH, NOT BY ITS CIRCLE. A landmark's corners
-        // reach 1.14-1.62x its nominal radius (util.rockShape's `reach`), so
+        // reach 1.14-1.62x its nominal radius (rockshape's shape `reach`), so
         // packing on `r` reserved a footprint about half the size of the rock
         // that went into it, and the masonry was born INTERLOCKED — visibly
         // overlapping and clipping on every seed, before anything moved.
@@ -1835,7 +1835,7 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
         // and worldgen runs constantly (freshRun / mechTest).
         // Reach is the cheap guarantee: one number per rock, and no orientation
         // can defeat it.
-        // Bounded PER DIRECTION (util.rockReachAt), not by the shape's global
+        // Bounded PER DIRECTION (rockshape.reachAt), not by the shape's global
         // reach. Still a strict upper bound — nothing can overlap — but an
         // honest one: a slab's longest corner points one way, and reserving for
         // it in every direction is what left the biggest rocks stranded in their
@@ -1843,7 +1843,7 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
         const ang = Math.atan2(p.y - g.y, p.x - g.x);
         const dc = Math.hypot(g.x - p.x, g.y - p.y) || 1;
         // Each rock's bound is taken over the arc the OTHER one subtends — see
-        // util.rockReachAt. Without the window this is a centre-line bound and
+        // rockshape.reachAt. Without the window this is a centre-line bound and
         // two large rocks interlock at a corner off it, which is the clipping
         // the reach bound exists to prevent.
         const hg = Math.min(1.2, Math.asin(Math.min(1, r * shapeReach(sp.shapeId) / dc)));
@@ -1916,8 +1916,8 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
 // outline (render.traceAsteroid) and the collider (physics.surfRadius) key off
 // it and nothing else — not a radius threshold on each side, which is how the
 // picture and the hitbox drift apart the moment one of them is retuned or a
-// rock chips its way across the line. util.rockShape turns it into an actual
-// slab / wedge / lump off the body id.
+// rock chips its way across the line. rockshape.rockShapeOf turns it into an
+// actual slab / wedge / lump off the body id.
 function shapeBig(b) {
   b.bigShape = true;
   return b;
