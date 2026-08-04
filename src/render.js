@@ -5316,7 +5316,10 @@ function drawAlien(game, al) {
 
 function drawPrediction(game) {
   // The Trajectory Plotter is an upgrade; the throw line also hides while the
-  // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
+  // sim is frozen behind any overlay (splash, shell panel, pause, SPEC card).
+  // `choosingUpgrade` is the FREEZE flag and nothing else now — an inline
+  // ability offer on the pilot card leaves the sim running, so the forecast
+  // keeps drawing under it, which is right: you are still flying.
   if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
   // ION WASH: a solar wave scrambles the forecast outright (the class's `ion`).

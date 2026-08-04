@@ -3303,6 +3303,30 @@ function updateParry(game, dt) {
   }
   const s = game.ship, st = game.st;
 
+  // A DOCK IS WHERE YOU STOP WORKING. The parry is not in CLAUDE.md's explicit
+  // inert-while-berthed list, but it is the same kind of verb and the same
+  // waste: `damageShip`'s dockReady early-out already eats the damage, so a
+  // berthed parry catches nothing that was going to hurt you and spends its
+  // 2.5s cooldown for a tell.
+  //
+  // STOOD DOWN, not skipped. A live session pins its rocks AT the hull with
+  // `parryFrozen` set, and those pins are released by the code below — so an
+  // early `return` while berthed would weld the caught rock to the ship for the
+  // rest of the run. This is exactly the half-live failure the design law names
+  // ("a half-live system re-welds a ring the dock just emptied"), so it mirrors
+  // `tractor.standDown`: unfreeze, hand each rock the ship's velocity, drop the
+  // session, and pay NOTHING — no riposte, no billiards credit, no XP.
+  if (game.dock) {
+    if (game.parry) {
+      for (const r of game.parry.rocks) {
+        r.b.parryFrozen = false;
+        r.b.vx = s.vx; r.b.vy = s.vy;
+      }
+      game.parry = null;
+    }
+    return;
+  }
+
   // Field scan: start a session, or grow a live one up to capacity
   if (st.deflect > 0 && s.alive && s.invuln <= 0 && !(game.parryCd > 0) &&
       (!game.parry || game.parry.rocks.length < st.deflect)) {

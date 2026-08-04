@@ -195,7 +195,7 @@ are still *reported* by the suite, just not gated.
    (interleaved — the perf bench swings ±50-90% across sessions on unchanged code).
 5. Soft rails; retune the home-return.
 6. Fracture: break → children → new rails.
-7. Delete the old machinery, retune `FIELD_BIG_HP_MUL`, re-run `window.mechTest()` (20/20) and a soak.
+7. Delete the old machinery, retune `FIELD_BIG_HP_MUL`, re-run `window.mechTest()` (28/28) and a soak.
 
 ### Notes for the wiring
 

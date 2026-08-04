@@ -467,14 +467,14 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | Hook | Use |
 |---|---|
 | `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "17/17", moons: "59/59", deaths, impacts, nanEvents, …}`. |
-| `window.mechTest()` | Fixed-seed scripted mechanics suite, ~1.5s, bit-repeatable. |
+| `window.mechTest()` | Fixed-seed scripted mechanics suite, ~4s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |
 | `window.speed(n)` | Live fast-forward of the *visible* game (0.25–50). |
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
-`window.mechTest()` is NOT in the bench suites — run it directly (2.5s) after any player-facing
-mechanic change; 20/20 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+`window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
+mechanic change; 28/28 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

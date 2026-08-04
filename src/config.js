@@ -2173,11 +2173,19 @@ export function stormClass(roll) {
 // so a spent wave SHREDS instead of blinking out at an exact radius (which is
 // the geometric in-world edge the house style will not have). A class's whole
 // geography lives in these two numbers; see the STORM_CLASSES notes.
+// A CLASS'S `fade` MUST BE < 1 — it is a fraction of `reach`, so at 1 the taper
+// has zero width and the divide below is 0. The three shipped classes are
+// 0.62 / 0.68 / 0.858, but a fourth row written with `fade: 1` (a plausible way
+// to say "no taper at all") would return NaN here, and `k` multiplies every
+// bite and every alpha downstream — so the whole wave would silently go NaN and
+// only surface later as a `game.nanEvents` tripwire, far from its cause. The
+// floor makes that row degrade to a one-unit taper instead of poisoning the run.
+// It is not a substitute for the invariant; it is what keeps a violation legible.
 export function stormStrength(wave) {
   const reachR = CFG.WORLD_R * wave.reach;
   const fadeR = reachR * wave.fade;
   if (wave.r <= fadeR) return 1;
-  return Math.max(0, 1 - (wave.r - fadeR) / (reachR - fadeR));
+  return Math.max(0, 1 - (wave.r - fadeR) / Math.max(1, reachR - fadeR));
 }
 
 // …and when there is nothing left of it. The front, not the tail: the sheath
