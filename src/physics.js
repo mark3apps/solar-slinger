@@ -1944,7 +1944,7 @@ function collideBodies(game, a, b) {
   // that rail have exactly ZERO relative motion: there is no collision here to
   // resolve, now or ever. And they genuinely do interlock — the packer spaces
   // landmarks by their circle radii while a shaped rock's corners reach past
-  // that (rockshape's shape `reach`), so a freshly generated pocket has its
+  // that (rockshape.shapeReach), so a freshly generated pocket has its
   // masonry keyed together at the corners on purpose. Measured on seed
   // 20260721: 144 of 801 candidate pairs overlap at rest.
   // Without this gate the resolver would push all 144 apart every substep and

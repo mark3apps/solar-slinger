@@ -1819,7 +1819,7 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
       let clash = false, near = Infinity;
       for (const g of slots) {
         // SPACED BY THE SHAPE'S REACH, NOT BY ITS CIRCLE. A landmark's corners
-        // reach 1.14-1.62x its nominal radius (rockshape's shape `reach`), so
+        // reach 1.14-1.62x its nominal radius (rockshape.shapeReach), so
         // packing on `r` reserved a footprint about half the size of the rock
         // that went into it, and the masonry was born INTERLOCKED — visibly
         // overlapping and clipping on every seed, before anything moved.
