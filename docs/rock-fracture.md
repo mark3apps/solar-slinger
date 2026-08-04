@@ -238,6 +238,29 @@ are genuinely clear (cover 0.013 inside vs 0.200 outside, 15×) but occupy only 
 and their surroundings aren't dense enough to form walls. That's a density-contrast problem, and it
 gets easier once the body count can go back up safely — which depends on the collider being cheap.
 
+**The collider IS cheap now, measured** (issue #85). The hull cache was rebuilding every substep for
+every awake landmark — `ROT_EPS` 1e-4 sat under a 300-unit slab's ~4.6e-4 rad per substep — and each
+rebuild allocated a fresh `Array`, a `Float64Array` per hull, an object per hull and a wrapper.
+Fixed by hoisting the rotation-invariant metrics per SHAPE, allocating the buffers ONCE per body,
+and keying on exact `rot` with no epsilon (an epsilon large enough to catch a spinning landmark is
+most of a unit of vertex error feeding a contact normal — unacceptable in the one file whose whole
+argument is that depth and direction are the same measurement). `physics.js` also passes a
+module-level scratch to `rockContacts`.
+
+Interleaved A/B in one session, `window.tick` (rAF-free, pinned to `CFG.DT`), both arms on an
+identical seeded workload — 4,418 bodies, 640 awake, 95 big-shape landmarks within 2,500 units:
+
+| parking spot | legacy (median) | current (median) | ratio |
+|---|---|---|---|
+| shoal heart | 799.3 ms | 652.2 ms | **1.23×** |
+| open space (`near = 0`) | 313.6 ms | 312.0 ms | 0.99× |
+
+**23% of the TOTAL sim step**, and the open-space control is what makes that mean something: with no
+landmark pairs the two arms are indistinguishable, so the win is the collider rather than noise. The
+arms never overlapped in the shoal (slowest current 660.5 < fastest legacy 783.3). Note the first
+legacy sample read 2338 ms against a warm 317 for identical work — any A/B here must discard its
+first sample and interleave, or a JIT warm-up will straddle the comparison and report anything.
+
 ## The shoal size law, stated correctly
 
 Recorded because it has been misread repeatedly, each time producing a different wrong pocket.

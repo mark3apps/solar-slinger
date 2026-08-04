@@ -1,3 +1,5 @@
+import { mulberry32 } from './util.js';
+
 // Audio engine. EVERY sound is a real royalty-free recording/production from
 // assets/audio/sfx/ (Kenney CC0 packs + CC0 OpenGameArt one-offs — see
 // assets/audio/CREDITS.md), fetched + decoded lazily the moment the
@@ -9,6 +11,28 @@
 // driven from game state; the loop files are authored as seamless loops.
 // music.js shares this module's AudioContext via getAudio() and streams the
 // music beds through musicBus.
+//
+// AUDIO DRAWS FROM ITS OWN STREAM, NEVER Math.random. Every random in this file
+// is cosmetic — which sample variant plays, how much pitch jitter it gets, the
+// noise buffer a fallback sweep is filled with — and none of it may share the
+// stream that drives spawns, spall and AI, because how many draws this file
+// takes depends on STATE THE GAME DOES NOT CONTROL:
+//
+//   * no AudioContext yet    -> play() bails, and blip/noiseSweep bail too: 0 draws
+//   * context up, undecoded  -> play() bails, the SYNTH FALLBACK runs, and
+//                               noiseSweep alone burns sampleRate*dur draws
+//                               (~29,000 for a 0.6s sweep at 48kHz)
+//   * context up, decoded    -> play() succeeds on ONE draw, fallback skipped
+//
+// Those are three different draw counts for the same gameplay, and which one
+// you are in turns on a user gesture (input.js calls initAudio on any keydown)
+// and on when a fetch happened to finish. That made window.mechTest's seeded
+// stream repeatable only by the accident of audio never coming up headlessly —
+// a single real keydown in the suite moved a later pick onto a different
+// ability. Fixed by construction here rather than worked around there: this
+// module's randomness is its own, so gameplay cannot hear it. (Issue #96.)
+const arnd = mulberry32(0x50f1c5);
+
 let ctx = null;
 let master = null;
 let sfxBus = null;
@@ -159,7 +183,7 @@ function play(name, { vol = 1, rate = 1, at = 0, dur = 0 } = {}) {
   try {
     const t0 = ctx.currentTime + at;
     const src = ctx.createBufferSource();
-    src.buffer = buffers.get(ready[(Math.random() * ready.length) | 0]);
+    src.buffer = buffers.get(ready[(arnd() * ready.length) | 0]);
     src.playbackRate.value = rate;
     const g = ctx.createGain();
     g.gain.setValueAtTime(vol, t0);
@@ -230,7 +254,7 @@ export function setThrust(on, boost = false, frac = 0) {
   if (on && !thrustWasOn) burnStart = t;
   if (igniting || boosting) {
     lastIgnite = t;
-    play('ignite', { vol: boosting ? 0.34 : 0.26, rate: (boosting ? 1.1 : 0.9) + Math.random() * 0.2 });
+    play('ignite', { vol: boosting ? 0.34 : 0.26, rate: (boosting ? 1.1 : 0.9) + arnd() * 0.2 });
     // Spool: drop the pitch below base so the setTargetAtTime below climbs it
     // into place — engines wind up, they don't snap on.
     if (lo.src) lo.src.playbackRate.setValueAtTime(0.82, t);
@@ -314,9 +338,9 @@ export function setScrape(x) {
   scrapeWas = x;
   l.gain.gain.setTargetAtTime(0.55 * x, t, 0.08);
   lo.gain.gain.setTargetAtTime(0.35 * x, t, 0.1);
-  if (x > 0.3 && t - lastScrapeHit > 0.22 + Math.random() * 0.3) {
+  if (x > 0.3 && t - lastScrapeHit > 0.22 + arnd() * 0.3) {
     lastScrapeHit = t;
-    play('hullHit', { vol: 0.3 * x, rate: 1.05 + Math.random() * 0.5 });
+    play('hullHit', { vol: 0.3 * x, rate: 1.05 + arnd() * 0.5 });
   }
 }
 
@@ -344,7 +368,7 @@ export function sfxGrab() {
 }
 
 export function sfxFling() {
-  if (!play('whoosh', { vol: 0.5, rate: 0.95 + Math.random() * 0.25 })) {
+  if (!play('whoosh', { vol: 0.5, rate: 0.95 + arnd() * 0.25 })) {
     blip(500, 0.3, 'square', 0.12, 90);
   }
 }
@@ -354,14 +378,14 @@ export function sfxDrop() {
 }
 
 export function sfxCollect() {
-  if (!play('glass', { vol: 0.32, rate: 0.9 + Math.random() * 0.3 })) {
+  if (!play('glass', { vol: 0.32, rate: 0.9 + arnd() * 0.3 })) {
     blip(880, 0.09, 'sine', 0.14); blip(1320, 0.14, 'sine', 0.1);
   }
 }
 
 // Glow-pocket mote: like collect but smaller, rounder, higher
 export function sfxMote() {
-  if (!play('glass', { vol: 0.2, rate: 1.25 + Math.random() * 0.35 })) {
+  if (!play('glass', { vol: 0.2, rate: 1.25 + arnd() * 0.35 })) {
     blip(1100, 0.08, 'sine', 0.08);
   }
 }
@@ -387,7 +411,7 @@ export function sfxLife() {
 }
 
 export function sfxHit() {
-  if (!play('hullHit', { vol: 0.5, rate: 0.9 + Math.random() * 0.25 })) {
+  if (!play('hullHit', { vol: 0.5, rate: 0.9 + arnd() * 0.25 })) {
     blip(140, 0.2, 'sawtooth', 0.2, 50);
   }
 }
@@ -406,13 +430,13 @@ export function sfxBump(strength) {
   const t = ctx.currentTime;
   if (t - lastBump < 0.18) return;
   lastBump = t;
-  play('hullHit', { vol: 0.2 + 0.5 * x, rate: 0.6 + 0.25 * x + Math.random() * 0.1 });
+  play('hullHit', { vol: 0.2 + 0.5 * x, rate: 0.6 + 0.25 * x + arnd() * 0.1 });
   if (x > 0.55) play('deepBoom', { vol: 0.3 * x, rate: 0.9 });
 }
 
 // Shield absorbed the whole hit — energy zap, not metal
 export function sfxShieldHit() {
-  if (!play('shield', { vol: 0.35, rate: 1.05 + Math.random() * 0.15 })) {
+  if (!play('shield', { vol: 0.35, rate: 1.05 + arnd() * 0.15 })) {
     blip(900, 0.15, 'sine', 0.1, 300);
   }
 }
@@ -432,7 +456,7 @@ export function sfxMenuClose() { play('menuClose', { vol: 0.35 }); }
 
 // Discovery / survey / lore chime
 export function sfxChime() {
-  if (!play('chime', { vol: 0.35, rate: 1 + Math.random() * 0.06 })) {
+  if (!play('chime', { vol: 0.35, rate: 1 + arnd() * 0.06 })) {
     blip(1180, 0.4, 'sine', 0.09, 1170);
   }
 }
@@ -440,7 +464,7 @@ export function sfxChime() {
 // Bastion turret fire (call with distVol so far forts stay quiet)
 export function sfxBolt(vol = 1) {
   if (vol < 0.05) return;
-  play('bolt', { vol: 0.22 * vol, rate: 0.95 + Math.random() * 0.12 });
+  play('bolt', { vol: 0.22 * vol, rate: 0.95 + arnd() * 0.12 });
 }
 
 // Slipstream warp: retro zap + shimmer
@@ -565,7 +589,7 @@ function noiseSweep(dur, f0, f1, vol) {
     const len = Math.floor(ctx.sampleRate * dur);
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    for (let i = 0; i < len; i++) d[i] = (arnd() * 2 - 1) * (1 - i / len);
     const src = ctx.createBufferSource(); src.buffer = buf;
     const bp = ctx.createBiquadFilter();
     bp.type = 'bandpass'; bp.Q.value = 1.2;

@@ -65,17 +65,29 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | storm: three classes, graded reach and a real taper | **"a wave's reach is its geography, and it dissolves rather than stopping"** — per-class reach ordering, full strength inside `fade`, zero at the limit, and `fade < 1` (the `stormStrength` divisor invariant) |
 | storm: every moon casts a lee | **"every moon shelters"** — counts real moons against `STORM_SHADOW_MIN_R` (the floor was 60 and quietly failed 40 of 59); the ring shepherd moonlet is the one documented exception |
 | parry: the riposte flies at the cursor | the aimed-deflection direction — ship→cursor, not back along the capture bearing |
+| pilot card: keydown, click, and the paused-run guard | the inline offer's three real answer paths — the `Digit1` keydown, the `#offerBox` click delegate (and the `data-i` wiring it reads), and the guard that refuses a digit into a paused run; plus the `flingDelayT` deferral an answered inline offer arms |
 | sky intact after suite | the suite's own actions must not shred planets/moons |
 
-**Known gap — the pilot card's answer paths are NOT covered.** A case that answers an owed pick
-through the UI (`Digit1` → `pickFromUi`, or the `#offerBox` click delegate) was written and then
-removed: it works, but it costs the suite its bit-repeatability. Opening an offer is repeatable over
-five consecutive runs; answering one makes them diverge (the delivery check drifts +95 / +83 / +107
-xp as an earlier auto-pick lands on a different ability). HEAD is stable over the same five runs,
-and stays stable with idle time inserted between them, so it is not wall-clock or stray frames.
-The full evidence and the two known contributors are in the comment block where the test used to
-live, in `src/devtest.js`. **Do not re-add a case that answers a pick until five consecutive runs
-compare equal.**
+**The pilot card's answer paths ARE covered now** (issue #96), and the story is worth knowing before
+you touch this suite. That case was written once, passed, and was reverted, because answering a pick
+made consecutive runs diverge. Two independent defects, both since fixed at the source:
+
+- **Audio was drawing from the gameplay stream.** `input.js` calls `initAudio()` on ANY keydown, and
+  `sfx.play()` plus its synth fallback take a wildly different number of `Math.random` draws
+  depending on whether a context exists and whether samples have decoded — no context = 0 draws,
+  context but undecoded = the fallback runs and `noiseSweep` alone burns ~29,000, decoded = one.
+  One real keydown therefore moved a later pick onto a different ability. `sfx.js`, `music.js` and
+  `hud.js` now own private streams.
+- **Body ids outlived their world.** `NEXT_ID` was session-monotonic while `rockshape.rockShapeOf`
+  keys the baked silhouette off `b.id`, so a re-run of the same seed built the same layout wearing
+  DIFFERENT rock — identical worldgen checksum in, 4,409 / 4,410 / 4,411 live bodies out half a
+  second later. `world.generateWorld` resets it now.
+
+**Every result carries a `draws` field** — the RNG draw count at that test's boundary. It is the
+tripwire: two runs of the same seed must produce the same sequence of them, and a drifting column
+localises a recurrence to a single test in one diff. That is how both defects above were found.
+**If a new case ever makes the suite drift, do not delete the case** — read the `draws` column, and
+check whether something has started drawing gameplay randoms off an initialise-once capability.
 
 ## Judging results
 

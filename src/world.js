@@ -2,7 +2,7 @@ import {
   CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass,
   FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent,
 } from './config.js';
-import { Body, railBody, railEllipse, makeChunk, chunkHaloW } from './entities.js';
+import { Body, railBody, railEllipse, makeChunk, chunkHaloW, resetBodyIds } from './entities.js';
 import { seedGlowPockets } from './glow.js';
 import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel } from './util.js';
 import { pickShapeId, reachAt, shapeReach, rockOverlap, rockReach } from './rockshape.js';
@@ -567,6 +567,15 @@ export function generateWorld(game, seed = 20260721) {
   // debris in typed arrays that nothing else clears, so without this a regen
   // leaves every grain of the previous run drifting through the new one.
   gravel.reset();
+  // ...and the body-id counter, sixth of the same family — and the only one
+  // whose leak is INVISIBLE, because the ids stay perfectly valid. It seeds
+  // every rock's baked shape (rockshape.rockShapeOf) and its sprite detail, so
+  // without this the same seed builds the same layout wearing different rock:
+  // identical worldgen checksum, different collisions half a second later. The
+  // reset goes BEFORE generateWorld's bodies are minted, and the ship is minted
+  // inside it too, so a run's ids are a pure function of the seed. See the note
+  // on NEXT_ID in entities.js.
+  resetBodyIds();
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is

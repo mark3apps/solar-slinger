@@ -4,6 +4,7 @@ import {
   chart, contactLabel, contactClass, contactLevel, waypointLabel, waypointPos,
   pointLabel, MAX_WAYPOINTS,
 } from './starmap.js';
+import { mulberry32 } from './util.js';
 
 const el = {};
 let msgTimer = null;
@@ -225,6 +226,12 @@ const TITLE_A = 'SOLAR ', TITLE_B = 'SLINGER';   // the plain half and the gold 
 const GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#*<>/\\+=';
 const SCRAMBLE_MS = 620;
 let scrambleRaf = 0;
+// Its own stream, for sfx.js's reason (see the note at the top of that file):
+// this runs on rAF for as many frames as the machine gives it in 620ms, so the
+// number of draws is a property of the HARDWARE. On Math.random that would be
+// frame-rate-dependent noise injected into the stream that drives spawns and
+// spall — cosmetic chrome must not be able to move the sim.
+const grnd = mulberry32(0x67c1a5);
 
 function scrambleTitle() {
   const node = el.gametitle;
@@ -239,7 +246,7 @@ function scrambleTitle() {
     for (let i = 0; i < full.length; i++) {
       out += (i < locked || full[i] === ' ')
         ? full[i]
-        : GLYPHS[(Math.random() * GLYPHS.length) | 0];
+        : GLYPHS[(grnd() * GLYPHS.length) | 0];
     }
     // Rebuilt as markup because the gold half is a <span> — the two-tone
     // wordmark has to survive the scramble.

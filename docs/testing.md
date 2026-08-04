@@ -21,8 +21,14 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   lazy-loaded): a fixed set of player actions against a fixed-seed fresh run, asserting each core
   mechanic and several design laws (fling-at-cursor/no-recoil, deferred picks, split-health, orbit
   gating, NaN containment, the three docking gates and what a berth makes inert, the solar-wave
-  classes, and the aimed riposte). **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
-  for a seeded RNG for the duration — so same code ⇒ identical report. Returns
+  classes, the aimed riposte, and the pilot card's keydown/click/paused-guard answer paths).
+  **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
+  for a seeded RNG for the duration — so same code ⇒ identical report. Two things had to be true for
+  that to actually hold, and neither was until issue #96: nothing outside the sim may draw from the
+  swapped stream (sfx/music/hud now own private ones), and nothing seeded off a body id may outlive
+  its world (`generateWorld` resets the id counter). Every result carries a **`draws`** field — the
+  RNG draw count at that test's boundary — which is the tripwire for a recurrence: a drifting column
+  localises the culprit to one test in a single diff. Returns
   `{ passed, failed, results, logs }` (also `window.lastMechReport`; `{download: true}` saves the
   JSON). ~4s wall. See the `mechanics-test` skill for the check list and judging rules.
 - `window.freshRun(specIdx, seed)` — repeatable fresh run: full reset onto the given world seed with
