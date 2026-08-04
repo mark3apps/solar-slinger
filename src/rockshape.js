@@ -31,42 +31,79 @@ export function rockShapeOf(b) {
   return (b._rs = ROCK_SHAPES[id] || ROCK_SHAPES[ROCK_ROOTS[0]]);
 }
 
-// ---- World-space hull cache -------------------------------------------------
-// A hull's world vertices are rebuilt only when the body has actually moved or
-// turned since the last build. Field rock in a settled pocket turns at a few
-// milliradians a second and shares one angular velocity per pocket, so most
-// bodies rebuild once and are then read many times by the sweep.
-//
-// The epsilon is on ROTATION only. Translation is applied at read time (the
-// cache stores centred vertices), because a body that drifts without turning
-// would otherwise dirty the cache every frame for no change in shape.
-const ROT_EPS = 1e-4;
+// ---- Per-shape hull metrics, computed once ----------------------------------
+// A hull's centroid and its bounding-circle radius about that centroid are the
+// two numbers the broad reject inside rockContacts runs on, and both are
+// ROTATION-INVARIANT in the unit frame: the centroid merely turns with the body
+// and `far` is a distance between two points of the same rigid hull, so it does
+// not change at all. Deriving them once per SHAPE and rotating the centroid is
+// what lets the world rebuild below drop its second pass — that pass was an
+// n-vertex Math.hypot loop per hull per rebuild, recomputing a constant.
+function hullMetrics(sh) {
+  let m = sh._hm;
+  if (m) return m;
+  m = sh._hm = [];
+  for (let h = 0; h < sh.hulls.length; h++) {
+    const src = sh.hulls[h], n = src.length >> 1;
+    let cx = 0, cy = 0, far = 0;
+    for (let i = 0; i < n; i++) { cx += src[i * 2]; cy += src[i * 2 + 1]; }
+    cx /= n; cy /= n;
+    for (let i = 0; i < n; i++) {
+      const d = Math.hypot(src[i * 2] - cx, src[i * 2 + 1] - cy);
+      if (d > far) far = d;
+    }
+    m.push({ n, cx, cy, far });
+  }
+  return m;
+}
 
+// ---- World-space hull cache -------------------------------------------------
+// A hull's world vertices are rebuilt only when the body has actually turned or
+// resized since the last build. Translation is applied at read time (the cache
+// stores vertices about the body's own centre), because a body that drifts
+// without turning would otherwise dirty the cache every frame for no change in
+// shape.
+//
+// THE KEY IS EXACT ROTATION, and there is no epsilon. There was one, at 1e-4,
+// and it could never fire: `world.js` seeds a landmark's spin off the Body's
+// ±0.3 rad/s scaled by `max(0.12, min(1, 55/r))`, so a 300-unit slab turns
+// ~4.6e-4 rad per 1/120 substep — 4.6x the epsilon, and no spin in the seeded
+// range sat under it. Every awake landmark took the rebuild path every substep
+// while paying for a cache lookup as well. Raising the epsilon instead would
+// buy hits with a stale hull: at a core rock's reach that is most of a unit of
+// vertex error feeding a contact normal, on the file whose entire job is that
+// the depth and the direction come from the SAME measurement. So the rebuild is
+// made cheap enough not to need hiding — metrics hoisted per shape above,
+// buffers allocated ONCE per body below — and the cache keeps the honest key,
+// where it still hits for every settled or railed rock in the sky.
 function hullsWorld(b) {
   const sh = rockShapeOf(b);
   const rot = b.rot || 0, r = b.radius;
   let c = b._hw;
-  if (c && Math.abs(c.rot - rot) < ROT_EPS && c.r === r && c.sh === sh) return c;
+  if (c && c.rot === rot && c.r === r && c.sh === sh) return c;
+  const met = hullMetrics(sh);
   const cs = Math.cos(rot), sn = Math.sin(rot);
-  const hulls = new Array(sh.hulls.length);
+  // Reuse the body's buffers. Hull count and vertex counts are fixed per shape,
+  // so once the arrays exist for a shape they never need to grow — only a shape
+  // swap (a fracture piece taking its baked child) reallocates.
+  if (!c || c.sh !== sh) {
+    const hulls = new Array(sh.hulls.length);
+    for (let h = 0; h < sh.hulls.length; h++) {
+      hulls[h] = { v: new Float64Array(met[h].n * 2), n: met[h].n, cx: 0, cy: 0, far: 0 };
+    }
+    c = b._hw = { rot: NaN, r: NaN, sh, hulls };
+  }
   for (let h = 0; h < sh.hulls.length; h++) {
-    const src = sh.hulls[h], n = src.length >> 1;
-    const v = new Float64Array(n * 2);
-    let cx = 0, cy = 0, far = 0;
+    const src = sh.hulls[h], mh = met[h], H = c.hulls[h], v = H.v, n = mh.n;
     for (let i = 0; i < n; i++) {
       const x = src[i * 2] * r, y = src[i * 2 + 1] * r;
-      const wx = x * cs - y * sn, wy = x * sn + y * cs;
-      v[i * 2] = wx; v[i * 2 + 1] = wy;
-      cx += wx; cy += wy;
+      v[i * 2] = x * cs - y * sn; v[i * 2 + 1] = x * sn + y * cs;
     }
-    cx /= n; cy /= n;
-    for (let i = 0; i < n; i++) {
-      const d = Math.hypot(v[i * 2] - cx, v[i * 2 + 1] - cy);
-      if (d > far) far = d;
-    }
-    hulls[h] = { v, n, cx, cy, far };
+    const lx = mh.cx * r, ly = mh.cy * r;
+    H.cx = lx * cs - ly * sn; H.cy = lx * sn + ly * cs;
+    H.far = mh.far * r;
   }
-  c = b._hw = { rot, r, sh, hulls };
+  c.rot = rot; c.r = r;
   return c;
 }
 
@@ -151,8 +188,14 @@ const MAX_POINTS = 2;
 // overlapping pairs still overlapping afterwards, with residuals up to twice the
 // depth that was resolved — the same "push along an axis that isn't the one
 // you're stuck on" failure as the collider this replaces, arriving by a
-// different route. The solver takes the whole list and iterates; that converges,
-// a single vector cannot.
+// different route.
+//
+// THIS FUNCTION'S CONTRACT IS THE WHOLE LIST. What the caller does with it is a
+// separate decision, and physics.collideBodies deliberately resolves only cs[0]
+// per substep — several impulses on one pair in one substep is how a contact
+// turns into a launch — relying on 120 Hz iteration to converge instead
+// (measured: 98% of realistic overlaps clear in one push, the rest in two).
+// tools/test-rockshape.mjs walks the full list, which is what proves that.
 //
 // Deepest first, and capped: past a few contacts the extra pairs are shallow
 // corners contributing nothing the first few have not already pinned.

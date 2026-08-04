@@ -235,7 +235,8 @@ give directions by). Rules that keep it from breaking the invariants above:
     Grindstones, The Hushfield) and one on the outer band's frost fringe (authored 44300, The
     Farshoal). Every one of those is an authored radius spread by `CFG.SYS_R_MUL` at seed time
     (world.js's module-local `SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
-    sits — the gaps are the point, not the numbers. Each is 740 rocks (`CFG.FIELD_ROCKS`)
+    sits — the gaps are the point, not the numbers. Each is ~910 rocks (`CFG.FIELD_ROCKS` 920 is the
+    packer's ceiling; the census lands a few short of it)
     across a roughly 6520 x 4860 pocket (`FIELD_LEN`/`FIELD_SPREAD` are HALF-extents), mean
     nearest-neighbour spacing ~148u centre-to-centre and ~26u surface-to-surface — the density the
     user signed off on; SIZE and COUNT are separate knobs and must move together, or you are
@@ -339,7 +340,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       `FIELD_TOUGH` below, applied in `collideShipBody`). The pockets are meant to be **high risk /
       high reward** and were reading as pure reward, because a rigid pocket is SAFE: match its orbit
       and every rock is nearly stationary relative to you, so the `closing > 25` gate left a farmer
-      sitting inside 740 rocks barely scratched. The multiplier rides `closing`, so it weights the
+      sitting inside ~910 rocks barely scratched. The multiplier rides `closing`, so it weights the
       danger toward LOOSE, stirred-up rock — the mess you made — while ambient jostling stays minor.
       Hull does not self-heal, so that attrition is the real price of working a shoal.
       **Field rock also keeps the BASE mass-saturation knee at every tier**, which mattered far more
@@ -372,7 +373,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       without dropping the class's small end below the gravel it has to outweigh.
       **Four things must move together or the grading silently stops working:**
       1. **A ROCK'S ALLOWED REACH FALLS AS A POWER OF ITS RADIUS** (`CFG.FIELD_REACH` `[rim, core]`
-         plus `FIELD_REACH_FALL`) — the primary limit and the direct statement of the law. Two
+         plus `FIELD_REACH_EXP`) — the primary limit and the direct statement of the law. Two
          things that look adequate and are not: biasing the *sampler* does nothing, because
          `packBigRock`'s greedy-snug scoring fills outward from whatever is already placed and
          saturates to one flat coverage everywhere it can reach (measured: mean landmark radius
@@ -406,25 +407,31 @@ give directions by). Rules that keep it from breaking the invariants above:
       78 / 62 / 37, coverage 0.19 / 0.41 / 0.05, and rocks at or above 150 units 1.3 / 6.8 / **0**.
       The outer third contains no large rock at all; its largest is ~54 units.
     - **THE MASONRY IS PACKED BY ITS REACH, NOT ITS RADIUS, AND THE GAP BAND GOES NEGATIVE.** A
-      landmark's corners reach 1.14–1.62x its nominal radius (`util.rockShape`'s `reach`), so packing
+      landmark's corners reach 1.14–2.45x its nominal radius across the baked library (mean 1.50 —
+      `rockdata.js`'s per-shape `reach`; history: 1.14–1.62x under the old per-id generator, whose
+      `util.ROCK_REACH_MAX` 1.62 still caps the gravel outlines), so packing
       on `r` reserved a footprint about half the size of the rock that went into it and the masonry
       was born INTERLOCKED — visibly overlapping and clipping on every seed, before anything moved.
       The silhouette and rotation are therefore drawn from the seeded stream BEFORE placement and
-      stamped onto the body as `_shape` / `rot`, which is what every consumer already reads.
+      stamped onto the body as `shapeId` / `rot`, which is what every consumer already reads.
       Spacing uses `reach` rather than the extent along the pair's bearing, because a bearing test
       fails the same way the old collider did — two star polygons can clear along the centre line and
       still interlock off it (measured: 60–75 overlapping pairs survived a bearing test, worst 237
       units) — and probing enough bearings to catch that is not affordable in a packer that runs
       hundreds of rocks x 170 tries x every placed slot on every worldgen.
-      The bound is DIRECTIONAL (`util.rockReachAt` — the max within a sector, not over the whole
+      The bound is DIRECTIONAL (`rockshape.reachAt` — the max within a sector, not over the whole
       outline) and it **must be widened by the arc the other rock subtends**: a centre-line bound is
       the same blindness the old collider had, and two large rocks interlock at a corner off it
       (measured: worst 95u of overlap). But a bound safe enough to guarantee that is pessimistic
       enough to strand the biggest rocks — mean surface gap to the nearest landmark ~30 units for
       every size class except 250+, which sat at 89. So the bound is used to **accept** (free, always
-      right) and `world.pairClearance` — a 7-sample exact probe, the same idea as
-      `physics.bigPenetration` — arbitrates the near misses. That combination gives zero overlap AND
-      uniform spacing.
+      right) and `world.pairOverlaps` — an exact boolean convex-hull SAT test through
+      `rockshape.rockOverlap` — arbitrates the near misses. That combination gives zero overlap AND
+      uniform spacing. (History: this was `world.pairClearance`, a 7-sample radial probe mirroring
+      the old `physics.bigPenetration`; both went with the collider rewrite.)
+      **`CFG.FIELD_PACK_GAP`'s measured overlap sweep is OWED A RE-RUN** — its own note says to
+      re-sweep when the shape kinds change, and the entire shape library was replaced with one whose
+      reach tail runs to 2.45 instead of 1.62.
       **Small rock BANKS against big rock** (`FIELD_PACK_BANK`, picking from the size-ordered head of
       the slot list): the greedy-snug rule is otherwise rich-get-richer — it scores candidates by
       distance to the nearest neighbour, so every later draw crowds into whatever region already has
@@ -460,8 +467,9 @@ give directions by). Rules that keep it from breaking the invariants above:
       nearly all of the pocket's gravel, so invariant 4 makes it immovable to a pebble, while staying
       close enough to a large moon that real mass still shifts it.
     - Field rock is why the view-local spawner's global asteroid cap is 9800 (was 380) and the world
-      runs ~3,730 bodies (2,960 field rock + 768 non-field, measured). The cap is far above the
-      steady state at today's `FIELD_ROCKS` 740; it was sized when a pocket held 1,900. Headless
+      runs ~4,415 bodies (3,643 field rock + 772 non-field, measured — `bench.mjs worldgen`). The cap
+      is far above the steady state at today's `FIELD_ROCKS` 920; it was sized when a pocket held
+      1,900. (History: the pocket was 1,900, then 740, and is 920 now.) Headless
       `tick` calls at this scale can exceed a 30s console eval budget: run soaks in chunks.
   - **THE FIELD LOD** (`physics.updateFieldLOD`, called once per FRAME from main.update AND
     driftSplash — never per substep) is what makes those bodies affordable: **full physics is a
@@ -506,11 +514,11 @@ give directions by). Rules that keep it from breaking the invariants above:
       camera and the screen edge is at 1.0x viewR, so a dormant rock CANNOT be on screen. Teleports
       (Slipstream warp, dev goto) reclassify the LOD immediately (`updateFieldLOD(game, 0)`) or the
       arrival would render empty for one frame.
-    - **The minimap dot layer is cached**: ~740 in-range rocks x (hypot+atan2+fillRect) per frame
+    - **The minimap dot layer is cached**: ~910 in-range rocks x (hypot+atan2+fillRect) per frame
       bakes into an offscreen canvas at ~15Hz (rebaked on origin jumps, fog flips, or the sim clock
       rewinding = resetRun) and composites as one drawImage; the sweep line stays live.
-    Measured at ~8000 bodies (the pre-740 pocket size), in-field: sim 3.6 -> 2.3ms, draw 2.2 ->
-    1.6ms, locked 120 fps. The world is ~3,730 bodies now, so those absolutes are an upper bound.
+    Measured at ~8000 bodies (the 1,900-rock pocket era), in-field: sim 3.6 -> 2.3ms, draw 2.2 ->
+    1.6ms, locked 120 fps. The world is ~4,415 bodies now, so those absolutes are an upper bound.
   - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
     BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
     one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at

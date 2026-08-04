@@ -3,7 +3,8 @@
 > **Status: WIRED AND LIVE.** The library, the bake, the narrow phase and the fracture are built and
 > running — `physics.js` drives every `bigShape` pair through `rockshape.rockContacts`, and a
 > landmark breaks into the pieces it was cut from. The old sampled collider
-> (`physics.bigPenetration`, `util.rockShape`'s LUT/normal/sector tables) is deleted.
+> (`physics.bigPenetration`) is deleted. `util.rockShape`'s LUT/normal/sector tables are still in
+> the tree but are runtime-dead — see "What this deleted, and what it did NOT" below.
 >
 > | | |
 > |---|---|
@@ -134,23 +135,35 @@ unchanged to the pieces, and every spawned piece counts against `DEBRIS_BUDGET` 
 fragment. Worst case is one giant fully worked down: 4 + 12 ≈ 16 authored pieces plus their eventual
 gravel — well inside budget, but it must be *counted*, not assumed.
 
-## What this deletes
+## What this deleted, and what it did NOT
 
-The clearest signal the direction is right. All of the following goes away:
+This section was written as a plan and read as a checklist afterwards, which is worse than useless —
+half of it never happened, and acting on it would delete live code. Split, so a reader can tell.
+
+**Actually gone (`2f5162c` / `eda059a`):**
 
 | Gone | Where |
 |---|---|
-| `rockShape` LUT + normal table + sector table | util.js |
-| `rockSurfAt`, `rockNormalAt`, `rockReachAt`, `rockSectors` | util.js |
-| `bigRockSurfAt`, `surfReach`, the `bigShape` branch of `surfRadius` | physics.js |
 | `bigPenetration` (the 7-sample probe) and its `_probeX`/`_probeY` stash | physics.js |
-| `applyBigFriction`'s bolted-on angular response | physics.js |
-| the railed-pair pass-through guard and `stuckPair` fall-through | physics.js |
-| `pairClearance` and the conservative-bound-vs-exact-probe arbitration | world.js |
-| `FIELD_REACH`, `FIELD_REACH_FALL` and the reach-widened clearance test in `packBigRock` | config.js / world.js |
+| `pairClearance` and the conservative-bound-vs-exact-probe arbitration | world.js — replaced by `pairOverlaps`, a boolean SAT test |
 
-The packer's clearance test becomes exact convex SAT against a handful of hulls — cheaper than what
-it does now and correct, which kills the entire bug class that produced seed-time interlocking.
+**Still live and load-bearing — DO NOT DELETE on this table's old authority:**
+
+| Claimed gone | Reality |
+|---|---|
+| `surfReach`, the `bigShape` branch of `surfRadius` | `physics.js` — `surfReach` IS the broad-phase bound for every shaped pair |
+| `applyBigFriction`'s angular response | `physics.js`, called from the resolver |
+| the railed-pair pass-through guard and `stuckPair` | `physics.js` — `stuckPair` was *added* by this work, not removed: a railed pair inside each other's reach runs the full narrow phase and the lighter one is derailed |
+| `FIELD_REACH` … in `packBigRock` | `config.js` → `world.js`. `FIELD_REACH` is the shoal size law's own enforcement mechanism; deleting it breaks the grading. Its partner is `FIELD_REACH_EXP` now — `FIELD_REACH_FALL` is the superseded exponent and is read by nothing |
+
+**Still present, but runtime-dead** — util.js's half of the old collider (`rockShape`, `rockSurfAt`,
+`rockNormalAt`, `rockReachAt`, `rockSectors`, `bigRockSurfAt`) was never removed. Nothing under
+`src/` imports any of it; physics and render take `rockSurfAt`/`rockNormalAt` from **rockshape.js**.
+`util.rockOutline` and `ROCK_KINDS` are the exception and must stay — `tools/bake-rocks.mjs` is built
+on them, and they are still the one generator for gravel outlines.
+
+The packer's clearance test is now exact convex SAT against a handful of hulls (`world.pairOverlaps`)
+— cheaper than the probe and correct, which kills the bug class that produced seed-time interlocking.
 
 ## Measured, once built
 
@@ -182,13 +195,19 @@ are still *reported* by the suite, just not gated.
    (interleaved — the perf bench swings ±50-90% across sessions on unchanged code).
 5. Soft rails; retune the home-return.
 6. Fracture: break → children → new rails.
-7. Delete the old machinery, retune `FIELD_BIG_HP_MUL`, re-run `window.mechTest()` (19/19) and a soak.
+7. Delete the old machinery, retune `FIELD_BIG_HP_MUL`, re-run `window.mechTest()` (20/20) and a soak.
 
 ### Notes for the wiring
 
-- `rockContacts(a, b)` returns a LIST, deepest first, capped at 4 — one manifold per overlapping hull
-  pair. Do not collapse it to one. A decomposed body has no single MTV, and taking only the deepest
-  left 46% of pairs still overlapping, which is the old collider's failure by another route.
+- `rockContacts(a, b, out)` returns a LIST, deepest first, capped at 4 — one manifold per overlapping
+  hull pair. **The function must not collapse it**: a decomposed body has no single MTV, and building
+  only the deepest left 46% of pairs still overlapping, which is the old collider's failure by
+  another route. **The resolver is the opposite call**: `physics.collideBodies` takes `cs[0]` and
+  nothing else per substep, because several impulses on one pair in one substep turns a contact into
+  a launch; 120 Hz iteration converges instead (98% of realistic overlaps clear in one push, the rest
+  in two). `tools/test-rockshape.mjs` iterates the whole list, which is what measures that.
+  The optional `out` is a caller-owned scratch array — `physics.js` passes one, since this runs per
+  big pair per substep.
 - The normal is **not** guaranteed to point along centre-to-centre, and must not be re-derived from
   it. Two rocks catching on a corner legitimately produce a normal pointing back across that line —
   that is the behaviour shaped collision exists to have, and assuming otherwise is precisely what
@@ -226,7 +245,7 @@ What this rules out, all of which have been built and are all wrong:
   at 96-128, none at 128-160, then monoliths appearing from nowhere at 160+.
 
 **The mechanism in world.js is already right — the failure is placement order.** `setQMax` gives each
-rock an allowance that falls as a power of its radius (`FIELD_REACH` / `FIELD_REACH_FALL`), so small
+rock an allowance that falls as a power of its radius (`FIELD_REACH` / `FIELD_REACH_EXP`), so small
 rock may go anywhere and big rock is confined to the core. That *is* "the top end scales, the bottom
 end exists everywhere". What breaks it is that `packBigRock` runs **heaviest first**: the core is
 saturated before small rock is ever drawn, so every small-rock candidate aimed at the core is

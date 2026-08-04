@@ -78,7 +78,7 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
   / parry and BOTH scrap drops including the combo bonus (physics.js). Flag a new field-rock award
   that bypasses it. Non-field bodies pass through untouched, so wrapping unconditionally is correct.
 - **`FIELD_XP_BUDGET` (`f.xpLeft`) is the gate that actually holds** — a multiplier prices a rock, but
-  a pocket holds 740 of them, so any rate increase outruns it. Flag a change that makes the budget
+  a pocket holds ~910 of them, so any rate increase outruns it. Flag a change that makes the budget
   refill, or that exempts giants/monoliths from `XP_FIELD_MUL` (that just moves the farm onto them).
 - **`CFG.FIELD_CHAIN_MAX` / `b.chainN`** — `chainN` must be reset to 0 at every REAL launch
   (`tractor.releaseHeld`, `flingAllFromOrbit`, the parry riposte). A missed reset means a rock that

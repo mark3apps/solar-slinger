@@ -1,5 +1,6 @@
 import { SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor } from './config.js';
+import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
@@ -82,6 +83,22 @@ export function runMechTest(game, hooks, opts = {}) {
   game.nanEvents = 0;
 
   try {
+    // T0 — the achievement catalog is id-unique. The whole track is id-keyed:
+    // `award` returns early on `st.got[a.id]`, so a duplicate id silently
+    // forfeits the second row's points and XP while the panel — keyed the same
+    // way — renders BOTH rows as earned off one predicate. It cost a real row
+    // ('homebody', duplicated by the docking batch) and nothing surfaced it, so
+    // it is asserted mechanically rather than left to a QA pass.
+    t('achievement ids are unique', () => {
+      const seen = new Map(), dupes = [];
+      for (const a of ACHIEVEMENTS) {
+        if (seen.has(a.id)) dupes.push(`${a.id} ("${seen.get(a.id)}" / "${a.name}")`);
+        else seen.set(a.id, a.name);
+      }
+      expect(dupes.length === 0, `duplicate achievement id(s): ${dupes.join(', ')}`);
+      return `${ACHIEVEMENTS.length} rows, all ids unique`;
+    });
+
     // T1 — world generation is deterministic for a fixed seed
     let sum1 = 0;
     t('world-gen deterministic', () => {

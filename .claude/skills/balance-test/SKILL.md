@@ -72,12 +72,12 @@ Read them in this order — most load-bearing first:
 layout; that is the whole reason the sweep is cheap now. One outlier seed = investigate that seed.
 All four moving together = a real regression.
 
-`strip:true` removes dormant FIELD ROCK before running (2,960 of 3,728 bodies, leaving 768). Use
+`strip:true` removes dormant FIELD ROCK before running (3,643 of 4,410 bodies, leaving 767). Use
 `strip:false` when the dense fields themselves are what you changed.
 
 ### Why the fast path (measured, not assumed)
 
-- **Only ~230 of 3,728 bodies are awake in an idle soak, yet the 2,960 dormant field rocks cost
+- **Only ~170 of 4,410 bodies are awake in an idle soak, yet the 3,643 dormant field rocks cost
   ~64% of the runtime** in pure LOD classification + dormant rail advance. They are gravity-free in
   both directions and can never touch a planet, so they cannot affect the sky verdict.
 - **Equivalence proved, seed 20260721, 300 sim-seconds:** stripped 4,390ms vs intact 12,322ms (2.8x),

@@ -11,7 +11,7 @@
 //   * soak()'s `deaths` are pre-formatted strings, which don't aggregate.
 //
 // ARGS: { seconds=600, strip=true, chunk=60 }
-//   strip:true removes DORMANT FIELD ROCK before running. Those 2,960 rocks are
+//   strip:true removes DORMANT FIELD ROCK before running. Those 3,643 rocks are
 //   gravity-free in both directions and can never touch a planet, but they cost
 //   ~64% of an idle soak's runtime in pure LOD + rail bookkeeping. Stripping them
 //   is a ~2.8x speedup that provably does not change the sky verdict (measured
@@ -151,7 +151,8 @@ const landmarks = {
 // FIELD POCKET INTEGRITY — only meaningful when the fields were not stripped.
 // Three rules from the design laws: field rock never attracts (at ANY mass,
 // giants included), the pocket is RIGID (one shared rail.w — mixed rates shear
-// it apart), and the reknit holds the census near CFG.FIELD_ROCKS (740).
+// it apart), and the reknit holds the census near CFG.FIELD_ROCKS (920 — the packer's
+// ceiling, so the census lands a little under it, ~910).
 let fieldChecks = null;
 if (!strip && g.fields && g.fields.length) {
   fieldChecks = g.fields.map((f, i) => {
@@ -159,7 +160,7 @@ if (!strip && g.fields && g.fields.length) {
     const railed = rocks.filter((b) => b.onRails && b.rail);
     return {
       field: i,
-      rocks: rocks.length,                                        // want ~740
+      rocks: rocks.length,                                        // want ~910
       anyAttractor: rocks.some((b) => b.attractor),               // must be false
       wMismatch: railed.filter((b) => Math.abs(b.rail.w - f.w) > 1e-9).length,  // must be 0
     };

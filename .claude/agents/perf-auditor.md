@@ -4,8 +4,8 @@ description: Audits Solar Slinger's hot paths — the per-substep loops, the fie
 tools: Read, Grep, Glob, Bash
 ---
 
-You are the performance guardian for Solar Slinger. The world holds **~3,730 bodies** (four dense
-asteroid shoals of 740 rocks each, `CFG.FIELD_ROCKS` — 2,960 field rock plus 768 non-field) and
+You are the performance guardian for Solar Slinger. The world holds **~4,415 bodies** (four dense
+asteroid shoals of ~910 rocks each, `CFG.FIELD_ROCKS` 920 — 3,643 field rock plus 772 non-field) and
 runs at a locked 120 fps only because of a specific
 architecture: **full physics is a local privilege**. Almost every performance regression here has the
 same shape — a scan that is proportional to *total* bodies rather than *nearby* ones. Read
@@ -91,7 +91,7 @@ rails pass, the cull), `src/render.js` (draw passes, minimap), `src/ai.js` (per-
   cloud and Cluster Rounds were ALL dead code. **Flag any budget test against `game.bodies.length`.**
 - **The renderer skips dormant bodies outright** — dormancy requires >2.2× viewR + 600 from the
   camera, and the screen edge is at 1.0× viewR, so a dormant rock cannot be on screen.
-- **The minimap dot layer is cached** (~740 hypot+atan2+fillRect per frame → an offscreen bake at
+- **The minimap dot layer is cached** (~910 hypot+atan2+fillRect per frame → an offscreen bake at
   ~15 Hz, composited as one `drawImage`; rebaked on origin jumps, fog flips, or the sim clock
   rewinding). The sweep math MIRRORS `drawMinimap`'s — flag a change to one without the other. It
   sizes off `rdpr`, so a render-scale change must not leave it baked at a stale resolution.

@@ -792,7 +792,11 @@ export const ACHIEVEMENTS = [
   A('dockRetire', 'silly', PTS.normal, 'Urban Sprawl',
     'Build so many docks that the oldest one gets abandoned.',
     (g, s) => s.docksRetired >= 1),
-  A('homebody', 'silly', PTS.tricky, 'Homebody',
+  // NOT 'homebody' — that id is the belt-hugging row further down. The track is
+  // id-keyed all the way through (award's `st.got[a.id]` guard, the panel's
+  // lookup), so a collision silently forfeits one row's points and XP while the
+  // panel renders both as earned. devtest.js asserts uniqueness now.
+  A('dockStreak300', 'silly', PTS.tricky, 'Shut-In',
     'Stay berthed for five unbroken minutes. There is a whole system out there.',
     (g, s) => s.dockStreakBest >= 300),
   A('homeLost', 'silly', PTS.normal, 'Foreclosure',

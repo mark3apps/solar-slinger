@@ -898,12 +898,15 @@ export const CFG = {
   // instead (world.fieldMass skews big, few pebbles).
   // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
   // against them (world.seedDenseFields fills the remainder with rubble, so the
-  // small-rock count is this minus however many big rocks landed, 113-122).
-  // Measured across the four pockets on seed 20260721: 740 = 107-116 giants
-  // + 5 packed monoliths + the heart + 618-627 rubble. The packer places all of
-  // those but the HEART, which seedDenseFields pins at the field centre before
-  // packing starts. Keep that split and the 474-landmark world figure below in
-  // step — they are the same measurement read two ways.
+  // small-rock count is this minus however many big rocks landed, 89-97).
+  // Measured across the four pockets, seeds 20260721 and 3827467762: a pocket
+  // censuses 904-915 of a ceiling of 920 (the packer gives up on the last few
+  // slots), split 89-97 masonry + 808-825 rubble; the world carries 371-377
+  // shaped landmarks in total. The packer places all of those but the HEART,
+  // which seedDenseFields pins at the field centre before packing starts.
+  // Re-measure this split whenever FIELD_ROCKS or FIELD_GIANTS moves —
+  // `node .claude/skills/run-solar-slinger/bench.mjs save worldgen` reports the
+  // per-pocket `rocks` straight out of the suite.
   //
   // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
   // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
@@ -1134,6 +1137,12 @@ export const CFG = {
   // Anything at or above 0 is a proof, not a tuning; below it this is a budget
   // for how much clipping is acceptable. RE-SWEEP if FIELD_SIZE_VARY, the
   // R_MULs or the shape kinds change — all three move `reach`.
+  // *** THIS SWEEP IS OWED A RE-RUN. *** It was measured against the old per-id
+  // generator, whose reach ran 1.14-1.62x radius. The whole shape library was
+  // replaced by the bake (rockdata.js) and the tail now runs to 2.446 (68
+  // shapes, mean 1.500), so the numbers above under-report the overlap a given
+  // gap buys. The band was NOT retuned with the library — treat the table as
+  // history until it is re-swept.
   // THE LOW END MAY NOT BE ZERO. At 0 the packer is allowed to set two rocks
   // down exactly touching, and a pocket seeded with touching mid-size rock is
   // trading contacts from the first substep — which is the clipping and the
@@ -1162,7 +1171,7 @@ export const CFG = {
   // surface gaps went from -27/-20/-14/2/-12 across the size bands to
   // -49/-48/-44/-31/-49, i.e. the reported bug, reintroduced.
   // The margin was never the problem — using a GLOBAL max as a directional
-  // bound was. world.packBigRock now bounds per direction (util.rockReachAt), so
+  // bound was. world.packBigRock now bounds per direction (rockshape.reachAt), so
   // the spacing is honest at every size and the guarantee survives intact.
   FIELD_PACK_NESTLE: 0,
   // ---- SWIMLANES (user design law): routes THROUGH the rock, so that following

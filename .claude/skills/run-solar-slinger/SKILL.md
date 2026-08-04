@@ -117,7 +117,7 @@ done; wait
 **4 seeds × 600 sim-seconds in 18.9s wall** (127× realtime, 450% CPU). Two things make it fast, and
 both are measured, not assumed:
 
-- **`strip:true` drops dormant field rock** — 2,960 of 3,728 bodies, leaving 768 to run. Only ~230
+- **`strip:true` drops dormant field rock** — 3,643 of 4,410 bodies, leaving 767 to run. Only ~170
   are awake in an idle soak, yet those dormant rocks cost ~64% of the runtime in LOD + rail
   bookkeeping, and being gravity-free in both directions they cannot affect the sky. Proven
   equivalent on one seed (20260721, 300 sim-seconds): 4,390ms stripped vs 12,322ms intact — a 2.8×

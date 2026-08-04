@@ -5,7 +5,7 @@ description: Measure Solar Slinger's frame/sim/draw cost correctly and A/B a per
 
 # Performance profiling
 
-The world holds **~3,730 bodies** (2,960 field rock + 768 non-field) and locks 120 fps only because
+The world holds **~4,415 bodies** (3,643 field rock + 772 non-field) and locks 120 fps only because
 of the field LOD, the awake list and
 the frame registries. This skill is how you measure whether a change actually helped.
 
@@ -73,7 +73,7 @@ window) or you are profiling something the matrix does not park you next to.
 
    ```js
    window.freshRun(0);                 // fixed seed, spec auto-picked
-   window.goto('The Shoal');           // in-field: 740 nearby rocks, the LOD's worst case
+   window.goto('The Shoal');           // in-field: ~910 nearby rocks, the LOD's worst case
    // or leave the ship in open space for the "cost of bodies you already ruled out" case
    window.tick(5);                     // settle
    ```
@@ -98,7 +98,7 @@ window) or you are profiling something the matrix does not park you next to.
 
 ## Reference costs (for orientation only, not as targets)
 
-Measured at ~8,000 bodies (the pre-740 pocket size — an upper bound on today's ~3,730), in-field,
+Measured at ~8,000 bodies (the 1,900-rock pocket era — an upper bound on today's ~4,415), in-field,
 after the LOD landed: **sim 3.6 → 2.3 ms, draw 2.2 → 1.6 ms**,
 locked 120 fps. The awake list alone was worth ~1.4 ms (~40% of sim). The registries were worth 1.7×
 the frame at doubled body count with an identical 381 awake bodies. The achievement sweep is 0.02 ms
