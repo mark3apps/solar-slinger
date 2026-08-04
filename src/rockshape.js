@@ -352,6 +352,13 @@ export function pickShapeId(u, tier) {
 // this packer several rounds: a conservative bound used as the decision strands
 // the biggest rocks in their own clearings, and an exact test used for scoring
 // is work spent to rank candidates that are all going to be rejected anyway.
+// 32, NOT 16, and that is a measured number: the bound is the max over a sector
+// WIDENED by half a sector on each side, so coarse sectors smear one long corner
+// across a 45-degree arc and the biggest rocks pay for it in every direction.
+// Under a single global reach the mean surface-to-surface gap to the nearest
+// neighbour was ~30 units for every size class except 250+, which sat at 85 —
+// stranded in its own clearing. Halving the arc measurably tightened that; the
+// table is 32 floats built once per shape, so resolution here is nearly free.
 const SECT_N = 32;
 // BUILT BY WALKING THE EDGES, NOT BY BUCKETING THE VERTICES. Filling sectors
 // from vertices alone is only a bound if every edge spans less than the widening
@@ -483,6 +490,21 @@ export function rockSurfAt(b, th) { return march(b, th) * b.radius; }
 // pebble on a slab — so there is no second hull to run SAT against and the face
 // the ray exits IS the face being hit. Two shaped rocks go through rockContacts
 // instead, which derives the normal from the separating axis.
+//
+// NEVER GO BACK TO A SAMPLED NORMAL TABLE. The collider this replaced looked its
+// normals up in a per-bearing table, and that indirection produced two real bugs
+// the march cannot have. (1) Selecting the entry with ROUND instead of FLOOR
+// handed the second half of every edge its NEIGHBOUR's normal: measured across
+// 400 shapes, the two selectors disagreed by a mean of 1.8 degrees, by more than
+// 5 degrees on 9.4% of bearings, and by up to 134 degrees at a corner — a
+// contact resolving against the wrong face. (Caught in review on PR #67.)
+// (2) At 256 samples over a 1/f-grained outline, neighbouring entries on a rough
+// stretch pointed tens of degrees apart, so a rock grinding along a big one drew
+// a new, unrelated normal every substep and caromed off differently each time —
+// reported as rocks bouncing strangely off other rocks; it needed a 5-sample
+// smoothing pass to stay usable. Here the ray reports the exact edge it left
+// through and the baked outline is already faceted, so both are structural
+// non-problems — reintroducing a table would reintroduce them with it.
 export function rockNormalAt(b, th) {
   march(b, th);
   const sh = rockShapeOf(b), v = sh.v, n = v.length >> 1;

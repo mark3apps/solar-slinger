@@ -408,7 +408,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       The outer third contains no large rock at all; its largest is ~54 units.
     - **THE MASONRY IS PACKED BY ITS REACH, NOT ITS RADIUS, AND THE GAP BAND GOES NEGATIVE.** A
       landmark's corners reach 1.14–2.45x its nominal radius across the baked library (mean 1.50 —
-      `rockdata.js`'s per-shape `reach`; history: 1.14–1.62x under the old per-id generator, whose
+      `rockshape.shapeReach`; history: 1.14–1.62x under the old per-id generator, whose
       `util.ROCK_REACH_MAX` 1.62 still caps the gravel outlines), so packing
       on `r` reserved a footprint about half the size of the rock that went into it and the masonry
       was born INTERLOCKED — visibly overlapping and clipping on every seed, before anything moved.

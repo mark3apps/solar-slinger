@@ -394,14 +394,15 @@ Plus the three scaling rules that make a big debris cascade affordable:
   holds no large rock at all. The core allowance has a floor set by the HEART's own footprint, and
   the outer third's mean size is floored by the class's small end.
 - **MASONRY IS SPACED BY ITS SHAPE, NOT ITS RADIUS** — across the baked library a corner reaches
-  1.14–2.45x the nominal radius (mean 1.50), so circle packing births the pocket interlocked.
-  (History: 1.14–1.62x under the old per-id generator, whose `util.ROCK_REACH_MAX` 1.62 still caps
-  the gravel outlines.) The bound is DIRECTIONAL (`rockshape.reachAt`) and must be taken over the arc
-  the other rock subtends, or two big rocks interlock at a corner off the centre line; a conservative
-  bound alone strands the biggest rocks in their own clearings, so it is used to ACCEPT and an exact
-  SAT test (`world.pairOverlaps`) arbitrates the near misses. **`CFG.FIELD_PACK_GAP`'s overlap sweep
-  is OWED A RE-RUN** — its own note says to re-sweep when the shape kinds change, and the whole
-  library was replaced.
+  1.14–2.45x the nominal radius (mean 1.50, `rockshape.shapeReach`), so circle packing births the
+  pocket interlocked. (History: 1.14–1.62x under the old per-id generator, whose
+  `util.ROCK_REACH_MAX` 1.62 still caps the gravel outlines.) The bound is DIRECTIONAL
+  (`rockshape.reachAt`) and must be taken over the arc the other rock subtends, or two big rocks
+  interlock at a corner off the centre line; a conservative bound alone strands the biggest rocks in
+  their own clearings, so it is used to ACCEPT outright where it clears (free, and always right) and
+  to SCORE snugness, while the near misses go to an exact SAT test — `world.pairOverlaps`, over
+  `rockshape.rockOverlap`. **`CFG.FIELD_PACK_GAP`'s overlap sweep is OWED A RE-RUN** — its own note
+  says to re-sweep when the shape kinds change, and the whole library was replaced.
   Small rock BANKS against big rock (`FIELD_PACK_BANK`) — without it the greedy-snug packer is
   rich-get-richer and never fills the sparse core.
 - **A SHOAL HAS SWIMLANES, AND THEY ARE FOUND AMONG THE ROCK, NOT CARVED THROUGH IT** — routes rim to

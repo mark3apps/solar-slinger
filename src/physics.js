@@ -1783,7 +1783,7 @@ function surfRadius(body, ang) {
     return body.radius * crystalRadiusAt(sh, ang - body.rot);
   }
   // BIG ROCK collides as the slab / wedge / shard / cleft / lump it is DRAWN as
-  // (util.rockShape — render.traceAsteroid reads the identical table), WITH its
+  // (rockshape.rockShapeOf — render.traceAsteroid reads the identical shape), WITH its
   // impact craters taken out of it exactly like a moon or a planet. Landmark
   // rock is visibly angular, and colliding it as a circle meant bouncing off
   // nothing beside a wedge's point and clipping through a slab's corner; the
@@ -1954,8 +1954,9 @@ function collideBodies(game, a, b) {
   // that rail have exactly ZERO relative motion: there is no collision here to
   // resolve, now or ever. And they genuinely do interlock — the packer spaces
   // landmarks by their circle radii while a shaped rock's corners reach past
-  // that (rockdata.js's per-shape `reach`, 1.14-2.45x), so a freshly generated
-  // pocket has its masonry keyed together at the corners on purpose. Measured on seed
+  // that (rockshape.shapeReach, 1.14-2.45x across the baked library), so a
+  // freshly generated pocket has its masonry keyed together at the corners on
+  // purpose. Measured on seed
   // 20260721: 144 of 801 candidate pairs overlap at rest.
   // Without this gate the resolver would push all 144 apart every substep and
   // the rail advance would snap them back on the next — the visible judder the

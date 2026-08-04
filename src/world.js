@@ -1823,7 +1823,8 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
       for (const g of slots) {
         // SPACED BY THE SHAPE'S REACH, NOT BY ITS CIRCLE. A landmark's corners
         // reach 1.14-2.45x its nominal radius across the baked library, mean 1.50
-        // (rockdata.js's per-shape `reach`; 1.14-1.62 was the old generator), so
+        // (rockshape.shapeReach; 1.14-1.62 was the old per-id generator, whose
+        // util.ROCK_REACH_MAX 1.62 still caps the gravel outlines), so
         // packing on `r` reserved a footprint about half the size of the rock
         // that went into it, and the masonry was born INTERLOCKED — visibly
         // overlapping and clipping on every seed, before anything moved.
@@ -1920,8 +1921,8 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
 // outline (render.traceAsteroid) and the collider (physics.surfRadius) key off
 // it and nothing else — not a radius threshold on each side, which is how the
 // picture and the hitbox drift apart the moment one of them is retuned or a
-// rock chips its way across the line. util.rockShape turns it into an actual
-// slab / wedge / lump off the body id.
+// rock chips its way across the line. rockshape.rockShapeOf turns it into an
+// actual slab / wedge / lump off the body id.
 function shapeBig(b) {
   b.bigShape = true;
   return b;
