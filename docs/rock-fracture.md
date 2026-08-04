@@ -21,8 +21,8 @@
 
 ## Why
 
-`util.rockShape` generates a star-shaped radial polygon per body id and the collider samples it at
-runtime: a 256-entry LUT, a per-edge normal table, a 32-sector directional reach bound, a 7-sample
+`util.rockShape` (since deleted) generated a star-shaped radial polygon per body id and the collider
+sampled it at runtime: a 256-entry LUT, a per-edge normal table, a 32-sector directional reach bound, a 7-sample
 penetration probe, and an exact-vs-conservative arbitration in the packer. That machinery has been
 extended four times this session and still cannot produce a true minimum-translation vector — the
 depth comes from the deepest sample and the direction from a separate face normal, and the two
@@ -134,23 +134,41 @@ unchanged to the pieces, and every spawned piece counts against `DEBRIS_BUDGET` 
 fragment. Worst case is one giant fully worked down: 4 + 12 ≈ 16 authored pieces plus their eventual
 gravel — well inside budget, but it must be *counted*, not assumed.
 
-## What this deletes
+## What this deleted, and what it did NOT
 
-The clearest signal the direction is right. All of the following goes away:
+The clearest signal the direction was right. **Actually gone:**
 
 | Gone | Where |
 |---|---|
 | `rockShape` LUT + normal table + sector table | util.js |
 | `rockSurfAt`, `rockNormalAt`, `rockReachAt`, `rockSectors` | util.js |
-| `bigRockSurfAt`, `surfReach`, the `bigShape` branch of `surfRadius` | physics.js |
+| `bigRockSurfAt` | util.js |
 | `bigPenetration` (the 7-sample probe) and its `_probeX`/`_probeY` stash | physics.js |
-| `applyBigFriction`'s bolted-on angular response | physics.js |
-| the railed-pair pass-through guard and `stuckPair` fall-through | physics.js |
 | `pairClearance` and the conservative-bound-vs-exact-probe arbitration | world.js |
-| `FIELD_REACH`, `FIELD_REACH_FALL` and the reach-widened clearance test in `packBigRock` | config.js / world.js |
 
-The packer's clearance test becomes exact convex SAT against a handful of hulls — cheaper than what
-it does now and correct, which kills the entire bug class that produced seed-time interlocking.
+The six util.js exports outlived the wiring as runtime-dead code — nothing under `src/` or `tools/`
+imported them and they only referenced each other — and were removed separately. Note that
+`rockshape.js` exports its **own** live `rockSurfAt` / `rockNormalAt` (a ray march over the baked
+outline, not a sampled table); those are what `physics.js` and `render.js` import.
+
+Two measured rationales from the deleted code were kept, moved to their live equivalents in
+rockshape.js: why the sector table is 32 buckets rather than 16, and why the normal must never go
+back to a sampled per-bearing table (the FLOOR-vs-ROUND selector bug from PR #67, and the 1/f-grain
+normal jitter that needed a smoothing pass).
+
+**Planned for deletion but still live** — the plan was written before the wiring settled, and these
+survived it:
+
+| Survived | Where | Why |
+|---|---|---|
+| `surfReach`, the `bigShape` branch of `surfRadius` | physics.js | still the shared surface query — retargeted to `rockshape.rockSurfAt` / `rockReach`, not removed |
+| `applyBigFriction` | physics.js | still applies the tangential/angular response on top of the manifold |
+| the railed-pair pass-through guard and `stuckPair` | physics.js | invariant 11 — two railed rocks of one pocket skip collision, with the overlap fall-through as the only route out |
+| `FIELD_REACH`, `FIELD_REACH_FALL` | config.js / world.js | a design law in its own right (the graded shoal); the packer's *clearance test* went exact, the reach *allowance* did not |
+
+The packer's clearance test did become exact convex SAT (`rockOverlap`) against a handful of hulls —
+cheaper than the old arbitration and correct, which killed the bug class that produced seed-time
+interlocking. `reachAt` survives beside it as the cheap **bound** used only for snugness scoring.
 
 ## Measured, once built
 

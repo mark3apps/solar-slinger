@@ -406,7 +406,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       78 / 62 / 37, coverage 0.19 / 0.41 / 0.05, and rocks at or above 150 units 1.3 / 6.8 / **0**.
       The outer third contains no large rock at all; its largest is ~54 units.
     - **THE MASONRY IS PACKED BY ITS REACH, NOT ITS RADIUS, AND THE GAP BAND GOES NEGATIVE.** A
-      landmark's corners reach 1.14–1.62x its nominal radius (`util.rockShape`'s `reach`), so packing
+      landmark's corners reach 1.14–1.62x its nominal radius (`rockshape.shapeReach`), so packing
       on `r` reserved a footprint about half the size of the rock that went into it and the masonry
       was born INTERLOCKED — visibly overlapping and clipping on every seed, before anything moved.
       The silhouette and rotation are therefore drawn from the seeded stream BEFORE placement and
@@ -416,7 +416,7 @@ give directions by). Rules that keep it from breaking the invariants above:
       still interlock off it (measured: 60–75 overlapping pairs survived a bearing test, worst 237
       units) — and probing enough bearings to catch that is not affordable in a packer that runs
       hundreds of rocks x 170 tries x every placed slot on every worldgen.
-      The bound is DIRECTIONAL (`util.rockReachAt` — the max within a sector, not over the whole
+      The bound is DIRECTIONAL (`rockshape.reachAt` — the max within a sector, not over the whole
       outline) and it **must be widened by the arc the other rock subtends**: a centre-line bound is
       the same blindness the old collider had, and two large rocks interlock at a corner off it
       (measured: worst 95u of overlap). But a bound safe enough to guarantee that is pessimistic

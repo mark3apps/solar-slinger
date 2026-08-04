@@ -178,8 +178,9 @@ separation, no impulse (`physics.collideBodies`, guarded right after `closing` i
 it.** A pocket shares one angular rate (`world.seedDenseFields`'s `w`, re-applied by the reknit and
 by the settle re-rail), so two rocks both still on that rail have exactly zero relative motion —
 there is no collision to resolve, now or ever. And they genuinely do interlock: the packer spaces
-landmarks by their circle radii while a shaped rock's corners reach past that (`util.rockShape`'s
-`reach`), so a freshly generated pocket has its masonry keyed together at the corners on purpose.
+landmarks by their circle radii while a shaped rock's corners reach past that
+(`rockshape.shapeReach`), so a freshly generated pocket has its masonry keyed together at the corners
+on purpose.
 Without the guard the resolver would push all 144 resting overlaps apart every substep and the rail
 advance would snap them back on the next — the judder described below, on a hundred rocks at once,
 plus the shaped narrow phase paid on every one of them for nothing. A knock derails, and a derailed

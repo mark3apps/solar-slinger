@@ -5,7 +5,8 @@
 // this project is fast to work on (see CLAUDE.md), so the bake writes a plain ES
 // module of arrays and nothing at runtime knows this script exists.
 //
-// WHY A LIBRARY AT ALL: util.rockShape generated a star-shaped radial polygon
+// WHY A LIBRARY AT ALL: the old util.rockShape (since deleted) generated a
+// star-shaped radial polygon
 // per body id and the collider sampled it live — a 256-entry LUT, a per-edge
 // normal table, a 32-sector reach bound, a 7-sample penetration probe, and an
 // exact-vs-conservative arbitration in the packer. That machinery could never

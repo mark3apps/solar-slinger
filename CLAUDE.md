@@ -390,10 +390,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
   holds no large rock at all. The core allowance has a floor set by the HEART's own footprint, and
   the outer third's mean size is floored by the class's small end.
 - **MASONRY IS SPACED BY ITS SHAPE, NOT ITS RADIUS** — corners reach up to 1.62x the nominal radius,
-  so circle packing births the pocket interlocked. The bound is DIRECTIONAL (`util.rockReachAt`) and
+  so circle packing births the pocket interlocked. The bound is DIRECTIONAL (`rockshape.reachAt`) and
   must be taken over the arc the other rock subtends, or two big rocks interlock at a corner off the
   centre line; a conservative bound alone strands the biggest rocks in their own clearings, so it is
-  used to ACCEPT and an exact probe (`world.pairClearance`) arbitrates the near misses.
+  used only to SCORE snugness and the exact test (`rockshape.rockOverlap`) decides.
   Small rock BANKS against big rock (`FIELD_PACK_BANK`) — without it the greedy-snug packer is
   rich-get-richer and never fills the sparse core.
 - **A SHOAL HAS SWIMLANES, AND THEY ARE FOUND AMONG THE ROCK, NOT CARVED THROUGH IT** — routes rim to

@@ -1162,7 +1162,7 @@ export const CFG = {
   // surface gaps went from -27/-20/-14/2/-12 across the size bands to
   // -49/-48/-44/-31/-49, i.e. the reported bug, reintroduced.
   // The margin was never the problem — using a GLOBAL max as a directional
-  // bound was. world.packBigRock now bounds per direction (util.rockReachAt), so
+  // bound was. world.packBigRock now bounds per direction (rockshape.reachAt), so
   // the spacing is honest at every size and the guarantee survives intact.
   FIELD_PACK_NESTLE: 0,
   // ---- SWIMLANES (user design law): routes THROUGH the rock, so that following
