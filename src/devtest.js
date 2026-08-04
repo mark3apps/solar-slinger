@@ -6,7 +6,7 @@ import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
-import { setDeathVisible, updateHud } from './hud.js';
+import { setDeathVisible } from './hud.js';
 import { setSfxVolume } from './sfx.js';
 import { mulberry32, surfaceVel } from './util.js';
 import { input } from './input.js';
