@@ -882,11 +882,17 @@ export function shatter(game, body, credit = null) {
           body.vx * keep + ((px - body.x) / od) * sp,
           body.vy * keep + ((py - body.y) / od) * sp,
           body.mass * k.af);
-        markFieldRock(piece, body.field);
         // It wears the baked child shape at the baked scale — this is what makes
         // the pieces MATCH the rock they fell out of.
+        // BEFORE markFieldRock, and world.js's seeding path does the same
+        // (`shapeBig(rock)` … `markFieldRock(rock, fi)`): markFieldRock picks the
+        // durability class off `b.bigShape`, so marking first read `undefined`
+        // and gave every fracture piece the GRAVEL 6x instead of the masonry
+        // 2.2x — 2.7x too tough, on the exact bodies the fracture tree exists to
+        // let the player work down.
         piece.bigShape = true;
         piece.shapeId = k.s;
+        markFieldRock(piece, body.field);
         // BOTH radius AND baseRadius, and baseMass with them. spawnAsteroid
         // sizes the body from asteroidRadius(mass) — about 31 units for a piece
         // this heavy — while a landmark's drawn size runs through the FIELD
@@ -1911,6 +1917,10 @@ function applyBigFriction(a, b, j, nx, ny, cx, cy, invA, invB) {
   }
 }
 
+// The manifold list rockContacts fills for the big-pair branch below. One
+// array, reused — see the note at the call site.
+const _satScratch = [];
+
 function collideBodies(game, a, b) {
   let stuckPair = false;   // two railed rocks of one pocket, possibly interpenetrating
   // A parry-frozen rock is pinned at the ship's hull — nothing grinds it
@@ -1944,8 +1954,9 @@ function collideBodies(game, a, b) {
   // that rail have exactly ZERO relative motion: there is no collision here to
   // resolve, now or ever. And they genuinely do interlock — the packer spaces
   // landmarks by their circle radii while a shaped rock's corners reach past
-  // that (rockshape.shapeReach), so a freshly generated pocket has its
-  // masonry keyed together at the corners on purpose. Measured on seed
+  // that (rockshape.shapeReach, 1.14-2.45x across the baked library), so a
+  // freshly generated pocket has its masonry keyed together at the corners on
+  // purpose. Measured on seed
   // 20260721: 144 of 801 candidate pairs overlap at rest.
   // Without this gate the resolver would push all 144 apart every substep and
   // the rail advance would snap them back on the next — the visible judder the
@@ -2013,7 +2024,12 @@ function collideBodies(game, a, b) {
       // Paid only here — a landmark against gravel keeps the single-bearing
       // test, which is correct enough at that size ratio and is the
       // overwhelmingly common case in a pocket of 800 rocks.
-      const cs = rockContacts(a, b);
+      // Into a module-level scratch, not a fresh array: this runs per big pair
+      // per substep and rockContacts exposes `out` precisely so the one hot
+      // caller can stop allocating a list it drops in the same breath. Safe to
+      // reuse — `sat` below is one of the manifold OBJECTS, which are still
+      // built per call, so the next fill cannot reach back and rewrite it.
+      const cs = rockContacts(a, b, _satScratch);
       if (!cs.length) return;
       sat = cs[0];
       probedPen = sat.depth;
@@ -3287,6 +3303,30 @@ function updateParry(game, dt) {
     game.parryReadyT -= dt;
   }
   const s = game.ship, st = game.st;
+
+  // A DOCK IS WHERE YOU STOP WORKING. The parry is not in CLAUDE.md's explicit
+  // inert-while-berthed list, but it is the same kind of verb and the same
+  // waste: `damageShip`'s dockReady early-out already eats the damage, so a
+  // berthed parry catches nothing that was going to hurt you and spends its
+  // 2.5s cooldown for a tell.
+  //
+  // STOOD DOWN, not skipped. A live session pins its rocks AT the hull with
+  // `parryFrozen` set, and those pins are released by the code below — so an
+  // early `return` while berthed would weld the caught rock to the ship for the
+  // rest of the run. This is exactly the half-live failure the design law names
+  // ("a half-live system re-welds a ring the dock just emptied"), so it mirrors
+  // `tractor.standDown`: unfreeze, hand each rock the ship's velocity, drop the
+  // session, and pay NOTHING — no riposte, no billiards credit, no XP.
+  if (game.dock) {
+    if (game.parry) {
+      for (const r of game.parry.rocks) {
+        r.b.parryFrozen = false;
+        r.b.vx = s.vx; r.b.vy = s.vy;
+      }
+      game.parry = null;
+    }
+    return;
+  }
 
   // Field scan: start a session, or grow a live one up to capacity
   if (st.deflect > 0 && s.alive && s.invuln <= 0 && !(game.parryCd > 0) &&
@@ -4694,7 +4734,15 @@ export function step(game, dt) {
     // (game.autoEvadeT, ticked down in main.js). Closest-approach test, not
     // just proximity: only things genuinely on a collision course trigger it,
     // and only fast ones — slow drift bounces harmlessly anyway (DMG thresh).
-    if (game.st.autoEvade > 0 && game.autoEvadeT <= 0 && s.invuln <= 0) {
+    // A DOCK IS WHERE YOU STOP WORKING, and this is the one mobility ability
+    // `main.dockBlocking` structurally cannot reach — it is not input-driven.
+    // updateDock pins position AND velocity to the pad later in this same
+    // substep, so an unguarded jink is erased before it moves the ship while
+    // still spending its 13.25s cooldown. `!game.dock` rather than
+    // `!dockReady(...)`: the pin bites the moment the clamps do, and the
+    // DOCK_BUILD window — no immunity, no dome, rock genuinely landing — is
+    // exactly where burning the charge for nothing costs the player something.
+    if (game.st.autoEvade > 0 && !game.dock && game.autoEvadeT <= 0 && s.invuln <= 0) {
       // Awake list: anything close enough and fast enough to be worth dodging
       // is inside the wake bubble by construction, so the dormants this used
       // to walk could never have passed the 1100u box test anyway.

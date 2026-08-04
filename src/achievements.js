@@ -792,7 +792,11 @@ export const ACHIEVEMENTS = [
   A('dockRetire', 'silly', PTS.normal, 'Urban Sprawl',
     'Build so many docks that the oldest one gets abandoned.',
     (g, s) => s.docksRetired >= 1),
-  A('homebody', 'silly', PTS.tricky, 'Homebody',
+  // NOT 'homebody' — that id is the belt-hugging row further down. The track is
+  // id-keyed all the way through (award's `st.got[a.id]` guard, the panel's
+  // lookup), so a collision silently forfeits one row's points and XP while the
+  // panel renders both as earned. devtest.js asserts uniqueness now.
+  A('dockStreak300', 'silly', PTS.tricky, 'Shut-In',
     'Stay berthed for five unbroken minutes. There is a whole system out there.',
     (g, s) => s.dockStreakBest >= 300),
   A('homeLost', 'silly', PTS.normal, 'Foreclosure',
@@ -1160,6 +1164,7 @@ export function noteDeath(game, cause) {
   // survive being blown up, and a repair run that ended in a death is no save.
   s.dockStreak = 0;
   s.dockHurt = 0;
+  s.dockHurtHull = undefined;   // respawn's hull refill must not read as healing off the pad
   s.clutchArmed = 0;
   s.sunIn = 0;
   s.holdT = 0;
@@ -1253,11 +1258,26 @@ export function updateAchievements(game, dt) {
         s.dockSaves = (s.dockSaves || 0) + 1;
         s.dockHurt = 0;
       }
+      s.dockHurtHull = ship.hull;
     } else {
       s.dockStreak = 0;
-      // The arm does NOT clear here: a build finishing, or a bump that costs
-      // the berth for a moment, must not throw away a repair in progress. Only
-      // completing it or dying does.
+      // The arm does NOT clear merely because the berth was lost: a build
+      // finishing, or a bump that costs it for a moment, must not throw away a
+      // repair in progress.
+      //
+      // But "WITHOUT LEAVING" has to mean something, and the arm alone did not
+      // enforce it. Limp in at 10%, leave before the repair finishes, top off
+      // at a GLOW POCKET (glow.js heals with no dock involved), then berth
+      // anywhere later for any reason — and the first berthed frame already
+      // satisfies `hull >= hullMax`, so it scored a save for a repair that
+      // never happened at a dock.
+      //
+      // What disqualifies is HEALING SOMEWHERE ELSE, not losing contact: any
+      // rise in hull while off the pad means this is no longer the repair that
+      // was armed. Damage off the pad leaves the arm alone, so limping back
+      // after a knock still counts, which is the feat as written.
+      if (s.dockHurt && ship.hull > (s.dockHurtHull ?? ship.hull)) s.dockHurt = 0;
+      s.dockHurtHull = ship.hull;
     }
 
     // WHERE you fly, integrated. Oort is measured from the world edge itself,

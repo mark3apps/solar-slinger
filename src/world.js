@@ -1305,6 +1305,9 @@ export function markFieldRock(b, fi) {
   // At the cap, a thrown moon-class mass still cracks anything in the shoal.
   // The gravel is tough (FIELD_HP_MUL); the LANDMARKS are meant to come apart.
   // Stacking the gravel's 6x on a giant is what made one take 172 solid hits.
+  // ORDER MATTERS: `b.bigShape` must already be set when this runs. Every caller
+  // shapes first and marks second — physics.js's fracture path marked first once
+  // and silently armoured every piece at the gravel class.
   const mul = b.bigShape ? CFG.FIELD_BIG_HP_MUL : CFG.FIELD_HP_MUL;
   b.hp = b.maxHp = Math.min(b.maxHp * mul, CFG.FIELD_HP_CAP);
   return b;
@@ -1617,9 +1620,9 @@ function laneDepthAt(f, x, y) {
 // ACCEPT (where it is free and always right) and this to arbitrate the near
 // misses (where the bound is merely pessimistic) gets both — the guarantee and
 // the tightness.
-// Same idea as physics.bigPenetration: both outlines are radial functions, so
-// walking one surface through the arc that faces the other and asking how far it
-// is from the other's surface is exact, and needs no polygon clipping.
+// (History: this mirrored physics.bigPenetration, the radial probe that walked
+// one surface through the arc facing the other. Both went with the collider
+// rewrite; this is convex-hull SAT via rockshape.rockOverlap now.)
 // EXACT, and now genuinely exact rather than exact-to-seven-probes. The old
 // version walked each radial outline through the arc the other subtended and
 // took the worst surface-to-surface distance — correct only because both shapes
@@ -1819,7 +1822,9 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
       let clash = false, near = Infinity;
       for (const g of slots) {
         // SPACED BY THE SHAPE'S REACH, NOT BY ITS CIRCLE. A landmark's corners
-        // reach 1.14-1.62x its nominal radius (rockshape.shapeReach), so
+        // reach 1.14-2.45x its nominal radius across the baked library, mean 1.50
+        // (rockshape.shapeReach; 1.14-1.62 was the old per-id generator, whose
+        // util.ROCK_REACH_MAX 1.62 still caps the gravel outlines), so
         // packing on `r` reserved a footprint about half the size of the rock
         // that went into it, and the masonry was born INTERLOCKED — visibly
         // overlapping and clipping on every seed, before anything moved.
@@ -1843,9 +1848,9 @@ function packBigRock(f, sun, rng, spec, slots, keepOut) {
         const ang = Math.atan2(p.y - g.y, p.x - g.x);
         const dc = Math.hypot(g.x - p.x, g.y - p.y) || 1;
         // Each rock's bound is taken over the arc the OTHER one subtends — see
-        // rockshape.reachAt. Without the window this is a centre-line bound and
-        // two large rocks interlock at a corner off it, which is the clipping
-        // the reach bound exists to prevent.
+        // rockshape.reachAt's `half` argument. Without the window this is a
+        // centre-line bound and two large rocks interlock at a corner off it,
+        // which is the clipping the reach bound exists to prevent.
         const hg = Math.min(1.2, Math.asin(Math.min(1, r * shapeReach(sp.shapeId) / dc)));
         const hp = Math.min(1.2, Math.asin(Math.min(1, g.r * shapeReach(g.shapeId) / dc)));
         const d = dc

@@ -898,12 +898,15 @@ export const CFG = {
   // instead (world.fieldMass skews big, few pebbles).
   // TOTAL bodies per pocket — the huge packed rocks plus the rubble that banks
   // against them (world.seedDenseFields fills the remainder with rubble, so the
-  // small-rock count is this minus however many big rocks landed, 113-122).
-  // Measured across the four pockets on seed 20260721: 740 = 107-116 giants
-  // + 5 packed monoliths + the heart + 618-627 rubble. The packer places all of
-  // those but the HEART, which seedDenseFields pins at the field centre before
-  // packing starts. Keep that split and the 474-landmark world figure below in
-  // step — they are the same measurement read two ways.
+  // small-rock count is this minus however many big rocks landed, 89-97).
+  // Measured across the four pockets, seeds 20260721 and 3827467762: a pocket
+  // censuses 904-915 of a ceiling of 920 (the packer gives up on the last few
+  // slots), split 89-97 masonry + 808-825 rubble; the world carries 371-377
+  // shaped landmarks in total. The packer places all of those but the HEART,
+  // which seedDenseFields pins at the field centre before packing starts.
+  // Re-measure this split whenever FIELD_ROCKS or FIELD_GIANTS moves —
+  // `node .claude/skills/run-solar-slinger/bench.mjs save worldgen` reports the
+  // per-pocket `rocks` straight out of the suite.
   //
   // Cut to a THIRD of the old small-rock count (1856 -> ~620) at the same time
   // as the pocket grew 30% in each axis. Both moves thin the gravel on purpose:
@@ -1134,6 +1137,12 @@ export const CFG = {
   // Anything at or above 0 is a proof, not a tuning; below it this is a budget
   // for how much clipping is acceptable. RE-SWEEP if FIELD_SIZE_VARY, the
   // R_MULs or the shape kinds change — all three move `reach`.
+  // *** THIS SWEEP IS OWED A RE-RUN. *** It was measured against the old per-id
+  // generator, whose reach ran 1.14-1.62x radius. The whole shape library was
+  // replaced by the bake (rockdata.js) and the tail now runs to 2.446 (68
+  // shapes, mean 1.500), so the numbers above under-report the overlap a given
+  // gap buys. The band was NOT retuned with the library — treat the table as
+  // history until it is re-swept.
   // THE LOW END MAY NOT BE ZERO. At 0 the packer is allowed to set two rocks
   // down exactly touching, and a pocket seeded with touching mid-size rock is
   // trading contacts from the first substep — which is the clipping and the
@@ -2164,11 +2173,19 @@ export function stormClass(roll) {
 // so a spent wave SHREDS instead of blinking out at an exact radius (which is
 // the geometric in-world edge the house style will not have). A class's whole
 // geography lives in these two numbers; see the STORM_CLASSES notes.
+// A CLASS'S `fade` MUST BE < 1 — it is a fraction of `reach`, so at 1 the taper
+// has zero width and the divide below is 0. The three shipped classes are
+// 0.62 / 0.68 / 0.858, but a fourth row written with `fade: 1` (a plausible way
+// to say "no taper at all") would return NaN here, and `k` multiplies every
+// bite and every alpha downstream — so the whole wave would silently go NaN and
+// only surface later as a `game.nanEvents` tripwire, far from its cause. The
+// floor makes that row degrade to a one-unit taper instead of poisoning the run.
+// It is not a substitute for the invariant; it is what keeps a violation legible.
 export function stormStrength(wave) {
   const reachR = CFG.WORLD_R * wave.reach;
   const fadeR = reachR * wave.fade;
   if (wave.r <= fadeR) return 1;
-  return Math.max(0, 1 - (wave.r - fadeR) / (reachR - fadeR));
+  return Math.max(0, 1 - (wave.r - fadeR) / Math.max(1, reachR - fadeR));
 }
 
 // …and when there is nothing left of it. The front, not the tail: the sheath

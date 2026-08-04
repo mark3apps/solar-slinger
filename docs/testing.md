@@ -20,10 +20,11 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 - `window.mechTest({seed, reset, download})` — **the scripted mechanics suite** (devtest.js,
   lazy-loaded): a fixed set of player actions against a fixed-seed fresh run, asserting each core
   mechanic and several design laws (fling-at-cursor/no-recoil, deferred picks, split-health, orbit
-  gating, NaN containment…). **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
+  gating, NaN containment, the three docking gates and what a berth makes inert, the solar-wave
+  classes, and the aimed riposte). **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
   for a seeded RNG for the duration — so same code ⇒ identical report. Returns
   `{ passed, failed, results, logs }` (also `window.lastMechReport`; `{download: true}` saves the
-  JSON). ~1.5s wall. See the `mechanics-test` skill for the check list and judging rules.
+  JSON). ~4s wall. See the `mechanics-test` skill for the check list and judging rules.
 - `window.freshRun(specIdx, seed)` — repeatable fresh run: full reset onto the given world seed with
   the spec auto-picked and the sim armed. The world layout is bit-identical per seed.
 - `window.speed(n)` — **live fast-forward**: runs the *visible* game at n× real time (0.25–50).

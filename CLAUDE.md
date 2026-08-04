@@ -135,7 +135,7 @@ presentation loop.
 | [rockshape.js](src/rockshape.js) | The narrow phase for shaped rock: convex-hull SAT with a true MTV and real contact manifolds, plus the fracture-tree lookups world.js packs against. Imports only rockdata.js. Drives every `bigShape` pair in physics.js — see [docs/rock-fracture.md](docs/rock-fracture.md). |
 | [gravel.js](src/gravel.js) | The SoA store for small, anonymous debris — typed arrays, stable slot handles, contiguous integrate. A grain PROMOTES to a real `Body` the moment the beam reaches it. Imports nothing. |
 | [render.js](src/render.js) | All canvas drawing. Owns the 2D context. Delegates bulk rock draws to rockgl.js and the minimap dot bake to minimap-worker.js — both behind fallbacks. |
-| [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~740 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
+| [rockgl.js](src/rockgl.js) | Instanced WebGL2 rock layer: a shoal's ~910 blits become one draw call per sheet. Engaged past `GL_ENTER` rocks; falls back to 2D blits on any failure. |
 | [minimap-worker.js](src/minimap-worker.js) | The radar's dense-field dot layer, baked off-thread to an ImageBitmap. Its sweep math MIRRORS `drawMinimap`'s — retune both together. |
 | [hud.js](src/hud.js) | All DOM/HUD access (cached in `el`). The sim never touches the DOM. |
 | [input.js](src/input.js) | Raw keyboard/mouse state + listeners. |
@@ -214,8 +214,12 @@ changing anything it touches.**
 
 10. A shoal has FRICTION and SETTLES — field rock is damped toward its pocket's own flow (never
     toward rest) and re-rails once it rides with its neighbours again.
-11. Two landmark rocks collide as SHAPES — a multi-sample probe, not one bearing; with friction and
-    spin. Two railed rocks of the same pocket skip collision entirely.
+11. Two landmark rocks collide as SHAPES — convex-hull SAT against the baked decomposition
+    (`rockshape.rockContacts`), returning a true MTV and real contact manifolds; with friction and
+    spin. Two railed rocks of the same pocket normally skip collision — but a railed pair inside
+    each other's reach falls through to the full narrow phase and the LIGHTER one is derailed
+    (`stuckPair`), because a pocket that re-rails near home can seat a rock on top of a neighbour.
+    (History: this was a multi-sample radial probe, `physics.bigPenetration`, until `2f5162c`.)
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
 `game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
@@ -384,16 +388,21 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **A SHOAL IS GRADED — YOU COME IN THINKING IT'S FINE AND STUMBLE INTO IT.** The landmark ladder is
   a `[rim, core]` ramp in mass AND drawn size (`FIELD_GIANT_MASS` / `FIELD_GIANT_R_MUL` /
   `FIELD_GIANT_SKEW`), and what enforces it is that **a rock's allowed reach falls as a power of its
-  radius** (`FIELD_REACH` + `FIELD_REACH_FALL`) — not a biased sampler (`packBigRock`'s greedy-snug
+  radius** (`FIELD_REACH` + `FIELD_REACH_EXP`) — not a biased sampler (`packBigRock`'s greedy-snug
   scoring saturates the pocket flat and overrides any sampler preference) and not a cumulative-area
   frontier alone (one shared envelope confines the small rock along with the big). The outer third
   holds no large rock at all. The core allowance has a floor set by the HEART's own footprint, and
   the outer third's mean size is floored by the class's small end.
-- **MASONRY IS SPACED BY ITS SHAPE, NOT ITS RADIUS** — corners reach up to 1.62x the nominal radius,
-  so circle packing births the pocket interlocked. The bound is DIRECTIONAL (`rockshape.reachAt`) and
-  must be taken over the arc the other rock subtends, or two big rocks interlock at a corner off the
-  centre line; a conservative bound alone strands the biggest rocks in their own clearings, so it is
-  used only to SCORE snugness and the exact test (`rockshape.rockOverlap`) decides.
+- **MASONRY IS SPACED BY ITS SHAPE, NOT ITS RADIUS** — across the baked library a corner reaches
+  1.14–2.45x the nominal radius (mean 1.50, `rockshape.shapeReach`), so circle packing births the
+  pocket interlocked. (History: 1.14–1.62x under the old per-id generator, whose
+  `util.ROCK_REACH_MAX` 1.62 still caps the gravel outlines.) The bound is DIRECTIONAL
+  (`rockshape.reachAt`) and must be taken over the arc the other rock subtends, or two big rocks
+  interlock at a corner off the centre line; a conservative bound alone strands the biggest rocks in
+  their own clearings, so it is used to ACCEPT outright where it clears (free, and always right) and
+  to SCORE snugness, while the near misses go to an exact SAT test — `world.pairOverlaps`, over
+  `rockshape.rockOverlap`. **`CFG.FIELD_PACK_GAP`'s overlap sweep is OWED A RE-RUN** — its own note
+  says to re-sweep when the shape kinds change, and the whole library was replaced.
   Small rock BANKS against big rock (`FIELD_PACK_BANK`) — without it the greedy-snug packer is
   rich-get-richer and never fills the sparse core.
 - **A SHOAL HAS SWIMLANES, AND THEY ARE FOUND AMONG THE ROCK, NOT CARVED THROUGH IT** — routes rim to
@@ -459,14 +468,14 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | Hook | Use |
 |---|---|
 | `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "17/17", moons: "59/59", deaths, impacts, nanEvents, …}`. |
-| `window.mechTest()` | Fixed-seed scripted mechanics suite, ~1.5s, bit-repeatable. |
+| `window.mechTest()` | Fixed-seed scripted mechanics suite, ~4s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |
 | `window.speed(n)` | Live fast-forward of the *visible* game (0.25–50). |
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
-`window.mechTest()` is NOT in the bench suites — run it directly (2.5s) after any player-facing
-mechanic change; 19/19 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+`window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
+mechanic change; 28/28 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

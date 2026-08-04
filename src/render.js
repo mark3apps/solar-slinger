@@ -5316,7 +5316,10 @@ function drawAlien(game, al) {
 
 function drawPrediction(game) {
   // The Trajectory Plotter is an upgrade; the throw line also hides while the
-  // sim is frozen behind any overlay (splash, shell panel, pause, upgrade card)
+  // sim is frozen behind any overlay (splash, shell panel, pause, SPEC card).
+  // `choosingUpgrade` is the FREEZE flag and nothing else now — an inline
+  // ability offer on the pilot card leaves the sim running, so the forecast
+  // keeps drawing under it, which is right: you are still flying.
   if (!game.predict || !game.started || game.paused || shellModal(game) ||
       game.choosingUpgrade || !game.st.hasPredict) return;
   // ION WASH: a solar wave scrambles the forecast outright (the class's `ion`).
@@ -6039,7 +6042,9 @@ function drawMinimap(game) {
   // the one that matters. Drawn before the journey so an active route's next
   // stop stays the loudest thing on the instrument.
   if (game.docks) for (const dk of game.docks) {
-    if (!dk.b.alive) continue;
+    // Same `b.hidden` rule as the chart: a rim-pinned bearing leaks less than a
+    // sun-centred plot, but "nothing, ever" has no instrument exceptions.
+    if (!dk.b.alive || dk.b.hidden) continue;
     const isHome = game.home === dk;
     const done = dk.t >= CFG.DOCK_BUILD;
     const p = padPos(dk);
@@ -6659,9 +6664,16 @@ export function drawStarMap(game) {
   // ---- YOUR DOCKS. A chart is the instrument that REMEMBERS, so the places in
   // the system you have BUILT belong on it — and unlike every other mark here
   // they are not contacts at all: they are decisions, like a journey. They ride
-  // their world's charted position (a docked world is charted by construction —
-  // you flew there and landed on it), and they are drawn UNDER the route so an
-  // active journey's next stop stays the loudest thing on screen.
+  // their world's TRUE position — a station is a decision, not a contact, so it
+  // owes the knowledge ladder no ghost offset — and they are drawn UNDER the
+  // route so an active journey's next stop stays the loudest thing on screen.
+  //
+  // `b.hidden` is the ONE exception, and it is absolute. Landing does not chart
+  // a hidden world (world.js's survey skips `b.hidden` however close you get),
+  // so the Wanderer's Star — an ordinary landable planet as far as the dock code
+  // is concerned — would otherwise print a berth glyph, and HOME PORT in rose,
+  // on a chart that draws nothing else there. The powered relay stays the only
+  // way to learn it exists.
   //
   // Rose for HOME, and deliberately against this file's "a UI construct is
   // painted in chrome ink" note: HOME already means rose on the pad sprite and
@@ -6669,7 +6681,7 @@ export function drawStarMap(game) {
   // is worse than one construct borrowing a semantic hue. Other stations get
   // the steel ring with no label — findable, not shouting.
   if (game.docks) for (const dk of game.docks) {
-    if (!dk.b.alive) continue;
+    if (!dk.b.alive || dk.b.hidden) continue;   // hidden shows NOTHING, chart included
     const isHome = game.home === dk;
     const hb = dk.b;
     const hx = toX(hb.x), hy = toY(hb.y);

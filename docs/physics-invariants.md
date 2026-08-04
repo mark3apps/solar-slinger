@@ -141,20 +141,31 @@ a freshly generated pocket at rest: of 801 candidate pairs the centre-line test 
 the probe found 144 — 54 real overlaps, 37% of the total, were invisible to the collider, the worst
 buried 87 units deep.**
 
-Both profiles are radial functions of bearing (`util.rockOutline` guarantees it — the outline cannot
-self-intersect), so "is this point inside that rock?" is one profile lookup. The probe walks each
-rock's own surface through the arc facing the other and asks. No SAT, no vertex lists, no winding.
-Deepest contact wins and its POSITION is what the resolver gets — the bearing from each centre for
-the face normal, and the lever arms for spin.
+**What ships is convex-hull SAT**, not that radial probe. Every baked shape carries a convex
+decomposition (`rockdata.js`); `rockshape.rockContacts` transforms both bodies' hulls to world space,
+rejects most of the hull pairs on a bounding circle, and runs SAT on what survives — so the depth and
+the axis come out of ONE measurement, which is the entire argument for it. Face clipping turns each
+surviving pair into a real contact manifold of up to two points, because a single point lets a
+resting slab satisfy the constraint and still rock about it forever.
+
+(History: this was `physics.bigPenetration`, a multi-sample radial probe over each rock's own surface
+through the arc facing the other — no vertex lists, no winding. It was deleted in `2f5162c`. Its
+weakness is the paragraph above: a probe can find a deep contact but cannot produce a true MTV.)
 
 Three things follow, and each one is load-bearing:
 
 - **The SAT overlap is a DEPTH, not a radial sum**, so it takes no centre-line cosine projection.
   Discounting it as well would under-separate exactly the off-axis contacts SAT exists to resolve,
   and two landmarks would settle interpenetrated and jitter there.
-- **Every overlapping hull pair yields its own manifold, and the list must not be collapsed to one.**
-  A decomposed body has no single separating vector — two gnarled rocks can catch on a corner AND
-  rest on a face at once. Resolving only the deepest left 46% of overlapping pairs still overlapping.
+- **`rockContacts` must RETURN every overlapping hull pair's manifold — and `collideBodies` resolves
+  only the deepest one per substep.** Those are two different rules and both are load-bearing. A
+  decomposed body has no single separating vector (two gnarled rocks can catch on a corner AND rest
+  on a face at once), so collapsing the list *inside* `rockContacts` throws away the information —
+  resolving only the deepest of a collapsed set left 46% of overlapping pairs still overlapping, and
+  `tools/test-rockshape.mjs` iterates the whole list to prove convergence. But applying all four
+  impulses to one pair in one substep is how a contact turns into a launch, so the resolver takes
+  `cs[0]` and relies on 120 Hz iteration instead: measured, 98% of realistic overlaps clear in one
+  push and the rest in two.
 - **The contact normal is NOT re-derived from the centre line.** SAT already orients it from a toward
   b, and a corner catch legitimately points back across that line. Re-deriving it is what made
   contacts read as skating sideways down a slab.

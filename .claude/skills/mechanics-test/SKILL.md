@@ -8,7 +8,7 @@ description: Run Solar Slinger's scripted, fixed-seed mechanics suite (window.me
 `window.mechTest()` scripts a fixed set of player actions against a **fixed-seed** fresh run and asserts
 each core mechanic — and several design laws — still behaves. It is **bit-repeatable**: the world seed is
 fixed and `Math.random` is swapped for a seeded RNG for the duration, so two runs on the same code return
-identical reports. A run takes ~1.5s wall.
+identical reports. A run takes ~4s wall (the docking cases fly real approaches).
 
 This is the fast "did I break the game loop?" check. It complements, not replaces, the `balance-test`
 skill: mechanics-test proves the verbs work; balance-test proves the sky survives an hour.
@@ -56,7 +56,26 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | NaN tripwire contains poison | invariant containment + `nanEvents` counting |
 | delivery: wreck wakes the Herald | the shared delivery verb (updateDeliveries) — handover, not kill; pays XP |
 | chart pays once; master chart at 100% | chart-everything: once-per-key payout, hidden-star exclusion, MASTER CHART reward |
+| achievement ids are unique | the track is id-keyed end to end — a duplicate id silently forfeits a row's points and XP while the panel shows both as earned |
+| dock: three gates latch a berth | contact / nose-within-`DOCK_ARC` / speed-under-`DOCK_SPEED`, all true for `DOCK_TIME`; and that `game.dockGate` names the one refusing |
+| dock: build window is unprotected, finished berth heals | **"a dock is a structure, not a state"** — the `DOCK_BUILD` seconds give nothing, the finished station gives immunity + `DOCK_HEAL` |
+| dock: jink and parry are inert while berthed | **"a dock is where you stop working"** for the two abilities `main.dockBlocking` structurally cannot reach (neither is input-driven), and that a parried rock is released rather than welded to the hull |
+| dock: launch releases, and the station persists | **"leaving is a sequence"**; a finished station STANDS on its world after the ship goes |
+| dock: a save needs the repair to happen AT the dock | "Limped In" means what it says — healing to full anywhere else cancels the arm |
+| storm: three classes, graded reach and a real taper | **"a wave's reach is its geography, and it dissolves rather than stopping"** — per-class reach ordering, full strength inside `fade`, zero at the limit, and `fade < 1` (the `stormStrength` divisor invariant) |
+| storm: every moon casts a lee | **"every moon shelters"** — counts real moons against `STORM_SHADOW_MIN_R` (the floor was 60 and quietly failed 40 of 59); the ring shepherd moonlet is the one documented exception |
+| parry: the riposte flies at the cursor | the aimed-deflection direction — ship→cursor, not back along the capture bearing |
 | sky intact after suite | the suite's own actions must not shred planets/moons |
+
+**Known gap — the pilot card's answer paths are NOT covered.** A case that answers an owed pick
+through the UI (`Digit1` → `pickFromUi`, or the `#offerBox` click delegate) was written and then
+removed: it works, but it costs the suite its bit-repeatability. Opening an offer is repeatable over
+five consecutive runs; answering one makes them diverge (the delivery check drifts +95 / +83 / +107
+xp as an earlier auto-pick lands on a different ability). HEAD is stable over the same five runs,
+and stays stable with idle time inserted between them, so it is not wall-clock or stray frames.
+The full evidence and the two known contributors are in the comment block where the test used to
+live, in `src/devtest.js`. **Do not re-add a case that answers a pick until five consecutive runs
+compare equal.**
 
 ## Judging results
 
