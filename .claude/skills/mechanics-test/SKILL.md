@@ -57,6 +57,7 @@ skill: mechanics-test proves the verbs work; balance-test proves the sky survive
 | delivery: wreck wakes the Herald | the shared delivery verb (updateDeliveries) — handover, not kill; pays XP |
 | chart pays once; master chart at 100% | chart-everything: once-per-key payout, hidden-star exclusion, MASTER CHART reward |
 | achievement ids are unique | the track is id-keyed end to end — a duplicate id silently forfeits a row's points and XP while the panel shows both as earned |
+| shaped rock: collider agrees with the drawn outline | **"the crater you SEE is the crater you can fly into"** for landmark rock — every baked shape's collider boundary must sit within render's own 0.8%-of-radius budget of the polygon `traceAsteroid` draws, and a concavity must read as empty. Pure geometry, no RNG. 17 of the 68 shapes are not radial functions, so the old one-radius-per-bearing query answered off the FAR wall by up to 1.40 body radii (issue #102) |
 | dock: three gates latch a berth | contact / nose-within-`DOCK_ARC` / speed-under-`DOCK_SPEED`, all true for `DOCK_TIME`; and that `game.dockGate` names the one refusing |
 | dock: build window is unprotected, finished berth heals | **"a dock is a structure, not a state"** — the `DOCK_BUILD` seconds give nothing, the finished station gives immunity + `DOCK_HEAL` |
 | dock: jink and parry are inert while berthed | **"a dock is where you stop working"** for the two abilities `main.dockBlocking` structurally cannot reach (neither is input-driven), and that a parried rock is released rather than welded to the hull |

@@ -84,6 +84,29 @@ a face–face contact, 1 for a vertex–face), then a sequential-impulse solver 
 inertia, restitution and Coulomb friction. Positional correction uses Baumgarte with slop, so a
 resting contact stops fighting the rail instead of being shoved apart every frame.
 
+**Collide against something ROUND** — the ship, an alien, a pebble — with `rockshape.rockCircleQuery`:
+the signed distance from the query point to the DRAWN outline (`v`, not `hulls`), its outward normal
+and the closest point, from one closest-point walk. Depth, direction and contact location are again
+the same measurement, and the answer agrees with the picture by construction.
+
+**A BEARING QUERY IS NOT A COLLIDER HERE, and that cost a HIGH-severity bug** (issue #102).
+`rockSurfAt` reduces the outline to one radius per bearing by taking the OUTERMOST ray/outline
+crossing, which is the surface only while the outline is a radial function r(θ). `util.rockOutline`
+is one by construction — the design law says an overhang would break the single radial query — but
+**the bake does not stop at rockOutline**: a child is CUT from its parent and lands with its own
+centroid, and a cut can leave a concave bite between that centroid and the far wall. Measured at 1440
+bearings over the library: **17 of 68 shapes have multi-crossing bearings**, worst radial gap **1.40
+body radii** (`s2_34`), and `m2_31` is multi-crossing over **6.7%** of its circumference. **None of
+the 5 roots is affected** — every offender is a cut child. Until the circle query landed, `physics.
+surfRadius` fed that far-wall radius to ship-, alien- and pebble-vs-landmark contact, so flying at a
+visible notch stopped the hull and bounced it in open space: landmark-vs-landmark respected the
+notch (it goes through `rockContacts`) and nothing else did. The bake is not at fault — every outline
+is CCW, the hulls are convex and CCW, `kids.af` sums to 1 and areas conserve. Only the radial
+reduction was lossy. `rockSurfAt` survives for render's decal ring and for the one collision case with
+no circle on either side (a landmark against a crystal world or a cratered limb, where both profiles
+are radial by construction anyway) — **do not hand it a new collider.**
+`window.mechTest`'s *shaped rock: collider agrees with the drawn outline* is the guard.
+
 **Scale:** collider = hull verts × `b.radius`. Uniform scale cannot break convexity, so one baked
 decomposition is valid from a 20-unit chip to a 400-unit monolith. Inertia scales as `r⁴`, area as
 `r²`.
@@ -167,7 +190,7 @@ table is the reason a reader must not treat the one above as a checklist:
 
 | Survived | Where | Why |
 |---|---|---|
-| `surfReach`, the `bigShape` branch of `surfRadius` | physics.js | still the shared surface query, and `surfReach` is the broad-phase bound for every shaped pair — retargeted to `rockshape.rockSurfAt` / `rockReach`, not removed |
+| `surfReach`, the `bigShape` branch of `surfRadius` | physics.js | `surfReach` is the broad-phase bound for every shaped pair — retargeted to `rockshape.rockReach`, not removed. `surfRadius`'s `bigShape` branch is now a NARROW fallback only: the exact `rockCircleQuery` took over every contact with a round party (issue #102, above), leaving it the landmark-against-crystal-world / cratered-limb case |
 | `applyBigFriction` | physics.js | still applies the tangential/angular response on top of the manifold |
 | the railed-pair pass-through guard and `stuckPair` | physics.js | invariant 11 — two railed rocks of one pocket skip collision, and `stuckPair` was *added* by this work: a railed pair inside each other's reach runs the full narrow phase and the lighter one is derailed |
 | `FIELD_REACH` | config.js / world.js | a design law in its own right (the graded shoal); the packer's *clearance test* went exact, the reach *allowance* did not. Its live partner is **`FIELD_REACH_EXP`** — `FIELD_REACH_FALL` is the superseded exponent, kept only because the measurements in its note were taken against it, and read by nothing |
@@ -229,7 +252,9 @@ are still *reported* by the suite, just not gated.
   radius changes — on a break, above all.
 - `hulls` is a coarser polygon than `v`. `v` is what the player sees; `hulls` is what they hit. They
   agree to 1.2% of reach, and the simplification only ever removes area, so the collider sits
-  fractionally inside the silhouette rather than outside it.
+  fractionally inside the silhouette rather than outside it. **`rockCircleQuery` runs on `v`** —
+  where one side is a circle there is no decomposition to need, so the round-party collider is the
+  drawn polygon exactly (measured agreement ~1e-12 body radii, against render's 0.8% budget).
 
 ## Still open after this
 

@@ -8,7 +8,9 @@ import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.j
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel } from './util.js';
+import { mulberry32, surfaceVel, TAU } from './util.js';
+import { ROCK_SHAPES } from './rockdata.js';
+import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
 
 // DEV MECHANICS SUITE — window.mechTest() lazy-loads this module, so normal
@@ -73,6 +75,27 @@ function worldChecksum(game) {
   return h;
 }
 
+// Every positive distance at which a ray from a shape's own origin crosses its
+// DRAWN outline, sorted. Written out here rather than borrowed from rockshape
+// on purpose: this is the independent reading of the picture that the collider
+// is being checked against, so it must not share code with it.
+function rayCrossings(v, dx, dy) {
+  const n = v.length >> 1, ts = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = v[i * 2], ay = v[i * 2 + 1];
+    const ex = v[j * 2] - ax, ey = v[j * 2 + 1] - ay;
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ax * ey - ay * ex) / den;          // along the ray
+    if (t <= 0) continue;
+    const u = (ax * dy - ay * dx) / den;          // along the edge
+    if (u < 0 || u > 1) continue;
+    ts.push(t);
+  }
+  return ts.sort((p, q) => p - q);
+}
+
 // Park the ship somewhere quiet with zeroed motion — each test starts from a
 // known kinematic state instead of inheriting the previous test's drama.
 function parkShip(game, x, y) {
@@ -127,6 +150,84 @@ export function runMechTest(game, hooks, opts = {}) {
       }
       expect(dupes.length === 0, `duplicate achievement id(s): ${dupes.join(', ')}`);
       return `${ACHIEVEMENTS.length} rows, all ids unique`;
+    });
+
+    // T0b — A LANDMARK COLLIDES AS THE ROCK IT IS DRAWN AS. Pure geometry over
+    // the baked library: no world, no RNG (the `draws` column must not move),
+    // so it sits up here with the other catalog checks.
+    //
+    // The design law is "the crater you SEE is the crater you can fly into —
+    // one profile feeds render, physics and both predict mirrors", and for
+    // shaped rock the seam is between render.traceAsteroid (which draws the
+    // TRUE polygon, concavities and all) and the collider. This asserts they
+    // agree to render.js's own budget: its cosmetic wobble is held at 0.8% of
+    // body radius precisely so drawn and collided stay inside one band, so 0.8%
+    // is the tolerance the collider has to clear too.
+    //
+    // WHAT THIS CATCHES, AND WHY IT IS NOT A FORMALITY (issue #102). Until the
+    // circle-vs-outline query landed, the collider asked for one radius per
+    // bearing (physics.surfRadius -> rockshape.rockSurfAt), which takes the
+    // OUTERMOST ray/outline crossing. That is the surface only while the
+    // outline is a radial function. util.rockOutline is one by construction,
+    // but the BAKE cuts children out of parents and a piece lands with its own
+    // centroid — so a concave bite can sit between that centroid and the far
+    // wall. 17 of the 68 baked shapes have such bearings (s2_34 worst at 1.40
+    // body radii, m2_31 over 6.7% of its circumference), and on them the
+    // collider sat a whole body radius outside the rock: the hull stopped and
+    // bounced in open space. Pointed at rockSurfAt this exact case reports 148
+    // disagreements across 14 of the 68 shapes (the other three offenders have
+    // arcs too narrow for 180 bearings to land in); pointed at the circle query
+    // the boundary agrees to ~4e-12 radii, against a 8e-3 budget.
+    t('shaped rock: collider agrees with the drawn outline', () => {
+      const BUD = 0.008;          // render.js's cosmetic wobble, in body radii
+      const N = 180;              // bearings per shape per placement
+      // Two placements, because the query has to be right in WORLD space: a
+      // unit rock at the origin and a 137-unit rock turned 0.7 rad and parked
+      // far out would both pass a frame-confused implementation only by luck.
+      const PLACE = [{ r: 1, rot: 0 }, { r: 137, rot: 0.7 }];
+      let flips = 0, gaps = 0, worst = 0, multi = 0;
+      const bad = [];
+      for (const [id, sh] of Object.entries(ROCK_SHAPES)) {
+        let shapeMulti = false;
+        for (const p of PLACE) {
+          const b = { x: 41000, y: -25000, rot: p.rot, radius: p.r, shapeId: id };
+          for (let k = 0; k < N; k++) {
+            const th = (k + 0.5) / N * TAU;             // shape-local bearing
+            const ts = rayCrossings(sh.v, Math.cos(th), Math.sin(th));
+            // An even crossing count means the ray started OUTSIDE the polygon
+            // — no "near surface" to check against from here.
+            if (!ts.length || ts.length % 2 === 0 || ts[0] < 4 * BUD) continue;
+            const wth = th + p.rot;
+            const at = (r) => rockCircleQuery(b,
+              b.x + Math.cos(wth) * r * p.r, b.y + Math.sin(wth) * r * p.r).d / p.r;
+            // The collider's verdict must FLIP at the drawn near surface: a
+            // hair inside is inside, a hair outside is outside. Skipped where
+            // the outline is thinner than the budget, which no tolerance can
+            // resolve either way.
+            if (!(ts.length > 1 && ts[1] - ts[0] < 4 * BUD)) {
+              flips++;
+              const dIn = at(ts[0] - BUD), dOut = at(ts[0] + BUD);
+              if (!(dIn < 0 && dOut > 0)) bad.push(`${id} @${th.toFixed(2)} flip ${dIn.toFixed(4)}/${dOut.toFixed(4)}`);
+              worst = Math.max(worst, Math.abs(at(ts[0])));
+            }
+            // ...and the GAP: a bearing whose ray leaves the rock and re-enters
+            // it has real empty space in between. That gap is what the player
+            // flies into, and reporting it as solid is the whole of issue #102.
+            if (ts.length > 1) {
+              shapeMulti = true;
+              gaps++;
+              const d = at((ts[0] + ts[1]) / 2);
+              if (!(d > 0)) bad.push(`${id} @${th.toFixed(2)} gap reported solid (${d.toFixed(4)})`);
+            }
+          }
+        }
+        if (shapeMulti) multi++;
+      }
+      expect(bad.length === 0,
+        `${bad.length} disagreement(s) with the drawn outline: ${bad.slice(0, 4).join('; ')}`);
+      expect(worst <= BUD, `boundary error ${worst.toFixed(5)} radii exceeds the ${BUD} budget`);
+      return `${Object.keys(ROCK_SHAPES).length} shapes, ${flips} boundary flips + ${gaps} concavity probes, ` +
+        `${multi} non-radial shapes, worst boundary error ${worst.toExponential(1)} radii`;
     });
 
     // T1 — world generation is deterministic for a fixed seed

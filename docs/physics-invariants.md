@@ -180,6 +180,39 @@ Three things follow, and each one is load-bearing:
 - **Two railed rocks of the same pocket skip the whole thing** (see below). They must, or the probe
   finding 144 resting overlaps would turn into 144 pointless resolutions per substep.
 
+### ...and a ROUND party gets the exact circle query, not a bearing (added 2026-08, issue #102)
+
+**The ship, an alien and a pebble collide with a landmark through `rockshape.rockCircleQuery`** — the
+signed distance from their centre to the DRAWN outline, its outward normal and the closest point, all
+out of one closest-point walk. Same argument as SAT, applied to the other half of the collision
+matrix: depth, direction and contact location are the same measurement.
+
+**A single radius per bearing is NOT a surface here, and treating it as one was a real bug.**
+`rockshape.rockSurfAt` marches the outline and takes the OUTERMOST crossing, which is the surface only
+while the outline is a radial function r(θ). `util.rockOutline` is one by construction — the design
+law is explicit that an overhang would break the single radial query — but the bake does not stop at
+`rockOutline`: a child is CUT from its parent and lands with its own centroid, and a cut can put a
+concave bite between that centroid and the far wall. Measured at 1440 bearings over the baked library:
+**17 of the 68 shapes have multi-crossing bearings**, worst radial gap **1.40 body radii** (`s2_34`);
+`m2_31` is multi-crossing over **6.7%** of its circumference. **None of the 5 roots is affected** —
+every offender is a cut child. While `physics.surfRadius` fed that far-wall radius to ship-, alien-
+and pebble-vs-landmark contact, the ship stopped and bounced *in open space* at a visible notch: one
+landmark had two disagreeing narrow phases, because landmark-vs-landmark went through `rockContacts`
+and respected the notch while nothing else did. It contradicted the crumble law directly.
+
+Three rules follow:
+
+- **The query runs on `v`, the drawn outline — not `hulls`.** With a circle on one side there is no
+  decomposition to need, and agreeing with the picture is the entire point (measured agreement ~1e-12
+  body radii, against `render.js`'s own 0.8%-of-radius wobble budget).
+- **Its depth takes no centre-line projection**, for exactly the reason the SAT depth doesn't.
+- **`surfRadius`'s `bigShape` branch is a fallback now, not the collider.** What still reaches it is
+  the case with no circle on either side — a landmark against a crystal world's shard polygon or a
+  cratered limb — where both profiles are radial by construction anyway. Don't hand it a new collider.
+
+`window.mechTest`'s *shaped rock: collider agrees with the drawn outline* is the guard: every baked
+shape, both placements, boundary flip plus a probe inside every concavity.
+
 ## Railed conjunctions pass through (added 2026-08)
 
 **Two RAILED natural celestials touching below `DMG_THRESH` do not collide at all** — no derail, no

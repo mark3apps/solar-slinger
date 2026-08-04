@@ -227,6 +227,10 @@ changing anything it touches.**
     each other's reach falls through to the full narrow phase and the LIGHTER one is derailed
     (`stuckPair`), because a pocket that re-rails near home can seat a rock on top of a neighbour.
     (History: this was a multi-sample radial probe, `physics.bigPenetration`, until `2f5162c`.)
+    11b. A landmark against anything ROUND — ship, alien, pebble — is exact too
+    (`rockshape.rockCircleQuery`, closest point on the DRAWN outline). A radius-per-bearing is not a
+    surface: 17 of the 68 baked shapes are not radial functions, so that query answered off the far
+    wall by up to 1.4 body radii and the hull bounced in open space.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
 `game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
@@ -482,7 +486,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; 29/29 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; 30/30 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 
