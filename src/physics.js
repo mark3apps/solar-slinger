@@ -2101,12 +2101,22 @@ function collideBodies(game, a, b) {
       bigProbe = true;
     } else {
       // NO CIRCLE ON EITHER SIDE (a crystal world's shard polygon, a cratered
-      // limb, or a landmark against one of those). Both profiles are radial
-      // functions of their own bearing, which is what the crystal and scar
-      // colliders were always written as, so the radial sum stands. A landmark
-      // reaching this branch keeps surfRadius' reduction and its known error —
-      // making it exact needs polygon-versus-polygon, which is what
-      // rockContacts already is for the pair that actually earns it.
+      // limb, or a landmark against one of those). Both sides are sampled by
+      // BEARING and summed, which is an approximation, not a guarantee — and
+      // how good it is depends on which pair got here:
+      //   - crystal vs scar, and either against the other, is EXACT enough by
+      //     construction: crystalRadiusAt and scarSurfaceAt are true radial
+      //     functions, so a bearing IS their surface.
+      //   - a LANDMARK reaching this branch is not. Its baked outline is the
+      //     very thing this diff is about: 17 of 68 shapes are multi-crossing,
+      //     so surfRadius keeps its reduction and its known error here, up to
+      //     1.40 body radii on an offending bearing.
+      // The landmark case is left approximate ON PURPOSE. Making it exact needs
+      // polygon-versus-polygon, which rockContacts already is for the pair that
+      // earns it (two landmarks), and neither party here is a circle, so the
+      // closest-point query above does not apply either. What lands here is a
+      // landmark grinding a crystal world or a cratered limb — rare, and never
+      // the ship, which is the surface the player actually feels.
       const ang = Math.atan2(dy, dx);
       raSurf = surfRadius(a, ang);
       rr = raSurf + surfRadius(b, ang + Math.PI);
