@@ -576,8 +576,8 @@ export function generateWorld(game, seed = 20260721) {
   // generateWorld mints an id-bearing object: only Body and Alien draw
   // NEXT_ID++, `Ship` carries no id at all (generateWorld does not build one —
   // respawnShip just repositions main.js's single import-time Ship), and
-  // regenWorld clears game.aliens before this runs. That is why a run's ids are
-  // a pure function of the seed — check this ordering again if Ship ever gains
+  // regenWorld clears game.aliens before this runs. That is why the ids minted by
+  // generateWorld are a pure function of the seed — check this ordering again if Ship ever gains
   // an id. See the note on NEXT_ID in entities.js.
   resetBodyIds();
 
