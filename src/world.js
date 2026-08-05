@@ -2437,6 +2437,12 @@ export function respawnShip(game) {
   }
   s.hull = game.st.hullMax;
   s.shield = game.st.shieldMax;
+  // THE RAM DOES NOT SURVIVE A DEATH. It is not a stat, it is cargo you crushed
+  // onto the hull — the wreck took it with it, and a respawned brawler goes and
+  // builds a new one. (The shield above refills because it is an ABILITY; the
+  // ram is the rock you were carrying.)
+  s.ram = 0;
+  s.ramHitT = 0;
   s.alive = true;
   s.invuln = 4;
   game.deathCause = '';

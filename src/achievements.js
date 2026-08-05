@@ -150,18 +150,11 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.orbitN >= 7),
   A('orbitMass', 'haul', PTS.tricky, 'Personal Asteroid Belt', 'Carry 20,000 mass in formation at once.',
     (g, s) => s.orbitMassBest >= 20000),
-  A('volley1', 'haul', PTS.easy, 'Buckshot', 'Fire a shotgun volley.',
-    (g, s) => s.volleys >= 1),
-  A('volley25', 'haul', PTS.normal, 'Trigger Happy', 'Fire 25 volleys.',
-    (g, s) => s.volleys >= 25),
-  A('volley100', 'haul', PTS.hard, 'Gunner', 'Fire 100 volleys.',
-    (g, s) => s.volleys >= 100),
-  A('volleyBest3', 'haul', PTS.normal, 'Triple Load', 'Fire a three-rock volley.',
-    (g, s) => s.volleyBest >= 3),
-  A('volleyBest5', 'haul', PTS.tricky, 'Both Barrels', 'Fire a five-rock volley.',
-    (g, s) => s.volleyBest >= 5),
-  A('volleyBest7', 'haul', PTS.hard, 'Full Broadside', 'Fire a seven-rock volley.',
-    (g, s) => s.volleyBest >= 7),
+  // (The volley family — Buckshot through Full Broadside — is DELETED with
+  // Scattergun: nothing feeds the volley channel any more, so fireVolley is
+  // unreachable in play and every one of those rows had become permanently
+  // unearnable, which the progression rules treat as exactly as broken as a
+  // frame-one freebie.)
   A('steal1', 'haul', PTS.normal, 'Highway Robbery', "Snatch a rock out of an alien's beam.",
     (g, s) => s.steal >= 1),
   A('steal10', 'haul', PTS.tricky, 'Career Criminal', 'Steal ten rocks from aliens.',
@@ -698,18 +691,20 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.maxed >= 3),
   A('maxTrack5', 'build', PTS.brutal, 'Nothing Left to Learn', 'Max out five separate abilities.',
     (g, s, c) => c.maxed >= 5),
-  A('shielded', 'build', PTS.normal, 'Screens Up', 'Unlock a regenerating shield.',
-    (g) => g.st.shieldMax > 0),
+  // RANK 3, not "you have one" — Phase Screen is in the SCOUT starting kit, so
+  // an unlock row for a shield would be free on frame one for that spec. Same
+  // fix and same reason as unlockDeflect below.
+  A('shielded', 'build', PTS.normal, 'Screens Up', 'Take a regenerating shield to its third rank.',
+    (g) => g.st.shieldLvl >= 3),
   A('hull300', 'build', PTS.normal, 'Reinforced', 'Push your total health pool past 300.',
     (g) => g.st.maxHull >= 300),
   A('hull450', 'build', PTS.tricky, 'Armoured', 'Push your total health pool past 450.',
     (g) => g.st.maxHull >= 450),
   A('hull600', 'build', PTS.hard, 'Walking Fortress', 'Push your total health pool past 600.',
     (g) => g.st.maxHull >= 600),
-  A('unlockVolley', 'build', PTS.normal, 'Scattergun', 'Unlock the shotgun volley.',
-    (g) => g.st.hasVolley),
-  // RANK 3, not rank 1 — the Deflector is in the BRAWLER starting kit, so an
-  // unlock row for it would be free on frame one for that spec.
+  // RANK 3, not rank 1 — the Deflector is in the SCOUT starting kit (it moved
+  // there from BRAWLER), so an unlock row for it would be free on frame one for
+  // that spec.
   A('unlockDeflect', 'build', PTS.normal, 'Deflector Mk III', 'Take the Deflector to its third rank.',
     (g) => g.st.deflect >= 3),
   A('unlockTether', 'build', PTS.normal, 'Recovery Tether', 'Unlock the returning-rock tether.',

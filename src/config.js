@@ -578,6 +578,43 @@ export const CFG = {
   DMG_SHIP: 0.18,
   RESTITUTION: 0.35,
 
+  // ---- THE BRAWLER'S RAM (War Rack) -------------------------------------
+  // A rock absorbed into the ram STOPS BEING A ROCK. It is destroyed and its
+  // mass is added to one scalar, `ship.ram` — there is no pack of bodies flying
+  // in formation ahead of the hull. That was the first build of this and it was
+  // wrong in a way worth recording: seven real bodies parked on the bow
+  // collided with the target on their own, died individually before the hull
+  // ever arrived, and left the "ram" as a cloud of debris rather than a thing
+  // attached to the ship. A ram is ONE object, it is welded on, and it grows.
+  //
+  // Capacity: what the ram can hold, per War Rack rank and tier. The per-rock
+  // gate is still config.canStow (a class rung plus a mass allowance), so the
+  // ram is boulder-capped the way the rack was — you build a ram out of rock
+  // you could have thrown, not out of moons.
+  RAM_CAP_PER_RANK: 4200,   // x rank x (0.6 + 0.14 * tier): ~2.5k at rank 1 -> ~33k maxed
+  // SIZE, and it is deliberately FRONT-LOADED. The growth curve is
+  // pow(fill, 0.4), not sqrt: the first few rocks have to visibly transform the
+  // slab or the build phase gives no feedback for its first ten seconds, and a
+  // ram that creeps up in imperceptible increments is one the player never
+  // learns to read. Two rocks into a rank-6 ram is already a third of its full
+  // size; the last rocks thicken a thing that is plainly there. The slab's
+  // actual dimensions live in config.ramPlate — the ONE geometry render draws
+  // and physics measures, per the CFG.dockDomeR mirror-drift rule.
+  RAM_R_POW: 0.4,           // front-loaded growth (see above)
+  // ABSORPTION. Front-arc damage is taken by the ram INSTEAD of the hull —
+  // fully, not as a percentage — and spends this much ram mass per hull point
+  // it eats. The hull takes nothing at all until the ram is gone, which is the
+  // whole promise of the thing; what it costs is that the ram is then gone.
+  // 120 sets the exchange: a rank-1 ram (~2.5k) is worth ~21 hull — one solid
+  // hit — and a maxed one (~33k) is worth ~270, a whole brawl.
+  RAM_ABSORB: 120,
+  // INERTIA. A big ram carries you THROUGH what you hit instead of bouncing:
+  // the contact kick is scaled by (1 - RAM_KEEP_MAX * ram/(ram + RAM_KEEP_KNEE)).
+  // Saturating on ABSOLUTE mass, not on fill, because "bigger" has to mean
+  // bigger — a full rank-1 ram is still a small ram and should still bounce.
+  RAM_KEEP_KNEE: 6000,
+  RAM_KEEP_MAX: 0.85,
+
   // PLANET DURABILITY (user design law: "killing a planet should feel like a
   // feat"). Planet hp is a BIG FLAT BASE plus a gentle mass slope, NOT the
   // mass-scaled curve every other body uses — because mass-scaled hp gets the
@@ -2308,6 +2345,95 @@ export function dockDomeR(st, hostR, groundY) {
   return dockPadR(st, hostR) * (1.15 + dockTier(st).mast * 0.24) + groundY;
 }
 
+// THE RAM'S GEOMETRY: A SLAB OF FUSED ROCK RIDING JUST AHEAD OF THE BOW. It is
+// not welded on — it is HELD, floating a short gap off the nose in the same
+// braided energy field that couples the scout's split drive section, and it
+// visibly compresses into that field when it takes a hit or eats a rock. A flat
+// working face across the front, rocky everywhere else, and WIDER THAN THE
+// SHIP at every size — the overhang is the silhouette; a slab narrower than the
+// hull would just read as a bigger nose.
+//
+//   back   where the field's hull emitters end and the coupling gap begins —
+//          measured off the DRAWN nose (radius / SHIP_HIT_FRAC), not the
+//          collision circle, or the slab overlaps the art it must stand clear of
+//   gap    the energy gap the beams span (the spring's free length)
+//   depth  the slab's thickness along the nose axis
+//   halfW  half its width across the bow — always past the hull radius
+//
+// One definition, shared: render draws this exact slab and hangs the beams in
+// this exact gap, physics takes the front CONTACT EDGE from ramFace and the
+// covered arc from ramArc — so the edge you can see is the edge that hits and
+// the edge that protects, per the CFG.dockDomeR mirror-drift rule.
+export function ramPlate(st, ram) {
+  if (!(ram > 0) || !(st.ramCap > 0)) return null;
+  const fill = Math.min(1, ram / st.ramCap);
+  const g = Math.pow(fill, CFG.RAM_R_POW);
+  const r = st.radius;
+  // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
+  // visible tier tracks what is IN it right now — how dense the current ram
+  // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
+  // as hits spend it. War Rack's rank only sets how high that ladder is
+  // allowed to climb: each rank unlocks the next tier, it does not wear it.
+  // ramTier below is the one place that mapping lives; the plate carries the
+  // result so render's build and physics' tier-drop detection read one number.
+  const t = ramTierOf(fill, st.orbitLvl || 1);
+  return {
+    back: (r / SHIP_HIT_FRAC) * 1.04,
+    // The field gap is the compression spring's FREE LENGTH, and it is
+    // deliberately generous: the slab rides well clear of the nose at rest so
+    // that compression has somewhere visible to go — under thrust it squeezes
+    // to ~2/3 of this, and an impact slams it nearly to the hull (render's
+    // spring). A tight resting gap made all three states read the same.
+    gap: r * 0.55,
+    depth: r * (0.26 + 0.055 * t + 0.34 * g),
+    halfW: r * (0.72 + 0.16 * t + 0.52 * g),
+    fill,
+    tier: t,
+  };
+}
+// fill -> tier, capped by rank. Six even density bands: a rank-6 ram walks all
+// six as it fills; a rank-2 ram tops out at tier 2 however much it holds
+// (which can't be much — the cap is rank-scaled too, so the bands and the
+// capacity climb together).
+function ramTierOf(fill, rank) {
+  return Math.max(1, Math.min(rank, Math.ceil(fill * 6)));
+}
+// The shared read: what tier is this ram AT? Physics compares it across a
+// spend to catch a downward crossing (debris comes loose); render keys the
+// rocklet build off it. 0 for no ram.
+export function ramTier(st, ram) {
+  if (!(ram > 0) || !(st.ramCap > 0)) return 0;
+  return ramTierOf(Math.min(1, ram / st.ramCap), st.orbitLvl || 1);
+}
+// The leading face's distance from the ship's centre — the front contact edge.
+// physics.collideShipBody swaps this in for the hull radius inside the covered
+// arc, which is what makes a rock strike the slab you can SEE instead of
+// passing through it to touch the hull buried behind.
+// Measured at the FULL gap, deliberately ignoring the render spring: the
+// compression (thrust / impacts) is cosmetic, and reading it here would make
+// the contact edge ring with the visual. Conservative by construction — the
+// sprung slab only ever sits AT or BEHIND this edge, so contact registers at
+// the field's outer extent and never late; the few units of daylight during a
+// compressed charge read as the field meeting the rock first.
+export function ramFace(st, ram) {
+  const p = ramPlate(st, ram);
+  return p ? p.back + p.gap + p.depth : st.radius;
+}
+// The half-angle the slab actually covers, taken from its own corners. It
+// widens as the slab widens, which is why "the bigger it is the more it shrugs
+// off" needs no second constant to be true.
+export function ramArc(st, ram) {
+  const p = ramPlate(st, ram);
+  if (!p) return 0;
+  return Math.atan2(p.halfW, p.back + p.gap + p.depth);
+}
+// How much of the contact kick the ram lets you keep. Saturating on absolute
+// mass — see CFG.RAM_KEEP_KNEE.
+export function ramKeep(ram) {
+  if (!(ram > 0)) return 0;
+  return CFG.RAM_KEEP_MAX * (ram / (ram + CFG.RAM_KEEP_KNEE));
+}
+
 // ---------------------------------------------------------------------------
 // THE BEAM CLASS LADDER (user design law: *a rank buys mass inside your class,
 // never the class above*).
@@ -2760,21 +2886,39 @@ export const PROG = {
 // first picks a non-choice. Same rule, same fix, different failure mode —
 // SCOUT once shipped with a lone rankable track behind Retro Jets.)
 export const SPECS = [
-  // Kit carries Ram Prow + Deflector, not Heavy Winch: the brawler's frame-one
-  // identity is MECHANICS (the innate prow and the parry, each deepened by its
-  // track) — a kit of three stat sliders played like the base ship with bigger
-  // numbers. Heavy Winch stays a strong early pool card. (The old kit rule —
-  // at least three rankable rows — is satisfied by construction now that every
-  // ability is six ranks; a kit is four climbing bars from frame one.)
+  // Kit carries the COMPLETE RAM LOOP, not stat sliders: War Rack IS the loop
+  // — built by eating rocks, spent by what it absorbs and rams (there is no
+  // release ability; Scattergun was deleted with the old trailing rack) — so
+  // the brawler's frame-one identity is a mechanic you build and ride behind.
+  // Heavy Winch stays a strong early pool card. (The old kit rule — at least
+  // three rankable rows — is satisfied by construction now that every ability
+  // is six ranks; a kit is three climbing bars from frame one.)
+  // NO INNATE ABILITIES: a spec is its kit and its pool, nothing else. The
+  // brawler used to bonk harder than everyone at rank 0 through a spec-DNA
+  // floor in shipStats, which meant its signature move was partly invisible —
+  // not on any card, not on any bar. The ram is now entirely War Rack's, so
+  // every point of it is a rank you can see climbing.
+  // KIT ORDER IS RANK CADENCE, NOT A LIST (see ladderScale): kit rows are spaced
+  // evenly across the XP spread band by their POSITION, so first-listed ranks
+  // soonest and last-listed slowest, and reordering a kit re-times the whole
+  // run. Each kit therefore leads with the ability that spec is ABOUT — War
+  // Rack builds the prow the brawler fights with, Orbital Sling is the hauler's
+  // ring, the Deflector is the scout's signature move — so the identity track
+  // is the one whose bar moves fastest.
+  // The orders are also SEARCHED, not just authored: the tightest gap between
+  // any two kit rank-ups is 100 / 102 / 76 XP here against devtest's floor of
+  // 40 (two ranks landing closer than that read as one event and the stagger
+  // has failed). The obvious authored orders were much worse — the hauler's
+  // longArmTractor-first reading scored 39 and tripped the suite outright.
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
-    start: ['kineticSling', 'reinforcedHull', 'ramProw', 'deflector'] },
+    start: ['bulwarkRing', 'reinforcedHull', 'kineticSling'] },
   { id: 'hauler', name: 'HAULER', icon: '◎',
     desc: 'Master of the beam — long reach, big hauls, orbit shields.',
-    start: ['longArmTractor', 'salvageMagnet', 'heavyWinch'] },
+    start: ['orbitalSling', 'salvageMagnet', 'longArmTractor'] },
   { id: 'scout', name: 'SCOUT', icon: '◇',
     desc: 'Eyes and speed — sensors, precision, and mobility.',
-    start: ['tunedThrusters', 'retroJets', 'navPlotter', 'leadComputer'] },
+    start: ['deflector', 'phaseScreen', 'tunedThrusters', 'navPlotter'] },
 ];
 
 // The named-ability catalog. Each ability has an OWNER spec, `max` ranks (which
@@ -2809,7 +2953,7 @@ export const SPECS = [
 // An optional `needs: '<channel>'` is a HARD PREREQUISITE, not a soft floor: the
 // ability is not OFFERED at all until you own something feeding that channel
 // (prereqMet). It exists for rows that are literally inert on their own —
-// Scattergun/Rockwall/Aegis/Recovery Tether all act on ORBIT rocks, and with no
+// Rockwall/Aegis/Recovery Tether all act on ORBIT rocks, and with no
 // orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
 // never a rock for them to act on; Impact Warning marks a spot on the FORECAST
 // PATH, and shipStats gates it behind the plotter outright (`hasCrashWarn =
@@ -2817,44 +2961,63 @@ export const SPECS = [
 // spent the pick, its bar started climbing, and nothing whatsoever happened in
 // the world. It names a CHANNEL, not an id, so it resolves across specs without
 // a per-spec table (the orbit channel is BRAWLER's War Rack and HAULER's
-// Orbital Sling / Expanded Bay alike) — the same reason shipStats reads
-// channels. Keep it for genuinely-inert rows ONLY: the second-track duplicates
-// (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter,
-// Juggernaut) READ like extensions but are fully functional standing alone, and
-// gating them would just thin the early pool for flavour.
+// Orbital Sling alike) — the same reason shipStats reads channels.
+// ONE TRACK PER CHANNEL PER SPEC (user design rule). There used to be five
+// "second track" rows — Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
+// Freighter, Juggernaut — each a second ability stacking a channel its spec
+// already had a row for. They are DELETED, and nothing may replace them: a card
+// whose whole promise is "the number you are already raising, again" spends a
+// pick without adding a verb, and it made two of the three tier-3 capstone
+// slots a stat top-up. Every remaining row owns its channel outright, so the
+// pool is shorter and every card in it does something the others don't.
 // NAMING LAW (user design rule): two abilities that DO the same thing carry the
-// SAME name/icon/desc even across specs (Heavy Winch is the catch starter in
-// both BRAWLER and HAULER; Reinforced Hull is the hull track in both — ids stay
-// distinct, they're separate catalog rows). Same-spec second tracks (Grapple
-// Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter, Juggernaut) are the
-// deliberate exception: they must stay separately named to coexist as distinct
-// cards, so their descs read as "more of the same" instead. BRAWLER's runtime abilities
-// (Ram Prow, Deflector, Cluster Rounds, Shockwave, Wall Splat, Berserker,
-// Demolition, Juggernaut — plus the INNATE ram, spec DNA) are live — their
-// hooks live in physics.js (collideShipBody + brawlerThrowKill + the parry
-// state machine) and tractor.js (Berserker fling). HAULER's: Recovery Tether +
-// Twin Grip + Dead Stop (tractor.js), Aegis Reflector (physics collideBodies),
-// Rockwall (physics damageBody hardening + tractor orbit spin). SCOUT's:
-// Afterburner (fuel tank in main.js, thrust + governor in physics), Dash Jets
-// (A/D — main.onDash), Reflex Jink (the auto-dodge scan in physics.step),
-// Slipstream (main.onWarp), Recon Drone (world.js survey). All three specs'
-// runtime abilities are live.
+// SAME name/icon/desc even across specs — Heavy Winch is the catch starter in
+// both BRAWLER and HAULER, Reinforced Hull is the hull track in both (ids stay
+// distinct, they're separate catalog rows). With the second tracks gone this is
+// now the ONLY reason two rows ever share a name.
+// BRAWLER's runtime abilities (War Rack's ram, Cluster Rounds, Shockwave,
+// Wall Splat, Berserker, Demolition) are live — their hooks live in physics.js
+// (collideShipBody's ram + absorption, brawlerThrowKill) and tractor.js
+// (absorbIntoRam, Berserker fling). NOTHING is innate: the brawler's
+// ram used to have a spec-DNA floor in shipStats that made it hit harder at
+// rank 0 than any other spec, and that is gone — every spec now starts at the
+// universal base and differs only by what its kit and pool contain.
+// HAULER's: Recovery Tether + Twin Grip + Dead Stop (tractor.js), Aegis
+// Reflector (physics collideBodies), Rockwall (physics damageBody hardening +
+// tractor orbit spin). SCOUT's: Deflector (the parry state machine in
+// physics.js), Afterburner (fuel tank in main.js, thrust + governor in
+// physics), Dash Jets (A/D — main.onDash), Reflex Jink (the auto-dodge scan in
+// physics.step), Slipstream (main.onWarp), Recon Drone (world.js survey). All
+// three specs' runtime abilities are live.
 export const ABILITIES = [
   // 🥊 BRAWLER
   { id: 'kineticSling',   spec: 'brawler', name: 'Kinetic Sling',  icon: '➹', channel: 'fling',  max: 6, minTier: 0, weight: 1.0, desc: 'Hurl held rocks harder.' },
   { id: 'reinforcedHull', spec: 'brawler', name: 'Reinforced Hull', icon: '▤', channel: 'hull',  max: 6, minTier: 0, weight: 1.0, desc: 'Raise maximum hull.' },
-  { id: 'scattergun',     spec: 'brawler', name: 'Scattergun',     icon: '☄', channel: 'volley', max: 6, minTier: 0, needs: 'orbit', weight: 1.1, desc: 'Right-click to blast your orbit rocks outward. Ranks fire harder and tighter.' },
+  // THE RACK IS A RAM, AND IT IS ONE OBJECT. War Rack does not trail ammo and
+  // does not fly a formation: RIGHT-CLICK a rock and it is dragged in and
+  // CRUSHED, destroyed outright, its mass welded into a single structure on the
+  // bow that GROWS with everything you feed it. That structure is the brawler's
+  // whole ram — it multiplies what a charge deals, it carries the ship's
+  // momentum through a hit instead of bouncing, and it takes head-on damage
+  // INSTEAD OF THE HULL until it is used up. Ranks buy how much it can hold.
+  // This replaced Ram Prow, deleted along with the innate spec-DNA ram: two
+  // abilities and a hidden floor all pushing one pair of numbers meant the
+  // brawler's signature was spread across three places, one of them invisible.
+  // It is one ability now, and it is a thing you can watch getting bigger.
+  // THE RAM CANNOT BE THROWN, FIRED OR DROPPED (user design rule). It is not
+  // ammunition and not a held rock — it is a structure you ride behind, spent
+  // only by what it absorbs for you. Scattergun, which used to fire the old
+  // trailing rack, is DELETED with the rack: a ringless spec has nothing for a
+  // volley to launch, and giving the ram a release move would just be the
+  // throw wearing a different name.
+  { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'RIGHT-CLICK rock to crush it into the ram riding ahead of your bow. It grows as it feeds — hits harder, shrugs off knockback, and eats head-on damage until it is spent.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
-  { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Drag captured rocks behind you as shotgun ammo (moon-size max).' },
   { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
-  { id: 'deflector',      spec: 'brawler', name: 'Deflector',      icon: '⤺', channel: 'deflect', max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull, then hurls itself wherever your mouse points when the freeze ends. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
-  { id: 'ramProw',        spec: 'brawler', name: 'Ram Prow',       icon: '△', channel: 'ram',        max: 6, minTier: 0, weight: 1.0, desc: 'Harden your innate ram — hit harder, shrug off more.' },
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
   { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 6, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
   { id: 'berserker',      spec: 'brawler', name: 'Berserker',      icon: '✷', channel: 'berserk',    max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'The lower your hull, the harder you throw and ram.' },
   { id: 'demolition',     spec: 'brawler', name: 'Demolition',     icon: '✸', channel: 'demolition', max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Throw-kills detonate, damaging everything nearby.' },
-  { id: 'juggernaut',     spec: 'brawler', name: 'Juggernaut',     icon: '⬢', channel: 'ram',        max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'A devastating ram and a much tougher hull.' },
 
   // 📡 HAULER
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
@@ -2871,10 +3034,7 @@ export const ABILITIES = [
   // coefficient in shipStats would have nerfed the brawler's own track, which
   // never changed length.
   { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 6, chMul: 2 / 3, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
-  { id: 'grappleExtenders', spec: 'hauler', name: 'Grapple Extenders', icon: '⤢', channel: 'reach', max: 6, minTier: 0, weight: 1.0, desc: 'More reach and grab forgiveness.' },
-  { id: 'expandedBay',    spec: 'hauler', name: 'Expanded Bay',     icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.0, desc: 'More orbit slots.' },
   { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
-  { id: 'bulkFreighter',  spec: 'hauler', name: 'Bulk Freighter',   icon: '❖', channel: 'catch',  max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Haul planet-scale masses.' },
   { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
   { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 6, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
   { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 6, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
@@ -2894,7 +3054,13 @@ export const ABILITIES = [
   { id: 'navPlotter',     spec: 'scout', name: 'Nav Plotter',     icon: '⋯', channel: 'plotter',   max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.1, desc: 'Your flight-path forecast.' },
   { id: 'impactWarning',  spec: 'scout', name: 'Impact Warning',  icon: '⚠', channel: 'collision', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, needs: 'plotter', weight: 1.0, desc: 'Mark where your path will hit (needs the plotter). Ranks forecast farther ahead.' },
   { id: 'leadComputer',   spec: 'scout', name: 'Lead Computer',   icon: '⊕', channel: 'targeting', max: 6, minTier: 0, also: { brawler: 2, hauler: 2 }, weight: 1.0, desc: 'Aim lead-markers for your throws.' },
-  { id: 'overtunedDrive', spec: 'scout', name: 'Overtuned Drive', icon: '⇶', channel: 'engine',    max: 6, minTier: 0, weight: 1.0, desc: 'Push the speed ceiling higher.' },
+  // THE PARRY IS THE SCOUT'S, not the brawler's. It was always a precision
+  // move — read the incoming rock, take it on the nose, aim the return — which
+  // is the scout's whole register, and it sat oddly on a spec whose answer to
+  // an incoming rock is now to eat it and wear it. Kit ability, so it ranks
+  // from frame one alongside Phase Screen: the scout's defence is timing and a
+  // thin wrap, never mass.
+  { id: 'deflector',      spec: 'scout', name: 'Deflector',       icon: '⤺', channel: 'deflect',   max: 6, minTier: 0, weight: 1.0, desc: 'A rock striking your NOSE freezes against the hull, then hurls itself wherever your mouse points when the freeze ends. Every rank: +1 rock held, wider catch bubble, longer freeze, harder hurl.' },
   { id: 'deepArray',      spec: 'scout', name: 'Deep Array',      icon: '◈', channel: 'deep',      max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Long-range map and forecast.' },
   { id: 'phaseScreen',    spec: 'scout', name: 'Phase Screen',   icon: '⛨', channel: 'shield',      max: 6, minTier: 0, weight: 0.9, desc: 'A thin full-wrap shield that recharges fast.' },
   // Afterburner is shared to BRAWLER only, and LATE (tier 4 — above even the
@@ -3184,10 +3350,13 @@ export function shipStats(prog) {
   const catchC = c('catch'), reachC = c('reach'), engineC = c('engine'), flingC = c('fling'),
     hullC = c('hull'), shieldC = c('shield'), magnetC = c('magnet'),
     orbitLvl = c('orbit'), volC = c('volley');
-  // BRAWLER runtime channels (ram = Ram Prow + Juggernaut; the rest are 1:1).
-  const ramC = c('ram'), berserkC = c('berserk'), clusterC = c('cluster'),
-    shockC = c('shockwave'), demoC = c('demolition'), wallsplatC = c('wallsplat'),
-    deflectC = c('deflect');
+  // BRAWLER runtime channels (all 1:1). There is no `ram` channel any more —
+  // the ram is the FUSED PROW, so it rides the `orbit` channel (War Rack) and
+  // is derived from what you have actually crushed onto the nose at runtime.
+  const berserkC = c('berserk'), clusterC = c('cluster'),
+    shockC = c('shockwave'), demoC = c('demolition'), wallsplatC = c('wallsplat');
+  // SCOUT: the parry (Deflector moved here from BRAWLER).
+  const deflectC = c('deflect');
   // HAULER runtime channels.
   const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'),
     rockwallC = c('rockwall'), deadstopC = c('deadstop');
@@ -3215,13 +3384,16 @@ export function shipStats(prog) {
   // The fill is asymptotic on purpose: it approaches the tier's own ceiling
   // without ever touching it, so no amount of stacking can round its way into
   // the rung above, and the last ranks still buy something rather than dead-
-  // ending against a hard clamp. 12 stacked ranks (Heavy Winch 6 + Bulk
-  // Freighter 6, the deepest catch channel in the game) reach ~90% of the gap.
+  // ending against a hard clamp. Heavy Winch's 6 ranks are now the DEEPEST
+  // catch channel in the game (Bulk Freighter, the second track that used to
+  // stack to 12, is deleted) and reach ~70% of the gap.
   const catchFill = 1 - Math.pow(0.82, catchC);
   const capacity = TIERS.caps[tier] + (TIERS.ceil[tier] - TIERS.caps[tier]) * catchFill;
-  // ram armor beefs the hull too — 30/rank over the old 4+3 ceiling, so 17.5
-  // over the new 6+6 (same +210 at the top).
-  const maxHull = 120 + 40 * tier + 55 * hullC + 17.5 * ramC;
+  // Hull is the HULL channel alone. Ram Prow / Juggernaut used to add 17.5 a
+  // rank on top (+210 at the top of a 12-rank ram channel), which is gone with
+  // them: the brawler's toughness is Reinforced Hull plus what the fused prow
+  // soaks for it, and neither is a hidden term in a number the HUD prints.
+  const maxHull = 120 + 40 * tier + 55 * hullC;
   // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
   // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
   // bar. It trades max hull for a recharging layer; only the shield regens.
@@ -3263,21 +3435,32 @@ export function shipStats(prog) {
   // same two-part gate the beam runs (config.canStow) — a class rung plus a
   // mass allowance inside it — so a rock you can hold is not automatically a
   // rock you can stow. The FORMATION is spec DNA like the shield: HAULER's stow
-  // orbits and protects; BRAWLER's trails BEHIND the ship (trailStow — an ammo
-  // train, not a shield) and is CAPPED AT BOULDER CLASS forever, however high
-  // the beam tier climbs — the rack is shotgun ammo, not a planet garage.
-  // (That cap read "moon class" when tier 1's label was 'Moons' and its cap was
-  // 6,000; on the class ladder 6,000 is boulder weight, and holding the RACK at
-  // 6,200 is what keeps the brawler's ammo mass where it has always been. The
-  // moon rungs would have tripled it.)
-  const trailStow = prog.spec === 'brawler';
+  // orbits and protects; BRAWLER's is CRUSHED INTO THE RAM (frontRam).
+  // THE RAM'S ROCK CLASS CLIMBS WITH WAR RACK'S OWN RANK (user design rule:
+  // "the tiers allow the max amount of debris to go up, plus larger rocks") —
+  // ranks 1-2 eat belt rock, 3+ boulders — AND IT HARD-STOPS AT BOULDER CLASS
+  // (user design rule: "never moons or any large objects in the ram"). No
+  // rank and no beam tier ever opens a moon rung here: the ram is debris
+  // crushed into a wall, and a moon on the nose would be a different (and
+  // sillier) machine. The ladder still sits inside the beam's own
+  // one-class-below gate, so early tiers can promise nothing the beam
+  // hasn't earned.
+  const frontRam = prog.spec === 'brawler';
   // Floored at 0, not at tier-1: a tier-0 beam still has a class to stow FROM,
   // and an orbit ability that granted nothing until the first tier-up would be
   // a dead card in two of the three starting kits.
   let orbitTier = orbitLvl > 0 ? Math.max(0, tier - 1) : -1;
-  if (trailStow && orbitTier > 2) orbitTier = 2;
+  if (frontRam && orbitTier >= 0) {
+    orbitTier = Math.min(orbitTier, orbitLvl <= 2 ? 1 : 2);
+  }
   const orbitCap = orbitTier >= 0 ? Math.min(capacity * 0.55, TIERS.ceil[orbitTier]) : 0;
   const orbitLabel = orbitTier >= 0 ? TIERS.labels[orbitTier] : 'Nothing yet';
+  // THE RAM'S TOTAL. Absorbed rock is DESTROYED and banked here as one number
+  // (tractor.absorbIntoRam -> ship.ram), so a brawler never puts anything into
+  // game.orbit at all — maxOrbiters is hard 0 for this spec below, which is what
+  // stops the ring code and the ram code both thinking they own the stow.
+  const ramCap = frontRam && orbitLvl > 0
+    ? CFG.RAM_CAP_PER_RANK * orbitLvl * (0.6 + 0.14 * tier) : 0;
 
   // totalLevel feeds ENEMY scaling (ai.js) and SHIP MASS (physics.js). Keep it in
   // the old ~0..25 band so combat/physics balance is preserved: it's just the sum
@@ -3324,19 +3507,35 @@ export function shipStats(prog) {
     hullMax,
     shieldMax: Math.round(maxHull) - hullMax,
     // Stow is LOCKED until an orbit ability (rank 0 -> no slots); see the
-    // trailStow/boulder-cap derivation above for the brawler differences.
+    // frontRam/boulder-cap derivation above for the brawler differences.
     // orbitTier is the CLASS rung (-1 = locked), orbitCap the mass allowance
     // inside it — config.canStow is the pair, and every stow test uses it.
     orbitCap,
     orbitTier,
     orbitLabel,
-    trailStow,
-    // 1/2/3/5/6/7 slots, CAPPED at 7 — orbit is a stacking channel (Orbital
-    // Sling + Expanded Bay), so uncapped it could hit 23; higher ranks still
-    // grow orbitCap/range. The old ladder was 2*lvl-1 over a 4-rank track
-    // (1/3/5/7); stretched across six ranks it climbs at 1.2 slots per rank so
-    // a single maxed orbit ability still lands exactly on the 7-slot cap.
-    maxOrbiters: orbitLvl > 0 ? Math.min(7, 1 + Math.round((orbitLvl - 1) * 1.2)) : 0,
+    // BRAWLER: the stow is CRUSHED INTO A RAM instead of orbiting. Absorbed rock
+    // is destroyed on contact with the beam and banked as `ship.ram` mass
+    // (tractor.absorbIntoRam); physics.collideShipBody swings it, spends it on
+    // damage, and reads its size back through config.ramRadius.
+    frontRam,
+    ramCap,
+    // Damage DEALT, at a full ram. SUPER-LINEAR in rank on purpose (user design
+    // rule: "especially at rank 6 the ram needs to be way stronger") — the old
+    // linear ladder was fitted to the deleted Ram Prow + Juggernaut ceiling
+    // (2.62x at 6), which priced rank 6 as a stat bump when it is actually the
+    // capstone of the spec's whole identity. The square term keeps ranks 1-2
+    // near the old curve (0.86x / 1.28x bonus at full) and runs away at the
+    // top: rank 6 is 1 + 1.5 + 2.16 = 4.66x bonus, ~5.7x total dealt — and the
+    // ram's mass ALSO rides the ship's effective mass now (main.js /
+    // collideShipBody), so a loaded rank-6 charge hits harder still.
+    // Physics still scales all of it by how full the ram actually is: an
+    // empty-nosed brawler deals exactly what any other spec does.
+    ramBiteMax: 0.30 + 0.25 * orbitLvl + 0.06 * orbitLvl * orbitLvl,
+    // 1/2/3/5/6/7 ring slots, capped at 7 — and HARD 0 for the brawler, which
+    // has no ring at all any more: its stow is the ram, and a spec that could
+    // fill both would be carrying two stows off one ability.
+    maxOrbiters: frontRam ? 0
+      : orbitLvl > 0 ? Math.min(7, 1 + Math.round((orbitLvl - 1) * 1.2)) : 0,
     orbitLvl,
     // Kept for render (engine-flare size, chart-length) — indexed like the old levels
     levels: { beam: tier, orbit: orbitLvl, fling: flingC, hull: hullC, thrust: engineC, chart: deepC },
@@ -3361,22 +3560,31 @@ export function shipStats(prog) {
     // it toward 0.6, so a ranked compass keeps reading out in the quiet places
     // between lanes where an unranked one just goes blank.
     compassFloor: compassC > 0 ? 1.2 / (1 + 0.2 * (compassC - 1)) : Infinity,
+    // NOTE: nothing feeds the volley channel any more — Scattergun was deleted
+    // with the brawler's trailing rack (the ram cannot be fired). The stats and
+    // main.js's fireVolley path are kept wired because they are the ring's
+    // launch machinery and the mechanics suite exercises them directly, but in
+    // play hasVolley is false for every reachable build.
     hasVolley: volC > 0,
     volleyLvl: volC,
+    // Shield RANK, not just the pool. achievements.js needs it: Phase Screen is
+    // in SCOUT's starting kit, so "you have a shield" is frame-one true for a
+    // whole spec and can only be asked about as a rank (see unlockDeflect).
+    shieldLvl: shieldC,
     // SCATTERGUN's ranks used to be dead weight — hasVolley was the only thing
     // anything read, so rank 2 and 3 bought nothing at all. Six ranks made that
     // untenable: the pellets now leave harder and in a tighter cone.
     volleySpeed: volC > 0 ? 1 + 0.05 * (volC - 1) : 1,
     volleySpread: 0.07 * (volC > 0 ? 1 - 0.06 * (volC - 1) : 1),
     // ---- BRAWLER runtime abilities (read by physics/tractor) ----
-    // INNATE RAM (spec DNA, like the shield shape): a brawler bonks from frame
-    // one — ram deals more and impacts hurt less at rank ZERO, so minute-one
-    // play already inverts (other specs dodge rocks; the brawler plays
-    // chicken). Ram Prow / Juggernaut then deepen the same numbers.
-    // (Ram Prow 4 + Juggernaut 3 = a 7-rank channel before; 6 + 6 = 12 now, so
-    // both coefficients are scaled by 7/12 and the ceiling is where it was.)
-    ramMul: (prog.spec === 'brawler' ? 1.35 : 1) + 0.26 * ramC,   // ram damage DEALT to bodies
-    ramArmor: Math.max(0.45, (prog.spec === 'brawler' ? 0.85 : 1) - 0.064 * ramC), // impact damage TAKEN (lower = tougher)
+    // NO INNATE RAM. These are the UNIVERSAL BASE, identical for every spec: a
+    // bare-nosed brawler rams exactly as hard as a scout does. The whole ram
+    // comes from the STRUCTURE it has built on its bow, which physics applies on
+    // top of these via ramBiteMax and ship.ram (see collideShipBody). It used to
+    // be a spec-DNA floor of 1.35 / 0.85 that no card, bar or readout ever
+    // showed — power the player owned and could not see.
+    ramMul: 1,      // ram damage DEALT to bodies (base; the ram multiplies it)
+    ramArmor: 1,    // impact damage TAKEN (base; the ram absorbs ahead of it)
     berserk: berserkC,                            // fling/ram scale up as hull drops (runtime hull read)
     cluster: clusterC,                            // shrapnel shards spawned on a throw-kill
     shockwave: shockC,                            // knockback impulse on a throw-kill
