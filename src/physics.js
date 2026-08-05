@@ -1783,13 +1783,10 @@ function surfRadius(body, ang) {
     return body.radius * crystalRadiusAt(sh, ang - body.rot);
   }
   // BIG ROCK collides as the slab / wedge / shard / cleft / lump it is DRAWN as
-  // (rockshape.rockShapeOf — render.traceAsteroid reads the identical shape), WITH its
-  // impact craters taken out of it exactly like a moon or a planet. Landmark
-  // rock is visibly angular, and colliding it as a circle meant bouncing off
-  // nothing beside a wedge's point and clipping through a slab's corner; the
-  // crater half is the CRUMBLE law applied to rock, which used to stop at
-  // worlds ("Rocks are excluded from cratering in BOTH" — no longer true for
-  // the ones you get close enough to see).
+  // (rockshape.rockShapeOf — render.traceAsteroid reads the identical shape).
+  // Landmark rock is visibly angular, and colliding it as a circle meant
+  // bouncing off nothing beside a wedge's point and clipping through a slab's
+  // corner.
   // `bigShape` is stamped by world.js on the rocks that earn it; everything
   // smaller stays the circle it was, which is what keeps the sweep affordable
   // at ~3,643 field rocks.
@@ -1821,9 +1818,9 @@ function surfRadius(body, ang) {
   // profile (render.worldSil draws from the same call), and scars are stored
   // surface-local, so the bearing loses b.rot exactly as the crystal path does.
   // Plain rocks are still excluded — they collide as circles and draw as their
-  // own jag, and render.traceSurface makes the same exclusion. Big rock takes
-  // its craters through the bigShape branch above instead, where they compose
-  // with the shape ring.
+  // own jag, and render.traceSurface makes the same exclusion. Big rock returns
+  // early above and carries no scar term at all — see the SCARS NO LONGER
+  // COMPOSE note there.
   if (body.type !== 'asteroid' && body.scars.length) {
     return body.radius * scarSurfaceAt(body.scars, body.radius, ang - body.rot);
   }
