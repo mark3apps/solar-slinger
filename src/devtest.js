@@ -3,7 +3,7 @@ import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   stormStrength, stormSpent, shelterR } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
-import { damageShip } from './physics.js';
+import { damageShip, parryLive } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
@@ -667,8 +667,11 @@ export function runMechTest(game, hooks, opts = {}) {
     // T17 — A DOCK IS WHERE YOU STOP WORKING. Both non-input-driven abilities
     // must be inert at a berth: Reflex Jink (issue #87/#90) and the parry
     // (#94). Neither is reachable by main.dockBlocking, so only this catches a
-    // regression. The parry also must not leave a rock WELDED to the hull.
-    t('dock: jink and parry are inert while berthed', () => {
+    // regression. The parry also must not leave a rock WELDED to the hull, and
+    // its TELLS must go dark with it (#103) — an armed rail and a "you can take
+    // this one" circlet over a field that has stood down read as a broken
+    // ability, so the render gates and the sim gate are one predicate.
+    t('dock: jink and parry are inert while berthed, tells included', () => {
       const s = game.ship;
       expect(game.dock, 'test needs a live berth');
       // Reflex Jink: grant it, then put a heavy rock on a collision course.
@@ -690,8 +693,27 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(!game.parry, 'a parry session survived the clamps');
       expect(!pr.parryFrozen, 'a parried rock stayed WELDED to the hull at a berth');
       expect(game.parryCd === 0, `the parry spent its cooldown at a berth (${game.parryCd})`);
+      // THE TELLS. `physics.parryLive` is what render.drawDeflectable and the
+      // armed nose rail both gate on, so asserting it here covers the drawn
+      // state without a canvas. Both directions: false with a rank and a clear
+      // cooldown purely BECAUSE of the berth, true again the moment the berth
+      // is gone — a predicate that is merely always-false would pass one half.
+      //
+      // The rank is READ, never granted: spec 0 is BRAWLER and the deflector is
+      // in its kit, so one is live from frame one, and poking `upgrades` here
+      // would either be a no-op or CUT a rank the run had already earned. This
+      // suite is bit-repeatable and what each case leaves behind is the next
+      // case's starting condition.
+      expect(game.st.deflect > 0, 'setup: no deflector rank to advertise');
+      expect(!parryLive(game),
+        'the armed tell stayed lit at a berth — render advertises a parry that cannot fire');
+      const dk = game.dock;                  // borrowed, not dropped: T18 needs this berth
+      game.dock = null;
+      const freeAgain = parryLive(game);
+      game.dock = dk;
+      expect(freeAgain, 'the parry read dead off the pad too — the tell would never come back');
       pr.alive = false;
-      return 'jink cooldown untouched, parry stood down and unfrozen';
+      return 'jink cooldown untouched, parry stood down and unfrozen, tells dark at the berth';
     });
 
     // T18 — LEAVING IS A SEQUENCE, and the station STANDS once built.

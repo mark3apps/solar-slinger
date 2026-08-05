@@ -3285,6 +3285,20 @@ export const PARRY_ARC = 1.05;
 // render timer, but it decays on the SAME clock as the cooldown that fires
 // it (below) so the pop and the state it announces can never disagree.
 export const PARRY_READY_T = 0.5;
+// THE FIELD AND ITS TELLS READ ONE PREDICATE. render paints two "the parry can
+// catch right now" cues — the armed nose rail and the deflectable-rock circlet
+// — and each carried its own private copy of the guard below. So when the berth
+// rule landed (the `game.dock` stand-down further down) both tells stayed lit
+// over a field that had already stood down: the dashed circlet promised a catch
+// on an incoming rock and the rail sat at full alpha while updateParry returned
+// on its first line, and the player reads a broken ability rather than a docked
+// one. Exported for exactly the reason PARRY_ARC is — a second copy drifts.
+// It is the FIELD's own state and nothing else: `s.alive` / `s.invuln` stay at
+// the call sites, because each of the three already spells its own ship-state
+// test and they are not the same test (the rail hides while invulnerable, the
+// hint does not). Fold those in here and you silently retune two overlays.
+export const parryLive = (game) =>
+  game.st.deflect > 0 && !game.dock && !(game.parryCd > 0);
 function parryEligible(game, b) {
   const s = game.ship;
   return b.alive && b.type === 'asteroid' && !b.majorComet && !b.heldBy &&
@@ -3293,6 +3307,14 @@ function parryEligible(game, b) {
     Math.abs(angDiff(Math.atan2(b.y - s.y, b.x - s.x), s.angle)) <= PARRY_ARC;
 }
 function updateParry(game, dt) {
+  // THE COOLDOWN KEEPS DRAINING AT A BERTH — this block sits deliberately ABOVE
+  // the dock stand-down below. A dock is where the ship repairs; leaving one
+  // still holding a reload would charge the player for stopping, and the field
+  // gains nothing by staying spent (damageShip's dockReady early-out already ate
+  // every hit it would have caught). The bloom this sets is harmless berthed
+  // because the tell is gated on `parryLive`: the rail is absent for the whole
+  // berth, so nothing pops on a nose that cannot catch — it re-arms silently and
+  // the rail simply comes back with the ship at launch.
   if (game.parryCd > 0) {
     game.parryCd -= dt;
     // ARMED AGAIN. Fired on the CROSSING, so the tell can't retrigger while
@@ -3328,8 +3350,12 @@ function updateParry(game, dt) {
     return;
   }
 
-  // Field scan: start a session, or grow a live one up to capacity
-  if (st.deflect > 0 && s.alive && s.invuln <= 0 && !(game.parryCd > 0) &&
+  // Field scan: start a session, or grow a live one up to capacity. Reads
+  // `parryLive` rather than spelling the rank/berth/cooldown test out again —
+  // its `!game.dock` term is redundant here (the stand-down above already
+  // returned), and that is the point: the sim and the two render tells share one
+  // definition, so a future gate cannot be added to one and missed by the others.
+  if (parryLive(game) && s.alive && s.invuln <= 0 &&
       (!game.parry || game.parry.rocks.length < st.deflect)) {
     const reach = st.deflectReach;
     for (const b of game.bodies) {

@@ -229,10 +229,17 @@
     freezes it (the sim's test adds `b.radius`) and the catch never happens out in space short of a
     visible line; it is floored at the drawn hull, which only binds at rank 1 where the field sits
     on the hull by design. It shows whenever the field can catch, draws NOTHING
-    while it reloads or runs out of slots (the bare-nose grammar of a downed shield), and POPS once
+    while it reloads, runs out of slots, or sits at a BERTH (the bare-nose grammar of a downed shield), and POPS once
     on the re-arm — `game.parryReadyT`, set on the cooldown CROSSING in `updateParry` and decayed on
     that same fixed step so the pop and the state can't disagree; `PARRY_READY_T` is its length.
-    Solid stroke: it is equipment, not aiming UI. Render: `drawParry` — dashed charge ring +
+    Solid stroke: it is equipment, not aiming UI. **A DOCK STANDS THE FIELD DOWN, TELLS INCLUDED**:
+    `updateParry` returns at a berth (releasing any frozen rock — never an early `return` above that
+    release, or the catch is welded to the hull for the run), and `physics.parryLive`
+    (`game.st.deflect > 0 && !game.dock && !(game.parryCd > 0)`) is the ONE definition of "can catch" that the
+    sim's field scan, the rail and `drawDeflectable` all read — private copies left both tells lit
+    over a stood-down field (#103). The cooldown deliberately keeps DRAINING while berthed, so
+    stopping to repair never costs a reload; the re-arm bloom it fires is invisible behind the same
+    predicate. Render: `drawParry` — dashed charge ring +
     per-rock aim arrow that lengthens and brightens with the charge (helper UI; it mirrors the
     ship→cursor direction and its fallback),
     additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a

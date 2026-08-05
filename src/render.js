@@ -2,7 +2,7 @@ import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR,
 } from './config.js';
-import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T } from './physics.js';
+import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive } from './physics.js';
 import * as gravel from './gravel.js';
 import {
   chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
@@ -4087,7 +4087,11 @@ function drawParry(game) {
 // than the field itself, so the tell arrives BEFORE the catch.
 function drawDeflectable(game) {
   const st = game.st, s = game.ship;
-  if (!st.deflect || !s.alive || game.parryCd > 0) return;
+  // "Field armed" is physics.parryLive — rank, not berthed, not reloading. A
+  // BERTHED field catches nothing (updateParry stands it down), and a circlet
+  // saying "you can take this one" over a rock that then sails through the nose
+  // reads as a broken ability, not a docked one.
+  if (!parryLive(game) || !s.alive) return;
   if (game.parry && game.parry.rocks.length >= st.deflect) return;   // no free slot
   const z = game.cam.zoom;
   const pulse = 0.55 + 0.45 * Math.sin(game.time * 9);
@@ -6167,16 +6171,18 @@ function drawShip(game) {
   // DEFLECTOR ARMED RAIL: a thin bracketed arc across the nose, spanning the
   // exact wedge the parry field scans (PARRY_ARC). This is the reload tell,
   // and it is a STATE, not a meter — no bar, no sweep, no countdown to read.
-  // Present = the field can catch; ABSENT ENTIRELY while it reloads or while
-  // every slot is full, which is the downed-shield law: the bare nose IS the
-  // indicator. It is ship hardware, not aiming UI, so the stroke is SOLID
+  // Present = the field can catch; ABSENT ENTIRELY while it reloads, while
+  // every slot is full, or while BERTHED (a dock stands the field down, and
+  // physics.parryLive is the ONE definition of "can catch" so the rail cannot
+  // outlive the field it advertises) — the downed-shield law: the bare nose IS
+  // the indicator. It is ship hardware, not aiming UI, so the stroke is SOLID
   // (dashes stay reserved for helper/aiming overlays) and it never moves
   // while it just sits there. The one piece of motion is the POP on the
   // frame it re-arms — one bloom that expands and fades, so "good to go"
   // lands in peripheral vision the way the throw-charge bloom does.
   if (game.st.deflect > 0 && s.invuln <= 0) {
     const z = game.cam.zoom;
-    const armed = !(game.parryCd > 0) &&
+    const armed = parryLive(game) &&
       !(game.parry && game.parry.rocks.length >= game.st.deflect);
     if (armed) {
       const pop = game.parryReadyT > 0 ? game.parryReadyT / PARRY_READY_T : 0;   // 1 -> 0
