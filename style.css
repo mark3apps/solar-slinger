@@ -964,18 +964,23 @@ body.preGame #hud::after { opacity: 0; }
     conic-gradient(from 135deg,
       rgba(var(--zone-rgb), .16) 0 270deg, transparent 270deg),
     radial-gradient(circle, rgba(12, 6, 26, .5) 0 100%);
-  /* HALF the previous ring width (user call) — a thin scale hugging the rim
-     instead of a heavy band eating half the dial's face.
-     `circle closest-side`, not bare `circle`: on a SQUARE box, a sizeless
+  /* `circle closest-side`, not bare `circle`: on a SQUARE box, a sizeless
      circle mask defaults to farthest-corner (the box's DIAGONAL, √2× the
-     true radius), so a stop written as "75.5%" lands at 75.5% of the
-     diagonal — past the element's own circular clip entirely, rendering
-     nothing. closest-side is exactly the box's half-width for a square,
-     i.e. this element's own true radius, so every percentage below means
-     what it says. (This silently broke every mask in the dial that leaned
-     on a stop near 100% — the redline included; see .sdover's own note.) */
-  -webkit-mask: radial-gradient(circle closest-side, transparent 0 75.5%, #000 76.5% 100%);
-  mask: radial-gradient(circle closest-side, transparent 0 75.5%, #000 76.5% 100%);
+     true radius), so a stop written as "X%" lands at X% of the diagonal —
+     past the element's own circular clip entirely, rendering nothing.
+     closest-side is exactly the box's half-width for a square, i.e. this
+     element's own true radius, so every percentage below means what it
+     says. (This silently broke every mask in the dial that leaned on a
+     stop near 100% — the redline included; see .sdover's own note.)
+     THE OUTER SCALE IS NOW SMALLER, and PULLED OFF THE RIM (user call): it
+     no longer reaches 100%, and its own thickness shrank again — moving
+     THIS ring, not growing the thrust ring, is how the gap between the two
+     closes to the requested 1/3, while the thrust ring keeps the exact
+     footprint it had. Everything else that used to assume this band ran to
+     100% — the ticks, the redline, the needle and rated-bug's own reach —
+     moves in to meet its new edge (70%) with it; see each element's note. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 57.8%, #000 58.8% 70%);
+  mask: radial-gradient(circle closest-side, transparent 0 57.8%, #000 58.8% 70%);
 }
 /* The REDLINE: everything past YOUR rated bug, drawn the way an instrument
    draws it — a thin amber arc ALONG THE RIM, never a tinted sector. At a low
@@ -991,9 +996,11 @@ body.preGame #hud::after { opacity: 0; }
      worst case: 93% of the default farthest-corner (a SQUARE box's
      diagonal) is well past the element's own edge, so the redline has been
      rendering fully transparent since it shipped — never actually visible,
-     on any ship, at any speed, until this fix. */
-  -webkit-mask: radial-gradient(circle closest-side, transparent 0 93%, #000 94% 100%);
-  mask: radial-gradient(circle closest-side, transparent 0 93%, #000 94% 100%);
+     on any ship, at any speed, until this fix.
+     Same 7-point-thick strip, moved to sit at the outer band's NEW edge
+     (70%, not 100% — see .sdvel's note) instead of the old rim. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 63%, #000 64% 70%);
+  mask: radial-gradient(circle closest-side, transparent 0 63%, #000 64% 70%);
 }
 /* The INNER ring: LIVE ENGINE OUTPUT on its own ABSOLUTE scale
    (STAT_RANGES.thrustOut — the hardest any engine can push, burner and all),
@@ -1029,13 +1036,11 @@ body.preGame #hud::after { opacity: 0; }
      percentages happened to stay inside the visible area even under the
      wrong (farthest-corner) scaling, which is why it always looked right;
      fixing the sizing keyword moved it to what these numbers actually say
-     (slightly further in, slightly narrower). Then pushed further OUT
-     still (36-49% -> 53.7-66.7%, same own thickness) to close the gap to
-     the outer band down to 1/3 of what fixing the sizing bug had opened up
-     (user call) — the two rings now sit close enough to read as one
-     instrument instead of two disconnected ones. */
-  -webkit-mask: radial-gradient(circle closest-side, transparent 0 53.7%, #000 54.7% 65.7%, transparent 66.7%);
-  mask: radial-gradient(circle closest-side, transparent 0 53.7%, #000 54.7% 65.7%, transparent 66.7%);
+     (slightly further in, slightly narrower) — and stays exactly HERE
+     (user call: keep the thrust ring's own size where it was). Closing the
+     gap to the outer band is the OUTER band's job now — see .sdvel. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 36%, #000 37% 48%, transparent 49%);
+  mask: radial-gradient(circle closest-side, transparent 0 36%, #000 37% 48%, transparent 49%);
 }
 /* The tick ring: 12 divisions of 22.5deg over the absolute scale. Hard conic
    stops, masked to the outer band so the marks read as bezel engraving, not
@@ -1061,18 +1066,20 @@ body.preGame #hud::after { opacity: 0; }
     rgba(var(--zone-soft-rgb), .55) 246.8deg 248.2deg, transparent 248.2deg 269.3deg,
     rgba(var(--zone-soft-rgb), .55) 269.3deg 270deg, transparent 270deg);
   /* closest-side, not bare circle — see .sdvel's note; same fix.
-     Length is 1/3 of the prior 19.5%-of-radius mark (user call): 6.5%,
-     hugging the rim as a light engraving rather than reaching into the
-     band. */
-  -webkit-mask: radial-gradient(circle closest-side, transparent 0 93.5%, #000 94.5% 100%);
-  mask: radial-gradient(circle closest-side, transparent 0 93.5%, #000 94.5% 100%);
+     Same 6.5%-of-radius length, moved to sit at the outer band's NEW edge
+     (70%, not 100% — see .sdvel's note) instead of the old rim. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 63.5%, #000 64.5% 70%);
+  mask: radial-gradient(circle closest-side, transparent 0 63.5%, #000 64.5% 70%);
 }
 /* The RATED BUG: the amber marker an airspeed bug is — your ship's current
    ceiling, pinned to the absolute scale and gliding up it on a tier or an
    engine rank. Throttle amber (the envelope's own family), rim-length only. */
 .sdbug {
   position: absolute; left: calc(50% - 1.5px); bottom: 50%;
-  width: 3px; height: 50%;
+  /* height: 35% reaches exactly 70% of the true radius — the outer band's
+     NEW edge (.sdvel's note); a bug reaching the old 100% would now
+     overshoot past the shrunk scale into empty space. */
+  width: 3px; height: 35%;
   transform-origin: 50% 100%;
   /* +135, matching the conic scale's own `from 135deg` start — the marks and
      the needle must agree with the band about where zero IS (a -135 here had
@@ -1086,7 +1093,10 @@ body.preGame #hud::after { opacity: 0; }
 /* The needle: rooted at the hub, riding the same --va the arc fills to. */
 .sdneedle {
   position: absolute; left: calc(50% - 1px); bottom: 50%;
-  width: 2px; height: 44%;
+  /* height: 35% reaches exactly 70% of the true radius — the outer band's
+     NEW edge (.sdvel's note); matches .sdbug so both pointers terminate at
+     the same scale instead of one overshooting the other. */
+  width: 2px; height: 35%;
   transform-origin: 50% 100%;
   transform: rotate(calc(var(--va) + 135deg));   /* +135: see .sdbug's note */
   background: linear-gradient(0deg, transparent 0 26%, #f6efff 26% 100%);
