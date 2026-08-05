@@ -923,19 +923,63 @@ stations are findable, not shouting.
 
 ## Ship hull art
 
-The player ship hull is procedural vector art: `drawShipHull(game, tier, dmg, r)` in render.js
-draws 6 tier designs x 3 damage states (picked from `game.st.tier` and hull fraction) in the
-ship's local frame, nose along +x, per the `SHIP_TIERS` spec table. Ring assemblies rotate in
-world space in the orbit shield's spin direction (+angle). Damage scars are seeded per
-(tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. The shield
-bubble wraps `shipVisualR(tier, r)` (the drawn art's reach = `r / SHIP_HIT_FRAC`), not the
-collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
+**THE HULL IS SPEC DNA (added 2026-08).** There are THREE ladders, not one, and
+`drawShipHull` dispatches on `game.prog.spec` via `shipTierTable`. Each says what its spec DOES
+before any HUD does, and the three silhouettes are kept deliberately disjoint — reading the spec
+at a glance is the whole point of splitting them:
+
+- **HAULER** (`HAULER_TIERS`) — the original ladder, geometry untouched. Ring arms with orb pods:
+  the arms ARE the orbit rock rack. It alone keeps the old `Math.max(1.1, 0.07 * u)` outline
+  expression, so its shipped art is bit-identical.
+- **SCOUT** (`SCOUT_TIERS`) — a winged gun platform that arms itself by swallowing rock: intake
+  maw → hopper → wing-root conduits → hardpoints. **FOUR GUNS TOTAL is the ceiling** (two per
+  wing, from tier 2 on): everything after that buys GUIDANCE, because its kit is Nav Plotter /
+  Lead Computer / Impact Warning / Reflex Jink and a ladder that grew barrels was claiming to be
+  a gunship. It grows LONGER, NOT WIDER (length 2.2 → 4.4 against span 1.6 → 2.5), and the wing
+  PLANFORM evolves — crank, root extension, rake — so the silhouette changes tier to tier.
+  Its gimmick is the GIMBAL: a sensor head that slews to `game.aim` independent of hull heading.
+  **From tier 3 the hull SPLITS** — see below.
+- **BRAWLER** (`BRAWLER_TIERS`) — a ram, and the ram is the class. `prowW >= 1.20` on every tier,
+  so the prow overhangs the hull on BOTH sides; it owns the front ~44% of the length. The stern
+  is drawn BARE on every tier because `st.shieldArc < PI` covers the front arc only — the spec's
+  weakness is visible from the hull alone.
+
+**A TIER MUST CHANGE THE OUTLINE, NOT JUST THE DETAIL** (user design rule). Both new ladders were
+first built varying only surface flags over one fixed shape, and six tiers read as ONE ship at six
+sizes. Every rung now adds a NAMED system that moves the silhouette — brawler: prow, deflector,
+rails, buttresses, sponsons, hammerhead, outriggers, double jaw; scout: guns, crank, arrays, split,
+booms, nacelles, winglets, mast, sail.
+
+**THE SPLIT HULL** (scout, tier 3+). The drive section flies loose behind the forward hull on a
+gravity coupling. It is a COMPRESSION SPRING, not a linear ease: it only ever PUSHES the drive
+against the forward hull, never pulls, so the drive drives. Thrust compresses it toward
+`SPLIT_MIN`; release and it springs back out past its rest point and rings. Two hard stops carry
+the character — it binds solid at `SPLIT_MIN` (bouncing off the stop) and cannot extend past its
+free length, because a compression spring has nothing to pull with. It is sub-stepped at 16ms: a
+spring that stiff integrated across a 0.1s frame goes unstable. **The halves must never touch**
+or the conceit collapses into a hull with a seam. Turn rate leads the nose (clamped, and the
+heading delta MUST be wrapped into -PI..PI or one pass through PI reads as a full-speed spin).
+The coupling field follows `drawBeam`'s language — braided strands, additive, solid strokes — and
+frays, jitters and arcs harder as `strain` rises. `scoutSplit` caches on `game.time` because
+`drawShip`'s flame anchors and `shipVisualR` read the same number in different passes, and two
+evaluations of a thrust-dependent value drift apart inside one frame.
+
+**Outline width** is `outlineW`: `max(1.0 / cam.zoom, 0.085 * u)`. The floor MUST be in screen
+pixels. It was 1.1 WORLD units, and since `u` shrinks with the tier that floor won on every small
+hull — a tier-0 ship is ~12 world units long, so the outline was most of what you could see of it.
+
+Damage scars are seeded per
+(tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. WHERE they land
+is per-spec (`drawShipScars` takes an ellipse): sampled on the hauler's body disc they fall in the
+empty air beside a scout's thin fuselage. The shield bubble wraps `shipVisualR(tier, r)` (the drawn
+art's reach = `r / SHIP_HIT_FRAC`) PLUS the split stand-off on a split hull — without it the drive
+section trails outside its own shield — not the collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
 footprint on every tier: `shipStats` reads it from `SHIP_RADIUS[tier]` (config.js), derived as
 `SHIP_HIT_FRAC × footprint`, where the FOOTPRINT grows by an equal RATIO each tier (perceptual
 evenness). render.js normalizes the art to the footprint (`u = r / (SHIP_HIT_FRAC × reach)`),
 so tuning the fraction moves only the hitbox, never the drawn size. (History: the hitbox used
 to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
-match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with `SHIP_TIERS` proportions;
+match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with the hull tables' proportions;
 the derivation rules live in the config.js comments.
 
 ## The crumble layer draws instanced (added 2026-08)

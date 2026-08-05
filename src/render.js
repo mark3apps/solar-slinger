@@ -3532,7 +3532,7 @@ const DOCK_STEEL = '207, 228, 255';
 const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (style.css)
 
 // THE STATION GROWS WITH THE SHIP. One row per beam tier (0-5), the same shape
-// of table as SHIP_TIERS and read the same way — from `game.st.tier`, i.e. your
+// of table as the per-spec hull tables and read the same way — from `game.st.tier`, i.e. your
 // CURRENT tier and not the tier the station was laid down at. A dock is
 // infrastructure you keep improving, so tiering up refits every station you own
 // rather than leaving your first pad looking like a shack forever.
@@ -4547,22 +4547,34 @@ function shipScars(tier, dmg) {
   return list;
 }
 
+// THE HULL IS SPEC DNA. Each specialization flies a visibly different ship,
+// and the difference says what that spec DOES before any HUD does:
+//   HAULER  — ring arms with orb pods. The arms ARE the orbit rock rack.
+//   SCOUT   — long thin swept wings carrying weapon hardpoints, fed by a rock
+//             intake and hopper. Grows by WINGSPAN and hardpoint count.
+//   BRAWLER — a front-heavy wedge behind a ram prow and hinged deflector
+//             slabs, with a conspicuously BARE TAIL: st.shieldArc < PI covers
+//             the front arc only, so the weakness is drawn, not just tuned.
+// Keep the three silhouettes disjoint — ring arms are the hauler's signature
+// and reading the spec at a glance is the whole point of splitting them.
+//
 // Per-tier anatomy. Lengths are in units of u = r * s (collision radius x
 // per-tier visual scale); arc angles are for the top half (-y) and mirrored
-// at draw time. Each tier is a DISTINCT design, not just a bigger wedge:
-//   0 SCOUT       bare wedge, tail fins
-//   1 FIGHTER     swept wing pods, twin engine bells
-//   2 CORVETTE    first ring arms bracketing the nose
-//   3 CRUISER     four arms, armor collar, hull windows
-//   4 DREADNOUGHT near-closed ring, strut spokes, triple bell
-//   5 TITAN       double ring, five pod pairs, spokes everywhere — a class
-//                 above everything else
+// at draw time. Each tier is a DISTINCT design, not just a bigger wedge.
 // The tier size ladder lives in config.js SHIP_RADIUS (read by shipStats).
 // The COLLISION circle is a uniform SHIP_HIT_FRAC of the drawn footprint on
 // every tier, so the art is normalized to the FOOTPRINT (u = r / (frac ×
 // reach)), NOT to the body disc — the drawn size never moves when the
 // hitbox fraction is tuned.
-const SHIP_TIERS = [
+//
+// HAULER — the original ladder:
+//   0 SKIFF       bare wedge, tail fins
+//   1 FIGHTER     swept wing pods, twin engine bells
+//   2 CORVETTE    first ring arms bracketing the nose
+//   3 CRUISER     four arms, armor collar, hull windows
+//   4 DREADNOUGHT near-closed ring, strut spokes, triple bell
+//   5 TITAN       double ring, five pod pairs, spokes everywhere
+const HAULER_TIERS = [
   { bR: 0.58, nose: 1.35, rear: 1.00, fins: true, core: 0, eng: 1 },
   { bR: 0.68, nose: 1.32, rear: 1.08, fins: true, wings: true, core: 1, eng: 2 },
   // Corvette's arms deliberately bracket the nose and DON'T spin — the
@@ -4581,9 +4593,179 @@ const SHIP_TIERS = [
     spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
 ];
 
+// SCOUT — a winged gun platform. It arms itself by swallowing rock, so the
+// silhouette reads bow to stern: intake maw -> hopper -> feed conduits out the
+// wing roots -> weapons on the wing hardpoints.
+//
+// THE SCOUT GROWS LONGER, NOT WIDER (user design rule). Length runs 2.2 -> 4.4
+// while span only runs 1.6 -> 2.5, so the class sharpens into a needle instead
+// of spreading into a bat — a wingspan-led ladder made the late tiers read as
+// the widest thing in the sky, which is the hauler's job. `bR` deliberately
+// grows slower than length for the same reason: the fuselage gets thinner in
+// proportion every tier.
+//
+// FOUR HARDPOINTS PER WING IS THE CEILING (user design rule). Tiers 4 and 5
+// carry the same four; T5 buys BETTER guns (longer coil barrels, wingtip
+// launchers) and better eyes, never more of them. A rack of eight read as a
+// weapon fence rather than a ship, and it left the top tier nothing to say.
+//
+// `hard` are fractions along the leading edge from root to tip. Layout inside
+// drawScoutHull is expressed in fractions of the hull's LENGTH, not in fixed
+// multiples of u, so a nose that nearly doubles across the ladder stretches the
+// fuselage instead of overrunning the gear mounted on it. `reach` is the nose
+// on every tier — the wingtip never out-reaches it, which is the rule that
+// keeps this class long.
+//   0 SPLINTER  bare wings, empty hardpoint nubs — a frame waiting to be armed
+//   1 DART      one pod per wing, rangefinder vanes, twin bells
+//   2 STILETTO  two pods per wing, spotter dish, feed conduits
+//   3 LONGSHOT  three pods, fire-control arrays, emitter posts, coil barrels
+//   4 FARSIGHT  four pods + wingtip launchers, twin hoppers, masts, triple bell
+//   5 ORACLE    same four guns, longer barrels, crescent fire-control sail
+// FOUR GUNS, TOTAL — two per wing, and that is the ceiling from tier 2 on
+// (user design rule). Everything after that is spent on the thing this class
+// actually is: TRACKING. Its kit is Nav Plotter, Lead Computer, Impact Warning
+// and Reflex Jink, so the ladder escalates GUIDANCE hardware, not armament —
+// a scout that grew by bolting on more barrels was telling you it was a
+// gunship, which is the brawler's job.
+//
+// The gimmick is the GIMBAL: a sensor head on the nose that physically slews to
+// wherever you are aiming, independent of where the hull is pointing. It is the
+// one moving part on the class, it says "computer guidance" at a glance, and it
+// is disjoint from the hauler's spinning ring arms (which are big, structural,
+// and turn at a constant rate rather than tracking anything).
+//
+// `wing` is the PLANFORM, and it evolves so the silhouette changes tier to
+// tier instead of the same wing carrying more junk: a short straight taper at
+// T0, a cranked leading edge from T2, a root extension from T4, and a long
+// raked scythe at T5. `tipChord` shrinks the whole way — the wing gets more
+// slender as it gets longer, which is what "refined" reads as.
+const SCOUT_TIERS = [
+  { bR: 0.26, nose: 1.25, rear: 0.95, span: 0.80, sweep: 0.26, hard: [],
+    wing: { le: 0.52, root: 0.18, tipChord: 0.080 },
+    eng: 1, core: 0, dish: 0, arrays: 0, hopper: 1, reach: 1.25 },
+  { bR: 0.28, nose: 1.50, rear: 1.05, span: 0.92, sweep: 0.27, hard: [0.62],
+    wing: { le: 0.53, root: 0.19, tipChord: 0.084 },
+    eng: 2, core: 1, dish: 0, arrays: 0, hopper: 1, vanes: true, reach: 1.50 },
+  { bR: 0.30, nose: 1.78, rear: 1.18, span: 1.02, sweep: 0.28, hard: [0.45, 0.80],
+    wing: { le: 0.54, root: 0.20, kink: 0.55, kinkSweep: 0.05, tipChord: 0.088 },
+    eng: 2, core: 1, dish: 1, arrays: 0, hopper: 1, vanes: true,
+    conduit: true, gimbal: 1, reach: 1.78 },
+  { bR: 0.32, nose: 2.08, rear: 1.32, span: 1.14, sweep: 0.30, hard: [0.45, 0.80],
+    wing: { le: 0.56, root: 0.22, kink: 0.50, kinkSweep: 0.07, tipChord: 0.094 },
+    eng: 2, core: 2, dish: 1, arrays: 2, hopper: 1, vanes: true,
+    conduit: true, coils: 2, gimbal: 1, chin: true, split: true, reach: 2.08 },
+  { bR: 0.34, nose: 2.40, rear: 1.48, span: 1.28, sweep: 0.32, hard: [0.45, 0.80],
+    wing: { le: 0.58, root: 0.25, kink: 0.45, kinkSweep: 0.09, tipChord: 0.100, lerx: true },
+    eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
+    conduit: true, coils: 2, gimbal: 2, chin: true, split: true,
+    booms: true, nacelles: true, reach: 2.40 },
+  { bR: 0.36, nose: 2.75, rear: 1.65, span: 1.44, sweep: 0.34, hard: [0.45, 0.80],
+    wing: { le: 0.60, root: 0.27, kink: 0.40, kinkSweep: 0.12, tipChord: 0.108, lerx: true, rake: true },
+    longBarrel: true,
+    eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
+    conduit: true, coils: 3, gimbal: 3, chin: true, blades: true,
+    sail: true, split: true, booms: true, nacelles: true,
+    winglets: true, mast: true, bigSail: true, reach: 2.75 },
+];
+
+// BRAWLER — a fist. Mass piles toward the bow: a chisel ram prow, then hinged
+// deflector slabs standing OFF the hull in front of it, and armour that thins
+// visibly toward the stern. `slabs` is the deflector count (0 at tier 0, then
+// 1/1/3/5/7) sitting on an arc of radius `slabR`, which is what sets `reach`
+// once it exists. The bare tail is drawn on EVERY tier — it mirrors
+// st.shieldArc < PI, and a fully-plated brawler would be the art lying about
+// the sim.
+//   0 BRUISER   blunt prow, one bell, no deflector yet
+//   1 MAULER    single curved deflector plate on two hinges, twin bells
+//   2 BREAKER   toothed prow, impact ribs, kinetic sling rails
+//   3 BULWARK   three slabs, buttresses, hull windows, core slot
+//   4 RAMPART   five slabs, outboard sponsons, cyan kinetic slot, triple bell
+//   5 COLOSSUS  seven slabs in two layers, hammerhead prow, quad bell
+// A BRAWLER IS STILL AN ARROW. The first cut of this table ran bR 0.72-1.08
+// against a nose of 0.95-1.32, and once the hull was normalized against the
+// standoff deflector radius the result read as a disc with a fence around it —
+// "front-heavy" is about where the MASS sits, not about being as wide as it is
+// long. Length now runs 2.25 -> 3.47 against a width of 1.20 -> 1.68, so every
+// tier is close to twice as long as it is wide, and the deflector is a BROW
+// across the bow (half-angle 0.60) rather than an arc wrapping the whole nose.
+// A TIER MUST CHANGE THE OUTLINE, NOT JUST THE DETAIL (user design rule, and
+// the reason the hauler ladder works — bare wedge, then wing pods, then ring
+// arms, then a closed ring). The first cut of this table varied only surface
+// flags (ribs, rails, windows) over one fixed wedge, so the six tiers read as
+// ONE ship photographed at six sizes. Every row below adds a part that changes
+// the SILHOUETTE, and each is called out by the flag that carries it:
+//   0 BRUISER   no prow block at all — the hull itself is the wedge. One bell.
+//   1 MAULER    +prow block, +a single standoff deflector bar, twin bells
+//   2 BREAKER   +toothed prow, +flank sling rails widening the outline
+//   3 BULWARK   +shoulder buttress plates, deflector splits into three bars
+//   4 RAMPART   +outboard sponsons (a three-lobed outline), five-bar brow
+//   5 COLOSSUS  +HAMMERHEAD prow wider than the hull, +engine outriggers,
+//               seven bars in two staggered layers
+// THE RAM IS THE CLASS. It has to be the first thing you read and the thing
+// that looks like it hurts, so `prowW` is >= 1 on every tier — the prow is at
+// least as wide as the hull behind it — and it occupies the front ~44% of the
+// length (pBase at 0.56). Two earlier passes had it as a small cap on the nose
+// with the deflector hung in front of it, which put the class's whole identity
+// behind a fence. The deflector is deliberately thinner and narrower now: it
+// FRAMES the ram, it does not compete with it.
+//
+// Tier 0 has one too. `ramProw` is in the brawler's STARTING KIT (config.js
+// SPECS) — the innate ram is its frame-one identity, so a tier-0 hull with no
+// prow was the art contradicting the kit.
+// `prowW` is a multiple of the HULL half-width, so it is literally "how many
+// times wider than the ship is the ram". It never drops below 1.20 — the ram
+// overhangs the hull on BOTH sides at every tier, including tier 0, because a
+// prow flush with the hull line stops being a ram and becomes a nose.
+//
+// The T0 -> T5 gap is deliberately extreme. Tier 0 is `plain`: hull, ram, one
+// bell, bridge, nothing else — no cheek plates, no keel, no core, no ribs,
+// rails or windows. Tier 5 carries eleven systems tier 0 does not. A ladder
+// whose ends look like the same ship at two sizes is the failure mode here, so
+// each rung adds a NAMED system rather than another decal:
+//   0 BRUISER   plain hull + ram + one bell                     (0 extras)
+//   1 MAULER    +deflector bar, twin bells, cheeks, keel        (4)
+//   2 BREAKER   +core, impact ribs, sling rails                 (7)
+//   3 BULWARK   +3-bar deflector, buttresses, windows, spine    (11)
+//   4 RAMPART   +sponsons, trusses, blisters, kinetic slot,
+//               5-bar brow, triple bell, core ticks             (17)
+//   5 COLOSSUS  +hammerhead, outriggers, 2nd slab layer,
+//               double jaw, quad bells                          (22)
+const BRAWLER_TIERS = [
+  { bR: 0.50, nose: 1.34, rear: 0.95, prowW: 1.20, slabs: 0, teeth: 2,
+    plain: true, eng: 1, core: 0, reach: 1.49 },
+  { bR: 0.55, nose: 1.46, rear: 1.02, prowW: 1.28, slabs: 1, slabR: 1.66, teeth: 3,
+    eng: 2, core: 0, reach: 1.70 },
+  { bR: 0.61, nose: 1.58, rear: 1.10, prowW: 1.36, slabs: 1, slabR: 1.80, teeth: 3,
+    eng: 2, core: 1, ribs: true, rails: true, reach: 1.84 },
+  { bR: 0.73, nose: 1.70, rear: 1.20, prowW: 1.46, slabs: 3, slabR: 1.98, teeth: 4,
+    eng: 2, core: 1, ribs: true, rails: true, windows: true, buttress: true,
+    spine: true, reach: 2.05 },
+  { bR: 0.78, nose: 1.86, rear: 1.30, prowW: 1.58, slabs: 5, slabR: 2.18, teeth: 4,
+    eng: 3, core: 2, ribs: true, rails: true, windows: true, buttress: true,
+    spine: true, sponsons: true, trusses: true, blisters: true, kslot: true,
+    reach: 2.27 },
+  { bR: 0.84, nose: 2.05, rear: 1.42, prowW: 1.75, slabs: 7, slabR: 2.50, teeth: 5,
+    eng: 3, core: 2, ribs: true, rails: true, windows: true, buttress: true,
+    spine: true, sponsons: true, trusses: true, blisters: true, kslot: true,
+    layer2: true, quad: true, hammer: true, outrigger: true, doubleJaw: true,
+    reach: 2.56 },
+];
+
+// Which ladder the ship is flying. `game.prog.spec` is the source of truth —
+// shipStats doesn't carry it, and render must not assume one exists (the very
+// first frames of a run are before the spec modal is answered).
+function shipTierTable(game) {
+  const spec = game.prog && game.prog.spec;
+  return spec === 'scout' ? SCOUT_TIERS : spec === 'brawler' ? BRAWLER_TIERS : HAULER_TIERS;
+}
+
 // A tier design's art-space reach: how far the drawn shape extends from
 // center, in the same units as bR/nose/armR (the footprint before scaling).
+// Scout and brawler carry it EXPLICITLY (a swept wingtip and a standoff
+// deflector arc aren't derivable from the hauler's nose/arm/fin formula); the
+// hauler keeps the derived expression so its geometry is untouched.
 function shipReach(t) {
+  if (t.reach) return t.reach;
   return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2));
 }
 
@@ -4597,15 +4779,1073 @@ function shipVisualR(tier, r) {
   return r / SHIP_HIT_FRAC;
 }
 
+// ---- shared hull pieces (all three specs) -----------------------------------
+
+// A tapered engine bell in the ship's local frame. Caller owns fill/stroke.
+function bellQuad(x0, x1, w0, w1, off) {
+  ctx.beginPath();
+  ctx.moveTo(x0, off - w0); ctx.lineTo(x1, off - w1);
+  ctx.lineTo(x1, off + w1); ctx.lineTo(x0, off + w0);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+// Reactor core: dark well, cyan glow ring, bright center. core 2 adds an outer
+// graduated ring with tick marks — the big-hull reactor look.
+// `wRef` is the body reference the ring widths were originally tuned against
+// (the hauler's body disc). Pass cR / 0.46 on a spec whose core isn't sized
+// off a body disc, so the ring weights stay in the same proportion to the core
+// rather than drifting per hull.
+function drawShipCore(t, x, cR, wRef, lw) {
+  ctx.fillStyle = '#141b28';
+  ctx.beginPath(); ctx.arc(x, 0, cR, 0, TAU); ctx.fill();
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.10 * wRef;
+  ctx.beginPath(); ctx.arc(x, 0, cR, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = 'rgba(90, 200, 255, 0.35)'; ctx.lineWidth = 0.17 * wRef;
+  ctx.beginPath(); ctx.arc(x, 0, cR * 0.65, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = SHIP_CYAN; ctx.lineWidth = 0.07 * wRef;
+  ctx.beginPath(); ctx.arc(x, 0, cR * 0.65, 0, TAU); ctx.stroke();
+  ctx.fillStyle = '#e8f7ff';
+  ctx.beginPath(); ctx.arc(x, 0, cR * 0.28, 0, TAU); ctx.fill();
+  if (t.core === 2) {
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.6)';
+    ctx.lineWidth = lw * 0.7;
+    ctx.beginPath(); ctx.arc(x, 0, cR * 1.35, 0, TAU); ctx.stroke();
+    for (const a of [0.785, 2.356, -0.785, -2.356]) {
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(a) * cR * 1.1, Math.sin(a) * cR * 1.1);
+      ctx.lineTo(x + Math.cos(a) * cR * 1.35, Math.sin(a) * cR * 1.35);
+      ctx.stroke();
+    }
+  }
+}
+
+// Damage overlay: scorch gouges with rust streaks trailing aft, and (major
+// only) dark bites out of the hull rim. The seeded scar list is shared across
+// specs, but WHERE it lands is not: scars scatter over an ellipse (ex, ey)
+// sized to that spec's actual body, or a scout's would fall in the empty air
+// beside its thin fuselage. `ss` scales the marks themselves — a scout's body
+// half-width is a third of a hauler's, so tying scar size to it would make
+// the same damage level invisible on one hull and lurid on another.
+function drawShipScars(tier, dmg, cx, ex, ey, ss) {
+  for (const sc of shipScars(tier, dmg)) {
+    if (sc.bite) {
+      ctx.fillStyle = '#0c0f16';
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(sc.a) * ex, Math.sin(sc.a) * ey, sc.sz * 0.18 * ss, 0, TAU);
+      ctx.fill();
+      continue;
+    }
+    const x = cx + Math.cos(sc.a) * sc.d * ex, y = Math.sin(sc.a) * sc.d * ey;
+    const sz = sc.sz * 0.16 * ss;
+    ctx.fillStyle = 'rgba(122, 74, 34, 0.7)';
+    ctx.beginPath();
+    ctx.moveTo(x, y - sz * 0.3);
+    ctx.lineTo(x - sc.streak * ss, y + sc.jit * ss);
+    ctx.lineTo(x, y + sz * 0.3);
+    ctx.closePath(); ctx.fill();
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(sc.rot);
+    ctx.fillStyle = '#241c12';
+    ctx.beginPath();
+    ctx.moveTo(-sz, 0); ctx.lineTo(-0.2 * sz, -0.8 * sz);
+    ctx.lineTo(sz, -0.15 * sz); ctx.lineTo(0.3 * sz, 0.7 * sz);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// Dispatch on the run's spec. Normalizes the art to the FOOTPRINT
+// (r / SHIP_HIT_FRAC), not the body disc: the collision circle covers
+// SHIP_HIT_FRAC of the drawn reach, uniformly on every tier and every spec.
 function drawShipHull(game, tier, dmg, r) {
-  const t = SHIP_TIERS[tier];
-  // Normalize the art to the FOOTPRINT (r / SHIP_HIT_FRAC), not the body
-  // disc: the collision circle covers SHIP_HIT_FRAC of the drawn reach.
+  const table = shipTierTable(game);
+  const t = table[tier];
   const u = r / (SHIP_HIT_FRAC * shipReach(t));
-  const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
-  const lw = Math.max(1.1, 0.07 * u);
-  const cx = -0.12 * u;                   // body circle sits a touch aft
   ctx.lineJoin = 'round';
+  if (table === SCOUT_TIERS) drawScoutHull(game, t, tier, dmg, u, outlineW(game, u));
+  else if (table === BRAWLER_TIERS) drawBrawlerHull(game, t, tier, dmg, u, outlineW(game, u));
+  // The hauler keeps its original expression so its shipped art is untouched.
+  else drawHaulerHull(game, t, tier, dmg, u, Math.max(1.1, 0.07 * u));
+  ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
+}
+
+// Hull outline width. The floor has to be in SCREEN PIXELS, not world units:
+// the old `max(1.1, 0.07 * u)` floored at 1.1 WORLD units, and since u shrinks
+// with the tier, that floor won the argument on every small hull — a tier-0
+// ship is ~12 world units long, so a 1.1-unit outline was most of what you
+// could see of it. Dividing the floor by the camera zoom keeps the line from
+// vanishing when zoomed out without letting it eat the ship when zoomed in.
+function outlineW(game, u) {
+  // The PROPORTIONAL term carries the weight; the screen floor only stops the
+  // line vanishing when zoomed out. Fixing the old world-unit floor, the
+  // proportional term got dropped from 0.07 to 0.055 at the same time, which
+  // overshot in the other direction and left every hull under-drawn — this
+  // sits slightly above the original weight, with the floor still in pixels.
+  return Math.max(1.0 / game.cam.zoom, 0.085 * u);
+}
+
+// ---- SCOUT: winged gun platform ---------------------------------------------
+// THE SPLIT HULL (tier 3+). From the moment the scout can afford real gravitic
+// hardware it stops being one body: the DRIVE SECTION flies loose behind the
+// forward hull, the two held together by a gravity tether rather than a spar.
+// Two things drive it, and both are read off the sim so the effect is never
+// decorative:
+//   THRUST COMPRESSES a spring. The coupling is a COMPRESSION SPRING, not a
+//   linear ease: it only ever PUSHES the drive against the forward hull, never
+//   pulls it back, so the drive drives. Under power the gap collapses toward
+//   SPLIT_MIN and the spring fights it; release and it springs back OUT to its
+//   free length, overshooting and settling rather than gliding home. Two hard
+//   stops give it the character: it binds solid at SPLIT_MIN (with a bounce off
+//   the bind) and it cannot extend past its free length, because a compression
+//   spring has nothing to pull with. It never reaches zero — the halves must
+//   never touch, or the conceit collapses into a normal hull with a seam.
+//   TURN RATE leads the nose. The forward hull swings ahead of the drive by a
+//   fraction of how fast you are actually turning, so the tail whips after it.
+// Cached per frame so drawShip's engine-flame anchors and drawScoutHull agree
+// on one number — they draw in different passes, and two independent
+// evaluations of a speed-dependent value drift apart within a frame.
+const SPLIT_CUT = 0.30;                  // station line the hull parts at
+const SPLIT_MIN = 0.075, SPLIT_MAX = 0.26;   // stand-off, as a fraction of length
+let splitGap = 0.26, splitVel = 0, splitLead = 0, splitAng = 0;
+let splitT = -1, splitStamp = -1, splitStrain = 0;
+function scoutSplit(game, len) {
+  if (game.time !== splitStamp) {
+    splitStamp = game.time;
+    const sh = game.ship;
+    // Eased on game.time, the same clock the tier morph uses — so it freezes
+    // with the sim when paused instead of racing on while the world is still.
+    const dt = splitT < 0 ? 0 : Math.max(0, Math.min(0.1, game.time - splitT));
+    splitT = game.time;
+    const k = 1 - Math.exp(-7 * dt);
+    // Thrust is a boolean plus the burner, so it reads as three settings:
+    // coasting, burning, and the afterburner compressing it hardest.
+    const th = sh.thrusting ? (game.burnerOn ? 1 : 0.72) : 0;
+    const target = SPLIT_MAX - (SPLIT_MAX - SPLIT_MIN) * th;
+    // Sub-stepped spring-damper. Deliberately UNDER-damped so it overshoots and
+    // rings; a stiff spring integrated at a 0.1s frame would go unstable, hence
+    // the fixed inner step rather than one big jump.
+    const steps = Math.max(1, Math.ceil(dt / 0.016));
+    const h = dt / steps;
+    for (let n = 0; n < steps; n++) {
+      splitVel += ((target - splitGap) * 62 - splitVel * 7.5) * h;
+      splitGap += splitVel * h;
+      if (splitGap > SPLIT_MAX) {          // free length: nothing to pull with
+        splitGap = SPLIT_MAX;
+        if (splitVel > 0) splitVel = 0;
+      } else if (splitGap < SPLIT_MIN) {   // coil bind: kick back off the stop
+        splitGap = SPLIT_MIN;
+        if (splitVel < 0) splitVel = -splitVel * 0.4;
+      }
+    }
+    // 0 at free length, 1 at bind — drives how hard the field is struggling.
+    splitStrain = 1 - (splitGap - SPLIT_MIN) / (SPLIT_MAX - SPLIT_MIN);
+    // Turn rate from the heading delta. Wrapped into -PI..PI or a pass through
+    // +-PI would read as a full-speed spin for one frame.
+    let dA = sh.angle - splitAng;
+    while (dA > Math.PI) dA -= TAU;
+    while (dA < -Math.PI) dA += TAU;
+    splitAng = sh.angle;
+    const rate = dt > 0 ? dA / dt : 0;
+    splitLead = lerp(splitLead, Math.max(-0.22, Math.min(0.22, rate * 0.05)), k);
+  }
+  return { gap: splitGap * len, lead: splitLead, strain: splitStrain };
+}
+
+function drawScoutHull(game, t, tier, dmg, u, lw) {
+  const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
+  // LAY THE HULL OUT IN FRACTIONS OF ITS OWN LENGTH. The nose more than doubles
+  // across the ladder, so anything mounted at a fixed multiple of u would slide
+  // off the fuselage by tier 5 (or bunch up at tier 0). `at(p)` is the station
+  // line: p 0 is the tail, p 1 is the nose tip.
+  const len = nose - rear;
+  const at = (p) => rear + p * len;
+  const sp = t.split ? scoutSplit(game, len) : { gap: 0, lead: 0 };
+  const gap = sp.gap, lead = sp.lead, strain = sp.strain || 0;
+  const cut = at(SPLIT_CUT);
+
+  const tipY = t.span * u;
+  const wLE = (t.wing && t.wing.le) || 0.52;
+  const wRoot = (t.wing && t.wing.root) || 0.18;
+  const leX0 = at(wLE), leY0 = bR * 0.82;                // wing leading edge, root
+  const leX1 = at(wLE - t.sweep), leY1 = tipY;            // ...and tip
+  const teX0 = at(wLE - wRoot);                           // root trailing edge
+  const barrel = (t.longBarrel ? 0.19 : t.coils ? 0.16 : 0.12) * len;
+
+  // ======================= DRIVE SECTION (trails aft) =======================
+  ctx.save();
+  ctx.translate(-gap, 0);
+
+  ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  const bx = at(0.13);
+  if (t.eng === 1) bellQuad(bx, rear, 0.46 * bR, 0.30 * bR, 0);
+  else if (t.eng === 2) {
+    bellQuad(bx, rear, 0.28 * bR, 0.18 * bR, -0.46 * bR);
+    bellQuad(bx, rear, 0.28 * bR, 0.18 * bR, 0.46 * bR);
+  } else {
+    bellQuad(bx, rear, 0.38 * bR, 0.25 * bR, 0);
+    bellQuad(at(0.11), at(0.03), 0.20 * bR, 0.14 * bR, -0.78 * bR);
+    bellQuad(at(0.11), at(0.03), 0.20 * bR, 0.14 * bR, 0.78 * bR);
+  }
+  ctx.fillStyle = 'rgba(122, 220, 255, 0.8)';
+  ctx.fillRect(rear, -0.16 * bR, 0.02 * len, 0.32 * bR);
+
+  // Drive hull
+  ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.moveTo(at(0.04), -bR * 0.46);
+  ctx.lineTo(at(0.16), -bR * 0.94);
+  ctx.lineTo(at(0.24), -bR);
+  ctx.lineTo(cut, -bR * 0.97);
+  ctx.lineTo(cut, bR * 0.97);
+  ctx.lineTo(at(0.24), bR);
+  ctx.lineTo(at(0.16), bR * 0.94);
+  ctx.lineTo(at(0.04), bR * 0.46);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // RADIATOR FINS: swept panels shedding drive heat, flanking the block.
+  ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+  for (const m of [1, -1]) {
+    ctx.beginPath();
+    ctx.moveTo(at(0.13), m * bR * 0.86);
+    ctx.lineTo(at(0.27), m * bR * 1.42);
+    ctx.lineTo(at(0.29), m * bR * 1.30);
+    ctx.lineTo(at(0.17), m * bR * 0.74);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(43, 52, 68, 0.45)'; ctx.lineWidth = lw * 0.8;
+  for (const m of [1, -1]) {
+    for (let k = 1; k <= 3; k++) {
+      const f = k / 4;
+      ctx.beginPath();
+      ctx.moveTo(lerp(at(0.13), at(0.27), f), m * lerp(bR * 0.86, bR * 1.42, f));
+      ctx.lineTo(lerp(at(0.17), at(0.29), f), m * lerp(bR * 0.74, bR * 1.30, f));
+      ctx.stroke();
+    }
+  }
+  // COOLANT TANKS: a pair of cylinders slung along the drive flanks.
+  if (t.dish >= 1) {
+    for (const m of [1, -1]) {
+      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+      ctx.beginPath();
+      ctx.ellipse(at(0.16), m * bR * 0.60, 0.055 * len, bR * 0.20, 0, 0, TAU);
+      ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = 'rgba(43, 52, 68, 0.5)'; ctx.lineWidth = lw * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(at(0.16), m * bR * 0.42); ctx.lineTo(at(0.16), m * bR * 0.78);
+      ctx.stroke();
+    }
+  }
+  // ENGINE COWL: a shroud ring around the bell cluster on the top tier.
+  if (t.eng === 3) {
+    ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.10 * u;
+    ctx.beginPath(); ctx.arc(at(0.09), 0, bR * 1.02, -1.95, 1.95); ctx.stroke();
+    ctx.strokeStyle = SHIP_MID; ctx.lineWidth = 0.05 * u;
+    ctx.beginPath(); ctx.arc(at(0.09), 0, bR * 1.02, -1.95, 1.95); ctx.stroke();
+  }
+
+  // DRIVE NACELLES: outboard pods on pylons, so the drive section itself grows
+  // a new outline at the top tiers instead of just gaining surface detail.
+  if (t.nacelles) {
+    for (const m of [1, -1]) {
+      ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.09 * u;
+      ctx.beginPath();
+      ctx.moveTo(at(0.18), m * bR * 0.80); ctx.lineTo(at(0.18), m * bR * 1.62);
+      ctx.stroke();
+      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.ellipse(at(0.17), m * bR * 1.82, 0.075 * len, bR * 0.30, 0, 0, TAU);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = 'rgba(122, 220, 255, 0.85)';
+      ctx.beginPath();
+      ctx.arc(at(0.10), m * bR * 1.82, 0.036 * u, 0, TAU); ctx.fill();
+    }
+  }
+
+  // Spotter dishes ride the drive section
+  for (let i = 0; i < (t.dish || 0); i++) {
+    const dx = at(0.22 - i * 0.07);
+    ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+    ctx.beginPath(); ctx.arc(dx, 0, bR * 0.58, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.5)'; ctx.lineWidth = lw * 0.75;
+    ctx.beginPath(); ctx.arc(dx, 0, bR * 0.34, 0, TAU); ctx.stroke();
+    ctx.fillStyle = SHIP_DARK;
+    ctx.beginPath(); ctx.arc(dx, 0, bR * 0.12, 0, TAU); ctx.fill();
+  }
+  // The coupling face: an emitter plate the tether springs from
+  if (t.split) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+    ctx.beginPath();
+    ctx.rect(cut - 0.022 * len, -bR * 0.66, 0.022 * len, bR * 1.32);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = SHIP_CYAN;
+    for (const m of [1, -1]) {
+      ctx.beginPath(); ctx.arc(cut - 0.011 * len, m * bR * 0.46, 0.026 * u, 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  // ============== THE COUPLING FIELD — braided and UNSTABLE ================
+  // Same language as the tractor beam (render.drawBeam): braided strands that
+  // bow apart, additive, solid strokes, and a flutter that gets faster and
+  // deeper the harder the field is working. Under compression it is being
+  // FOUGHT, so the strands whip, the bloom flares and arcs jump between them.
+  // Math.random is fine here — this is per-frame VFX, not sim state.
+  if (t.split && gap > 0.001) {
+    const ca = Math.cos(lead), sa = Math.sin(lead);
+    const ax = cut - gap;
+    // Flutter: the strained field breathes faster and wider, exactly as a
+    // low-grip beam does.
+    const puls = 1 + Math.sin(game.time * (15 + 30 * strain)) * (0.16 + 0.42 * strain);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    const STRANDS = [0, -0.42, 0.42, -0.80, 0.80];
+    const n = 3 + (strain > 0.45 ? 2 : 0);   // it frays as it is squeezed
+    for (let i = 0; i < n; i++) {
+      const off = STRANDS[i];
+      const core = off === 0;
+      const fy = off * bR;
+      const fxr = cut * ca - fy * sa, fyr = cut * sa + fy * ca;
+      // Per-frame jitter, scaled by strain: a settled field is nearly steady,
+      // a compressed one cannot hold its shape.
+      const jit = (Math.random() - 0.5) * bR * (0.10 + 0.75 * strain);
+      const bow = off * bR * (0.55 + 0.5 * strain) * puls + jit;
+      ctx.strokeStyle = core
+        ? `rgba(170, 238, 255, ${0.62 + 0.34 * strain})`
+        : `rgba(110, 200, 255, ${0.20 + 0.30 * strain})`;
+      ctx.lineWidth = (core ? 0.05 : 0.026) * u * puls;
+      ctx.beginPath();
+      ctx.moveTo(ax, off * bR * 0.6);
+      ctx.quadraticCurveTo((ax + fxr) / 2, (off * bR * 0.6 + fyr) / 2 + bow, fxr, fyr);
+      ctx.stroke();
+    }
+    // Arcs jumping across the gap once the field is genuinely strained
+    if (strain > 0.3) {
+      ctx.strokeStyle = `rgba(200, 245, 255, ${0.30 + 0.5 * strain})`;
+      ctx.lineWidth = 0.022 * u;
+      const arcs = 1 + (Math.random() * 3 * strain | 0);
+      for (let i = 0; i < arcs; i++) {
+        const f0 = Math.random(), f1 = f0 + 0.18 + Math.random() * 0.3;
+        const y0 = (Math.random() - 0.5) * bR * 1.5, y1 = (Math.random() - 0.5) * bR * 1.5;
+        ctx.beginPath();
+        ctx.moveTo(lerp(ax, cut, f0), y0);
+        ctx.lineTo(lerp(ax, cut, Math.min(1, f1)), y1);
+        ctx.stroke();
+      }
+    }
+    // Bloom at each coupling face, flaring with the strain
+    for (const [gx, gy] of [[ax, 0], [cut * ca, cut * sa]]) {
+      const R = bR * (0.8 + 0.5 * strain) * puls;
+      const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, R);
+      g.addColorStop(0, `rgba(170, 238, 255, ${0.40 + 0.35 * strain})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(gx, gy, R, 0, TAU); ctx.fill();
+    }
+    ctx.lineCap = 'butt';
+    ctx.restore();              // closes the additive pass
+    ctx.globalAlpha = 1;
+  }
+
+  // ==================== FORWARD HULL (leads the turn) ======================
+  ctx.save();
+  ctx.rotate(lead);
+
+  // The wing root sits BEHIND midships so a long clean nose runs out ahead of
+  // it. Mounted forward, the wings became the whole read and the hull looked
+  // wide no matter how long it actually was.
+  const wg = t.wing || {};
+  ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  for (const m of [1, -1]) {
+    ctx.beginPath();
+    // LERX: a root extension running forward along the fuselage. It is what
+    // turns a plain swept wing into a compound planform on the late tiers.
+    if (wg.lerx) {
+      ctx.moveTo(at(0.72), m * bR * 0.50);
+      ctx.lineTo(leX0, m * leY0 * 1.06);
+    } else {
+      ctx.moveTo(leX0, m * leY0);
+    }
+    // CRANK: the leading edge bends aft partway out, so the wing reads as a
+    // scythe rather than a triangle — and the bend gets sharper every tier.
+    if (wg.kink) {
+      ctx.lineTo(lerp(leX0, leX1, wg.kink) - wg.kinkSweep * len,
+        m * lerp(leY0, leY1, wg.kink));
+    }
+    ctx.lineTo(leX1, m * leY1);
+    ctx.lineTo(leX1 - (wg.tipChord || 0.07) * len, m * (wg.rake ? tipY * 0.97 : tipY));
+    ctx.lineTo(teX0, m * bR * 0.95);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  // Feed conduits: the rock path from hopper out to the hardpoints, drawn as
+  // a seam down each wing root. This is the ONE line that makes the intake and
+  // the guns read as one system rather than two unrelated greebles.
+  if (t.conduit) {
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.55)'; ctx.lineWidth = lw * 0.8;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(0.40), m * bR * 0.7);
+      ctx.lineTo(lerp(leX0, leX1, 0.55), m * lerp(leY0, leY1, 0.55) * 0.92);
+      ctx.stroke();
+    }
+  }
+
+  // Wing hardpoints: a pod with a forward rail barrel. Tier 0 gets bare nubs —
+  // the empty mount is the promise that this class becomes a gun. FOUR TOTAL
+  // is the ceiling: two per wing.
+  const mounts = t.hard.length ? t.hard : [0.55];
+  for (const f of mounts) {
+    const px = lerp(leX0, leX1, f), py = lerp(leY0, leY1, f);
+    for (const m of [1, -1]) {
+      const y = m * py;
+      if (!t.hard.length) {
+        ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+        ctx.beginPath(); ctx.arc(px, y, 0.055 * u, 0, TAU); ctx.fill(); ctx.stroke();
+        continue;
+      }
+      ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(px, y - 0.038 * u); ctx.lineTo(px + barrel, y - 0.026 * u);
+      ctx.lineTo(px + barrel, y + 0.026 * u); ctx.lineTo(px, y + 0.038 * u);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      if (t.coils) {
+        ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+        for (let i = 1; i <= t.coils; i++) {
+          const cx2 = px + barrel * (i / (t.coils + 1));
+          ctx.beginPath();
+          ctx.moveTo(cx2, y - 0.062 * u); ctx.lineTo(cx2, y + 0.062 * u);
+          ctx.stroke();
+        }
+      }
+      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath(); ctx.arc(px, y, 0.088 * u, 0, TAU); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = SHIP_CYAN;
+      ctx.beginPath(); ctx.arc(px + barrel, y, 0.024 * u, 0, TAU); ctx.fill();
+    }
+  }
+
+  // SENSOR BOOMS: long slim spars reaching forward off the wing roots, each
+  // ending in a lit pod well ahead of the leading edge. They stretch the
+  // outline forward and outward — the single loudest change at tier 4.
+  if (t.booms) {
+    for (const m of [1, -1]) {
+      ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.075 * u;
+      ctx.beginPath();
+      ctx.moveTo(at(0.50), m * bR * 1.30); ctx.lineTo(at(0.86), m * bR * 1.62);
+      ctx.stroke();
+      ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = 0.038 * u;
+      ctx.beginPath();
+      ctx.moveTo(at(0.50), m * bR * 1.30); ctx.lineTo(at(0.86), m * bR * 1.62);
+      ctx.stroke();
+      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.ellipse(at(0.88), m * bR * 1.64, 0.048 * len, bR * 0.20, 0, 0, TAU);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = SHIP_CYAN;
+      ctx.beginPath();
+      ctx.arc(at(0.93), m * bR * 1.64, 0.030 * u, 0, TAU); ctx.fill();
+    }
+  }
+  // WINGLETS: blades standing off each wingtip, breaking the clean swept line.
+  if (t.winglets) {
+    for (const m of [1, -1]) {
+      ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(leX1 + 0.01 * len, m * tipY * 0.99);
+      ctx.lineTo(leX1 - 0.16 * len, m * tipY * 1.20);
+      ctx.lineTo(leX1 - 0.22 * len, m * tipY * 1.16);
+      ctx.lineTo(leX1 - 0.09 * len, m * tipY * 0.96);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  // DORSAL MAST: a stacked array tower on the spine, the top-tier signature.
+  if (t.mast) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.rect(at(0.46), -bR * 0.30, 0.14 * len, bR * 0.60);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = SHIP_MID;
+    for (const k of [0.02, 0.06, 0.10]) {
+      ctx.beginPath();
+      ctx.rect(at(0.46) + k * len, -bR * 0.56, 0.022 * len, bR * 1.12);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+
+  // Forward canards, drawn as FILLED fins rooted in the hull. Bare struts with
+  // a lamp on the end read as sticks floating beside the ship; a fin with a
+  // root chord cannot float.
+  if (t.vanes) {
+    ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(0.68), m * bR * 0.55);
+      ctx.lineTo(at(0.74), m * bR * 1.55);
+      ctx.lineTo(at(0.62), m * bR * 1.50);
+      ctx.lineTo(at(0.58), m * bR * 0.70);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  // Crescent fire-control sail — the tier 5 signature, curving forward. Kept
+  // INSIDE the wingspan: a sail wider than the wings would put the width back.
+  if (t.sail) {
+    const sR = (t.bigSail ? 0.54 : 0.42) * len, sC = at(0.46) - sR * 0.55;
+    ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.20 * u;
+    const sHalf = t.bigSail ? 1.30 : 1.05;
+    ctx.beginPath(); ctx.arc(sC, 0, sR, -sHalf, sHalf); ctx.stroke();
+    ctx.strokeStyle = SHIP_MID; ctx.lineWidth = 0.11 * u;
+    ctx.beginPath(); ctx.arc(sC, 0, sR, -sHalf, sHalf); ctx.stroke();
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.45)'; ctx.lineWidth = lw * 0.75;
+    for (let i = -3; i <= 3; i++) {
+      const a = i * 0.28;
+      ctx.beginPath();
+      ctx.moveTo(sC + Math.cos(a) * (sR - 0.09 * u), Math.sin(a) * (sR - 0.09 * u));
+      ctx.lineTo(sC + Math.cos(a) * (sR + 0.09 * u), Math.sin(a) * (sR + 0.09 * u));
+      ctx.stroke();
+    }
+  }
+
+  // Forward hull: a BLADE — a long near-parallel run, then the nose taper.
+  ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.moveTo(cut, -bR * 0.97);
+  ctx.lineTo(at(0.64), -bR * 0.88);
+  ctx.quadraticCurveTo(at(0.86), -bR * 0.52, nose, 0);
+  ctx.quadraticCurveTo(at(0.86), bR * 0.52, at(0.64), bR * 0.88);
+  ctx.lineTo(cut, bR * 0.97);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  // Matching coupling face on the forward hull
+  if (t.split) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+    ctx.beginPath();
+    ctx.rect(cut, -bR * 0.66, 0.022 * len, bR * 1.32);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = SHIP_CYAN;
+    for (const m of [1, -1]) {
+      ctx.beginPath(); ctx.arc(cut + 0.011 * len, m * bR * 0.46, 0.026 * u, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  // Intake maw: the rock goes in HERE. A SLOT, not a box.
+  ctx.fillStyle = '#141b28';
+  ctx.fillRect(at(0.66), -bR * 0.20, 0.030 * len, bR * 0.40);
+  if (tier >= 3) {
+    ctx.fillStyle = SHIP_GREY;
+    for (let i = -1; i <= 1; i++) {
+      ctx.fillRect(at(0.667), i * bR * 0.13 - bR * 0.03, 0.016 * len, bR * 0.06);
+    }
+  }
+
+  // MANOEUVRING THRUSTERS — read off the LIVE kit, not the tier. Retro Jets are
+  // in the scout's starting kit; Dash Jets are a card it may or may not take,
+  // so the hull says which it actually has. Seated INSIDE the hull line: at the
+  // edge they read as loose dashes rather than ports cut into the plating.
+  const st = game.st;
+  const nozzle = (x, y, dx, dy, w) => {
+    const mx = x + dx * w * 1.7, my = y + dy * w * 1.7;   // mouth centre
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x - dy * w, y + dx * w);
+    ctx.lineTo(mx - dy * w * 1.8, my + dx * w * 1.8);
+    ctx.lineTo(mx + dy * w * 1.8, my - dx * w * 1.8);
+    ctx.lineTo(x + dy * w, y - dx * w);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(122, 220, 255, 0.85)';
+    ctx.beginPath();
+    ctx.moveTo(mx - dy * w * 1.5, my + dx * w * 1.5);
+    ctx.lineTo(mx + dy * w * 1.5, my - dx * w * 1.5);
+    ctx.lineTo(mx + dx * w * 0.35 + dy * w * 1.5, my + dy * w * 0.35 - dx * w * 1.5);
+    ctx.lineTo(mx + dx * w * 0.35 - dy * w * 1.5, my + dy * w * 0.35 + dx * w * 1.5);
+    ctx.closePath(); ctx.fill();
+  };
+  if (st && st.hasReverse) {
+    for (const m of [1, -1]) nozzle(at(0.50), m * bR * 0.62, 1, 0, 0.070 * u);
+  }
+  if (st && st.evasion > 0) {
+    for (const m of [1, -1]) {
+      nozzle(at(0.44), m * bR * 0.70, 0, m, 0.062 * u);
+      nozzle(at(0.37), m * bR * 0.70, 0, m, 0.062 * u);
+    }
+  }
+
+  // Ammunition hopper(s): segmented drum with loaded rock showing through
+  const hopY = t.hopper === 2 ? [-bR * 0.46, bR * 0.46] : [0];
+  for (const hy of hopY) {
+    const hw = t.hopper === 2 ? bR * 0.34 : bR * 0.62;
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+    ctx.beginPath();
+    ctx.rect(at(0.34), hy - hw, 0.10 * len, hw * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#6c6a63';
+    for (const k of [0.28, 0.72]) {
+      ctx.beginPath();
+      ctx.arc(at(0.34) + 0.10 * len * k, hy, hw * 0.44, 0, TAU);
+      ctx.fill();
+    }
+  }
+  // Cockpit blister doubling as the targeting optic
+  ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.ellipse(at(0.56), 0, 0.045 * len, bR * 0.46, 0, 0, TAU);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = SHIP_CYAN;
+  ctx.beginPath(); ctx.arc(at(0.572), 0, 0.042 * u, 0, TAU); ctx.fill();
+
+  // Fire-control array panels, ruled with fine seams
+  if (t.arrays) {
+    const rows = t.arrays === 4 ? [0.44, 0.34] : [0.40];
+    for (const ap of rows) {
+      for (const m of [1, -1]) {
+        ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+        ctx.beginPath();
+        ctx.rect(at(ap), m * bR * 0.62, 0.065 * len, m * bR * 0.34);
+        ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = 'rgba(43, 52, 68, 0.45)'; ctx.lineWidth = lw * 0.8;
+        for (let i = 1; i <= 3; i++) {
+          ctx.beginPath();
+          ctx.moveTo(at(ap) + 0.0163 * len * i, m * bR * 0.62);
+          ctx.lineTo(at(ap) + 0.0163 * len * i, m * bR * 0.96);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // Forward guidance blades: thin fixed vanes flanking the sensor head.
+  if (t.blades) {
+    ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(0.80), m * bR * 0.30);
+      ctx.lineTo(at(0.99), m * bR * 0.62);
+      ctx.lineTo(at(0.96), m * bR * 0.20);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  // Chin sensor block ahead of the gimbal
+  if (t.chin) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+    ctx.beginPath();
+    ctx.rect(at(0.90), -bR * 0.17, 0.05 * len, bR * 0.34);
+    ctx.fill(); ctx.stroke();
+  }
+  // THE GIMBAL — this class's one moving part. A sensor head in nested rings
+  // that SLEWS TO THE AIM, independent of where the hull is pointing: the Lead
+  // Computer and the tracking kit made visible. We are inside rotate(s.angle)
+  // AND the forward hull's lead rotation, so both come off the world bearing.
+  if (t.gimbal) {
+    const sh = game.ship;
+    const gx = at(0.80), gr = (0.075 + 0.022 * t.gimbal) * u;
+    const aimA = game.aim
+      ? Math.atan2(game.aim.y - sh.y, game.aim.x - sh.x) - sh.angle - lead : 0;
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.arc(gx, 0, gr, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.55)'; ctx.lineWidth = lw * 0.8;
+    for (let k = 1; k <= t.gimbal; k++) {
+      ctx.beginPath(); ctx.arc(gx, 0, gr * (1 - k * 0.19), 0, TAU); ctx.stroke();
+    }
+    ctx.save();
+    ctx.translate(gx, 0); ctx.rotate(aimA);
+    ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.arc(0, 0, gr * 0.56, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = SHIP_CYAN;
+    ctx.beginPath(); ctx.arc(gr * 0.40, 0, gr * 0.24, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  // Nose slit, drawn straight onto the hull.
+  ctx.strokeStyle = SHIP_CYAN; ctx.lineWidth = Math.max(0.5 / game.cam.zoom, 0.024 * u);
+  ctx.beginPath(); ctx.moveTo(at(0.965), 0); ctx.lineTo(at(0.80), 0); ctx.stroke();
+  if (tier >= 3) {
+    ctx.fillStyle = '#e8f7ff';
+    ctx.beginPath(); ctx.arc(nose * 0.97, 0, 0.035 * u, 0, TAU); ctx.fill();
+  }
+
+  if (t.core > 0) drawShipCore(t, at(0.42), bR * 0.50, bR * 1.09, lw);
+  drawShipScars(tier, dmg, at(0.46), 0.28 * len, bR * 0.85, bR * 1.5);
+  ctx.restore();
+}
+
+// ---- BRAWLER: ram prow, hinged deflector, bare tail --------------------------
+function drawBrawlerHull(game, t, tier, dmg, u, lw) {
+  const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
+  // Same station-line trick the scout uses: everything is placed in fractions
+  // of the hull's own length, so a nose that grows 1.30 -> 2.05 stretches the
+  // wedge instead of sliding its furniture off the front.
+  const len = nose - rear;
+  const at = (p) => rear + p * len;
+  const pw = t.prowW * bR, pBase = at(0.56);
+
+  // Deflector slabs stand OFF the hull on hinges — the gap is the point, it is
+  // what makes them read as armour plates rather than a thicker nose. Half
+  // angle 0.60 keeps it a BROW across the bow: wrap it further and the ship
+  // reads as a disc in a cage, whatever the hull underneath is doing.
+  const slabArc = (R, n, half, wOut, wIn) => {
+    const step = (half * 2) / n, gap = step * 0.16;
+    for (let i = 0; i < n; i++) {
+      const a0 = -half + i * step + gap * 0.5, a1 = a0 + step - gap;
+      ctx.beginPath(); ctx.arc(0, 0, R, a0, a1);
+      ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = wOut; ctx.stroke();
+      ctx.strokeStyle = SHIP_MID; ctx.lineWidth = wIn; ctx.stroke();
+      for (const a of [a0, a1]) {          // hinge pivots back to the hull
+        ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = 0.055 * u;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * R, Math.sin(a) * R);
+        ctx.lineTo(Math.cos(a) * (R - 0.16 * u), Math.sin(a) * (R - 0.16 * u));
+        ctx.stroke();
+      }
+    }
+  };
+  // Engine bells, then the hull over their mouths
+  ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  const bx = at(0.26);
+  // Engine deck: the block the bells are mounted on. Without it the nozzles sit
+  // in open space behind the hull and read as loose parts trailing the ship.
+  ctx.beginPath();
+  ctx.rect(at(0.10), -bR * 0.52, 0.22 * len, bR * 1.04);
+  ctx.fill(); ctx.stroke();
+  if (t.eng === 1) bellQuad(bx, rear, 0.40 * bR, 0.26 * bR, 0);
+  else if (t.eng === 2) {
+    bellQuad(bx, rear, 0.22 * bR, 0.14 * bR, -0.36 * bR);
+    bellQuad(bx, rear, 0.22 * bR, 0.14 * bR, 0.36 * bR);
+  } else if (t.quad) {
+    bellQuad(bx, rear, 0.19 * bR, 0.12 * bR, -0.22 * bR);
+    bellQuad(bx, rear, 0.19 * bR, 0.12 * bR, 0.22 * bR);
+    // OUTRIGGERS: the outboard pair hangs off booms clear of the hull, so the
+    // stern silhouette forks instead of just gaining another nozzle inside the
+    // same outline.
+    if (t.outrigger) {
+      ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = 0.10 * u;
+      for (const m of [1, -1]) {
+        ctx.beginPath();
+        ctx.moveTo(at(0.22), m * bR * 0.60);
+        ctx.lineTo(at(0.12), m * bR * 1.18);
+        ctx.stroke();
+      }
+      ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    }
+    bellQuad(at(0.14), at(0.01), 0.15 * bR, 0.10 * bR,
+      -(t.outrigger ? 1.18 : 0.56) * bR);
+    bellQuad(at(0.14), at(0.01), 0.15 * bR, 0.10 * bR,
+      (t.outrigger ? 1.18 : 0.56) * bR);
+  } else {
+    bellQuad(bx, rear, 0.30 * bR, 0.20 * bR, 0);
+    bellQuad(at(0.12), at(0.03), 0.15 * bR, 0.10 * bR, -0.54 * bR);
+    bellQuad(at(0.12), at(0.03), 0.15 * bR, 0.10 * bR, 0.54 * bR);
+  }
+  ctx.fillStyle = 'rgba(122, 220, 255, 0.8)';
+  ctx.fillRect(rear, -0.14 * bR, 0.018 * len, 0.28 * bR);
+
+  // Outboard armour sponsons bulging from the shoulders
+  if (t.sponsons) {
+    ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      // Strut FIRST — a pod hanging in space beside the hull reads as debris.
+      ctx.beginPath();
+      ctx.rect(at(0.36), m * bR * 0.55, 0.12 * len, m * bR * 0.60);
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(at(0.42), m * bR * 1.12, 0.105 * len, 0.16 * u, 0, 0, TAU);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+
+  // Shoulder buttress plates: angled slabs bracing the bow back into the hull.
+  // They stand PROUD of the hull line, so the tier that gains them gains a
+  // visibly different outline rather than another decal on the same one.
+  if (t.buttress) {
+    ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(0.52), m * bR * 0.80);
+      ctx.lineTo(at(0.46), m * bR * 1.32);
+      ctx.lineTo(at(0.30), m * bR * 1.20);
+      ctx.lineTo(at(0.32), m * bR * 0.80);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+
+  // Hull: a front-heavy wedge — widest at the shoulders, tapering to a thin
+  // tail. Front-heavy is about where the mass SITS, so the shoulder line is
+  // well forward of midships and the stern is genuinely narrow.
+  ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  // The shoulder line has to stay AFT of the prow base (pBase is at 0.56 now
+  // that the ram owns the front 44%), or the outline doubles back on itself.
+  ctx.moveTo(pBase, -pw * 0.92);
+  ctx.lineTo(at(0.48), -bR);
+  ctx.lineTo(at(0.24), -bR * 0.84);
+  ctx.lineTo(at(0.13), -bR * 0.40);
+  ctx.lineTo(at(0.13), bR * 0.40);
+  ctx.lineTo(at(0.24), bR * 0.84);
+  ctx.lineTo(at(0.48), bR);
+  ctx.lineTo(pBase, pw * 0.92);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
+  // THE BARE TAIL. War Plating covers the front arc only (st.shieldArc < PI),
+  // so the stern is drawn as exposed frame on every tier — the spec's weakness
+  // is visible from the hull alone, not just in the shield's coverage wedge.
+  // The fill has to read as EXPOSED FRAME, not as a hole. At rgba(20,26,38) it
+  // was within a few points of empty space, so on the small tiers — where the
+  // tail is most of the ship — the stern vanished into the background and its
+  // frame ribs were left hanging in the void as loose floating bars.
+  ctx.fillStyle = '#4c576f';
+  ctx.beginPath();
+  ctx.moveTo(at(0.28), -bR * 0.85);
+  ctx.lineTo(at(0.13), -bR * 0.40);
+  ctx.lineTo(at(0.13), bR * 0.40);
+  ctx.lineTo(at(0.28), bR * 0.85);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(140, 156, 186, 0.8)'; ctx.lineWidth = lw * 0.8;
+  for (const k of [0.28, 0.58, 0.86]) {
+    const fx = lerp(at(0.30), at(0.13), k);
+    const fy = lerp(bR * 0.85, bR * 0.40, k);
+    ctx.beginPath(); ctx.moveTo(fx, -fy); ctx.lineTo(fx, fy); ctx.stroke();
+  }
+  // Re-close the silhouette: the tail overlay paints over the hull's own dark
+  // outline, and an unstroked stern edge is what lets the ship leak into space.
+  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.moveTo(at(0.28), -bR * 0.85);
+  ctx.lineTo(at(0.13), -bR * 0.40);
+  ctx.lineTo(at(0.13), bR * 0.40);
+  ctx.lineTo(at(0.28), bR * 0.85);
+  ctx.stroke();
+
+  // THE RAM. Drawn heavy: a darker under-shadow first so it reads as a slab of
+  // mass rather than a flat cap, then the plate, then a bright leading edge —
+  // the eye lands on the edge that does the damage.
+  // A BLADE that overhangs the hull on both sides and carries its teeth across
+  // the FULL width of the front face. A forward taper was tried and reads
+  // softer — this squarer, full-width jaw is the one that looks like it hits
+  // things, so keep the front face at +-pw.
+  const prowPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(pBase, -pw);
+    if (t.teeth) {
+      const n = t.teeth, span = pw * 2;
+      for (let k = 0; k < n; k++) {
+        const y0 = -pw + span * (k / n), y1 = -pw + span * ((k + 0.5) / n);
+        ctx.lineTo(nose, y0); ctx.lineTo(at(0.86), y1);
+      }
+      ctx.lineTo(nose, pw);
+    } else {
+      ctx.lineTo(nose, -pw * 0.55); ctx.lineTo(nose, pw * 0.55);
+    }
+    ctx.lineTo(pBase, pw);
+    ctx.closePath();
+  };
+  // Cheek plates tying the ram back into the shoulders, so a prow this wide
+  // still reads as part of the ship rather than a plough bolted to the nose.
+  if (!t.plain) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(pBase + 0.02 * len, m * pw * 0.98);
+      ctx.lineTo(at(0.40), m * bR * 0.86);
+      ctx.lineTo(at(0.40), m * bR * 0.30);
+      ctx.lineTo(pBase + 0.02 * len, m * pw * 0.42);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  }
+  ctx.fillStyle = SHIP_DARK;
+  ctx.save(); ctx.translate(-0.025 * len, 0); prowPath(); ctx.fill(); ctx.restore();
+  ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 1.5;
+  prowPath(); ctx.fill(); ctx.stroke();
+  // Keel down the ram's spine + a lit leading edge
+  if (!t.plain) {
+    ctx.strokeStyle = 'rgba(43, 52, 68, 0.55)'; ctx.lineWidth = lw * 0.9;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(pBase + 0.02 * len, m * pw * 0.55);
+      ctx.lineTo(at(0.92), m * pw * 0.22);
+      ctx.stroke();
+    }
+  }
+  // DOUBLE JAW: a second, inset tooth row behind the first. Top tier only —
+  // it is the one feature that changes the ram's own outline rather than its
+  // scale, so it reads instantly as "this one bites twice".
+  if (t.doubleJaw) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    const n = t.teeth, iw = pw * 0.74, span = iw * 2;
+    ctx.beginPath();
+    ctx.moveTo(at(0.72), -iw);
+    for (let k = 0; k < n; k++) {
+      const y0 = -iw + span * (k / n), y1 = -iw + span * ((k + 0.5) / n);
+      ctx.lineTo(at(0.85), y0); ctx.lineTo(at(0.75), y1);
+    }
+    ctx.lineTo(at(0.85), iw);
+    ctx.lineTo(at(0.72), iw);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(220, 230, 242, 0.85)'; ctx.lineWidth = lw * 1.1;
+  ctx.beginPath();
+  ctx.moveTo(at(0.90), -pw * 0.86);
+  ctx.lineTo(nose, -pw * 0.16);
+  ctx.lineTo(nose, pw * 0.16);
+  ctx.lineTo(at(0.90), pw * 0.86);
+  ctx.stroke();
+  // Cyan kinetic slot down the prow centreline
+  if (t.kslot) {
+    ctx.strokeStyle = SHIP_CYAN;
+    ctx.lineWidth = Math.max(0.6 / game.cam.zoom, 0.055 * u);
+    ctx.beginPath(); ctx.moveTo(at(0.60), 0); ctx.lineTo(at(0.97), 0); ctx.stroke();
+  } else {
+    ctx.fillStyle = SHIP_CYAN;
+    ctx.fillRect(at(0.62), -bR * 0.07, 0.05 * len, bR * 0.14);
+  }
+  // A hammerhead needs its own neck, or it floats off the front of the hull
+  if (t.hammer) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.rect(at(0.46), -bR * 0.50, 0.12 * len, bR * 1.00);
+    ctx.fill(); ctx.stroke();
+  }
+
+  // DEFLECTOR, drawn after the ram and on real pylons. Standing the slabs off
+  // the hull is the point of the design, but a standoff with nothing spanning
+  // the gap is just a bar floating in front of a ship. It is deliberately
+  // THINNER and NARROWER than the ram it sits in front of — it frames the ram,
+  // it does not compete with it.
+  if (t.slabs) {
+    const R = t.slabR * u, half = 0.50;
+    ctx.lineCap = 'round';
+    for (const pass of [[SHIP_DARK, 0.12 * u], [SHIP_GREY, 0.06 * u]]) {
+      ctx.strokeStyle = pass[0]; ctx.lineWidth = pass[1];
+      for (const m of [1, -1]) {
+        ctx.beginPath();
+        ctx.moveTo(at(0.90), m * pw * 0.60);
+        ctx.lineTo(Math.cos(half) * R, m * Math.sin(half) * R);
+        ctx.stroke();
+      }
+      ctx.beginPath(); ctx.moveTo(nose, 0); ctx.lineTo(R, 0); ctx.stroke();
+    }
+    ctx.lineCap = 'butt';
+    if (t.layer2) slabArc(R * 0.91, t.slabs, 0.40, 0.11 * u, 0.055 * u);
+    slabArc(R, t.slabs, half, 0.15 * u, 0.075 * u);
+  }
+
+  // Armoured bridge. Every tier has one, because a hull with no cockpit reads
+  // as debris however good its outline is.
+  ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.moveTo(at(0.50), -bR * 0.24);
+  ctx.lineTo(at(0.38), -bR * 0.42);
+  ctx.lineTo(at(0.38), bR * 0.42);
+  ctx.lineTo(at(0.50), bR * 0.24);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(122, 220, 255, 0.9)';
+  ctx.beginPath();
+  ctx.moveTo(at(0.487), -bR * 0.22);
+  ctx.lineTo(at(0.405), -bR * 0.32);
+  ctx.lineTo(at(0.405), bR * 0.32);
+  ctx.lineTo(at(0.487), bR * 0.22);
+  ctx.closePath(); ctx.fill();
+
+  // DORSAL SPINE: a stepped armour ridge down the hull's centreline.
+  if (t.spine) {
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
+    for (const sp of [0.20, 0.28, 0.36]) {
+      ctx.beginPath();
+      ctx.rect(at(sp), -bR * 0.16, 0.05 * len, bR * 0.32);
+      ctx.fill(); ctx.stroke();
+    }
+  }
+  // TRUSSES: open lattice tying the sponsons back to the hull. Solid struts
+  // would just read as a wider hull; a lattice reads as added STRUCTURE.
+  if (t.trusses) {
+    ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = lw * 1.2;
+    for (const m of [1, -1]) {
+      for (const k of [0.36, 0.44]) {
+        ctx.beginPath();
+        ctx.moveTo(at(k), m * bR * 0.70);
+        ctx.lineTo(at(k + 0.06), m * bR * 1.12);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(at(0.38), m * bR * 1.02);
+      ctx.lineTo(at(0.50), m * bR * 1.02);
+      ctx.stroke();
+    }
+  }
+  // BLISTERS: turret pods on the ram's cheeks.
+  if (t.blisters) {
+    for (const m of [1, -1]) {
+      ctx.fillStyle = SHIP_MID; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.arc(at(0.62), m * pw * 0.74, 0.075 * u, 0, TAU);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = SHIP_DARK;
+      ctx.beginPath();
+      ctx.arc(at(0.62), m * pw * 0.74, 0.032 * u, 0, TAU); ctx.fill();
+      ctx.fillStyle = SHIP_CYAN;
+      ctx.beginPath();
+      ctx.arc(at(0.665), m * pw * 0.74, 0.018 * u, 0, TAU); ctx.fill();
+    }
+  }
+
+  // Impact ribs raking back from the prow along both shoulders
+  if (t.ribs) {
+    ctx.strokeStyle = SHIP_GREY; ctx.lineWidth = 0.085 * u;
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(0.54), m * pw * 0.70);
+      ctx.lineTo(at(0.34), m * bR * 0.78);
+      ctx.stroke();
+    }
+  }
+  // Kinetic sling rails along the flanks, cyan emitter block at the front
+  if (t.rails) {
+    for (const m of [1, -1]) {
+      ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.8;
+      ctx.beginPath();
+      ctx.rect(at(0.22), m * bR * 0.56, 0.24 * len, m * bR * 0.13);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = SHIP_CYAN;
+      ctx.beginPath();
+      ctx.arc(at(0.44), m * bR * 0.625, 0.038 * u, 0, TAU);
+      ctx.fill();
+    }
+  }
+  // Plate seams — the big bow plate must not read as one blank slab
+  // Seams RAKE with the wedge. Drawn dead vertical they read as the stripes on
+  // a loaf of bread, which is most of why the small tiers looked like junk.
+  ctx.strokeStyle = 'rgba(43, 52, 68, 0.32)'; ctx.lineWidth = lw * 0.75;
+  for (const k of [0.28, 0.42]) {
+    for (const m of [1, -1]) {
+      ctx.beginPath();
+      ctx.moveTo(at(k), 0); ctx.lineTo(at(k - 0.10), m * bR * 0.92);
+      ctx.stroke();
+    }
+  }
+  // Lit hull windows along the flanks
+  if (t.windows) {
+    ctx.fillStyle = 'rgba(122, 220, 255, 0.9)';
+    for (const m of [1, -1]) {
+      for (const wp of [0.24, 0.34, 0.44]) {
+        ctx.beginPath();
+        ctx.arc(at(wp), m * bR * 0.36, 0.028 * u, 0, TAU);
+        ctx.fill();
+      }
+    }
+  }
+
+  if (t.core > 0) {
+    // The core sits in an armoured slot, not open on the plating
+    ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.arc(at(0.34), 0, bR * 0.44, 0, TAU); ctx.fill(); ctx.stroke();
+    drawShipCore(t, at(0.34), bR * 0.32, bR * 0.70, lw);
+  }
+  drawShipScars(tier, dmg, at(0.34), 0.24 * len, bR * 0.78, bR * 0.80);
+}
+
+// ---- HAULER: the original ring-armed ladder ---------------------------------
+function drawHaulerHull(game, t, tier, dmg, u, lw) {
+  const bR = t.bR * u, nose = t.nose * u, rear = -t.rear * u;
+  const cx = -0.12 * u;                   // body circle sits a touch aft
 
   // The ring assemblies ROTATE (tiers flagged spin: true), in the same
   // +angle direction the orbit shield spins (CFG.ORBIT_OMEGA > 0) but
@@ -4767,61 +6007,10 @@ function drawShipHull(game, tier, dmg, r) {
     ctx.beginPath(); ctx.arc(nose * 0.96, 0, 0.045 * u, 0, TAU); ctx.fill();
   }
 
-  // Core: dark well, cyan glow ring, bright center. core 2 adds an outer
-  // graduated ring with tick marks — the reference's big-hull reactor look.
-  const cR = (t.core === 0 ? 0.34 : 0.46) * bR;
-  ctx.fillStyle = '#141b28';
-  ctx.beginPath(); ctx.arc(0, 0, cR, 0, TAU); ctx.fill();
-  ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = 0.10 * bR;
-  ctx.beginPath(); ctx.arc(0, 0, cR, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = 'rgba(90, 200, 255, 0.35)'; ctx.lineWidth = 0.17 * bR;
-  ctx.beginPath(); ctx.arc(0, 0, cR * 0.65, 0, TAU); ctx.stroke();
-  ctx.strokeStyle = SHIP_CYAN; ctx.lineWidth = 0.07 * bR;
-  ctx.beginPath(); ctx.arc(0, 0, cR * 0.65, 0, TAU); ctx.stroke();
-  ctx.fillStyle = '#e8f7ff';
-  ctx.beginPath(); ctx.arc(0, 0, cR * 0.28, 0, TAU); ctx.fill();
-  if (t.core === 2) {
-    ctx.strokeStyle = 'rgba(43, 52, 68, 0.6)';
-    ctx.lineWidth = lw * 0.7;
-    ctx.beginPath(); ctx.arc(0, 0, cR * 1.35, 0, TAU); ctx.stroke();
-    for (const a of [0.785, 2.356, -0.785, -2.356]) {
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * cR * 1.1, Math.sin(a) * cR * 1.1);
-      ctx.lineTo(Math.cos(a) * cR * 1.35, Math.sin(a) * cR * 1.35);
-      ctx.stroke();
-    }
-  }
-
-  // Damage overlay: scorch gouges with rust streaks trailing aft, and (major
-  // only) dark bites out of the hull rim
-  for (const sc of shipScars(tier, dmg)) {
-    if (sc.bite) {
-      ctx.fillStyle = '#0c0f16';
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(sc.a) * bR, Math.sin(sc.a) * bR, sc.sz * 0.18 * bR, 0, TAU);
-      ctx.fill();
-      continue;
-    }
-    // Scar geometry scales with the BODY, not the collision radius — the same
-    // damage level should look equally beat-up on a scout and a titan.
-    const x = cx + Math.cos(sc.a) * sc.d * bR, y = Math.sin(sc.a) * sc.d * bR;
-    const sz = sc.sz * 0.16 * bR;
-    ctx.fillStyle = 'rgba(122, 74, 34, 0.7)';
-    ctx.beginPath();
-    ctx.moveTo(x, y - sz * 0.3);
-    ctx.lineTo(x - sc.streak * bR, y + sc.jit * bR);
-    ctx.lineTo(x, y + sz * 0.3);
-    ctx.closePath(); ctx.fill();
-    ctx.save();
-    ctx.translate(x, y); ctx.rotate(sc.rot);
-    ctx.fillStyle = '#241c12';
-    ctx.beginPath();
-    ctx.moveTo(-sz, 0); ctx.lineTo(-0.2 * sz, -0.8 * sz);
-    ctx.lineTo(sz, -0.15 * sz); ctx.lineTo(0.3 * sz, 0.7 * sz);
-    ctx.closePath(); ctx.fill();
-    ctx.restore();
-  }
-  ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
+  // Scar geometry scales with the BODY, not the collision radius — the same
+  // damage level should look equally beat-up at every tier.
+  drawShipCore(t, 0, (t.core === 0 ? 0.34 : 0.46) * bR, bR, lw);
+  drawShipScars(tier, dmg, cx, bR, bR, bR);
 }
 
 // Tier-morph state (render-local, cosmetic): when the tier changes, the new
@@ -4838,9 +6027,19 @@ function drawShip(game) {
 
   const lv = game.st.levels;
   const r = s.radius;
-  const tier = Math.min(game.st.tier, SHIP_TIERS.length - 1);
-  const tG = SHIP_TIERS[tier];
-  const visR = shipVisualR(tier, r);   // how far the drawn art reaches
+  const table = shipTierTable(game);
+  const tier = Math.min(game.st.tier, table.length - 1);
+  const tG = table[tier];
+  // Art normalization and the split stand-off, computed ONCE up here: the
+  // shield bubble, the tier-morph scale and the engine-flame anchors all need
+  // them, and re-deriving a speed/thrust-dependent value per pass lets the
+  // passes disagree inside a single frame.
+  const uG = r / (SHIP_HIT_FRAC * shipReach(tG));
+  const splitX = tG.split ? scoutSplit(game, (tG.nose + tG.rear) * uG).gap : 0;
+  // THE BUBBLE HAS TO WRAP THE WHOLE SHIP, and on a split hull the drive
+  // section is trailing outside the footprint the un-split art occupied. Add
+  // the stand-off, or the drive flies naked behind its own shield.
+  const visR = shipVisualR(tier, r) + splitX;   // how far the drawn art reaches
 
   if (tier !== morphTierSeen) {
     // First frame ever doesn't morph; every later tier change (up OR down —
@@ -5071,9 +6270,10 @@ function drawShip(game) {
   // hitbox change, r (collision) is LARGER than the drawn body disc — art
   // anchors must use the same footprint normalization as drawShipHull, and
   // art-proportional sizes scale off the DRAWN disc (bodyR), never r.
-  const uG = r / (SHIP_HIT_FRAC * shipReach(tG));
   const bodyR = tG.bR * uG;   // the drawn body disc radius
-  const rearX = -tG.rear * uG, noseX = tG.nose * uG;
+  // A SPLIT SCOUT's exhaust rides its DRIVE SECTION, not the origin the whole
+  // hull used to share — otherwise the flame hangs in the gap between halves.
+  const rearX = -tG.rear * uG - splitX, noseX = tG.nose * uG;
   if (s.thrusting) {
     const burner = !!game.burnerOn;
     // The afterburner plume is nearly twice the flame — the burn should LOOK
