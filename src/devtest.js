@@ -137,6 +137,12 @@ export function runMechTest(game, hooks, opts = {}) {
   Math.random = () => { draws++; return rng(); };
   const wasAuto = game.autoUpgrade;
   game.autoUpgrade = true;
+  // PAUSE IS SHARED STATE TOO. T23 forces `paused = false` to prove a digit
+  // cannot be spent into a paused run, and main.js's frame loop gates the sim
+  // update on `game.paused` — so running the suite from the console while
+  // paused would resume the run under the player's hands on the very next rAF.
+  // Restored in the finally beside Math.random and input.keys.
+  const wasPaused = game.paused;
   // THE INPUT DEVICE IS SHARED STATE, and the suite drives it: the docking and
   // pilot-card cases park the cursor (input.mouseX/Y feed game.aim every frame)
   // and hold KeyW. Left behind, that state is the NEXT run's starting
@@ -993,63 +999,72 @@ export function runMechTest(game, hooks, opts = {}) {
     // an initialise-once capability, and read the `draws` column to find where.
     t('pilot card: keydown, click, and the paused-run guard', () => {
       hooks.freshRun(0, seed);
+      // This case turns OFF the auto-resolver the whole suite runs under and
+      // synthesises a keydown with no matching keyup, so its cleanup belongs in
+      // a finally, not mid-body: makeT catches and continues, and a failed
+      // assertion halfway down would otherwise hand the NEXT test a run with
+      // picks unresolved and Digit1 still held.
       game.autoUpgrade = false;
-      const offer = () => {
-        game.flingDelayT = 0;   // the post-fling deferral is T5's subject, not this one
-        game.prog.xp = xpForPick(game.prog) + 1;
-        hooks.stepSim(0.2);
-      };
-      const digit = (code) =>
-        window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+      try {
+        const offer = () => {
+          game.flingDelayT = 0;   // the post-fling deferral is T5's subject, not this one
+          game.prog.xp = xpForPick(game.prog) + 1;
+          hooks.stepSim(0.2);
+        };
+        const digit = (code) =>
+          window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
 
-      offer();
-      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
-        'no inline offer stood up with autoUpgrade off');
-      expect(!game.choosingUpgrade,
-        'an ability offer froze the sim — only the spec card is a modal');
+        offer();
+        expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+          'no inline offer stood up with autoUpgrade off');
+        expect(!game.choosingUpgrade,
+          'an ability offer froze the sim — only the spec card is a modal');
 
-      // The markup the delegate reads. It routes off `data-i`, so a card that
-      // lost its index is a dead card that silently swallows the click.
-      updateHud(game);
-      const rows = [...document.querySelectorAll('#offerBox .ofrow')];
-      expect(rows.length === game.upgradeChoices.length,
-        `offer drew ${rows.length} cards for ${game.upgradeChoices.length} choices`);
-      expect(rows.every((r, i) => +r.dataset.i === i), 'offer card data-i is not 0..n-1');
-      expect(rows[0].textContent.includes(game.upgradeChoices[0].name),
-        'the drawn card does not name the choice it stands for');
+        // The markup the delegate reads. It routes off `data-i`, so a card that
+        // lost its index is a dead card that silently swallows the click.
+        updateHud(game);
+        const rows = [...document.querySelectorAll('#offerBox .ofrow')];
+        expect(rows.length === game.upgradeChoices.length,
+          `offer drew ${rows.length} cards for ${game.upgradeChoices.length} choices`);
+        expect(rows.every((r, i) => +r.dataset.i === i), 'offer card data-i is not 0..n-1');
+        expect(rows[0].textContent.includes(game.upgradeChoices[0].name),
+          'the drawn card does not name the choice it stands for');
 
-      // GUARD: the digits are a WINDOW listener and fire whatever is on screen,
-      // so a pick must not be spendable into a paused run.
-      const want0 = game.upgradeChoices[0].id;
-      game.paused = true;
-      digit('Digit1');
-      game.paused = false;
-      expect(game.upgradeChoices, 'a digit spent the pick while the run was paused');
-      expect(!game.prog.upgrades[want0], `paused Digit1 still granted ${want0}`);
+        // GUARD: the digits are a WINDOW listener and fire whatever is on screen,
+        // so a pick must not be spendable into a paused run.
+        const want0 = game.upgradeChoices[0].id;
+        game.paused = true;
+        digit('Digit1');
+        game.paused = false;
+        expect(game.upgradeChoices, 'a digit spent the pick while the run was paused');
+        expect(!game.prog.upgrades[want0], `paused Digit1 still granted ${want0}`);
 
-      // KEYDOWN answers it...
-      digit('Digit1');
-      input.keys.delete('Digit1');   // no keyup is dispatched; do not leave it held
-      expect(!game.upgradeChoices, 'the offer survived the keypress');
-      expect(game.prog.upgrades[want0] >= 1, `Digit1 did not grant ${want0}`);
-      // ...and an answered INLINE offer holds the next card back, so it cannot
-      // land under a finger still on the button (the flingDelayT reuse).
-      expect(game.flingDelayT >= 0.8, 'answering an inline offer armed no deferral');
+        // KEYDOWN answers it...
+        digit('Digit1');
+        input.keys.delete('Digit1');   // no keyup is dispatched; do not leave it held
+        expect(!game.upgradeChoices, 'the offer survived the keypress');
+        expect(game.prog.upgrades[want0] >= 1, `Digit1 did not grant ${want0}`);
+        // ...and an answered INLINE offer holds the next card back, so it cannot
+        // land under a finger still on the button (the flingDelayT reuse).
+        expect(game.flingDelayT >= 0.8, 'answering an inline offer armed no deferral');
 
-      // CLICK answers the next one, through the delegate rather than the key.
-      offer();
-      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
-        'no second offer to answer by mouse');
-      const want1 = game.upgradeChoices[1].id;
-      updateHud(game);
-      const row1 = document.querySelector('#offerBox .ofrow[data-i="1"]');
-      expect(row1, 'the second offer drew no card at data-i=1');
-      row1.click();
-      expect(!game.upgradeChoices, 'the offer survived the click');
-      expect(game.prog.upgrades[want1] >= 1, `the click did not grant ${want1}`);
+        // CLICK answers the next one, through the delegate rather than the key.
+        offer();
+        expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+          'no second offer to answer by mouse');
+        const want1 = game.upgradeChoices[1].id;
+        updateHud(game);
+        const row1 = document.querySelector('#offerBox .ofrow[data-i="1"]');
+        expect(row1, 'the second offer drew no card at data-i=1');
+        row1.click();
+        expect(!game.upgradeChoices, 'the offer survived the click');
+        expect(game.prog.upgrades[want1] >= 1, `the click did not grant ${want1}`);
 
-      game.autoUpgrade = true;
-      return `key -> ${want0}, click -> ${want1}, paused digit refused`;
+        return `key -> ${want0}, click -> ${want1}, paused digit refused`;
+      } finally {
+        game.autoUpgrade = true;
+        input.keys.delete('Digit1');
+      }
     });
 
     // T24 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
@@ -1088,6 +1103,7 @@ export function runMechTest(game, hooks, opts = {}) {
     Math.random = realRandom;
     game.viewPin = wasViewPin;
     game.autoUpgrade = wasAuto;
+    game.paused = wasPaused;
     setSfxVolume(game.sfxVol);
     game.godMode = false;
     input.mouseX = wasMouseX; input.mouseY = wasMouseY;
