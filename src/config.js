@@ -544,21 +544,22 @@ export const CFG = {
   // DEALT damage is tempered (user calls, 2026-08: damage "shouldn't increase
   // exponentially as things get bigger", then "it shouldn't just affect the
   // top end, it should affect the whole thing"). The mass term in every
-  // dealt-damage formula goes through config.dmgMass: identity up to
-  // DMG_MASS_KNEE, then KNEE*(m/KNEE)^EXP above it. The knee sits at the
-  // BOTTOM of the throwable range — the smallest combat-ladder rung — so the
-  // ENTIRE ladder from ordinary rock to gas giant rides the sublinear curve
-  // (square root at EXP 0.5): a 600 rock is the anchor and lands unchanged, a
-  // 2500 rock ~x0.49, a 6000 boulder ~x0.32, a 13k moon ~x0.21, a mid planet
-  // ~x0.07, a gas giant ~x0.03. Sub-knee dust keeps identity rather than the
-  // power curve's BOOST — normalizing a sublinear curve anywhere above the
-  // floor makes everything under the pivot hit HARDER, and a 2.4x pebble buff
-  // was nobody's intent. First shipped as knee 6000 / EXP 0.6 ("top end
-  // only"), rejected twice; the whole-range clamp is deliberate, and it
-  // re-prices the celestial kill ladders wholesale — the measured post-temper
-  // rungs live in the combat bench baseline, not in invariant 8's old
-  // hit-counts. Ship TAKEN damage already saturates via massSat and is not
-  // run through this.
+  // dealt-damage formula goes through config.dmgMass:
+  //   LOW_MUL * m                        at or below DMG_MASS_KNEE
+  //   LOW_MUL * KNEE * (m/KNEE)^EXP      above it
+  // The knee sits at the BOTTOM of the throwable range — the smallest
+  // combat-ladder rung — so the ENTIRE ladder from ordinary rock to gas giant
+  // rides the sublinear curve. Net factors vs raw mass: x1.3 at and below the
+  // 600 rung, a 2500 rock ~x0.60, a 6000 boulder ~x0.38, a 13k moon ~x0.25, a
+  // mid planet ~x0.074, a gas giant ~x0.03. Sub-knee dust rides the flat
+  // LOW_MUL rather than the power curve — normalizing a sublinear curve
+  // anywhere above the floor makes everything under the pivot hit HARDER
+  // still (an uncompensated 600 pivot was a 2.4x pebble buff; the deliberate
+  // lift is 1.3x). First shipped as knee 6000 / EXP 0.6 ("top end only"),
+  // rejected twice; the whole-range clamp is deliberate, and it re-prices the
+  // celestial kill ladders wholesale — the measured post-temper rungs live in
+  // the combat bench baseline, not in invariant 8's old hit-counts. Ship
+  // TAKEN damage already saturates via massSat and is not run through this.
   // LOW_MUL is a bottom-end lift (user call, 2026-08: "the little guys should
   // do more" — the gap from boulders up to planets read too wide). It scales
   // the WHOLE curve, and the exponent drop 0.5 -> 0.46 is what pays for it:
@@ -2091,8 +2092,9 @@ export const CFG = {
 // The tempered mass every DEALT-damage formula uses in place of raw impactor
 // mass (see CFG.DMG_MASS_KNEE). One function, sim-wide, so body-vs-body, the
 // gas-giant entry, the ram and the alien-hit paths cannot drift apart —
-// identity below the knee (the whole everyday throw ladder is bit-exact),
-// continuous at it, monotone above it. Mass DOMINANCE stays on raw mass:
+// LINEAR below the knee (x DMG_MASS_LOW_MUL, the deliberate bottom-end lift),
+// continuous at it, sublinear and monotone above it — the LOW_MUL scales the
+// WHOLE curve, sub-knee included. Mass DOMINANCE stays on raw mass:
 // dominance decides who hurts whom (a direction), this decides how hard the
 // blow can possibly land (a magnitude), and running dominance through the
 // temper would let a tempered giant start TAKING real damage from pebbles.

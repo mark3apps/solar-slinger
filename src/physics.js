@@ -3668,10 +3668,11 @@ function collideAlienBody(game, al, b, dt) {
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
     let dmg = CFG.DMG_BODY * effA * effA * dmgMass(b.mass) * bonus * 2;
     // LURKERS TAKE A MINIMUM NUMBER OF HITS. Rock damage is QUADRATIC in
-    // closing speed and linear in mass, so it spans three orders of magnitude
-    // (a 200-mass lob at 400 does 139; a 1400-mass rock at 1000 does 7422) and
-    // NO hp value is tunable across that range — every one is either one-shot
-    // by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
+    // closing speed and sublinear in mass (config.dmgMass — the temper helps
+    // but the speed term still rules), so it spans well over an order of
+    // magnitude (a 200-mass lob at 400 does ~180; a 1400-mass rock at 1000
+    // does ~6,100) and NO hp value is tunable across that range — every one is
+    // either one-shot by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
     // alone changed literally nothing: both were one-shot by all nine sample
     // throws. So the per-hit damage is capped at a fraction of max hp, the same
     // idiom invariant 3 uses to stop comparable rocks one-shotting each other.
