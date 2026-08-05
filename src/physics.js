@@ -1511,18 +1511,21 @@ export function damageShip(game, dmg, cause, hitAng) {
   if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return;
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull. Coverage
-  // is spec DNA (st.shieldArc, config.shipStats): BRAWLER's War Plating wraps
-  // only the FRONT arc, so a directional hit (hitAng = world angle from ship
-  // to impact) landing outside it skips the shield entirely — the tail is
-  // bare.
+  // is `st.shieldArc` (config.shipStats), the half-angle around the nose: a
+  // directional hit (hitAng = world angle from ship to impact) landing outside
+  // it skips the shield entirely. SCOUT's Phase Screen is the only shield in
+  // the catalog and it is a FULL WRAP, so this reduces to "the shield soaks
+  // first" today — the arc is kept because it is the whole expression of a
+  // directional shield, and devtest T6 holds it to that against an explicit
+  // wedge. (BRAWLER's front-arc War Plating was the partial case; it is
+  // deleted — the brawler's protection is hull plus the War Rack prow.)
   // DIRECTIONLESS damage (heat, gas crush, Oort grinding — no hitAng) has no
   // angle to test, so it can't be shrugged off by facing the right way. It
   // bathes the WHOLE hull, and a partial shield only covers part of that hull:
-  // it soaks its COVERAGE SHARE (arc / PI — half, for the brawler's PI/2
-  // plating) and the rest goes straight through. Half a shield stops half of
-  // an all-over effect; it used to soak all of it, which quietly made the
-  // front-arc drawback free in exactly the places it should hurt most. A
-  // full-wrap shield (SCOUT's Phase Screen) is unaffected — its share is 1.
+  // it soaks its COVERAGE SHARE (arc / PI) and the rest goes straight through.
+  // Half a shield stops half of an all-over effect; it used to soak all of it,
+  // which quietly made a front-arc drawback free in exactly the places it
+  // should hurt most. A full wrap is unaffected — its share is 1.
   const arc = game.st.shieldArc ?? Math.PI;
   const fullWrap = arc > Math.PI - 0.01;
   const covered = hitAng === undefined || fullWrap ||
@@ -3193,8 +3196,11 @@ function collideShipBody(game, s, b, dt) {
     // reaches the hull on that same frame, so there is no free frame and no
     // cliff — protection is total, then it is over, and rebuilding it means
     // going and finding more rock.
-    // Front arc ONLY, the same bargain War Plating makes: the ram is welded to
-    // the bow and does nothing for a hit that comes in past the shoulders.
+    // Front arc ONLY: the ram is welded to the bow and does nothing for a hit
+    // that comes in past the shoulders. That bargain is now the brawler's ONLY
+    // layer in front of the hull — War Plating, which used to make the same
+    // trade with a regenerating plate, is deleted — so the arc is what keeps
+    // "point at the thing hurting you" a real demand on the spec.
     let hullDmg = dmg;
     if (dmg > 0 && s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
       hullDmg = spendRam(game, dmg, hitAng);

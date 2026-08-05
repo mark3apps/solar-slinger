@@ -4565,8 +4565,9 @@ function shipScars(tier, dmg) {
 //   SCOUT   — long thin swept wings carrying weapon hardpoints, fed by a rock
 //             intake and hopper. Grows by WINGSPAN and hardpoint count.
 //   BRAWLER — a front-heavy wedge behind a ram prow and hinged deflector
-//             slabs, with a conspicuously BARE TAIL: st.shieldArc < PI covers
-//             the front arc only, so the weakness is drawn, not just tuned.
+//             slabs, with a conspicuously BARE TAIL: the spec has no shield at
+//             all and its one layer (the War Rack ram) is welded to the bow, so
+//             the weakness is drawn, not just tuned.
 // Keep the three silhouettes disjoint — ring arms are the hauler's signature
 // and reading the spec at a glance is the whole point of splitting them.
 //
@@ -4684,9 +4685,9 @@ const SCOUT_TIERS = [
 // deflector slabs standing OFF the hull in front of it, and armour that thins
 // visibly toward the stern. `slabs` is the deflector count (0 at tier 0, then
 // 1/1/3/5/7) sitting on an arc of radius `slabR`, which is what sets `reach`
-// once it exists. The bare tail is drawn on EVERY tier — it mirrors
-// st.shieldArc < PI, and a fully-plated brawler would be the art lying about
-// the sim.
+// once it exists. The bare tail is drawn on EVERY tier — the spec has no
+// shield and its one layer (the ram) is welded to the bow, so a fully-plated
+// brawler would be the art lying about the sim.
 //   0 BRUISER   blunt prow, one bell, no deflector yet
 //   1 MAULER    single curved deflector plate on two hinges, twin bells
 //   2 BREAKER   toothed prow, impact ribs, kinetic sling rails
@@ -5600,9 +5601,9 @@ function drawBrawlerHull(game, t, tier, dmg, u, lw) {
   ctx.lineTo(pBase, pw * 0.92);
   ctx.closePath(); ctx.fill(); ctx.stroke();
 
-  // THE BARE TAIL. War Plating covers the front arc only (st.shieldArc < PI),
-  // so the stern is drawn as exposed frame on every tier — the spec's weakness
-  // is visible from the hull alone, not just in the shield's coverage wedge.
+  // THE BARE TAIL. The brawler carries no shield and its only layer — the War
+  // Rack ram — is welded to the bow, so the stern is drawn as exposed frame on
+  // every tier: the spec's weakness is visible from the hull alone.
   // The fill has to read as EXPOSED FRAME, not as a hole. At rgba(20,26,38) it
   // was within a few points of empty space, so on the small tiers — where the
   // tail is most of the ship — the stern vanished into the background and its
@@ -6201,9 +6202,12 @@ function drawShip(game) {
     // collision radius — on a titan those differ by almost 2x. It tracks the
     // tier-morph scale so it grows with the art instead of snapping.
     const R = visR * morphScale * 1.08 + 5 / z;
-    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI), so
-    // every shield visual — glow, recharge sweep, absorb ripple — is confined
-    // to the covered wedge and the bare tail reads at a glance.
+    // A PARTIAL shield (st.shieldArc < PI) confines every visual — glow,
+    // recharge sweep, absorb ripple — to the covered wedge, so a bare tail
+    // reads at a glance. No live ability produces one: SCOUT's Phase Screen is
+    // the only shield in the catalog and it is a full wrap, and BRAWLER's
+    // front-arc War Plating is deleted. The wedge path stays because it is the
+    // drawn half of `st.shieldArc`, which physics still honours.
     //
     // THE EDGES MUST FEATHER, NOT CUT. A single pie clip ended the glow on two
     // dead-straight radial lines, which read as a UI mask laid over the ship —

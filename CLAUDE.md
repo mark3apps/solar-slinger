@@ -437,9 +437,12 @@ Plus the three scaling rules that make a big debris cascade affordable:
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
 - **Enemy density is deliberately sparse**; nests and shoal-lurker broods are the only alien sources.
-- **The shield is an ability, not base, and its shape is spec DNA** (BRAWLER front plate / SCOUT
-  full-wrap / HAULER none). Hull does not self-heal — it mends only at a glow pocket, on a DOCK, and
-  on the sanctioned hull-gain heal.
+- **The shield is an ability, not base, and it is SCOUT-ONLY** (Phase Screen's full wrap). HAULER
+  answers a hit with the orbit rock wall, BRAWLER with hull plus the War Rack ram — neither has a
+  `shield`-channel row, and nothing may give them one. The directional-arc machinery (`st.shieldArc`,
+  `physics.damageShip`, render's feathered wedge) is kept and tested but currently has no user.
+  Hull does not self-heal — it mends only at a glow pocket, on a DOCK, and on the sanctioned
+  hull-gain heal.
 
 ### Progression → [docs/progression.md](docs/progression.md)
 
@@ -496,7 +499,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; 30/30 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (31 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

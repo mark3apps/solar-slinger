@@ -677,14 +677,25 @@ export const ACHIEVEMENTS = [
   // to something every spec passes without trying, which is the freebie failure
   // mode wearing a different hat. Scaled by the measured ratio, so each row
   // still asks for what it used to ask for.
+  //
+  // THE TOP ROW IS BOUNDED BY THE SHORTEST SPEC'S POOL, and it has to be
+  // re-checked whenever a catalog row is added or deleted. `c.ranks` sums
+  // `prog.upgrades`, so a spec's ceiling is (offerable rows) x 6:
+  // brawler 15 x 6 = 90, hauler 15 x 6 = 90, scout 14 x 6 = 84. 95 was set
+  // against the brawler's old 16-row, 96-rank ceiling; deleting War Plating
+  // took that to 90 and left the row MATHEMATICALLY UNREACHABLE for every
+  // build in the game — a dead row, which is the freebie failure mode running
+  // backwards. 85 keeps it the hardest rank row (it still wants ~14 rows
+  // maxed, above 'Everything on the Rack') and keeps it winnable on the two
+  // specs that could ever reach it.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
     (g, s, c) => c.ranks >= 40),
   A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
     (g, s, c) => c.ranks >= 70),
-  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 95 ability ranks.',
-    (g, s, c) => c.ranks >= 95),
+  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 85 ability ranks.',
+    (g, s, c) => c.ranks >= 85),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',

@@ -498,38 +498,68 @@ export function runMechTest(game, hooks, opts = {}) {
     });
 
     // T6 — shield ability: rank>0 unlocks a pool that absorbs BEFORE the hull.
-    // Also the ARC law — BRAWLER's War Plating covers the front only, so it
-    // eats a frontal hit whole, ignores one from behind, and soaks just its
-    // COVERAGE SHARE (half) of directionless damage: heat, gas crush, Oort.
+    //
+    // PROBED AS A SCOUT, and this is the DESIGN LAW half of the test: the
+    // shield is SCOUT-ONLY. Phase Screen is the sole shield-channel row in the
+    // catalog — BRAWLER's front-arc War Plating is deleted and HAULER never had
+    // one — so a brawler-spec probe would be asserting against a build no run
+    // can reach. The spec is restored after; every later test wants the brawler.
+    //
+    // The second half is the ARC law, which physics.damageShip still honours
+    // even though nothing in the catalog produces a partial wedge today: a hit
+    // outside the coverage arc skips the shield entirely, and DIRECTIONLESS
+    // damage (heat, gas crush, Oort grind) is soaked only in the arc's COVERAGE
+    // SHARE. It is exercised against an EXPLICIT wedge written onto game.st,
+    // not against an ability's number, so the mechanism cannot rot unnoticed
+    // while it sits between users.
     t('shield unlocks and absorbs first', () => {
       const s = game.ship;
-      game.prog.upgrades.warPlating = 3;         // BRAWLER's shield channel
+      const wasSpec = game.prog.spec;
+      game.prog.spec = 'scout';
+      game.prog.upgrades.phaseScreen = 3;        // SCOUT's shield channel
       game.st = shipStats(game.prog);
       expect(game.st.shieldMax > 0, 'shield rank did not unlock a pool');
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      expect(game.st.shieldArc >= Math.PI, 'Phase Screen is a FULL WRAP, not a wedge');
+      const pool = game.st.shieldMax;
+      s.shield = pool; s.invuln = 0;
       let hull0 = s.hull, sh0 = s.shield;
       damageShip(game, 10, 'suite: absorb probe', s.angle);   // straight up the nose
       expect(s.hull === hull0, 'damage leaked past a full shield');
       expect(Math.abs(sh0 - s.shield - 10) < 1e-9, `shield absorbed ${sh0 - s.shield}, wanted 10`);
-      // ...from BEHIND the front arc it soaks nothing — the tail is bare
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      // ...and a full wrap has no bare bearing: the same hit from behind is
+      // soaked exactly as the frontal one was.
+      s.shield = pool; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
       damageShip(game, 10, 'suite: rear probe', s.angle + Math.PI);
+      expect(s.hull === hull0, 'a full wrap let a rear hit through to the hull');
+      expect(Math.abs(sh0 - s.shield - 10) < 1e-9, 'a full wrap soaked the wrong amount from behind');
+      // ARC MECHANISM, forced: a narrow nose wedge eats a frontal hit whole,
+      // ignores one from behind, and takes only shieldArc / PI of an all-over
+      // effect. The share is DERIVED from the wedge rather than hardcoded, so
+      // retuning the angle here can't silently invert the assertion.
+      const wedge = Math.PI * 0.35;
+      game.st.shieldArc = wedge;
+      const share = wedge / Math.PI;
+      s.shield = pool; s.invuln = 0;
+      hull0 = s.hull; sh0 = s.shield;
+      damageShip(game, 10, 'suite: wedge rear probe', s.angle + Math.PI);
       expect(s.shield === sh0, 'the front arc soaked a hit from behind');
       expect(Math.abs(hull0 - s.hull - 10) < 1e-9, 'a rear hit did not go straight to hull');
-      // ...and DIRECTIONLESS damage splits by COVERAGE SHARE (shieldArc / PI),
-      // derived rather than hardcoded: the brawler wedge is deliberately under
-      // half (see shipStats), so a literal 5 here would just re-break every
-      // time that angle is tuned.
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      s.shield = pool; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
-      const share = game.st.shieldArc / Math.PI;
       damageShip(game, 10, 'suite: directionless probe');
       expect(Math.abs(sh0 - s.shield - 10 * share) < 1e-9,
         `the wedge soaked ${sh0 - s.shield} of 10 directionless, wanted ${10 * share}`);
       expect(Math.abs(hull0 - s.hull - 10 * (1 - share)) < 1e-9, 'the rest never reached the hull');
+      // Put the brawler build back exactly as it was — including the hull/shield
+      // split, which shipStats rebuilds from the (now shieldless) spec.
+      game.prog.spec = wasSpec;
+      delete game.prog.upgrades.phaseScreen;
+      game.st = shipStats(game.prog);
+      expect(game.st.shieldMax === 0, 'BRAWLER came back carrying a shield pool');
       s.shield = game.st.shieldMax;
-      return `pool=${Math.round(game.st.shieldMax)}`;
+      s.hull = Math.min(s.hull, game.st.hullMax);
+      return `pool=${Math.round(pool)} (probed as scout; the shield is scout-only)`;
     });
 
     // T7 — window.god: the damageShip choke point ignores everything
@@ -564,14 +594,39 @@ export function runMechTest(game, hooks, opts = {}) {
         : `held at ${Math.round(hull0)}/${game.st.hullMax}`;
     });
 
-    // T9 — the shield DOES recharge after the quiet delay
+    // T9 — the shield DOES recharge after the quiet delay. Probed as a SCOUT
+    // for the same reason T6 is: the shield is scout-only now, so the suite's
+    // own brawler build has no pool for a regen tick to fill. Restored after.
+    //
+    // This one STEPS THE SIM for a second, so it strips the brawler's War Rack
+    // across the swap the same way T4 does — channels sum across specs, and a
+    // leftover orbit rank would run that second with a scout holding an open
+    // ring slot AND a loaded ram it no longer has the capacity for. T6 gets
+    // away without it because it only calls damageShip directly.
     t('shield recharges after quiet time', () => {
       const s = game.ship;
+      const wasSpec = game.prog.spec;
+      const hadRack = game.prog.upgrades.bulwarkRing || 0;
+      const hadRam = s.ram || 0;
+      delete game.prog.upgrades.bulwarkRing;
+      s.ram = 0;
+      game.prog.spec = 'scout';
+      game.prog.upgrades.phaseScreen = 3;
+      game.st = shipStats(game.prog);
+      s.hull = Math.min(s.hull, game.st.hullMax);
       s.shield = 0;
       game.lastDamage = game.time - (game.st.regenDelay + 1);
       hooks.stepSim(1);
-      expect(s.shield > 0, 'shield did not recharge after the quiet delay');
-      return `+${s.shield.toFixed(1)} in 1s`;
+      const gained = s.shield;
+      expect(gained > 0, 'shield did not recharge after the quiet delay');
+      // Put the brawler build back exactly as it was.
+      game.prog.spec = wasSpec;
+      delete game.prog.upgrades.phaseScreen;
+      if (hadRack) game.prog.upgrades.bulwarkRing = hadRack;
+      game.st = shipStats(game.prog);
+      s.ram = hadRam;
+      s.shield = 0;
+      return `+${gained.toFixed(1)} in 1s`;
     });
 
     // T10 — speed governor: an absurd velocity bleeds back toward the local
@@ -813,9 +868,11 @@ export function runMechTest(game, hooks, opts = {}) {
     t('dock: build window is unprotected, finished berth heals', () => {
       const s = game.ship;
       expect(game.dock && game.dock.t < 10, 'test needs a fresh, unfinished berth');
-      // The suite has already granted a shield by now, and damageShip spends
-      // that first — an unzeroed pool would absorb the probe and read exactly
-      // like the immunity this test is trying to prove is ABSENT.
+      // Zeroed defensively: damageShip spends the shield pool first, so any
+      // pool at all would absorb the probe and read exactly like the immunity
+      // this test is trying to prove is ABSENT. The suite's brawler build
+      // carries none now (the shield is scout-only), but the earlier probes
+      // borrow the scout's, and this must not depend on them cleaning up.
       s.shield = 0; game.godMode = false; s.invuln = 0;
       s.hull = game.st.hullMax * 0.5;
       const hurt0 = s.hull;
