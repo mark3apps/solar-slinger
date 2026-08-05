@@ -303,15 +303,21 @@ function manifold(a, b, hullA, hullB, best, ox, oy) {
     seg = [onFace(p0), onFace(p1)];
   }
 
-  // Keep only the points actually behind the reference face, and take their
-  // depth from that face rather than from the SAT axis: per-point depth is what
-  // lets the solver push a tilted slab straight instead of translating it.
+  // Keep only the points actually behind the reference face. A POINT IS A
+  // POSITION, NOT A DEPTH: the one depth in a manifold is the SAT axis's
+  // (`best.depth`, returned below), which is what physics.collideBodies reads
+  // for the push and what rockContacts sorts on. There WAS a per-point `depth`
+  // here, described as letting the solver push a tilted slab straight — nothing
+  // ever read it, and it could not have worked: the corner fallback below
+  // projects both endpoints ONTO this face with `onFace`, and `u` is
+  // perpendicular to `rn` by construction, so `p · rn === rc` exactly and every
+  // corner contact reported 0. Add it back only WITH the solver that uses it,
+  // and carry a real depth into the corner path when you do.
   const rc = ra.x * rnx + ra.y * rny;
   const pts = [];
   for (const p of seg) {
-    const d = rc - (p.x * rnx + p.y * rny);
-    if (d < 0) continue;
-    pts.push({ x: p.x + a.x, y: p.y + a.y, depth: d });
+    if (rc - (p.x * rnx + p.y * rny) < 0) continue;
+    pts.push({ x: p.x + a.x, y: p.y + a.y });
     if (pts.length === MAX_POINTS) break;
   }
   if (!pts.length) {
@@ -328,7 +334,7 @@ function manifold(a, b, hullA, hullB, best, ox, oy) {
     const d0 = rc - (p0.x * rnx + p0.y * rny), d1 = rc - (p1.x * rnx + p1.y * rny);
     const p = d0 > d1 ? p0 : p1;
     const t = Math.max(0, Math.min(tl, (p.x - ra.x) * ux + (p.y - ra.y) * uy));
-    pts.push({ x: ra.x + ux * t + a.x, y: ra.y + uy * t + a.y, depth: Math.max(0, Math.max(d0, d1)) });
+    pts.push({ x: ra.x + ux * t + a.x, y: ra.y + uy * t + a.y });
   }
   return { nx: best.nx, ny: best.ny, depth: best.depth, points: pts };
 }
