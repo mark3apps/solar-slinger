@@ -488,6 +488,14 @@ export function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
 // 2.2 -> 1.8 double the ~30-300 pebble band while the 1,000+ rock and the
 // branch ceiling (2,600, where boulders take over) stay where they were —
 // every draw still lands in the same beam classes, so TIERS is untouched.
+// KNOW WHAT RETUNING THIS COSTS: the draw COUNT is unchanged (two per rock,
+// so the append-only rng contract below holds), but mass feeds radius feeds
+// placement/packing retries, so ANY change to these numbers deals the same
+// seed a different sky downstream — every fixed-seed expectation that leans
+// on world layout re-rolls. Measured 2026-08: this exact retune left the
+// first moon bit-identical yet broke mechTest's dock staging (4 of 31) purely
+// through downstream reshuffle. Re-run the full mechTest after touching this,
+// and expect worldgen bench churn that is knock-on, not regression.
 function asteroidMass(rng) {
   if (rng() < 0.12) return 2600 + rng() * 3400;   // boulder: 2600-6000
   return 40 + Math.pow(rng(), 1.8) * 2560;
