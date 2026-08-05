@@ -3383,20 +3383,21 @@ export function shipStats(prog) {
   // rock you can stow. The FORMATION is spec DNA like the shield: HAULER's stow
   // orbits and protects; BRAWLER's is CRUSHED INTO THE RAM (frontRam).
   // THE RAM'S ROCK CLASS CLIMBS WITH WAR RACK'S OWN RANK (user design rule:
-  // "the tiers allow the max amount of debris to go up, plus larger rocks").
-  // Ranks 1-2 eat belt rock, 3-4 boulders, 5-6 small moons — always inside the
-  // beam's own one-class-below gate, so the rank ladder can promise nothing the
-  // beam tier hasn't earned. This replaced a flat boulder-class cap; the old
-  // cap's reasoning ("the prow is something you swing, not a planet garage")
-  // survives as the ladder's ceiling: small moons at rank 6 is the top, the
-  // large-moon and planet rungs stay unreachable at any rank.
+  // "the tiers allow the max amount of debris to go up, plus larger rocks") —
+  // ranks 1-2 eat belt rock, 3+ boulders — AND IT HARD-STOPS AT BOULDER CLASS
+  // (user design rule: "never moons or any large objects in the ram"). No
+  // rank and no beam tier ever opens a moon rung here: the ram is debris
+  // crushed into a wall, and a moon on the nose would be a different (and
+  // sillier) machine. The ladder still sits inside the beam's own
+  // one-class-below gate, so early tiers can promise nothing the beam
+  // hasn't earned.
   const frontRam = prog.spec === 'brawler';
   // Floored at 0, not at tier-1: a tier-0 beam still has a class to stow FROM,
   // and an orbit ability that granted nothing until the first tier-up would be
   // a dead card in two of the three starting kits.
   let orbitTier = orbitLvl > 0 ? Math.max(0, tier - 1) : -1;
   if (frontRam && orbitTier >= 0) {
-    orbitTier = Math.min(orbitTier, orbitLvl <= 2 ? 1 : orbitLvl <= 4 ? 2 : 3);
+    orbitTier = Math.min(orbitTier, orbitLvl <= 2 ? 1 : 2);
   }
   const orbitCap = orbitTier >= 0 ? Math.min(capacity * 0.55, TIERS.ceil[orbitTier]) : 0;
   const orbitLabel = orbitTier >= 0 ? TIERS.labels[orbitTier] : 'Nothing yet';
