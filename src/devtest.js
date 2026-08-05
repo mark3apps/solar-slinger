@@ -692,6 +692,20 @@ export function runMechTest(game, hooks, opts = {}) {
     // the arc. Park the cursor instead: the camera is ship-centred and the
     // world axes are the screen axes, so +x on screen is bearing 0 in world.
     const setDown = (world, upOff = 0) => {
+      // ONE PRIMING FRAME FIRST — the hull must be staged against LIVE state,
+      // not worldgen's. Straight off freshRun the ship is still the factory
+      // hull (entities.Ship radius 9) until update() snaps it to st.radius
+      // (4 at tier 0), and a railed moon's generated vx/vy are one frame
+      // stale against the rail that owns it from the first substep. Staged
+      // against either, the 0.5-unit overlap below became a ~4.5-unit GAP one
+      // frame later and the approach started AIRBORNE — the tests then passed
+      // or failed on whether local gravity happened to re-land the hull
+      // inside the assertion window, which is how a content-only world change
+      // (PR #132's asteroidMass) broke four dock tests without touching the
+      // moon, the ship or any dock code. stepSim is the suite's own
+      // deterministic primitive, so repeatability only gains: it shifts the
+      // draws columns once, it does not loosen them.
+      hooks.stepSim(1 / 60);
       const s = game.ship;
       s.x = world.x + (world.radius + s.radius - 0.5);
       s.y = world.y;
@@ -728,6 +742,10 @@ export function runMechTest(game, hooks, opts = {}) {
       setDown(w, Math.PI / 2);
       hooks.stepSim(0.4);
       expect(!game.dock, 'berthed with the nose off the arc');
+      // Contact first, gate second: if the staging itself ever comes unstuck
+      // again, fail saying THAT — "gate was ''" reads as a dock bug when the
+      // hull simply is not touching anything.
+      expect(game.dockCand === w, 'staging lost contact — the hull is not on the moon at all');
       expect(game.dockGate === 'level', `refusing gate was "${game.dockGate}", wanted "level"`);
       // Now rockets down, held past DOCK_TIME.
       setDown(w, 0);
