@@ -27,7 +27,7 @@
 // (heat/oort/gas/skim/coast seconds) are integrated here off live game state
 // rather than instrumented in physics: those flags already exist, and keeping
 // the integration here means the hot path never grew a line for us.
-import { ABILITIES, CFG } from './config.js';
+import { ABILITIES, CFG, SPECS, tierFloorFor } from './config.js';
 
 // Point bands. Deliberately lopsided: the silly ones are cheap, and the
 // insane ones are worth more than a whole category of easy ones, so a big
@@ -44,6 +44,35 @@ const PTYPE_BIT = {
 // how that row silently goes back to being winnable one world short the day a
 // tenth archetype lands. Computed once at module init — the sweep never sees it.
 export const PTYPE_COUNT = Object.keys(PTYPE_BIT).length;
+
+// THE TOP RANK RUNG IS DERIVED TOO, AND FOR THE SAME REASON — this one has
+// already cost us. 'Master of the Craft' carried a hand-written 95, fitted
+// against the BIGGEST spec pool of the day (BRAWLER, 20 rows x 6 = 120 ranks;
+// 95 was 79% of it). Nothing ever checked it against the SMALLEST: SCOUT has
+// 14 rows = 84 ranks with every one of them maxed, so the row was already
+// unearnable for a third of the game, and the pass that deleted seven catalog
+// rows then dropped HAULER to 90 and BRAWLER to 96 — a row that wanted a
+// literally perfect build or nothing. An unearnable row is as broken as a
+// freebie: both are a line in the panel that can never move.
+//
+// So the threshold is the SMALLEST pool any spec can build, times the headroom
+// fraction. A spec's pool is its own rows plus the `also` rows shared with it
+// (tierFloorFor is the one resolver — an Infinity floor means never offered),
+// every row climbs to `max`, and picks keep coming at the top tier until the
+// pool is exhausted, so that sum is genuinely reachable rather than notional.
+// The headroom leaves the tightest spec ~1.3 abilities of slack instead of
+// demanding a flawless build, and on the widest pool it lands at 79% of the
+// ceiling — exactly what the old 95 asked of BRAWLER. Measured in XP (the
+// thing a player actually spends) the rung costs ~1.1x the full tier-0..5
+// climb on SCOUT and ~1.35x on BRAWLER/HAULER, against ~1.15x for `ranks70`:
+// still the hardest rank row in the game, still well past the end of the
+// climb, no longer impossible. Add or delete a catalog row and it moves.
+// (If a spec's pool ever shrinks far enough for this to land near ranks70's
+// 70, the whole rank ladder wants re-fitting — not just this rung.)
+const RANK_GOAL_FRAC = 0.9;
+const specRankCeil = (sp) =>
+  ABILITIES.reduce((n, a) => n + (tierFloorFor(a, sp.id) < Infinity ? a.max : 0), 0);
+export const RANK_GOAL = Math.round(RANK_GOAL_FRAC * Math.min(...SPECS.map(specRankCeil)));
 
 export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 200 };
 
@@ -668,23 +697,33 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 10),
   A('abil12', 'build', PTS.hard, 'Overqualified', 'Own twelve abilities at once.',
     (g, s, c) => c.owned >= 12),
+  // FOURTEEN IS THE SMALLEST SPEC POOL (SCOUT's 14 rows), which is what
+  // "everything on the rack" means here — for SCOUT this row is the whole pool
+  // and lands as the last pick exhausts it, for BRAWLER/HAULER it's 14 of
+  // 16/15 and takes a pick past the top tier. It is the CEILING for one spec,
+  // so it has no slack: shrink any spec's pool below fourteen rows and this
+  // becomes unearnable. Derive it (see RANK_GOAL) rather than re-typing a
+  // literal if that day comes.
   A('abil14', 'build', PTS.brutal, 'Everything on the Rack', 'Own fourteen abilities at once.',
     (g, s, c) => c.owned >= 14),
-  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95).
+  // THE FIRST THREE MOVED WITH THE SIX-RANK PASS (10/25/45 -> 15/40/70).
   // Every ability is six ranks now, so the same run banks ~1.6x the ranks it
   // used to (measured over the full climb: ~44 before, ~69 after) — at the old
-  // thresholds 'Master of the Craft' went from the hardest rank row in the game
-  // to something every spec passes without trying, which is the freebie failure
-  // mode wearing a different hat. Scaled by the measured ratio, so each row
-  // still asks for what it used to ask for.
+  // thresholds these went from a ladder to something every spec passes without
+  // trying, which is the freebie failure mode wearing a different hat. Scaled
+  // by the measured ratio, so each row still asks for what it used to ask for.
+  // The top rung took the same rescale (65 -> 95) and that is exactly where it
+  // broke: a flat number fitted against one spec's pool went unearnable for the
+  // other two the moment the catalog shrank. It is DERIVED now — RANK_GOAL, off
+  // the smallest pool in the game; read that note before touching this ladder.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
     (g, s, c) => c.ranks >= 40),
   A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
     (g, s, c) => c.ranks >= 70),
-  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 95 ability ranks.',
-    (g, s, c) => c.ranks >= 95),
+  A('ranksMaster', 'build', PTS.hard, 'Master of the Craft', `Earn ${RANK_GOAL} ability ranks.`,
+    (g, s, c) => c.ranks >= RANK_GOAL),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',
