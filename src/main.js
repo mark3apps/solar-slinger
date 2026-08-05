@@ -23,7 +23,7 @@ import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import * as zone from './zone.js';
-import { lerp, shellModal, seedFrom } from './util.js';
+import { lerp, shellModal, seedFrom, placeName } from './util.js';
 
 // A run's progression record. config.newProgress builds the roguelite half;
 // the achievement ledger is bolted on HERE rather than inside it because
@@ -570,7 +570,7 @@ initInput(canvas, {
     // fork the build clock and leave the home port frozen at whatever progress
     // it happened to be at.
     game.home = d;
-    game.homeSetName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+    game.homeSetName = placeName(d.b);
     game.dockFlashT = 0.9;
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to

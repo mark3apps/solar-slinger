@@ -24,6 +24,20 @@ export const shellModal = (g) =>
 // whether the ship is visible, and render must not import ai.
 export const senseBlind = (g) => !!(g.dustCloak || g.stormBlind);
 
+// WHAT A HUD MESSAGE IS ALLOWED TO CALL A PLACE. `b.hidden` is absolute — the
+// chart shows nothing for it (starmap.js's sensor-null rung), the dial shows
+// nothing, world.js's survey skips it however close you get, and the powered
+// relay stays the ONLY way to learn the Wanderer's Star exists. But the
+// Wanderer IS landable on purpose, and every dock event prints the place's
+// name across the screen (main.js EVENT_MSGS), so the one instrument nobody
+// guarded would have spent the relay questline's payoff the moment you set
+// down. Kept here, a leaf, for the same reason as senseBlind: physics.js's
+// five flags and main.js's sixth must not each carry their own copy of the
+// rule. Matches render.js's dwarf-star readout wording.
+export const placeName = (b) =>
+  (b.hidden ? 'an unresolved mass' : b.name) ||
+  (b.type === 'moon' ? 'this moon' : 'this world');
+
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
 
