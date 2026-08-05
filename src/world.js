@@ -1532,6 +1532,18 @@ function findLanes(f, rng, slots) {
   for (let i = 0; i + 2 < nodes.length; i += 2) pairs.push([nodes[i], nodes[i + 2]]);
   // Each edge takes the quietest of a few bows, so an individual road still
   // picks its way through what is actually there.
+  //
+  // NO SEPARATION TERM, ON PURPOSE. Cost is rock displacement alone: nothing
+  // here pushes two roads apart. There used to be a documented/tuned constant
+  // for this (config's FIELD_LANE_APART, now deleted), but `findLanes` never
+  // actually read it. The network form makes it the wrong idea rather than an
+  // unfinished one. Measured over 3 seeds x 4 pockets, of the pairs
+  // running closest together essentially all are indices >= 8 — the junction
+  // CHAIN and the CHORDS — while the 8 rim edges stay well clear of each
+  // other. That is the topology, not a defect: a chord from node i to i+2
+  // exists to shortcut the chain through i+1, so it is DEFINED as running
+  // alongside it. A separation cost would push chords off the chains they are
+  // built to close, and buy nothing on the rim edges, which never needed it.
   const lanes = [];
   for (const [a, b] of pairs) {
     const span = Math.hypot(b.tan - a.tan, b.rad - a.rad);
