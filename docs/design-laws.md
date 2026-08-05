@@ -389,8 +389,13 @@ code "works."
       DRAMA that scales, not the rule.
     - **The honest limit of the representation**: a rock may be notched, waisted, hollowed or cut
       most of the way through, but never HOOKED. An overhang would put two surfaces on one bearing,
-      and the collider's whole narrow phase is a single radial query. `OUTLINE_FLOOR` is how close to
-      the middle a surface may come (0.19 of the mean radius).
+      and `rockOutline` is a radial function about one origin by construction. `OUTLINE_FLOOR` is how
+      close to the middle a surface may come (0.19 of the mean radius).
+      **This is a rule on the GENERATOR, and it is not inherited by the bake** — `tools/bake-rocks.mjs`
+      CUTS children out of parents, and a child landing with its own centroid can put a bite between
+      that centroid and its far wall. 17 of the 68 baked shapes are not radial functions as a result,
+      which is why a landmark's collider is a polygon query and not a bearing one (issue #102 —
+      [physics-invariants.md](physics-invariants.md), [rock-fracture.md](rock-fracture.md)).
   - **Gravel is drawn SQUATTER than a landmark of the same kind** (`GRAVEL_SQUAT`/`GRAVEL_OFF`), and
     that is a memory bill, not a fudge: the sprite cell must span the ring's longest axis, so the
     atlas pays for the peak-to-mean ratio in BOTH memory and fill: `SPRITE_EXT` is sized from

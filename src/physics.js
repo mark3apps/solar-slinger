@@ -10,7 +10,7 @@ import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
   surfaceVel, padPos,
 } from './util.js';
-import { rockContacts, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
+import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
@@ -1799,6 +1799,19 @@ function surfRadius(body, ang) {
   // This is a deliberate narrowing of the CRUMBLE law, not a lapse from it —
   // worlds keep "the crater you see is the crater you can fly into", and a
   // fracture is a more legible answer for rock than gradual erosion was.
+  //
+  // THIS BRANCH IS NO LONGER THE COLLIDER FOR A ROUND PARTY, and that matters:
+  // `rockSurfAt` reduces the outline to one radius per bearing, and 17 of the
+  // 68 baked shapes are not radial functions (a cut child can put a concave
+  // bite between its centroid and its far wall — see rockshape.rockCircleQuery
+  // for the measurement). On those bearings this returned the FAR wall, up to
+  // 1.40 body radii outside the rock the player can see, so the ship stopped
+  // and bounced in open space. Ship / alien / pebble contact now runs
+  // rockshape.rockCircleQuery, which is exact against the drawn outline.
+  // What still arrives here is the case with no circle on either side — a
+  // landmark against a crystal world's shard polygon or a cratered limb —
+  // where both parties are non-circular and the radial sum is the shared
+  // approximation the crystal and scar colliders were always written as.
   if (body.bigShape) return rockSurfAt(body, ang);
   // CRATERED WORLDS collide as the shape they are DRAWN as, for exactly the
   // reason crystal worlds do. Once impacts started cutting real notches out of
@@ -1832,6 +1845,19 @@ function surfRadius(body, ang) {
 function shaped(body) {
   return body.ptype === 'crystal' || body.bigShape === true
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
+}
+// A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
+// gates a cratered world on `nearShip` — an off-view wound is not worth a
+// narrow phase to the body it gates — but `surfRadius` honours scars whether
+// the ship is watching or not. So a landmark meeting an off-view cratered world
+// through `!shaped` would be handed `other.radius`, the nominal disc, and
+// contact would register early on a wound the old radial path did honour. That
+// is the crumble law narrowing in the one case nobody is looking at, which is
+// exactly where a regression survives. The circle-vs-outline query is only
+// valid when the other party really has no profile of its own.
+function roundParty(body) {
+  return body.ptype !== 'crystal' && body.bigShape !== true
+    && !(body.scars && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
 // must clear the TALLEST feature, not the mean disc — a chunk born inside a
@@ -1920,6 +1946,14 @@ function applyBigFriction(a, b, j, nx, ny, cx, cy, invA, invB) {
 // The manifold list rockContacts fills for the big-pair branch below. One
 // array, reused — see the note at the call site.
 const _satScratch = [];
+// ...and the same trick for the circle-vs-landmark branch: one manifold-shaped
+// record, reused, so an exact contact costs no allocation either. Shaped to
+// match what rockContacts hands back ({nx, ny, points[]}), because everything
+// downstream of the narrow phase reads the two the same way.
+// UNLIKE _satScratch this record itself is reused, not just its array — safe
+// only because it is filled and fully read inside ONE collideBodies call and
+// nothing here re-enters. Don't hand it to anything that outlives the call.
+const _circ = { nx: 0, ny: 0, points: [{ x: 0, y: 0 }] };
 
 function collideBodies(game, a, b) {
   let stuckPair = false;   // two railed rocks of one pocket, possibly interpenetrating
@@ -1999,6 +2033,12 @@ function collideBodies(game, a, b) {
   // rr along the actual bearing. Spikes reach OUTSIDE the radius, so crystal
   // has to bound on surfReach; craters only cut inward, so the plain sum is
   // already a valid outer bound and the early-out below does the rejecting.
+  // `bigProbe` means "the overlap below is a true DEPTH along its own normal",
+  // not a radial sum — set by both exact narrow phases (the landmark pair's SAT
+  // manifold and the circle-vs-outline query), and read by the separation to
+  // skip the centre-line projection. `sat` carries whichever of the two
+  // produced it: they share the shape {nx, ny, points[]}, which is all anything
+  // downstream reads.
   let bigProbe = false, probedPen = 0, raSurf = a.radius;
   let sat = null;
   if (shaped(a) || shaped(b)) {
@@ -2034,7 +2074,49 @@ function collideBodies(game, a, b) {
       sat = cs[0];
       probedPen = sat.depth;
       bigProbe = true;
+    } else if ((a.bigShape && roundParty(b)) || (b.bigShape && roundParty(a))) {
+      // A LANDMARK AGAINST A ROUND BODY IS EXACT TOO — circle versus the drawn
+      // outline (rockshape.rockCircleQuery), not a radius per bearing.
+      //
+      // The bearing query it replaces (physics.surfRadius -> rockshape.march)
+      // takes the OUTERMOST ray/outline crossing, which is the surface only
+      // while the outline is a radial function. 17 of the 68 baked shapes are
+      // not — a piece CUT from its parent lands with its own centroid and a
+      // concave bite can sit between that centroid and the far wall — so on
+      // those bearings the collider sat up to 1.40 body radii outside the rock
+      // render draws, and a pebble stopped dead in a visible notch. Same defect,
+      // same fix as the landmark pair above: depth, direction and contact point
+      // all come out of one measurement.
+      const rock = a.bigShape ? a : b, other = rock === a ? b : a;
+      const q = rockCircleQuery(rock, other.x, other.y);
+      const pen = other.radius - q.d;
+      if (pen <= 0) return;
+      // Oriented "from a toward b", which is the sense the impulse and the
+      // separation below are both written in.
+      const sgn = rock === a ? 1 : -1;
+      _circ.nx = q.nx * sgn; _circ.ny = q.ny * sgn;
+      _circ.points[0].x = q.x; _circ.points[0].y = q.y;
+      sat = _circ;
+      probedPen = pen;
+      bigProbe = true;
     } else {
+      // NO CIRCLE ON EITHER SIDE (a crystal world's shard polygon, a cratered
+      // limb, or a landmark against one of those). Both sides are sampled by
+      // BEARING and summed, which is an approximation, not a guarantee — and
+      // how good it is depends on which pair got here:
+      //   - crystal vs scar, and either against the other, is EXACT enough by
+      //     construction: crystalRadiusAt and scarSurfaceAt are true radial
+      //     functions, so a bearing IS their surface.
+      //   - a LANDMARK reaching this branch is not. Its baked outline is the
+      //     very thing this diff is about: 17 of 68 shapes are multi-crossing,
+      //     so surfRadius keeps its reduction and its known error here, up to
+      //     1.40 body radii on an offending bearing.
+      // The landmark case is left approximate ON PURPOSE. Making it exact needs
+      // polygon-versus-polygon, which rockContacts already is for the pair that
+      // earns it (two landmarks), and neither party here is a circle, so the
+      // closest-point query above does not apply either. What lands here is a
+      // landmark grinding a crystal world or a cratered limb — rare, and never
+      // the ship, which is the surface the player actually feels.
       const ang = Math.atan2(dy, dx);
       raSurf = surfRadius(a, ang);
       rr = raSurf + surfRadius(b, ang + Math.PI);
@@ -2107,14 +2189,17 @@ function collideBodies(game, a, b) {
   // the heavier one owns the normal: it is the wall, the other is what hit it.
   let nx = dx / d, ny = dy / d;
   if (sat) {
-    // STRAIGHT FROM THE SEPARATING AXIS, and deliberately not re-derived from
-    // the centre line or from a face lookup. rockContacts already orients it
-    // from a toward b, and it is NOT guaranteed to point along centre-to-centre:
-    // two gnarled rocks catching on a corner legitimately produce a normal
-    // pointing back across that line. Re-deriving it is exactly the mistake that
-    // made contacts read as skating sideways down a slab.
+    // STRAIGHT FROM THE SEPARATING AXIS (or, for a circle, from the closest
+    // point on the outline), and deliberately not re-derived from the centre
+    // line or from a face lookup. Both narrow phases already orient it from a
+    // toward b, and it is NOT guaranteed to point along centre-to-centre: two
+    // gnarled rocks catching on a corner legitimately produce a normal pointing
+    // back across that line. Re-deriving it is exactly the mistake that made
+    // contacts read as skating sideways down a slab.
     nx = sat.nx; ny = sat.ny;
   } else if (a.bigShape || b.bigShape) {
+    // Only the no-circle mix reaches here now (see the narrow phase above) —
+    // a landmark against a crystal world or a cratered limb.
     const wall = (a.bigShape && (!b.bigShape || a.mass >= b.mass)) ? a : b;
     // The bearing of the CONTACT from the wall's centre, not of the other
     // body's centre. For a pebble on a slab those agree to within a degree; for
@@ -2363,9 +2448,10 @@ function collideBodies(game, a, b) {
   // it back onto the normal first — otherwise the fix for the slide trades it
   // for a pop off flat faces.
   //
-  // THE SAT CASE IS ALREADY A DEPTH, not a radial sum, so it takes no such
+  // THE EXACT CASES ARE ALREADY A DEPTH, not a radial sum, so they take no such
   // projection: rockshape.rockContacts returns a true minimum-translation
-  // vector, and its depth IS the distance that has to come out along its own
+  // vector and rockCircleQuery a true closest-point distance, and either depth
+  // IS the distance that has to come out along its own
   // normal. Discounting it by the centre-line cosine as well would
   // under-separate exactly the off-axis contacts SAT exists to resolve, and two
   // landmarks would settle interpenetrated and jitter there. Bounded per substep so a pair that starts
@@ -2657,10 +2743,35 @@ function collideShipBody(game, s, b, dt) {
   // shard polygon, a cratered world's notched limb — not the mean disc. Same
   // radial narrow phase as collideBodies; you can fly down into a crater you
   // punched, which is the whole point of cutting it out of the silhouette.
+  //
+  // ...and against a LANDMARK it is the exact one. The ship is a circle, the
+  // rock is a baked polygon, so rockshape.rockCircleQuery answers outright:
+  // depth, normal and contact point off the same closest-point measurement,
+  // against the outline render actually draws. THIS IS THE PATH THE PLAYER
+  // FEELS. The bearing query it replaces reduced the outline to one radius per
+  // bearing and took the OUTERMOST crossing, which is the surface only for a
+  // radial function — 17 of the 68 baked shapes are not (see
+  // rockshape.rockCircleQuery), so flying at a visible concave bite on one of
+  // them stopped the hull and bounced it in open space, up to 1.40 body radii
+  // clear of the rock. That is the crumble law's "the crater you SEE is the
+  // crater you can fly into" failing on rock, and it is why this is exact
+  // rather than merely bounded.
+  let exOn = false, exNx = 0, exNy = 0;
   if (shaped(b)) {
     const bound = s.radius + surfReach(b);
     if (d2 > bound * bound) return;
-    rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    if (b.bigShape) {
+      const q = rockCircleQuery(b, s.x, s.y);
+      const pen = s.radius - q.d;
+      if (pen <= 0) return;
+      // Expressed as an `rr` so every reader below — the separation, the skim,
+      // the bounce — keeps working in the one currency this function has always
+      // used, with `rr - d` now an EXACT depth instead of a radial difference.
+      rr = Math.sqrt(d2) + pen;
+      exOn = true; exNx = q.nx; exNy = q.ny;   // outward from the rock
+    } else {
+      rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    }
   }
   if (d2 > rr * rr) return;
   shipContacts.n++;
@@ -2727,10 +2838,13 @@ function collideShipBody(game, s, b, dt) {
 
   let nx = dx / d, ny = dy / d;
   // Same face-normal fix as collideBodies — this is the path the player
-  // actually feels, and the one the slide was reported against.
-  if (b.bigShape) {
-    const n = surfNormal(b, Math.atan2(-dy, -dx));
-    nx = -n.x; ny = -n.y;   // rewritten as "from ship toward body"
+  // actually feels, and the one the slide was reported against. It comes from
+  // the closest-point query above rather than a second ray march, so the depth
+  // and the direction can no longer disagree about which face is being hit, and
+  // a hull resting on a CORNER gets the corner's normal instead of one of the
+  // two faces meeting at it.
+  if (exOn) {
+    nx = -exNx; ny = -exNy;   // rewritten as "from ship toward body"
   }
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
   const closing = -(rvx * nx + rvy * ny);
@@ -2746,8 +2860,13 @@ function collideShipBody(game, s, b, dt) {
   // a teleport to a border that is not where the surface is. (The same bug sat
   // in the crystal path from the day shard colliders landed: the ship was
   // ejected to the mean disc rather than to the facet it actually touched.)
-  // Projected onto the contact normal — see the note in collideBodies.
-  const overlap = (rr - d) * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
+  // Projected onto the contact normal — see the note in collideBodies. The
+  // EXACT case takes no projection, for the same reason the SAT case doesn't:
+  // `rr - d` is already the distance that has to come out along this very
+  // normal, and discounting it by the centre-line cosine as well would leave
+  // the hull settled inside the face it is resting on.
+  const overlap = exOn ? (rr - d)
+    : (rr - d) * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
   s.x -= nx * overlap; s.y -= ny * overlap;
 
   // SURFACE SKIMMING: sliding along a surface in contact grinds the hull.
@@ -3455,7 +3574,22 @@ function collideAlienBody(game, al, b, dt) {
   if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
-    rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    if (b.bigShape) {
+      // An alien is a circle and a landmark is a baked polygon, so this is the
+      // exact query, exactly as for the ship — the bearing reduction it
+      // replaces reported the FAR wall on the 17 shapes that are not radial
+      // functions (see rockshape.rockCircleQuery), which parked an alien
+      // bouncing off nothing in a visible notch. Only the DEPTH is taken from
+      // it: the separation and bounce below stay on the centre-line normal
+      // aliens have always used, deliberately — the face normal is scoped to
+      // the ship and to landmark pairs, where the contact geometry is what the
+      // player is reading.
+      const pen = al.radius - rockCircleQuery(b, al.x, al.y).d;
+      if (pen <= 0) return;
+      rr = Math.sqrt(d2) + pen;   // so `rr - d` below is that exact depth
+    } else {
+      rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    }
   }
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
