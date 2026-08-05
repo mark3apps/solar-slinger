@@ -59,6 +59,21 @@ import { input } from './input.js';
 // ordinary full-screen play window, so the suite exercises what people fly.
 const VIEW_PIN = { vw: 1920, vh: 1080 };
 
+// THE SPEAKERS ARE NOT PART OF ANY ASSERTION, so they may not be able to fail
+// the suite. setSfxVolume reaches sfxBus.gain.setTargetAtTime, which throws
+// InvalidStateError on a closed AudioContext — and there may be no audio graph
+// at all, since one is only built on a user gesture. Two distinct failures come
+// off that, both real:
+//   - at SETUP a throw aborts the whole run, so a headless or gesture-less
+//     session simply cannot run mechTest;
+//   - in the TEARDOWN it is worse. The restore sits in the middle of the
+//     finally, so a throw there skips every restore BELOW it — godMode,
+//     started, the cursor and the held keys — which is precisely the leak the
+//     teardown exists to prevent, reintroduced through the teardown itself.
+// Swallowed on purpose: muting is a courtesy to whoever is listening, and a
+// courtesy must not be load-bearing.
+const hushAudio = (v) => { try { setSfxVolume(v); } catch { /* no audio graph — carry on */ } };
+
 // Assertion helper: numbers land in the detail string so a failure is
 // diagnosable straight from the report, without re-running.
 let draws = 0;   // RNG draws taken so far this run (see the note above)
@@ -133,12 +148,12 @@ export function runMechTest(game, hooks, opts = {}) {
   // ---- determinism + quiet: seeded RNG swap, sound off, picks auto-resolved
   // CAPTURE EVERYTHING FIRST, MUTATE NOTHING UNTIL INSIDE THE TRY. Every
   // restore below lives in the finally, so any mutation made BEFORE `try` is
-  // unprotected: setSfxVolume in particular calls sfxBus.gain.setTargetAtTime,
-  // which throws InvalidStateError on a closed AudioContext — and a throw there
-  // used to leave Math.random permanently stubbed and the view permanently
-  // pinned, i.e. exactly the leak this teardown exists to prevent, reached
-  // through the teardown's own setup. T23's comment states the convention; this
-  // block now follows it.
+  // unprotected: the audio mute was the one that actually bit — a throw there
+  // left Math.random permanently stubbed and the view permanently pinned, i.e.
+  // exactly the leak this teardown exists to prevent, reached through the
+  // teardown's own setup. That call is belt-and-braces now (hushAudio swallows
+  // it), but the ORDERING is the rule and it holds for every mutation added
+  // here later, guarded or not. T23's comment states the same convention.
   const realRandom = Math.random;
   const rng = mulberry32(seed ^ 0x5f3759df);
   const wasAuto = game.autoUpgrade;
@@ -189,8 +204,8 @@ export function runMechTest(game, hooks, opts = {}) {
     input.mouseY = VIEW_PIN.vh / 2;
     // Mute the SFX bus for the scripted burst (there are no audio toggles any
     // more — the volume slider IS the control; game.sfxVol still holds the
-    // user's level to restore).
-    setSfxVolume(0);
+    // user's level to restore). Via hushAudio — see its note.
+    hushAudio(0);
     game.collisionLog = [];
     game.deathLog = [];
     game.nanEvents = 0;
@@ -1231,7 +1246,7 @@ export function runMechTest(game, hooks, opts = {}) {
     game.viewPin = wasViewPin;
     game.autoUpgrade = wasAuto;
     game.paused = wasPaused;
-    setSfxVolume(game.sfxVol);
+    hushAudio(game.sfxVol);
     // RESTORE, never force — see the capture note above.
     game.godMode = wasGod;
     game.started = wasStarted;
