@@ -78,9 +78,16 @@ const planets = gen.filter((b) => b.type === 'planet' && b.parent === star)
   .map((p) => ({ p, lane: laneOf(p) }))
   .sort((a, b) => a.lane - b.lane || (a.p.name < b.p.name ? -1 : 1));
 
-let minSurfaceGap = Infinity, minSurfacePair = null;
+// CO-ORBITAL PAIRS share one lane by design (2026-08 seeded-layout pass):
+// same radius means the same rail |w| and the sky turns one way, so their
+// angular separation is FIXED and they can never conjunct — a surface-gap
+// reading between them would be a large negative number describing a
+// collision that cannot happen. They are skipped from the gap scan and
+// counted instead, so a layout change that mints more (or loses) them shows.
+let minSurfaceGap = Infinity, minSurfacePair = null, coOrbitalPairs = 0;
 for (let i = 0; i < planets.length - 1; i++) {
   const a = planets[i], b = planets[i + 1];
+  if (b.lane - a.lane < 1) { coOrbitalPairs++; continue; }
   const gap = (b.lane - a.lane) - a.p.radius - b.p.radius;
   if (gap < minSurfaceGap) { minSurfaceGap = gap; minSurfacePair = `${a.p.name}->${b.p.name}`; }
 }
@@ -103,6 +110,7 @@ for (const m of moons) {
 let overlappingPairs = 0, worstOverlap = 0;
 const reach = (p) => Math.max(p.radius, ...moons.filter((m) => m.parent === p).map((m) => apo(m) + m.radius), 0);
 for (let i = 0; i < planets.length - 1; i++) {
+  if (planets[i + 1].lane - planets[i].lane < 1) continue;   // co-orbital: fixed separation, never conjuncts
   const need = reach(planets[i].p) + reach(planets[i + 1].p);
   const gap = planets[i + 1].lane - planets[i].lane;
   if (need > gap) { overlappingPairs++; worstOverlap = Math.max(worstOverlap, Math.round(need - gap)); }
@@ -158,7 +166,8 @@ return {
             nonField: gen.filter((b) => !b.fieldRock).length },
   byType,
   byPtype,
-  planetLanes: { count: planets.length, minSurfaceGap: Math.round(minSurfaceGap), at: minSurfacePair },
+  planetLanes: { count: planets.length, minSurfaceGap: Math.round(minSurfaceGap), at: minSurfacePair,
+                 coOrbitalPairs },
   moonSystems: { count: moons.length, minPeriClearance: Math.round(minPeriClear), at: minPeriMoon,
                  overlappingNeighbourPairs: overlappingPairs, worstOverlap },
   fields,

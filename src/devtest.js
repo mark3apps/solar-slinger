@@ -1,6 +1,6 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
-  stormStrength, stormSpent, shelterR } from './config.js';
+  stormStrength, stormSpent, shelterR, SHIP_RADIUS } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip, parryLive } from './physics.js';
@@ -805,7 +805,7 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(game.dock, `no berth after ${CFG.DOCK_TIME + 0.6}s of all three gates`);
       expect(game.dock.b === w, 'berthed to the wrong body');
       expect(game.docks.length === 1, `docks=${game.docks.length}, wanted 1`);
-      return `gate refused as "level", then latched to ${w.name || 'a moon'} in <=${CFG.DOCK_TIME + 0.6}s`;
+      return `gate refused as "level", then latched to ${w.name || 'a moon'}`;
     });
 
     // T16 — the build window gives NOTHING, and the finished station gives
@@ -1020,12 +1020,19 @@ export function runMechTest(game, hooks, opts = {}) {
         `${unexpected.length}/${moons.length} moons besides the shepherd are under `
         + `STORM_SHADOW_MIN_R ${CFG.STORM_SHADOW_MIN_R} and cast no lee `
         + `(radii ${unexpected.map((b) => b.radius.toFixed(1)).join(', ')})`);
-      // The flat pad is what makes a small moon's lee a pocket, not a razor edge.
+      // The flat pad is what makes a small moon's lee a pocket, not a razor
+      // edge — and the pad is measured in SHIP-widths (a TITAN must fit in the
+      // slot the radius multiple alone would not leave), so the assertion is
+      // lee minus moon against the biggest hull, NOT a multiple of the moon's
+      // own radius. The old `> 2x radius` form was that multiple, calibrated
+      // when the smallest moon was ~25 units; the 2026-08 moon growth made it
+      // fail on moons whose lee is proportionally MORE generous than ever.
       const small = moons.filter((b) => !b.shepherd)
         .reduce((a, b) => (b.radius < a.radius ? b : a));
-      expect(shelterR(small) > small.radius * 2,
-        `a small moon's lee (${shelterR(small).toFixed(1)}) is barely wider than the moon `
-        + `(${small.radius.toFixed(1)}) — the flat pad is missing`);
+      expect(shelterR(small) - small.radius > SHIP_RADIUS[5],
+        `a small moon's lee (${shelterR(small).toFixed(1)}) leaves only `
+        + `${(shelterR(small) - small.radius).toFixed(1)} over the moon (${small.radius.toFixed(1)}) `
+        + `— a TITAN (${SHIP_RADIUS[5]}) does not fit; the flat pad is missing`);
       return `${moons.length - dark.length}/${moons.length} moons shelter `
         + `(${dark.length} shepherd exempt); smallest r=${small.radius.toFixed(1)}, lee=${shelterR(small).toFixed(1)}`;
     });

@@ -75,7 +75,7 @@ Skills wrap the recurring procedures; subagents audit a diff against the rules i
 
 | Skill | For |
 |---|---|
-| `balance-test` | long-horizon sky stability — `window.soak` against the 17-planet/59-moon baseline |
+| `balance-test` | long-horizon sky stability — `window.soak` against the run's own start-of-soak census (17 planets; moons vary per seed, ~70-80) |
 | `mechanics-test` | fast "did I break the game loop?" — the fixed-seed `window.mechTest` suite |
 | `playtest` | **the default way to drive the game** — Browser pane: park the ship, force the event, screenshot it |
 | `run-solar-slinger` | clean-machine setup + scripted/unattended runs (Electron driver, nothing visible) |
@@ -181,10 +181,16 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
   optional `snd`: `sfxAlarm` = the ship is in danger NOW, `sfxWarnLow` = hostile contact / bad news,
   `sfxChime` = discovery / opportunity, `sfxLife` = triumph. Keep new events on that grammar.
 - **Determinism:** world *generation* uses a seeded `mulberry32`, but the seed is **random per run**
-  — pin one with `?seed=` for a repeatable world. The 15-planet/58-moon `layout` table in world.js
-  is FIXED, so the seed varies placement, masses and features, never the structural counts: the
-  balance baseline holds on any seed. (It censuses as **17 planets / 59 moons** — the layout's 15
-  plus the crystal binary's companion and The Wanderer's Star, and the ring shepherd moonlet.) Runtime spawns/spall/AI intentionally use `Math.random`.
+  — pin one with `?seed=` for a repeatable world. The layout itself is **SEEDED PER RUN** now
+  (world.js `buildLayout`): which archetype sits at which lane, per-world size/mass jitter, moon
+  counts (base ×1–1.5), names (a seeded shuffle) and an optional co-orbital pairing of the two
+  outer-band worlds all come off the world rng. The planet COUNT stays the template's 15 (17 in
+  census, with the binary companion and the Wanderer's Star) — variety comes from arrangement,
+  never population — while the MOON census varies (~70–80), so soaks/benches judge against the
+  run's own start-of-run counts. The GUARDRAILS are structural (see buildLayout's header): all nine
+  ptypes always ship, exactly three gas giants, every landmark/quest role rides a content tag, the
+  fort always takes the desert world, lava stays innermost, and the terran station stays the first
+  station (the relay). Runtime spawns/spall/AI intentionally use `Math.random`.
   Procedural sprite geometry is seeded off `b.id` and cached — and **`b.id` restarts with the
   world** (`entities.resetBodyIds`, called from `generateWorld`), because `rockshape.rockShapeOf`
   picks the baked silhouette off it: a session-monotonic counter built the same layout wearing
@@ -482,7 +488,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 
 | Hook | Use |
 |---|---|
-| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "17/17", moons: "59/59", deaths, impacts, nanEvents, …}`. |
+| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "N/N", moons: "N/N", deaths, impacts, nanEvents, …}` — the denominators are the run's own start-of-soak census (the layout is seeded per run). |
 | `window.mechTest()` | Fixed-seed scripted mechanics suite, ~4s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |

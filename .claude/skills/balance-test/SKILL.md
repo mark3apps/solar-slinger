@@ -81,8 +81,9 @@ All four moving together = a real regression.
   ~64% of the runtime** in pure LOD classification + dormant rail advance. They are gravity-free in
   both directions and can never touch a planet, so they cannot affect the sky verdict.
 - **Equivalence proved, seed 20260721, 300 sim-seconds:** stripped 4,390ms vs intact 12,322ms (2.8x),
-  and every verdict field identical — planets 17 / 0 off-rail, moons 59/59, `nonAsteroidDeaths` {},
-  `firstWorldLossAt` null. Re-run that A/B if you ever doubt the strip.
+  and every verdict field identical — planets 17 / 0 off-rail, moons 59/59 (that era's census; the
+  argument is count-independent), `nonAsteroidDeaths` {}, `firstWorldLossAt` null. Re-run that A/B
+  if you ever doubt the strip.
 - **Parallelism is near-linear** (each process is single-threaded): 4 concurrent seeds cost 18.9s
   versus ~11s for one alone.
 - **Never use `window.speed(20)` to hurry a soak.** That is the live rAF path — it renders every frame
@@ -98,8 +99,10 @@ Still correct, and the right choice when you want to *watch* what a soak found. 
 window.soak(600, { idle: true });   // 10 idle sim-minutes
 ```
 
-Returns `{ simSeconds, wallMs, planets: "17/17", moons: "59/59", ship, lives, tier, deaths: [...],
-impacts, nanEvents }`. `idle: true` removes the ship first (no life spent). Note its `moons` figure is
+Returns `{ simSeconds, wallMs, planets: "N/N", moons: "N/N", ship, lives, tier, deaths: [...],
+impacts, nanEvents }` — the denominators are the run's own start-of-soak census: planets hold at
+17 on every seed, moons vary (~70–80) since the seeded-layout pass. `idle: true` removes the ship
+first (no life spent). Note its `moons` figure is
 a live census, and its `deaths` are formatted strings — see the caveats below. Chunk long runs
 (`2 x 300s`) to stay inside the pane's ~30s console eval budget.
 
@@ -114,22 +117,23 @@ a live census, and its `deaths` are formatted strings — see the caveats below.
    normal play. Opening the page with `?dev=1` adds hotkeys: `-` halve, `=` double, `0` reset. Note picks
    still freeze the sim at speed — `game.autoUpgrade = true` if that stalls a long watch.
 
-## Pass criteria (baseline re-measured 2026-08 after the rarer/wider planet-system
-## pass, on the one-sun world: 17 planets, 59 moons — the 17 is the layout's 15
-## worlds plus the crystal binary's companion and The Wanderer's Star (the
-## expedition layer's dark dwarf, which counts as a planet in the census and must
-## survive like one); the 59 is the layout's 58 plus the ring shepherd moonlet)
+## Pass criteria (re-based 2026-08 after the SEEDED-LAYOUT pass: planets hold
+## at 17 — the layout's fixed 15 anchors plus the crystal binary's companion
+## and The Wanderer's Star; a co-orbital pairing rearranges the outer band,
+## never adds — while the MOON census varies per seed (~70–80: counts draw
+## ×1–1.5 per world, plus the ring shepherd moonlet). The bar is therefore
+## RATIO-shaped: alive must equal the run's own start-of-run count.
 
-**Measured baseline — 4 seeds x `suites/stability.js {seconds:600, strip:true}`, idle, all four identical
-except where noted.** Every field below held on 20260721 / 3827467762 / 111222333 / 987654321:
+**Measured baseline — 4 seeds x `suites/stability.js {seconds:600, strip:true}`, idle — every seed
+held its full census through the soak.** Fields:
 
 | Field | Pass | Why it is the bar |
 |---|---|---|
 | `nanEvents` | **0** | any firing is a real upstream bug; the tripwire only contained it |
-| `planetsAlive` | **17/17** | planets are permanent — losing one is never variance |
+| `planetsAlive` | **equal to the run's start count** | planets are permanent — losing one is never variance |
 | `planetsOffRail` | **0** | alive-but-off-rail is a deorbit in progress the census cannot see |
 | `worstPlanetDriftPct` | **< 1%** | measured 0 / 0 / 0 / 0 across the four seeds |
-| `moonsAlive` | **59/59**, and equal to `moonsAtStart` | genuinely holds now — see the history note below |
+| `moonsAlive` | **equal to `moonsAtStart`** | genuinely holds now — see the history note below |
 | `nonAsteroidDeaths` | **`{}`** — empty on all four seeds | any entry at all is the signal; the per-cause bars below are what a REGRESSION would look like |
 | `moon:absorbed` | **0** | was 1/5/7/7 before the conjunction fix; a return means that guard regressed |
 | `moon:swallowed by a gas giant` | **0**, and never more than ~4 per 600s | a jump means a new loose-moon source |

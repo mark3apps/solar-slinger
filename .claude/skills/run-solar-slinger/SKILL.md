@@ -99,7 +99,9 @@ eval (()=>{const r=window.soak(600,{idle:true});return {seed:game.worldSeed,plan
 ' | npx electron .claude/skills/run-solar-slinger/driver.mjs --url 'app://game/index.html?seed=20260721'
 ```
 
-→ `{"seed":20260721,"planets":"17/17","moons":"59/59","nan":0}` in ~50s wall for 600 sim-seconds.
+→ `{"seed":20260721,"planets":"17/17","moons":"74/74","nan":0}` in ~50s wall for 600 sim-seconds
+(planets hold at 17; the moon census varies per seed since the seeded-layout pass — judge
+alive-equals-start, not a fixed number).
 
 ### Multi-seed stability sweep — the fast balance check
 
@@ -121,8 +123,9 @@ both are measured, not assumed:
   are awake in an idle soak, yet those dormant rocks cost ~64% of the runtime in LOD + rail
   bookkeeping, and being gravity-free in both directions they cannot affect the sky. Proven
   equivalent on one seed (20260721, 300 sim-seconds): 4,390ms stripped vs 12,322ms intact — a 2.8×
-  speedup with **every verdict field identical** (planets 17, 0 off-rail, moons 59/59,
-  `nonAsteroidDeaths` {}, `firstWorldLossAt` null). Pass `strip:false` when the
+  speedup with **every verdict field identical** (measured pre-seeded-layout at planets 17,
+  0 off-rail, moons 59/59, `nonAsteroidDeaths` {}, `firstWorldLossAt` null — the counts are that
+  era's census; the equivalence argument is count-independent). Pass `strip:false` when the
   fields themselves are what changed.
 - **Parallelism is near-linear** — each Electron process is single-threaded, so N seeds cost about
   what one does.
@@ -448,8 +451,9 @@ product, not a test surface — it gives you no programmatic handle.
 - **Moon survival used to be seed-dependent** — seed `3827467762` reproducibly ended a 600s idle soak
   at 43/48, losing four moons to `swallowed by a gas giant` before any player input. The
   railed-conjunction pass-through fixed that and the all-prograde sky has kept it fixed: all four
-  bench seeds now end at 59/59 with `nonAsteroidDeaths` empty. Still judge a soak against the same
-  seed you compared before, and see Troubleshooting.
+  bench seeds now end with their full start-of-run census (per-seed since the seeded layout) and
+  `nonAsteroidDeaths` empty. Still judge a soak against the same seed you compared before, and see
+  Troubleshooting.
 - **Cleaning up: match precisely.** `pkill -f Electron` also matches Claude Desktop, VS Code and Docker
   Desktop helper processes. Use `pkill -f "Solar system.*Electron"` or kill the PID you started.
 
