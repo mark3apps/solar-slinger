@@ -1125,7 +1125,7 @@ function seedDebrisBelts(bodies, planets, rng) {
     // test below needs the full list (down to the 5-unit ring pellets) while
     // the lane search only wants the ones big enough to hold a lane — but both
     // used to walk the whole `bodies` array, the slot test once per slot. This
-    // pass runs AFTER seedDenseFields, so the array already holds ~7,600 shoal
+    // pass runs AFTER seedDenseFields, so the array already holds ~3,643 shoal
     // rocks and every one of them is railed: the parent compare alone ran into
     // millions of iterations per generateWorld. One walk, two lists. Same
     // membership, so placement is unchanged. (generateWorld now also runs on a
