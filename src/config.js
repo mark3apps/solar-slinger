@@ -222,13 +222,13 @@ export const CFG = {
   STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this).
-  // 4.2 = the old 3.0 x 1.4 (2026-08 user call: "planet gravity generally
-  // about 1.4x as strong"), cashing in the invitation the WORLD SCALE note
-  // above makes: the growth pass left masses alone, so surface pull fell as
-  // 1/mul² while the worlds grew — this claws the felt grab back toward how
-  // big they now look. Ship-only, like everything in this family: rails,
+  // 6.0 = the old 3.0 x 2 (2026-08 user call, first "about 1.4x as strong",
+  // then raised to "2x instead"), cashing in the invitation the WORLD SCALE
+  // note above makes: the growth pass left masses alone, so surface pull fell
+  // as 1/mul² while the worlds grew — this claws the felt grab back toward
+  // how big they now look. Ship-only, like everything in this family: rails,
   // moon orbits, thrown rocks and damage never read it.
-  PLANET_GRAV_SHIP: 4.2,
+  PLANET_GRAV_SHIP: 6.0,
   // LONG ARMS (ship only): beyond SHIP_WELL_START planet radii, the
   // ship-felt pull of a world falls off as 1/r instead of 1/r² until the
   // boost caps at SHIP_WELL_MAX — wells reach farther WITHOUT deepening
