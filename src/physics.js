@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
-  ramKeep, ramArc, ramFace, ramTier,
+  ramKeep, ramArc, ramFace, ramTier, dmgMass,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -9,9 +9,9 @@ import { spawnAsteroid, markFieldRock, asteroidRadius, setFieldHome } from './wo
 import { computeFlingVelocity, clearHoldState, standDown } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
-  surfaceVel, padPos,
+  surfaceVel, padPos, placeName,
 } from './util.js';
-import { rockContacts, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
+import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
@@ -1793,13 +1793,26 @@ function surfRadius(body, ang) {
   // the ones you get close enough to see).
   // `bigShape` is stamped by world.js on the rocks that earn it; everything
   // smaller stays the circle it was, which is what keeps the sweep affordable
-  // at ~7,600 field rocks.
+  // at ~3,643 field rocks.
   // SCARS NO LONGER COMPOSE ONTO A ROCK'S OUTLINE. Damage on shaped rock is a
   // decal plus an hp value; the way a rock expresses being hurt is that it comes
   // APART, into pieces cut from its own silhouette (see docs/rock-fracture.md).
   // This is a deliberate narrowing of the CRUMBLE law, not a lapse from it —
   // worlds keep "the crater you see is the crater you can fly into", and a
   // fracture is a more legible answer for rock than gradual erosion was.
+  //
+  // THIS BRANCH IS NO LONGER THE COLLIDER FOR A ROUND PARTY, and that matters:
+  // `rockSurfAt` reduces the outline to one radius per bearing, and 17 of the
+  // 68 baked shapes are not radial functions (a cut child can put a concave
+  // bite between its centroid and its far wall — see rockshape.rockCircleQuery
+  // for the measurement). On those bearings this returned the FAR wall, up to
+  // 1.40 body radii outside the rock the player can see, so the ship stopped
+  // and bounced in open space. Ship / alien / pebble contact now runs
+  // rockshape.rockCircleQuery, which is exact against the drawn outline.
+  // What still arrives here is the case with no circle on either side — a
+  // landmark against a crystal world's shard polygon or a cratered limb —
+  // where both parties are non-circular and the radial sum is the shared
+  // approximation the crystal and scar colliders were always written as.
   if (body.bigShape) return rockSurfAt(body, ang);
   // CRATERED WORLDS collide as the shape they are DRAWN as, for exactly the
   // reason crystal worlds do. Once impacts started cutting real notches out of
@@ -1833,6 +1846,19 @@ function surfRadius(body, ang) {
 function shaped(body) {
   return body.ptype === 'crystal' || body.bigShape === true
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
+}
+// A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
+// gates a cratered world on `nearShip` — an off-view wound is not worth a
+// narrow phase to the body it gates — but `surfRadius` honours scars whether
+// the ship is watching or not. So a landmark meeting an off-view cratered world
+// through `!shaped` would be handed `other.radius`, the nominal disc, and
+// contact would register early on a wound the old radial path did honour. That
+// is the crumble law narrowing in the one case nobody is looking at, which is
+// exactly where a regression survives. The circle-vs-outline query is only
+// valid when the other party really has no profile of its own.
+function roundParty(body) {
+  return body.ptype !== 'crystal' && body.bigShape !== true
+    && !(body.scars && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
 // must clear the TALLEST feature, not the mean disc — a chunk born inside a
@@ -1921,6 +1947,14 @@ function applyBigFriction(a, b, j, nx, ny, cx, cy, invA, invB) {
 // The manifold list rockContacts fills for the big-pair branch below. One
 // array, reused — see the note at the call site.
 const _satScratch = [];
+// ...and the same trick for the circle-vs-landmark branch: one manifold-shaped
+// record, reused, so an exact contact costs no allocation either. Shaped to
+// match what rockContacts hands back ({nx, ny, points[]}), because everything
+// downstream of the narrow phase reads the two the same way.
+// UNLIKE _satScratch this record itself is reused, not just its array — safe
+// only because it is filled and fully read inside ONE collideBodies call and
+// nothing here re-enters. Don't hand it to anything that outlives the call.
+const _circ = { nx: 0, ny: 0, points: [{ x: 0, y: 0 }] };
 
 function collideBodies(game, a, b) {
   let stuckPair = false;   // two railed rocks of one pocket, possibly interpenetrating
@@ -2000,6 +2034,12 @@ function collideBodies(game, a, b) {
   // rr along the actual bearing. Spikes reach OUTSIDE the radius, so crystal
   // has to bound on surfReach; craters only cut inward, so the plain sum is
   // already a valid outer bound and the early-out below does the rejecting.
+  // `bigProbe` means "the overlap below is a true DEPTH along its own normal",
+  // not a radial sum — set by both exact narrow phases (the landmark pair's SAT
+  // manifold and the circle-vs-outline query), and read by the separation to
+  // skip the centre-line projection. `sat` carries whichever of the two
+  // produced it: they share the shape {nx, ny, points[]}, which is all anything
+  // downstream reads.
   let bigProbe = false, probedPen = 0, raSurf = a.radius;
   let sat = null;
   if (shaped(a) || shaped(b)) {
@@ -2035,7 +2075,49 @@ function collideBodies(game, a, b) {
       sat = cs[0];
       probedPen = sat.depth;
       bigProbe = true;
+    } else if ((a.bigShape && roundParty(b)) || (b.bigShape && roundParty(a))) {
+      // A LANDMARK AGAINST A ROUND BODY IS EXACT TOO — circle versus the drawn
+      // outline (rockshape.rockCircleQuery), not a radius per bearing.
+      //
+      // The bearing query it replaces (physics.surfRadius -> rockshape.march)
+      // takes the OUTERMOST ray/outline crossing, which is the surface only
+      // while the outline is a radial function. 17 of the 68 baked shapes are
+      // not — a piece CUT from its parent lands with its own centroid and a
+      // concave bite can sit between that centroid and the far wall — so on
+      // those bearings the collider sat up to 1.40 body radii outside the rock
+      // render draws, and a pebble stopped dead in a visible notch. Same defect,
+      // same fix as the landmark pair above: depth, direction and contact point
+      // all come out of one measurement.
+      const rock = a.bigShape ? a : b, other = rock === a ? b : a;
+      const q = rockCircleQuery(rock, other.x, other.y);
+      const pen = other.radius - q.d;
+      if (pen <= 0) return;
+      // Oriented "from a toward b", which is the sense the impulse and the
+      // separation below are both written in.
+      const sgn = rock === a ? 1 : -1;
+      _circ.nx = q.nx * sgn; _circ.ny = q.ny * sgn;
+      _circ.points[0].x = q.x; _circ.points[0].y = q.y;
+      sat = _circ;
+      probedPen = pen;
+      bigProbe = true;
     } else {
+      // NO CIRCLE ON EITHER SIDE (a crystal world's shard polygon, a cratered
+      // limb, or a landmark against one of those). Both sides are sampled by
+      // BEARING and summed, which is an approximation, not a guarantee — and
+      // how good it is depends on which pair got here:
+      //   - crystal vs scar, and either against the other, is EXACT enough by
+      //     construction: crystalRadiusAt and scarSurfaceAt are true radial
+      //     functions, so a bearing IS their surface.
+      //   - a LANDMARK reaching this branch is not. Its baked outline is the
+      //     very thing this diff is about: 17 of 68 shapes are multi-crossing,
+      //     so surfRadius keeps its reduction and its known error here, up to
+      //     1.40 body radii on an offending bearing.
+      // The landmark case is left approximate ON PURPOSE. Making it exact needs
+      // polygon-versus-polygon, which rockContacts already is for the pair that
+      // earns it (two landmarks), and neither party here is a circle, so the
+      // closest-point query above does not apply either. What lands here is a
+      // landmark grinding a crystal world or a cratered limb — rare, and never
+      // the ship, which is the surface the player actually feels.
       const ang = Math.atan2(dy, dx);
       raSurf = surfRadius(a, ang);
       rr = raSurf + surfRadius(b, ang + Math.PI);
@@ -2108,14 +2190,17 @@ function collideBodies(game, a, b) {
   // the heavier one owns the normal: it is the wall, the other is what hit it.
   let nx = dx / d, ny = dy / d;
   if (sat) {
-    // STRAIGHT FROM THE SEPARATING AXIS, and deliberately not re-derived from
-    // the centre line or from a face lookup. rockContacts already orients it
-    // from a toward b, and it is NOT guaranteed to point along centre-to-centre:
-    // two gnarled rocks catching on a corner legitimately produce a normal
-    // pointing back across that line. Re-deriving it is exactly the mistake that
-    // made contacts read as skating sideways down a slab.
+    // STRAIGHT FROM THE SEPARATING AXIS (or, for a circle, from the closest
+    // point on the outline), and deliberately not re-derived from the centre
+    // line or from a face lookup. Both narrow phases already orient it from a
+    // toward b, and it is NOT guaranteed to point along centre-to-centre: two
+    // gnarled rocks catching on a corner legitimately produce a normal pointing
+    // back across that line. Re-deriving it is exactly the mistake that made
+    // contacts read as skating sideways down a slab.
     nx = sat.nx; ny = sat.ny;
   } else if (a.bigShape || b.bigShape) {
+    // Only the no-circle mix reaches here now (see the narrow phase above) —
+    // a landmark against a crystal world or a cratered limb.
     const wall = (a.bigShape && (!b.bigShape || a.mass >= b.mass)) ? a : b;
     // The bearing of the CONTACT from the wall's centre, not of the other
     // body's centre. For a pebble on a slab those agree to within a degree; for
@@ -2217,7 +2302,7 @@ function collideBodies(game, a, b) {
       // the speed term is quadratic and a late-game sling would otherwise end a
       // gas giant in two throws.
       const dmg = Math.min(giant.maxHp * CFG.GAS_HIT_CAP,
-        CFG.DMG_BODY * eff * eff * rock.mass * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
+        CFG.DMG_BODY * eff * eff * dmgMass(rock.mass) * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
       // ENTRY PLUME: the cloud tops boil where it went in, in the giant's own
       // colour, thrown back OUT along the entry bearing (this runs before the
       // shared normal is computed, so it takes its own).
@@ -2364,9 +2449,10 @@ function collideBodies(game, a, b) {
   // it back onto the normal first — otherwise the fix for the slide trades it
   // for a pop off flat faces.
   //
-  // THE SAT CASE IS ALREADY A DEPTH, not a radial sum, so it takes no such
+  // THE EXACT CASES ARE ALREADY A DEPTH, not a radial sum, so they take no such
   // projection: rockshape.rockContacts returns a true minimum-translation
-  // vector, and its depth IS the distance that has to come out along its own
+  // vector and rockCircleQuery a true closest-point distance, and either depth
+  // IS the distance that has to come out along its own
   // normal. Discounting it by the centre-line cosine as well would
   // under-separate exactly the off-axis contacts SAT exists to resolve, and two
   // landmarks would settle interpenetrated and jitter there. Bounded per substep so a pair that starts
@@ -2485,8 +2571,10 @@ function collideBodies(game, a, b) {
     // Applied only to the damage the big rock TAKES, never to what it deals:
     // it is the target's toughness being re-priced, not the impact.
     const domIn = (x, target) => (target.bigShape ? Math.pow(x, CFG.FIELD_BIG_DOM_EXP) : x);
-    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domIn(domA, a);
-    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * domIn(1 - domA, b);
+    // The mass term is TEMPERED (config.dmgMass) — dominance above stays on
+    // raw mass; only the magnitude of the blow saturates, not its direction.
+    let dmgToA = CFG.DMG_BODY * eff * eff * dmgMass(b.mass) * mult * natural * 2 * domIn(domA, a);
+    let dmgToB = CFG.DMG_BODY * eff * eff * dmgMass(a.mass) * mult * natural * 2 * domIn(1 - domA, b);
     // Comparable-mass natural hits never one-shot: cap at 70% of remaining
     // hp so they crunch (and spall, below) instead of vanishing. Truly
     // lopsided impacts (8x+) keep their insta-crush — big IS stronger.
@@ -2736,10 +2824,39 @@ function collideShipBody(game, s, b, dt) {
   // shard polygon, a cratered world's notched limb — not the mean disc. Same
   // radial narrow phase as collideBodies; you can fly down into a crater you
   // punched, which is the whole point of cutting it out of the silhouette.
+  //
+  // ...and against a LANDMARK it is the exact one. The ship is a circle, the
+  // rock is a baked polygon, so rockshape.rockCircleQuery answers outright:
+  // depth, normal and contact point off the same closest-point measurement,
+  // against the outline render actually draws. THIS IS THE PATH THE PLAYER
+  // FEELS. The bearing query it replaces reduced the outline to one radius per
+  // bearing and took the OUTERMOST crossing, which is the surface only for a
+  // radial function — 17 of the 68 baked shapes are not (see
+  // rockshape.rockCircleQuery), so flying at a visible concave bite on one of
+  // them stopped the hull and bounced it in open space, up to 1.40 body radii
+  // clear of the rock. That is the crumble law's "the crater you SEE is the
+  // crater you can fly into" failing on rock, and it is why this is exact
+  // rather than merely bounded.
+  let exOn = false, exNx = 0, exNy = 0;
   if (shaped(b)) {
     const bound = sR + surfReach(b);
     if (d2 > bound * bound) return;
-    rr = sR + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    if (b.bigShape) {
+      // sR, not s.radius (merge of the ram branch with the exact-contact fix):
+      // inside the ram's covered arc the ship's contact edge is the slab face,
+      // and the exact penetration has to be measured against that same edge or
+      // a loaded brawler's front contact regresses to the bare hull.
+      const q = rockCircleQuery(b, s.x, s.y);
+      const pen = sR - q.d;
+      if (pen <= 0) return;
+      // Expressed as an `rr` so every reader below — the separation, the skim,
+      // the bounce — keeps working in the one currency this function has always
+      // used, with `rr - d` now an EXACT depth instead of a radial difference.
+      rr = Math.sqrt(d2) + pen;
+      exOn = true; exNx = q.nx; exNy = q.ny;   // outward from the rock
+    } else {
+      rr = sR + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    }
   }
   if (d2 > rr * rr) return;
   shipContacts.n++;
@@ -2806,10 +2923,13 @@ function collideShipBody(game, s, b, dt) {
 
   let nx = dx / d, ny = dy / d;
   // Same face-normal fix as collideBodies — this is the path the player
-  // actually feels, and the one the slide was reported against.
-  if (b.bigShape) {
-    const n = surfNormal(b, Math.atan2(-dy, -dx));
-    nx = -n.x; ny = -n.y;   // rewritten as "from ship toward body"
+  // actually feels, and the one the slide was reported against. It comes from
+  // the closest-point query above rather than a second ray march, so the depth
+  // and the direction can no longer disagree about which face is being hit, and
+  // a hull resting on a CORNER gets the corner's normal instead of one of the
+  // two faces meeting at it.
+  if (exOn) {
+    nx = -exNx; ny = -exNy;   // rewritten as "from ship toward body"
   }
   const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
   const closing = -(rvx * nx + rvy * ny);
@@ -2825,8 +2945,13 @@ function collideShipBody(game, s, b, dt) {
   // a teleport to a border that is not where the surface is. (The same bug sat
   // in the crystal path from the day shard colliders landed: the ship was
   // ejected to the mean disc rather than to the facet it actually touched.)
-  // Projected onto the contact normal — see the note in collideBodies.
-  const overlap = (rr - d) * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
+  // Projected onto the contact normal — see the note in collideBodies. The
+  // EXACT case takes no projection, for the same reason the SAT case doesn't:
+  // `rr - d` is already the distance that has to come out along this very
+  // normal, and discounting it by the centre-line cosine as well would leave
+  // the hull settled inside the face it is resting on.
+  const overlap = exOn ? (rr - d)
+    : (rr - d) * Math.max(0.25, (dx / d) * nx + (dy / d) * ny);
   s.x -= nx * overlap; s.y -= ny * overlap;
 
   // SURFACE SKIMMING: sliding along a surface in contact grinds the hull.
@@ -2994,7 +3119,11 @@ function collideShipBody(game, s, b, dt) {
     const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
     const aggro = game.st.ramMul * (1 + game.st.ramBiteMax * ramF)
       * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.15 * (1 - ramHullFrac) : 1);
-    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
+    // dmgMass, not raw shipM (merge with the damage-temper pass): the ram-mass
+    // fold rides the same tempered curve as every other mass-derived damage in
+    // the sky, so a loaded ram hits harder on the rebalanced scale, not the
+    // old raw one.
+    const ramDmg = CFG.DMG_BODY * effB * effB * dmgMass(shipM) * 2 * aggro;
     // Ramming is "running into things", not a throw — it damages the body but
     // pays out NO scrap and no fling growth (credit 'ram', not 'player').
     if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'ram', s.x, s.y);
@@ -3010,33 +3139,28 @@ function collideShipBody(game, s, b, dt) {
     // gravel and WRONG for a rock storm: it made the shoals get SAFER the
     // stronger you got (a median field rock at 300 closing: 31% of hull at tier
     // 0, 7% at tier 3, 4% at tier 5 — the tier you actually farm them at, which
-    // is why they read as harmless no matter how high FIELD_SHIP_DMG went).
+    // is why they read as harmless no matter how high the since-removed
+    // FIELD_SHIP_DMG multiplier was pushed).
     // Field rock therefore keeps the BASE knee at every tier: the same absolute
     // bite from tier 0 to 5, so a bigger hull endures more of a shoal without
     // ever becoming immune to one. A big ship in a dense field is a big target.
     const knee = 1500 * (b.fieldRock ? 1 : 1 + game.st.tier * 1.2);
     const massSat = b.mass / (b.mass + knee);
-    // SHOAL ROCK BITES (CFG.FIELD_SHIP_DMG) — the exact mirror of FIELD_TOUGH:
-    // field rock is tough against ITS OWN KIND and dangerous to YOU. This is
-    // what makes a dense field high-risk/high-reward instead of just high-
-    // reward. It costs nothing to fly through one: the pocket is RIGID (one
-    // shared rail w, zero relative drift), so ambient closing speeds are ~0 and
-    // the `closing > 25` gate below means gentle contact still cannot hurt. The
-    // danger is entirely SELF-INFLICTED — once you start smashing, the space
-    // around you fills with fast loose rock, and a Shockwave detonation is now
-    // a genuine double-edged sword rather than free area denial.
-    // NOT applied to an alien-thrown rock, which already carries its own
-    // `thrown` multiplier and its own tuning (LURKER_SHOVE speed + mass). The
-    // two stacked put a single lurker body-check on the 45% per-hit cap at
-    // EVERY tier — a two-shot kill from an ambush you may not have seen, with
-    // three of them hunting. Keeping them separate is also what lets the shoal
-    // and its predator be tuned independently instead of through each other.
-    const field = b.fieldRock && !(b.thrownBy === 'alien' && b.thrownTimer > 0)
-      ? CFG.FIELD_SHIP_DMG : 1;
+    // SHOAL ROCK MULTIPLIER — REMOVED (user call, 2026-08, the damage-temper
+    // pass). CFG.FIELD_SHIP_DMG (1.0 -> 2.5 -> 1.3 -> gone) multiplied ship-
+    // taken damage from field rock; with the rest of the sky's damage tempered
+    // it was the one flat amplifier left, and a stirred pocket fed rock after
+    // rock into the 45% per-hit cap. Field rock now prices exactly like any
+    // other rock of its mass and speed. What KEEPS a shoal dangerous is the
+    // base knee above (no tier scaling on massSat in a field — a big ship is a
+    // big target) and pure quantity; what keeps it fair is that the pocket is
+    // RIGID (ambient closing ~0, the `closing > 25` gate below) so the danger
+    // stays self-inflicted. Alien-thrown rock was always exempt from the
+    // multiplier — LURKER_SHOVE keeps its own tuning, nothing changes there.
     // st.ramArmor is a flat 1 for every spec now (the innate brawler 0.85 and
     // the Ram Prow / Juggernaut ranks that scaled it are all gone). What takes
-    // the hit off the hull instead is the FUSED PROW, below.
-    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * field * game.st.ramArmor,
+    // the hit off the hull instead is the RAM, below.
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
       game.st.maxHull * 0.45);
     // THE RAM TAKES THE WHOLE HIT UNTIL IT IS GONE. Not a percentage: while any
     // ram is left, a front-on impact costs the hull NOTHING and costs the ram
@@ -3173,7 +3297,7 @@ function updateDock(game, dt) {
       if (d.t < CFG.DOCK_BUILD) {
         d.t = Math.min(CFG.DOCK_BUILD, d.t + dt);
         if (d.t >= CFG.DOCK_BUILD) {
-          game.dockReadyName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+          game.dockReadyName = placeName(d.b);
           game.dockFlashT = 0.9;
           // The one thing the dockReadyName flag can't carry: WHAT you built on.
           if (d.b.type === 'moon') bump(game, 'docksMoon');
@@ -3214,10 +3338,10 @@ function updateDock(game, dt) {
         const i = docks.findIndex((q) => q !== game.home && q !== d);
         if (i >= 0) {
           const gone = docks.splice(i, 1)[0];
-          game.dockRetiredName = gone.b.name || 'a world';
+          game.dockRetiredName = placeName(gone.b);
         }
       }
-      game.dockBuildName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+      game.dockBuildName = placeName(b);
     } else {
       // RE-SEAT THE PAD TO THE SHIP THAT IS USING IT. `rf` is the hull's
       // standoff as a fraction of the world's radius, and it was measured off
@@ -3228,7 +3352,7 @@ function updateDock(game, dt) {
       // Re-measuring on each berth is also honest about what the station is:
       // the art already refits to your current tier, and so does the berth.
       d.rf = dist / Math.max(1, b.radius);
-      game.dockedName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+      game.dockedName = placeName(b);
       game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
     }
     game.dock = d;
@@ -3397,6 +3521,20 @@ export const PARRY_ARC = 1.05;
 // render timer, but it decays on the SAME clock as the cooldown that fires
 // it (below) so the pop and the state it announces can never disagree.
 export const PARRY_READY_T = 0.5;
+// THE FIELD AND ITS TELLS READ ONE PREDICATE. render paints two "the parry can
+// catch right now" cues — the armed nose rail and the deflectable-rock circlet
+// — and each carried its own private copy of the guard below. So when the berth
+// rule landed (the `game.dock` stand-down further down) both tells stayed lit
+// over a field that had already stood down: the dashed circlet promised a catch
+// on an incoming rock and the rail sat at full alpha while updateParry returned
+// on its first line, and the player reads a broken ability rather than a docked
+// one. Exported for exactly the reason PARRY_ARC is — a second copy drifts.
+// It is the FIELD's own state and nothing else: `s.alive` / `s.invuln` stay at
+// the call sites, because each of the three already spells its own ship-state
+// test and they are not the same test (the rail hides while invulnerable, the
+// hint does not). Fold those in here and you silently retune two overlays.
+export const parryLive = (game) =>
+  game.st.deflect > 0 && !game.dock && !(game.parryCd > 0);
 function parryEligible(game, b) {
   const s = game.ship;
   return b.alive && b.type === 'asteroid' && !b.majorComet && !b.heldBy &&
@@ -3405,6 +3543,14 @@ function parryEligible(game, b) {
     Math.abs(angDiff(Math.atan2(b.y - s.y, b.x - s.x), s.angle)) <= PARRY_ARC;
 }
 function updateParry(game, dt) {
+  // THE COOLDOWN KEEPS DRAINING AT A BERTH — this block sits deliberately ABOVE
+  // the dock stand-down below. A dock is where the ship repairs; leaving one
+  // still holding a reload would charge the player for stopping, and the field
+  // gains nothing by staying spent (damageShip's dockReady early-out already ate
+  // every hit it would have caught). The bloom this sets is harmless berthed
+  // because the tell is gated on `parryLive`: the rail is absent for the whole
+  // berth, so nothing pops on a nose that cannot catch — it re-arms silently and
+  // the rail simply comes back with the ship at launch.
   if (game.parryCd > 0) {
     game.parryCd -= dt;
     // ARMED AGAIN. Fired on the CROSSING, so the tell can't retrigger while
@@ -3440,8 +3586,12 @@ function updateParry(game, dt) {
     return;
   }
 
-  // Field scan: start a session, or grow a live one up to capacity
-  if (st.deflect > 0 && s.alive && s.invuln <= 0 && !(game.parryCd > 0) &&
+  // Field scan: start a session, or grow a live one up to capacity. Reads
+  // `parryLive` rather than spelling the rank/berth/cooldown test out again —
+  // its `!game.dock` term is redundant here (the stand-down above already
+  // returned), and that is the point: the sim and the two render tells share one
+  // definition, so a future gate cannot be added to one and missed by the others.
+  if (parryLive(game) && s.alive && s.invuln <= 0 &&
       (!game.parry || game.parry.rocks.length < st.deflect)) {
     const reach = st.deflectReach;
     for (const b of game.bodies) {
@@ -3541,7 +3691,22 @@ function collideAlienBody(game, al, b, dt) {
   if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
-    rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    if (b.bigShape) {
+      // An alien is a circle and a landmark is a baked polygon, so this is the
+      // exact query, exactly as for the ship — the bearing reduction it
+      // replaces reported the FAR wall on the 17 shapes that are not radial
+      // functions (see rockshape.rockCircleQuery), which parked an alien
+      // bouncing off nothing in a visible notch. Only the DEPTH is taken from
+      // it: the separation and bounce below stay on the centre-line normal
+      // aliens have always used, deliberately — the face normal is scoped to
+      // the ship and to landmark pairs, where the contact geometry is what the
+      // player is reading.
+      const pen = al.radius - rockCircleQuery(b, al.x, al.y).d;
+      if (pen <= 0) return;
+      rr = Math.sqrt(d2) + pen;   // so `rr - d` below is that exact depth
+    } else {
+      rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+    }
   }
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
@@ -3620,12 +3785,13 @@ function collideAlienBody(game, al, b, dt) {
     const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
     const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
-    let dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
+    let dmg = CFG.DMG_BODY * effA * effA * dmgMass(b.mass) * bonus * 2;
     // LURKERS TAKE A MINIMUM NUMBER OF HITS. Rock damage is QUADRATIC in
-    // closing speed and linear in mass, so it spans three orders of magnitude
-    // (a 200-mass lob at 400 does 139; a 1400-mass rock at 1000 does 7422) and
-    // NO hp value is tunable across that range — every one is either one-shot
-    // by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
+    // closing speed and sublinear in mass (config.dmgMass — the temper helps
+    // but the speed term still rules), so it spans well over an order of
+    // magnitude (a 200-mass lob at 400 does ~180; a 1400-mass rock at 1000
+    // does ~6,100) and NO hp value is tunable across that range — every one is
+    // either one-shot by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
     // alone changed literally nothing: both were one-shot by all nine sample
     // throws. So the per-hit damage is capped at a fraction of max hp, the same
     // idiom invariant 3 uses to stop comparable rocks one-shotting each other.
@@ -4385,7 +4551,7 @@ export function step(game, dt) {
     // big rock's corners do the same (a slab's diagonal is ~1.1r, a wedge's
     // point further). The sweep must see the TALLEST feature or those hits get
     // pruned before the narrow phase ever runs. Everything else: _bp IS the
-    // radius — one property read, no shape lookup, on the ~7,600 pebbles.
+    // radius — one property read, no shape lookup, on the ~3,643 pebbles.
     b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH
       : b.bigShape ? rockReach(b)
       : b.radius;
@@ -4811,7 +4977,7 @@ export function step(game, dt) {
     if (game.dock) {
       if (!game.launch && throttle > 0) {
         game.launch = { t: 0 };
-        game.launchName = game.dock.b.name || 'the pad';
+        game.launchName = placeName(game.dock.b);
       }
       throttle = 0;
       // The plume IS the sequence's second act — s.thrusting drives render's

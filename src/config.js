@@ -531,7 +531,7 @@ export const CFG = {
   // 100-300) must bounce harmlessly or the systems sandblast themselves to
   // death in minutes. Deliberately THROWN objects get a lower threshold and a
   // damage multiplier, so the tractor fling (and alien throws) stay lethal.
-  DMG_BODY: 1.2e-6,        // dmg = K * (closing - threshold)^2 * otherMass
+  DMG_BODY: 1.2e-6,        // dmg = K * (closing - threshold)^2 * dmgMass(otherMass)
   // 240 is tuned to the sky speed (sun mass 1.42e7, world.js): ambient
   // crossing traffic closes at ~100-300, and this lets it bounce harmlessly
   // while real slams still bite. It was briefly raised to 340 when the sun
@@ -541,6 +541,35 @@ export const CFG = {
   DMG_THRESH: 240,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
   DMG_THROWN_MULT: 2,
+  // DEALT damage is tempered (user calls, 2026-08: damage "shouldn't increase
+  // exponentially as things get bigger", then "it shouldn't just affect the
+  // top end, it should affect the whole thing"). The mass term in every
+  // dealt-damage formula goes through config.dmgMass:
+  //   LOW_MUL * m                        at or below DMG_MASS_KNEE
+  //   LOW_MUL * KNEE * (m/KNEE)^EXP      above it
+  // The knee sits at the BOTTOM of the throwable range — the smallest
+  // combat-ladder rung — so the ENTIRE ladder from ordinary rock to gas giant
+  // rides the sublinear curve. Net factors vs raw mass: x1.3 at and below the
+  // 600 rung, a 2500 rock ~x0.60, a 6000 boulder ~x0.38, a 13k moon ~x0.25, a
+  // mid planet ~x0.074, a gas giant ~x0.03. Sub-knee dust rides the flat
+  // LOW_MUL rather than the power curve — normalizing a sublinear curve
+  // anywhere above the floor makes everything under the pivot hit HARDER
+  // still (an uncompensated 600 pivot was a 2.4x pebble buff; the deliberate
+  // lift is 1.3x). First shipped as knee 6000 / EXP 0.6 ("top end only"),
+  // rejected twice; the whole-range clamp is deliberate, and it re-prices the
+  // celestial kill ladders wholesale — the measured post-temper rungs live in
+  // the combat bench baseline, not in invariant 8's old hit-counts. Ship
+  // TAKEN damage already saturates via massSat and is not run through this.
+  // LOW_MUL is a bottom-end lift (user call, 2026-08: "the little guys should
+  // do more" — the gap from boulders up to planets read too wide). It scales
+  // the WHOLE curve, and the exponent drop 0.5 -> 0.46 is what pays for it:
+  // the two cancel at gas-giant mass, so the lift tapers — +30% at and below
+  // the knee, ~+19% on a boulder, ~+15% on a moon, ~+6% on a mid planet, ~0
+  // at the top. Change either constant without re-deriving the other and the
+  // top end silently moves too.
+  DMG_MASS_KNEE: 600,
+  DMG_MASS_EXP: 0.46,
+  DMG_MASS_LOW_MUL: 1.3,
   // Ship impact damage: closing * DMG_SHIP * massSat, where massSat is the
   // impactor's mass saturating at 1 — the saturation knee SCALES WITH BEAM
   // TIER (1500 * (1 + tier * 1.2) in collideShipBody), so pebbles that
@@ -607,7 +636,14 @@ export const CFG = {
   // below), which is exactly why raising hp doesn't quietly stop a planet from
   // visibly coming apart. Corona heat is a fraction of maxHp per second, so a
   // planet still melts in the sun at the same rate as before.
-  PLANET_HP_BASE: 18000,
+  // 18000 -> 7000 (2026-08): re-priced for the dmgMass temper, on the user's
+  // call — the old base was sized against LINEAR mass damage, and under the
+  // tempered curve it made worlds feel unkillable (a moon slam took 23 hits;
+  // the planet-fling one-shot was gone). At 7000 the original ladder reads
+  // again: ~11 moon slams wound a mid world down, a hard (~900) fling of a
+  // comparable planet is the killing blow, rock still chips in the dozens.
+  // The flat-base-not-mass-curve SHAPE is unchanged — that part is invariant 8.
+  PLANET_HP_BASE: 7000,
   PLANET_HP_MUL: 1.2,
 
   // MOONS ARE THEIR OWN DURABILITY CLASS TOO — the rung between belt rock and a
@@ -1271,12 +1307,11 @@ export const CFG = {
   // would delete its own walls.
   FIELD_LANE_MIN: 85,
   FIELD_LANE_TRIES: 40,
-  // How far apart chosen lanes are pushed, world units. Routes that stack read
-  // as one wide gap and waste the pocket. Scored, not enforced — a crowded
-  // pocket still gets its full count rather than silently dropping a lane.
-  // Down with the lane count — 8 routes cannot be held 420 apart in a pocket
-  // that fitted 5, and forcing it just makes the extra ones fail to place.
-  FIELD_LANE_APART: 300,
+  // (There is deliberately no lane-separation constant. There WAS —
+  // FIELD_LANE_APART, from when a pocket held three independent rim-to-rim
+  // curves and two of them stacking wasted the pocket. `findLanes` never read
+  // it, and the network form made it the wrong idea rather than an unfinished
+  // one: see the note on the edge loop in world.js.)
   // PER-ROCK SIZE VARIATION on top of the class multiplier — every big rock
   // draws its own factor in this band. Without it the giants all came out
   // within a whisker of the same size (their masses span 14k-60k, but radius
@@ -1706,20 +1741,17 @@ export const CFG = {
   // top; the cap in physics.applyBigSpin is the hard backstop.
   FIELD_BIG_SPIN: 0.45,
   FIELD_TOUGH: 0.08,       // x damage on field-vs-field impacts (unless a player throw is involved)
-  // ...and the MIRROR of it: shoal rock is tough against its own kind and
-  // DANGEROUS TO YOU. The pockets are meant to be high risk / high reward and
-  // were reading as pure reward. The reason is that the pocket is RIGID (one
-  // shared rail w, zero relative drift): match its orbit and every rock is
-  // nearly stationary relative to you, so the `closing > 25` gate meant a
-  // farmer sitting in the middle of 1900 rocks was barely scratched.
-  // It weights toward SELF-INFLICTED danger without being free otherwise,
-  // because the damage rides `closing`: the faster the rock, the more it takes,
-  // so it is loose stirred-up rock that bites and ambient jostling stays minor.
-  // Measured over 20s at 1.0 vs 2.5 — parked 4% -> 7% hull, flying through
-  // 6% -> 11%, and FARMING (10 detonating throws) 3% -> 10%, which is the
-  // behaviour meant to cost the most. It also puts a real price on the brawler
-  // blasts, which used to be free area denial in here.
-  FIELD_SHIP_DMG: 2.5,
+  // FIELD_SHIP_DMG — REMOVED ENTIRELY (user call, 2026-08: "remove this
+  // multiplier altogether"). It multiplied ship-taken damage from field rock
+  // (shipped 1.0, raised to 2.5 for high-risk/high-reward — measured over 20s:
+  // parked 4%->7% hull, flythrough 6%->11%, farming 3%->10% — then 1.3, then
+  // gone): under the tempered damage curve it was the last flat amplifier in
+  // the sky, and a stirred pocket fed rock after rock into the 45% per-hit
+  // cap. Shoal rock now prices like any rock of its mass and speed. The
+  // field's remaining teeth are DELIBERATE and live elsewhere: the un-tiered
+  // massSat knee in collideShipBody (a big ship never becomes immune to a
+  // shoal) and sheer rock count. Do not reintroduce a flat field multiplier
+  // to make shoals scary; tune the knee or the lurkers instead.
   // FRIENDLY FIRE on the brawler blast (physics.brawlerThrowKill): the share of
   // its body damage the SHIP takes for standing inside the DAMAGE radius, with
   // the same linear falloff. At Demolition 3 / tier 3 that is ~63 at point
@@ -2094,6 +2126,20 @@ export const CFG = {
 // so every approach shows a different silhouette and the edge never runs
 // straight. Amplitudes are capped well under 1 so the radius stays positive
 // and the pocket stays roughly as big as its extents claim (~0.67x-1.33x).
+// The tempered mass every DEALT-damage formula uses in place of raw impactor
+// mass (see CFG.DMG_MASS_KNEE). One function, sim-wide, so body-vs-body, the
+// gas-giant entry, the ram and the alien-hit paths cannot drift apart —
+// LINEAR below the knee (x DMG_MASS_LOW_MUL, the deliberate bottom-end lift),
+// continuous at it, sublinear and monotone above it — the LOW_MUL scales the
+// WHOLE curve, sub-knee included. Mass DOMINANCE stays on raw mass:
+// dominance decides who hurts whom (a direction), this decides how hard the
+// blow can possibly land (a magnitude), and running dominance through the
+// temper would let a tempered giant start TAKING real damage from pebbles.
+export function dmgMass(m) {
+  return CFG.DMG_MASS_LOW_MUL * (m <= CFG.DMG_MASS_KNEE
+    ? m : CFG.DMG_MASS_KNEE * Math.pow(m / CFG.DMG_MASS_KNEE, CFG.DMG_MASS_EXP));
+}
+
 // Returns the outline radius in NORMALIZED pocket units (1 = the plain
 // ellipse). A field with no lobe table (an older save, a test stub) falls
 // back to the ellipse.
@@ -2211,13 +2257,19 @@ export function stormClass(roll) {
 // the geometric in-world edge the house style will not have). A class's whole
 // geography lives in these two numbers; see the STORM_CLASSES notes.
 // A CLASS'S `fade` MUST BE < 1 — it is a fraction of `reach`, so at 1 the taper
-// has zero width and the divide below is 0. The three shipped classes are
-// 0.62 / 0.68 / 0.858, but a fourth row written with `fade: 1` (a plausible way
-// to say "no taper at all") would return NaN here, and `k` multiplies every
-// bite and every alpha downstream — so the whole wave would silently go NaN and
-// only surface later as a `game.nanEvents` tripwire, far from its cause. The
-// floor makes that row degrade to a one-unit taper instead of poisoning the run.
-// It is not a substitute for the invariant; it is what keeps a violation legible.
+// has zero width and above 1 it has negative width. The three shipped classes
+// are 0.62 / 0.68 / 0.858; the `Math.max(1, …)` floor is what keeps a fourth
+// row that breaks the rule legible rather than catastrophic, and the two ways
+// to break it fail differently:
+//   `fade: 1` (a plausible way to say "no taper at all") — without the floor
+//   the divide is by 0, giving Infinity and therefore k = 0 for any r > `fadeR`.
+//   Not NaN: a wave that BLINKS OUT at an exact radius, which is the
+//   geometric in-world edge the house style will not have.
+//   `fade > 1` — without the floor the denominator goes NEGATIVE and k comes
+//   back ABOVE 1 (measured 1.139 at r = 44056 for `fade: 1.2`), i.e. a wave
+//   stronger than full strength, amplifying every bite and every alpha.
+// The floor degrades both to a one-unit taper. It is not a substitute for the
+// invariant; it is what stops a bad row from silently rewriting the sun.
 export function stormStrength(wave) {
   const reachR = CFG.WORLD_R * wave.reach;
   const fadeR = reachR * wave.fade;
@@ -2405,7 +2457,8 @@ export function ramKeep(ram) {
 //
 // The rungs are fitted to the sky's actual mass census (seed 20260721):
 //   ice shards 64-446, probe junk 70-384, crust crumbs 90-2,837, belt rock
-//   15-2,600, comets 2,400, caches 2,800, derelict stations 1,500-1,900,
+//   40-2,600 (pebble floor doubled 2026-08), comets 2,400, caches 2,800,
+//   derelict stations 1,500-1,900,
 //   boulders 2,702-5,756, cored rock 677-4,416, shoal rock 120-4,999,
 //   moons 900 + 2,400-17,050, shoal monoliths 19,523-480,000,
 //   planets 20,000-650,000.
@@ -3440,7 +3493,14 @@ export function shipStats(prog) {
     force: capacity * 55 * (0.6 + 0.12 * tier),
     maxSpeed: 280 + 40 * tier + 80 * engineC,
     thrust: 180 + 30 * tier + 95 * engineC,
-    fling: 430 + 55 * tier + 150 * flingC,
+    // 150 -> 50 per Kinetic Sling rank (user call, 2026-08: "Kinetic Sling gets
+    // too high, it should max out at around 1,000"): the old slope put a T5
+    // Sling-6 launch at ~1,605 before the tether/Berserker multipliers even
+    // stacked, and on the quadratic damage law that one channel dwarfed every
+    // other lever. Ceiling is now T5+6 ranks = 1,005. Rank value drops with it
+    // (+50 speed each) — that is the point, not a dead-card bug; on v^2 each
+    // rank is still ~+15% damage at the ceiling.
+    fling: 430 + 55 * tier + 50 * flingC,
     maxHull: Math.round(maxHull),
     // Pool splits hull (mends only at glow pockets) / shield (recharges)
     hullMax,

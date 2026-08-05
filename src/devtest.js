@@ -3,12 +3,14 @@ import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   stormStrength, stormSpent, shelterR } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
-import { damageShip } from './physics.js';
+import { damageShip, parryLive } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel } from './util.js';
+import { mulberry32, surfaceVel, TAU } from './util.js';
+import { ROCK_SHAPES } from './rockdata.js';
+import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
 
 // DEV MECHANICS SUITE — window.mechTest() lazy-loads this module, so normal
@@ -32,11 +34,30 @@ import { input } from './input.js';
 //      session-monotonic while rockshape.rockShapeOf keys the baked silhouette
 //      off it, so a re-run built the same layout wearing DIFFERENT rock and
 //      diverged within half a second. world.generateWorld resets it.
+//   3. The VIEW may not reach the sim (issue #104) — LATENT, not observed.
+//      game.viewR sizes the spawn ring and the leash in world.replenishWorld,
+//      and the `continue` past that leash SKIPS the rng() draws behind it — so
+//      viewR gates draw COUNTS; cam.zoom carries the same dependence into
+//      game.aim. But main.js's fair view cancels the window out of viewR, and
+//      MEASURED that cancellation is exact in float, not just in algebra:
+//      viewR is byte-identical (7867.525607436779) at 1024x736, 1440x868 and
+//      1920x1018, and this suite's whole report — every `draws` column and
+//      every detail string — matches across all three with NO pin. So unlike
+//      1 and 2, nothing was caught misbehaving here. VIEW_PIN below makes the
+//      window-independence structural instead of inherited from that float
+//      coincidence, restored in the finally beside Math.random.
 // `draws` on every result is the tripwire for a recurrence: it is the RNG
 // draw count at that test's boundary, and two runs of the same seed must
-// produce the same sequence of them. A drifting draws column localises the
-// culprit to one test in a single diff, which is how both of the above were
-// found.
+// produce the same sequence of them — on any machine, at any window size. A
+// drifting draws column localises the culprit to one test in a single diff,
+// which is how 1 and 2 were both found.
+
+// The view the whole suite runs at. 1920x1080 is CFG.VIEW_REF_DIAG's own
+// basis, so a pinned run sits EXACTLY at the fair-view reference: the
+// normalization ratio is 1, cam.zoom === zoomCur, and viewR is exactly
+// VIEW_REF_DIAG/2/zoomCur — no rounding to differ about. It is also an
+// ordinary full-screen play window, so the suite exercises what people fly.
+const VIEW_PIN = { vw: 1920, vh: 1080 };
 
 // Assertion helper: numbers land in the detail string so a failure is
 // diagnosable straight from the report, without re-running.
@@ -73,6 +94,27 @@ function worldChecksum(game) {
   return h;
 }
 
+// Every positive distance at which a ray from a shape's own origin crosses its
+// DRAWN outline, sorted. Written out here rather than borrowed from rockshape
+// on purpose: this is the independent reading of the picture that the collider
+// is being checked against, so it must not share code with it.
+function rayCrossings(v, dx, dy) {
+  const n = v.length >> 1, ts = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = v[i * 2], ay = v[i * 2 + 1];
+    const ex = v[j * 2] - ax, ey = v[j * 2 + 1] - ay;
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = (ax * ey - ay * ex) / den;          // along the ray
+    if (t <= 0) continue;
+    const u = (ax * dy - ay * dx) / den;          // along the edge
+    if (u < 0 || u > 1) continue;
+    ts.push(t);
+  }
+  return ts.sort((p, q) => p - q);
+}
+
 // Park the ship somewhere quiet with zeroed motion — each test starts from a
 // known kinematic state instead of inheriting the previous test's drama.
 function parkShip(game, x, y) {
@@ -95,6 +137,12 @@ export function runMechTest(game, hooks, opts = {}) {
   Math.random = () => { draws++; return rng(); };
   const wasAuto = game.autoUpgrade;
   game.autoUpgrade = true;
+  // PAUSE IS SHARED STATE TOO. T23 forces `paused = false` to prove a digit
+  // cannot be spent into a paused run, and main.js's frame loop gates the sim
+  // update on `game.paused` — so running the suite from the console while
+  // paused would resume the run under the player's hands on the very next rAF.
+  // Restored in the finally beside Math.random and input.keys.
+  const wasPaused = game.paused;
   // THE INPUT DEVICE IS SHARED STATE, and the suite drives it: the docking and
   // pilot-card cases park the cursor (input.mouseX/Y feed game.aim every frame)
   // and hold KeyW. Left behind, that state is the NEXT run's starting
@@ -104,6 +152,12 @@ export function runMechTest(game, hooks, opts = {}) {
   // Math.random, for exactly the same reason.
   const wasMouseX = input.mouseX, wasMouseY = input.mouseY;
   const wasKeys = new Set(input.keys);
+  // THE WINDOW IS SHARED STATE TOO, and it is not the suite's to inherit — see
+  // note 3 above. main.js's simView() honours this for every SIM reader of the
+  // view (applyZoom, and update()'s viewR + mouseWorld); the chart's DOM
+  // handlers keep the real one, which the suite never touches.
+  const wasViewPin = game.viewPin;
+  game.viewPin = VIEW_PIN;
   // Mute the SFX bus for the scripted burst (there are no audio toggles any
   // more — the volume slider IS the control; game.sfxVol still holds the
   // user's level to restore).
@@ -127,6 +181,84 @@ export function runMechTest(game, hooks, opts = {}) {
       }
       expect(dupes.length === 0, `duplicate achievement id(s): ${dupes.join(', ')}`);
       return `${ACHIEVEMENTS.length} rows, all ids unique`;
+    });
+
+    // T0b — A LANDMARK COLLIDES AS THE ROCK IT IS DRAWN AS. Pure geometry over
+    // the baked library: no world, no RNG (the `draws` column must not move),
+    // so it sits up here with the other catalog checks.
+    //
+    // The design law is "the crater you SEE is the crater you can fly into —
+    // one profile feeds render, physics and both predict mirrors", and for
+    // shaped rock the seam is between render.traceAsteroid (which draws the
+    // TRUE polygon, concavities and all) and the collider. This asserts they
+    // agree to render.js's own budget: its cosmetic wobble is held at 0.8% of
+    // body radius precisely so drawn and collided stay inside one band, so 0.8%
+    // is the tolerance the collider has to clear too.
+    //
+    // WHAT THIS CATCHES, AND WHY IT IS NOT A FORMALITY (issue #102). Until the
+    // circle-vs-outline query landed, the collider asked for one radius per
+    // bearing (physics.surfRadius -> rockshape.rockSurfAt), which takes the
+    // OUTERMOST ray/outline crossing. That is the surface only while the
+    // outline is a radial function. util.rockOutline is one by construction,
+    // but the BAKE cuts children out of parents and a piece lands with its own
+    // centroid — so a concave bite can sit between that centroid and the far
+    // wall. 17 of the 68 baked shapes have such bearings (s2_34 worst at 1.40
+    // body radii, m2_31 over 6.7% of its circumference), and on them the
+    // collider sat a whole body radius outside the rock: the hull stopped and
+    // bounced in open space. Pointed at rockSurfAt this exact case reports 148
+    // disagreements across 14 of the 68 shapes (the other three offenders have
+    // arcs too narrow for 180 bearings to land in); pointed at the circle query
+    // the boundary agrees to ~4e-12 radii, against a 8e-3 budget.
+    t('shaped rock: collider agrees with the drawn outline', () => {
+      const BUD = 0.008;          // render.js's cosmetic wobble, in body radii
+      const N = 180;              // bearings per shape per placement
+      // Two placements, because the query has to be right in WORLD space: a
+      // unit rock at the origin and a 137-unit rock turned 0.7 rad and parked
+      // far out would both pass a frame-confused implementation only by luck.
+      const PLACE = [{ r: 1, rot: 0 }, { r: 137, rot: 0.7 }];
+      let flips = 0, gaps = 0, worst = 0, multi = 0;
+      const bad = [];
+      for (const [id, sh] of Object.entries(ROCK_SHAPES)) {
+        let shapeMulti = false;
+        for (const p of PLACE) {
+          const b = { x: 41000, y: -25000, rot: p.rot, radius: p.r, shapeId: id };
+          for (let k = 0; k < N; k++) {
+            const th = (k + 0.5) / N * TAU;             // shape-local bearing
+            const ts = rayCrossings(sh.v, Math.cos(th), Math.sin(th));
+            // An even crossing count means the ray started OUTSIDE the polygon
+            // — no "near surface" to check against from here.
+            if (!ts.length || ts.length % 2 === 0 || ts[0] < 4 * BUD) continue;
+            const wth = th + p.rot;
+            const at = (r) => rockCircleQuery(b,
+              b.x + Math.cos(wth) * r * p.r, b.y + Math.sin(wth) * r * p.r).d / p.r;
+            // The collider's verdict must FLIP at the drawn near surface: a
+            // hair inside is inside, a hair outside is outside. Skipped where
+            // the outline is thinner than the budget, which no tolerance can
+            // resolve either way.
+            if (!(ts.length > 1 && ts[1] - ts[0] < 4 * BUD)) {
+              flips++;
+              const dIn = at(ts[0] - BUD), dOut = at(ts[0] + BUD);
+              if (!(dIn < 0 && dOut > 0)) bad.push(`${id} @${th.toFixed(2)} flip ${dIn.toFixed(4)}/${dOut.toFixed(4)}`);
+              worst = Math.max(worst, Math.abs(at(ts[0])));
+            }
+            // ...and the GAP: a bearing whose ray leaves the rock and re-enters
+            // it has real empty space in between. That gap is what the player
+            // flies into, and reporting it as solid is the whole of issue #102.
+            if (ts.length > 1) {
+              shapeMulti = true;
+              gaps++;
+              const d = at((ts[0] + ts[1]) / 2);
+              if (!(d > 0)) bad.push(`${id} @${th.toFixed(2)} gap reported solid (${d.toFixed(4)})`);
+            }
+          }
+        }
+        if (shapeMulti) multi++;
+      }
+      expect(bad.length === 0,
+        `${bad.length} disagreement(s) with the drawn outline: ${bad.slice(0, 4).join('; ')}`);
+      expect(worst <= BUD, `boundary error ${worst.toFixed(5)} radii exceeds the ${BUD} budget`);
+      return `${Object.keys(ROCK_SHAPES).length} shapes, ${flips} boundary flips + ${gaps} concavity probes, ` +
+        `${multi} non-radial shapes, worst boundary error ${worst.toExponential(1)} radii`;
     });
 
     // T1 — world generation is deterministic for a fixed seed
@@ -565,13 +697,15 @@ export function runMechTest(game, hooks, opts = {}) {
     // velocity and aim the nose straight up, which is what the three gates want.
     // The aim matters — `s.angle` chases `game.aim`, so without pointing it
     // outward the level gate refuses and a berth never forms.
-    // Cursor 300 screen-px along `bearing` from the view centre. render.js
-    // sizes the view off window.innerWidth/Height in CSS px, which is exactly
-    // what input.mouseX/Y carry, so the same numbers go straight back in.
+    // Cursor 300 screen-px along `bearing` from the view centre. input.mouseX/Y
+    // carry CSS px and update() maps them back through the same view width, so
+    // the same numbers go straight back in — as long as both halves agree about
+    // how wide the view is. They read VIEW_PIN rather than the real window on
+    // purpose: unpinned, 300px is a different world distance on every monitor
+    // (it is divided by cam.zoom), and the suite is bit-repeatable by contract.
     const aimAt = (bearing) => {
-      const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
-      input.mouseX = vw / 2 + Math.cos(bearing) * 300;
-      input.mouseY = vh / 2 + Math.sin(bearing) * 300;
+      input.mouseX = VIEW_PIN.vw / 2 + Math.cos(bearing) * 300;
+      input.mouseY = VIEW_PIN.vh / 2 + Math.sin(bearing) * 300;
     };
     // THE MOUSE IS THE HELM. `s.angle` chases `game.aim`, and update() rebuilds
     // `game.aim` from `input.mouseX/Y` every frame — so setting game.aim here
@@ -591,6 +725,20 @@ export function runMechTest(game, hooks, opts = {}) {
     // friction cannot lift the hull clear, at every tier, so contact is a
     // CONSTANT of these tests and the thing under test is the gate.
     const setDown = (world, upOff = 0) => {
+      // ONE PRIMING FRAME FIRST — the hull must be staged against LIVE state,
+      // not worldgen's. Straight off freshRun the ship is still the factory
+      // hull (entities.Ship radius 9) until update() snaps it to st.radius
+      // (4 at tier 0), and a railed moon's generated vx/vy are one frame
+      // stale against the rail that owns it from the first substep. Staged
+      // against either, the 0.5-unit overlap below became a ~4.5-unit GAP one
+      // frame later and the approach started AIRBORNE — the tests then passed
+      // or failed on whether local gravity happened to re-land the hull
+      // inside the assertion window, which is how a content-only world change
+      // (PR #132's asteroidMass) broke four dock tests without touching the
+      // moon, the ship or any dock code. stepSim is the suite's own
+      // deterministic primitive, so repeatability only gains: it shifts the
+      // draws columns once, it does not loosen them.
+      hooks.stepSim(1 / 60);
       const s = game.ship;
       s.x = world.x + (world.radius + s.radius - Math.max(1.5, s.radius * 0.35));
       s.y = world.y;
@@ -647,6 +795,10 @@ export function runMechTest(game, hooks, opts = {}) {
       // contact and stillness hold, so the refusal must be named as 'level'.
       holdDown(w, Math.PI / 2, 0.4);
       expect(!game.dock, 'berthed with the nose off the arc');
+      // Contact first, gate second: if the staging itself ever comes unstuck
+      // again, fail saying THAT — "gate was ''" reads as a dock bug when the
+      // hull simply is not touching anything.
+      expect(game.dockCand === w, 'staging lost contact — the hull is not on the moon at all');
       expect(game.dockGate === 'level', `refusing gate was "${game.dockGate}", wanted "level"`);
       // Now rockets down, held past DOCK_TIME.
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
@@ -692,8 +844,11 @@ export function runMechTest(game, hooks, opts = {}) {
     // T17 — A DOCK IS WHERE YOU STOP WORKING. Both non-input-driven abilities
     // must be inert at a berth: Reflex Jink (issue #87/#90) and the parry
     // (#94). Neither is reachable by main.dockBlocking, so only this catches a
-    // regression. The parry also must not leave a rock WELDED to the hull.
-    t('dock: jink and parry are inert while berthed', () => {
+    // regression. The parry also must not leave a rock WELDED to the hull, and
+    // its TELLS must go dark with it (#103) — an armed rail and a "you can take
+    // this one" circlet over a field that has stood down read as a broken
+    // ability, so the render gates and the sim gate are one predicate.
+    t('dock: jink and parry are inert while berthed, tells included', () => {
       const s = game.ship;
       expect(game.dock, 'test needs a live berth');
       // Reflex Jink: grant it, then put a heavy rock on a collision course.
@@ -715,8 +870,41 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(!game.parry, 'a parry session survived the clamps');
       expect(!pr.parryFrozen, 'a parried rock stayed WELDED to the hull at a berth');
       expect(game.parryCd === 0, `the parry spent its cooldown at a berth (${game.parryCd})`);
+      // THE TELLS. `physics.parryLive` is what render.drawDeflectable and the
+      // armed nose rail both gate on, so asserting it here covers the drawn
+      // state without a canvas. Both directions: false with a rank and a clear
+      // cooldown purely BECAUSE of the berth, true again the moment the berth
+      // is gone — a predicate that is merely always-false would pass one half.
+      //
+      // PROBED AS A SCOUT — the same rule as the orbit-gate case, which probes
+      // the ring as a HAULER. This comment used to say "the rank is read,
+      // never granted: spec 0 is BRAWLER and the deflector is in its kit", and
+      // that premise died with the loadout rework: the parry is SCOUT hardware
+      // now, and a brawler can never earn the rank, so faking one onto the
+      // brawler build would test a loadout that cannot exist (user design
+      // call). Instead the build BECOMES a scout for the probe — the rank set
+      // here is exactly what applySpec seeds a scout's kit with — and is put
+      // back rank-and-spec together, so the next case inherits the untouched
+      // brawler run.
+      const wasSpec = game.prog.spec;
+      const hadDeflector = game.prog.upgrades.deflector || 0;
+      game.prog.spec = 'scout';
+      game.prog.upgrades.deflector = Math.max(1, hadDeflector);
+      game.st = shipStats(game.prog);
+      expect(game.st.deflect > 0, 'setup: no deflector rank to advertise');
+      expect(!parryLive(game),
+        'the armed tell stayed lit at a berth — render advertises a parry that cannot fire');
+      const dk = game.dock;                  // borrowed, not dropped: T18 needs this berth
+      game.dock = null;
+      const freeAgain = parryLive(game);
+      game.dock = dk;
+      expect(freeAgain, 'the parry read dead off the pad too — the tell would never come back');
       pr.alive = false;
-      return 'jink cooldown untouched, parry stood down and unfrozen';
+      game.prog.spec = wasSpec;
+      if (hadDeflector) game.prog.upgrades.deflector = hadDeflector;
+      else delete game.prog.upgrades.deflector;
+      game.st = shipStats(game.prog);
+      return 'jink cooldown untouched, parry stood down and unfrozen, tells dark at the berth';
     });
 
     // T18 — LEAVING IS A SEQUENCE, and the station STANDS once built.
@@ -796,7 +984,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const R = CFG.WORLD_R;
       const seen = [];
       for (const c of cs) {
-        expect(c.fade < 1, `${c.key}: fade ${c.fade} >= 1 would make stormStrength divide by zero`);
+        expect(c.fade < 1, `${c.key}: fade ${c.fade} >= 1 collapses the taper — at 1 the wave blinks out at a hard radius, above 1 stormStrength returns k > 1`);
         const reachR = R * c.reach, fadeR = reachR * c.fade;
         expect(stormStrength({ ...c, r: fadeR }) === 1, `${c.key}: not full strength at its fade radius`);
         expect(stormStrength({ ...c, r: reachR }) === 0, `${c.key}: still biting at its reach limit`);
@@ -846,14 +1034,16 @@ export function runMechTest(game, hooks, opts = {}) {
     // T22 — the riposte leaves along ship->cursor, not back along the rock's
     // own capture bearing. That direction IS the feature; nothing else asserts it.
     t('parry: the riposte flies at the cursor', () => {
-      hooks.freshRun(0, seed);
+      // Spec 2 = SCOUT, whose kit carries the Deflector — the rank comes from
+      // applySpec like any real run's, never granted by the test (user design
+      // rule: a build the game cannot produce proves nothing). T23 after this
+      // stages its own fresh brawler, so leaving a scout run behind is fine.
+      hooks.freshRun(2, seed);
       const s = game.ship;
       parkShip(game, s.x, s.y);
       game.dock = null; game.docks = [];
-      game.prog.upgrades.deflector = 1;
-      game.st = shipStats(game.prog);
       const rank = game.st.deflect;
-      expect(rank > 0, 'the deflector ability did not grant a rank');
+      expect(rank > 0, 'the scout kit did not seed a deflector rank');
       // Rock captured on the +x bearing; cursor put at 90 degrees to it, so a
       // riposte along the capture bearing and one along the aim are 90 apart
       // and cannot be confused.
@@ -893,66 +1083,98 @@ export function runMechTest(game, hooks, opts = {}) {
     // an initialise-once capability, and read the `draws` column to find where.
     t('pilot card: keydown, click, and the paused-run guard', () => {
       hooks.freshRun(0, seed);
+      // This case turns OFF the auto-resolver the whole suite runs under and
+      // synthesises a keydown with no matching keyup, so its cleanup belongs in
+      // a finally, not mid-body: makeT catches and continues, and a failed
+      // assertion halfway down would otherwise hand the NEXT test a run with
+      // picks unresolved and Digit1 still held.
       game.autoUpgrade = false;
-      const offer = () => {
-        game.flingDelayT = 0;   // the post-fling deferral is T5's subject, not this one
-        game.prog.xp = xpForPick(game.prog) + 1;
-        hooks.stepSim(0.2);
-      };
-      const digit = (code) =>
-        window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+      try {
+        const offer = () => {
+          game.flingDelayT = 0;   // the post-fling deferral is T5's subject, not this one
+          game.prog.xp = xpForPick(game.prog) + 1;
+          hooks.stepSim(0.2);
+        };
+        const digit = (code) =>
+          window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
 
-      offer();
-      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
-        'no inline offer stood up with autoUpgrade off');
-      expect(!game.choosingUpgrade,
-        'an ability offer froze the sim — only the spec card is a modal');
+        offer();
+        expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+          'no inline offer stood up with autoUpgrade off');
+        expect(!game.choosingUpgrade,
+          'an ability offer froze the sim — only the spec card is a modal');
 
-      // The markup the delegate reads. It routes off `data-i`, so a card that
-      // lost its index is a dead card that silently swallows the click.
-      updateHud(game);
-      const rows = [...document.querySelectorAll('#offerBox .ofrow')];
-      expect(rows.length === game.upgradeChoices.length,
-        `offer drew ${rows.length} cards for ${game.upgradeChoices.length} choices`);
-      expect(rows.every((r, i) => +r.dataset.i === i), 'offer card data-i is not 0..n-1');
-      expect(rows[0].textContent.includes(game.upgradeChoices[0].name),
-        'the drawn card does not name the choice it stands for');
+        // The markup the delegate reads. It routes off `data-i`, so a card that
+        // lost its index is a dead card that silently swallows the click.
+        updateHud(game);
+        const rows = [...document.querySelectorAll('#offerBox .ofrow')];
+        expect(rows.length === game.upgradeChoices.length,
+          `offer drew ${rows.length} cards for ${game.upgradeChoices.length} choices`);
+        expect(rows.every((r, i) => +r.dataset.i === i), 'offer card data-i is not 0..n-1');
+        expect(rows[0].textContent.includes(game.upgradeChoices[0].name),
+          'the drawn card does not name the choice it stands for');
 
-      // GUARD: the digits are a WINDOW listener and fire whatever is on screen,
-      // so a pick must not be spendable into a paused run.
-      const want0 = game.upgradeChoices[0].id;
-      game.paused = true;
-      digit('Digit1');
-      game.paused = false;
-      expect(game.upgradeChoices, 'a digit spent the pick while the run was paused');
-      expect(!game.prog.upgrades[want0], `paused Digit1 still granted ${want0}`);
+        // GUARD: the digits are a WINDOW listener and fire whatever is on screen,
+        // so a pick must not be spendable into a paused run.
+        const want0 = game.upgradeChoices[0].id;
+        game.paused = true;
+        digit('Digit1');
+        game.paused = false;
+        expect(game.upgradeChoices, 'a digit spent the pick while the run was paused');
+        expect(!game.prog.upgrades[want0], `paused Digit1 still granted ${want0}`);
 
-      // KEYDOWN answers it...
-      digit('Digit1');
-      input.keys.delete('Digit1');   // no keyup is dispatched; do not leave it held
-      expect(!game.upgradeChoices, 'the offer survived the keypress');
-      expect(game.prog.upgrades[want0] >= 1, `Digit1 did not grant ${want0}`);
-      // ...and an answered INLINE offer holds the next card back, so it cannot
-      // land under a finger still on the button (the flingDelayT reuse).
-      expect(game.flingDelayT >= 0.8, 'answering an inline offer armed no deferral');
+        // KEYDOWN answers it...
+        digit('Digit1');
+        input.keys.delete('Digit1');   // no keyup is dispatched; do not leave it held
+        expect(!game.upgradeChoices, 'the offer survived the keypress');
+        expect(game.prog.upgrades[want0] >= 1, `Digit1 did not grant ${want0}`);
+        // ...and an answered INLINE offer holds the next card back, so it cannot
+        // land under a finger still on the button (the flingDelayT reuse).
+        expect(game.flingDelayT >= 0.8, 'answering an inline offer armed no deferral');
 
-      // CLICK answers the next one, through the delegate rather than the key.
-      offer();
-      expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
-        'no second offer to answer by mouse');
-      const want1 = game.upgradeChoices[1].id;
-      updateHud(game);
-      const row1 = document.querySelector('#offerBox .ofrow[data-i="1"]');
-      expect(row1, 'the second offer drew no card at data-i=1');
-      row1.click();
-      expect(!game.upgradeChoices, 'the offer survived the click');
-      expect(game.prog.upgrades[want1] >= 1, `the click did not grant ${want1}`);
+        // CLICK answers the next one, through the delegate rather than the key.
+        offer();
+        expect(game.upgradeChoices && game.upgradeChoices.length >= 2,
+          'no second offer to answer by mouse');
+        const want1 = game.upgradeChoices[1].id;
+        updateHud(game);
+        const row1 = document.querySelector('#offerBox .ofrow[data-i="1"]');
+        expect(row1, 'the second offer drew no card at data-i=1');
+        row1.click();
+        expect(!game.upgradeChoices, 'the offer survived the click');
+        expect(game.prog.upgrades[want1] >= 1, `the click did not grant ${want1}`);
 
-      game.autoUpgrade = true;
-      return `key -> ${want0}, click -> ${want1}, paused digit refused`;
+        return `key -> ${want0}, click -> ${want1}, paused digit refused`;
+      } finally {
+        game.autoUpgrade = true;
+        input.keys.delete('Digit1');
+      }
     });
 
-    // T19 — the suite's own drama must not have shredded the sky
+    // T24 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
+    // window it ran in (issue #104). Everything above this line integrates
+    // through game.viewR — the spawn ring and both leashes in
+    // world.replenishWorld, the wake bubble, the glow field — and steers
+    // through cam.zoom (the parked cursor becomes game.aim every frame). Both
+    // derive from the view size. Today the fair view cancels the window out of
+    // viewR exactly — measured identical across a 2x window range — so this
+    // case guards a LATENT dependency, not a live bug: it fails the moment
+    // something stops routing the sim's view through simView().
+    // Asserted with === on purpose: at VIEW_PIN the fair-view ratio is exactly
+    // 1, so cam.zoom is EXACTLY zoomCur and viewR exactly VIEW_REF_DIAG/2/
+    // zoomCur — an unpinned run only lands there if the real window happens to
+    // be 1920x1080. Takes no step of its own, so it disturbs nothing
+    // downstream: it reads the view the last stepSim above left behind.
+    t('harness view is pinned', () => {
+      expect(game.viewPin === VIEW_PIN, 'the view pin is not in force');
+      expect(game.cam.zoom === game.zoomCur,
+        `cam.zoom ${game.cam.zoom} != zoomCur ${game.zoomCur} — the sim is reading the real window`);
+      const want = CFG.VIEW_REF_DIAG / 2 / game.zoomCur;
+      expect(game.viewR === want, `viewR ${game.viewR} != ${want}`);
+      return `${VIEW_PIN.vw}x${VIEW_PIN.vh}, zoom=${game.cam.zoom.toFixed(4)}, viewR=${game.viewR.toFixed(1)}`;
+    });
+
+    // T25 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {
       const now = census(game);
       expect((now.planet || 0) === (skyBefore.planet || 0),
@@ -963,7 +1185,9 @@ export function runMechTest(game, hooks, opts = {}) {
     });
   } finally {
     Math.random = realRandom;
+    game.viewPin = wasViewPin;
     game.autoUpgrade = wasAuto;
+    game.paused = wasPaused;
     setSfxVolume(game.sfxVol);
     game.godMode = false;
     input.mouseX = wasMouseX; input.mouseY = wasMouseY;
@@ -991,7 +1215,12 @@ export function runMechTest(game, hooks, opts = {}) {
   window.lastMechReport = report;
   // eslint-style side channel for humans watching the console; the report
   // object is the machine-readable truth
-  console.table(results.map((r) => ({ test: r.name, pass: r.pass, detail: r.detail })));
+  // `draws` rides in the table, not just the report: it is the documented
+  // determinism tripwire (docs/testing.md, the mechanics-test skill), and a
+  // reviewer diffing two runs by eye reads THIS, not window.lastMechReport.
+  // The `detail` strings often do not move first, which is the whole reason
+  // the column exists.
+  console.table(results.map((r) => ({ test: r.name, pass: r.pass, draws: r.draws, detail: r.detail })));
 
   if (opts.download) {
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });

@@ -21,12 +21,24 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   lazy-loaded): a fixed set of player actions against a fixed-seed fresh run, asserting each core
   mechanic and several design laws (fling-at-cursor/no-recoil, deferred picks, split-health, orbit
   gating, NaN containment, the three docking gates and what a berth makes inert, the solar-wave
-  classes, the aimed riposte, and the pilot card's keydown/click/paused-guard answer paths).
+  classes, the aimed riposte, the pilot card's keydown/click/paused-guard answer paths, and that a
+  landmark's collider agrees with the polygon render draws it as).
   **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
   for a seeded RNG for the duration — so same code ⇒ identical report. Two things had to be true for
   that to actually hold, and neither was until issue #96: nothing outside the sim may draw from the
   swapped stream (sfx/music/hud now own private ones), and nothing seeded off a body id may outlive
-  its world (`generateWorld` resets the id counter). Every result carries a **`draws`** field — the
+  its world (`generateWorld` resets the id counter). A third, **the window may not reach the sim**
+  (issue #104), is held STRUCTURALLY rather than because it was ever observed to break: `game.viewR`
+  gates RNG *draw counts* (`replenishWorld`'s leash `continue` skips the draws behind it) and
+  `cam.zoom` turns the parked cursor into `game.aim`, so both are in principle window-derived.
+  In practice main.js's fair view cancels the window out of `viewR` exactly — **measured
+  byte-identical (7867.525607436779) at 1024x736, 1440x868 and 1920x1018, with the full report
+  including every `draws` column identical across all three** — so the feared ulp-level drift does
+  not occur at tested sizes. The pin makes that a guarantee instead of a coincidence:
+  `runMechTest` sets `game.viewPin` to 1920x1080 (`CFG.VIEW_REF_DIAG`'s own basis, so the
+  normalization ratio is exactly 1) and restores it in the same `finally` as `Math.random`;
+  `main.simView` is what honours it, and the chart's DOM handlers deliberately do not.
+  Every result carries a **`draws`** field — the
   RNG draw count at that test's boundary — which is the tripwire for a recurrence: a drifting column
   localises the culprit to one test in a single diff. Returns
   `{ passed, failed, results, logs }` (also `window.lastMechReport`; `{download: true}` saves the

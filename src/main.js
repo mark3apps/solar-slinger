@@ -11,7 +11,7 @@ import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tr
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
-  newAchState, updateAchievements, bump, best, noteDeath, ACH_EVENT_STATS,
+  newAchState, updateAchievements, bump, best, noteDeath, noteHullGrant, ACH_EVENT_STATS,
 } from './achievements.js';
 import { initRender, render, setRenderScale } from './render.js';
 import {
@@ -23,7 +23,7 @@ import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import * as zone from './zone.js';
-import { lerp, shellModal, seedFrom } from './util.js';
+import { lerp, shellModal, seedFrom, placeName } from './util.js';
 
 // A run's progression record. config.newProgress builds the roguelite half;
 // the achievement ledger is bolted on HERE rather than inside it because
@@ -127,6 +127,7 @@ const game = {
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
   zoomCur: 1.15,           // animated camera zoom (no manual control)
+  viewPin: null,           // {vw, vh} a HARNESS may pin the sim's view to (simView) — null in play
   shake: 0,
   predict: true,
   deathCause: '',
@@ -355,11 +356,29 @@ for (const ev of ['pointerdown', 'keydown']) {
   window.addEventListener(ev, () => sfx.initAudio(), { once: true, passive: true });
 }
 
+// THE SIM'S VIEW SIZE, WHICH A HARNESS MAY PIN. The fair view below already
+// makes game.viewR window-size-INDEPENDENT: viewR is hypot(vw,vh)/2/cam.zoom
+// and cam.zoom carries the same hypot, so it reduces to VIEW_REF_DIAG/2/zoomCur
+// and the window cancels. MEASURED: that cancellation is exact in float too —
+// viewR is byte-identical (7867.525607436779) at 1024x736, 1440x868 and
+// 1920x1018, and mechTest's whole report matches across all three WITHOUT this
+// pin. So the pin fixes nothing observed; it makes the property STRUCTURAL.
+// It is worth having because the thing it guards is sharp: viewR gates RNG
+// DRAW COUNTS (world.replenishWorld's leash test skips the rng() draws behind
+// it on a `continue`) and cam.zoom maps the parked cursor to a world distance,
+// so if that float cancellation ever stopped being exact — a different zoomCur,
+// a different machine — mechTest's bit-repeatability contract would break with
+// no obvious cause. runMechTest pins game.viewPin for its duration (issue #104).
+// SIM-CLOCK READERS ONLY. The chart's DOM handlers below deliberately keep the
+// raw view.getView(): they map a REAL cursor into chart space, and a pinned
+// width would put the hit test somewhere the user isn't pointing.
+function simView() { return game.viewPin || view.getView(); }
+
 // Fair view: fold the canvas-size normalization into cam.zoom itself —
 // mouseWorld, viewR, render culling, and the /zoom UI-stroke idiom all read
 // cam.zoom, so this one assignment keeps every consumer consistent.
 function applyZoom() {
-  const { vw, vh } = view.getView();
+  const { vw, vh } = simView();
   game.cam.zoom = game.zoomCur * (Math.hypot(vw, vh) / CFG.VIEW_REF_DIAG);
 }
 applyZoom();
@@ -583,7 +602,7 @@ initInput(canvas, {
     // fork the build clock and leave the home port frozen at whatever progress
     // it happened to be at.
     game.home = d;
-    game.homeSetName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+    game.homeSetName = placeName(d.b);
     game.dockFlashT = 0.9;
   },
   // DEV sim-speed hotkeys (?dev=1 only): [-] halve, [=] double, [0] reset to
@@ -751,7 +770,11 @@ function driftSplash(dt) {
   game.time += dt;
   // The re-rail scan measures against the player's view, not the camera's — off
   // on the title screen it would re-rail rocks in shot. Keep it honest.
-  const { vw, vh } = view.getView();
+  // simView, not view.getView: viewR is only window-independent because the
+  // hypot here cancels the one inside cam.zoom, so the two must always be read
+  // through the same accessor (the title screen is not a harness path today —
+  // this is here so a pinned run can never end up with a mismatched pair).
+  const { vw, vh } = simView();
   game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
   game.ship.invuln = Math.max(game.ship.invuln || 0, 1);
   // The solar wave can't reach the title screen. Backing out to the menu
@@ -934,6 +957,10 @@ function healOnHullGain(oldHullMax) {
   const gain = game.st.hullMax - oldHullMax;
   if (gain > 0 && game.ship.alive) {
     game.ship.hull = Math.min(game.st.hullMax, game.ship.hull + gain * 1.2);
+    // Re-baseline the one stat this invalidates. A ceiling gain is a grant, not
+    // a repair, and an automatic rank landing mid-flight must not disarm a
+    // "Limped In" run in progress — see achievements.noteHullGrant.
+    noteHullGrant(game);
   }
 }
 
@@ -1580,7 +1607,7 @@ function update(dtReal) {
     } else {
       game.burnerOn = false;
     }
-    const { vw, vh } = view.getView();
+    const { vw, vh } = simView();
     const m = mouseWorld(game, vw, vh);
     game.aim.x = m.x; game.aim.y = m.y;
     // World-space radius of the current view — the local asteroid spawner

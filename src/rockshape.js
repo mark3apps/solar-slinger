@@ -81,8 +81,14 @@ function hullMetrics(sh) {
 // vertex error feeding a contact normal, on the file whose entire job is that
 // the depth and the direction come from the SAME measurement. So the rebuild is
 // made cheap enough not to need hiding — metrics hoisted per shape above,
-// buffers allocated ONCE per body below — and the cache keeps the honest key,
-// where it still hits for every settled or railed rock in the sky.
+// buffers allocated ONCE per body below — and the cache keeps the honest key.
+// BE CLEAR ABOUT WHERE IT HITS: WITHIN a substep, where one rock is queried
+// against every neighbour the sweep paired it with, and for dormant rock whose
+// `rot` is frozen. It does NOT hit across substeps for anything awake —
+// physics.js's integrate loop writes `b.rot` ABOVE its `if (b.onRails)
+// continue;`, so railed field rock turns exactly like a free body, and nothing
+// damps landmark spin to zero. Do not read this as a cross-substep cache for
+// the ~3.6k railed field rocks and go hunting the collider's cost elsewhere.
 function hullsWorld(b) {
   const sh = rockShapeOf(b);
   const rot = b.rot || 0, r = b.radius;
@@ -303,15 +309,21 @@ function manifold(a, b, hullA, hullB, best, ox, oy) {
     seg = [onFace(p0), onFace(p1)];
   }
 
-  // Keep only the points actually behind the reference face, and take their
-  // depth from that face rather than from the SAT axis: per-point depth is what
-  // lets the solver push a tilted slab straight instead of translating it.
+  // Keep only the points actually behind the reference face. A POINT IS A
+  // POSITION, NOT A DEPTH: the one depth in a manifold is the SAT axis's
+  // (`best.depth`, returned below), which is what physics.collideBodies reads
+  // for the push and what rockContacts sorts on. There WAS a per-point `depth`
+  // here, described as letting the solver push a tilted slab straight — nothing
+  // ever read it, and it could not have worked: the corner fallback below
+  // projects both endpoints ONTO this face with `onFace`, and `u` is
+  // perpendicular to `rn` by construction, so `p · rn === rc` exactly and every
+  // corner contact reported 0. Add it back only WITH the solver that uses it,
+  // and carry a real depth into the corner path when you do.
   const rc = ra.x * rnx + ra.y * rny;
   const pts = [];
   for (const p of seg) {
-    const d = rc - (p.x * rnx + p.y * rny);
-    if (d < 0) continue;
-    pts.push({ x: p.x + a.x, y: p.y + a.y, depth: d });
+    if (rc - (p.x * rnx + p.y * rny) < 0) continue;
+    pts.push({ x: p.x + a.x, y: p.y + a.y });
     if (pts.length === MAX_POINTS) break;
   }
   if (!pts.length) {
@@ -328,7 +340,7 @@ function manifold(a, b, hullA, hullB, best, ox, oy) {
     const d0 = rc - (p0.x * rnx + p0.y * rny), d1 = rc - (p1.x * rnx + p1.y * rny);
     const p = d0 > d1 ? p0 : p1;
     const t = Math.max(0, Math.min(tl, (p.x - ra.x) * ux + (p.y - ra.y) * uy));
-    pts.push({ x: ra.x + ux * t + a.x, y: ra.y + uy * t + a.y, depth: Math.max(0, Math.max(d0, d1)) });
+    pts.push({ x: ra.x + ux * t + a.x, y: ra.y + uy * t + a.y });
   }
   return { nx: best.nx, ny: best.ny, depth: best.depth, points: pts };
 }
@@ -458,10 +470,109 @@ export function rockOverlap(a, b) {
   return false;
 }
 
+// ---- A CIRCLE AGAINST THE DRAWN OUTLINE (exact) -----------------------------
+// The narrow phase for every party that is round: the ship, an alien, a pebble.
+// Returns the SIGNED distance from the query point to the outline (negative
+// inside), the outward unit normal there, and the closest point itself — so a
+// caller gets depth, direction and contact location from ONE measurement, which
+// is this file's whole argument applied to the other half of the collision
+// matrix.
+//
+// WHY THIS EXISTS RATHER THAN A BEARING QUERY. `rockSurfAt` below reduces the
+// outline to a single radius per bearing, and that is only the surface when the
+// outline is a radial function r(theta). `util.rockOutline` is one by
+// construction — the design law says so in as many words ("an overhang would
+// break the single radial query") — but the bake does not stop at rockOutline:
+// a child is CUT from its parent and lands with its own centroid, and a cut can
+// put a concave bite between that centroid and the far wall. Measured over the
+// baked library at 1440 bearings: 17 of the 68 shapes have bearings whose ray
+// crosses the outline more than twice, worst gap 1.40 body radii (s2_34), and
+// m2_31 is multi-crossing over 6.7% of its circumference. `march` takes the
+// OUTERMOST crossing, so on exactly those bearings the collider sat a whole
+// body radius outside the rock the player can see — fly at the visible bite and
+// you stop and bounce in open space, against the crumble law's "the crater you
+// see is the crater you can fly into". None of the 5 roots are affected; every
+// offender is a cut child, which is the signature of the cause.
+//
+// Distance to a polygon has no such degeneracy: the boundary is the boundary,
+// however gnarled. Run against `v` (the DRAWN outline) and not `hulls`, because
+// agreeing with the picture is the entire point of the query — render.js's
+// cosmetic wobble is held to 0.8% of radius precisely so drawn and collided
+// stay inside one band.
+//
+// One pass, no per-edge division except the two it cannot avoid, against
+// `march`'s two divisions per edge — and it replaces a `march` for the radius
+// AND a second one for the normal at every ship contact.
+// ONE RECORD, REUSED — an exact contact costs no allocation on a path that runs
+// per substep over every landmark pair. It is overwritten by the NEXT call, so
+// read the fields you want into locals before querying anything else; holding
+// two results to compare them silently reads one rock twice.
+const _cq = { d: 0, nx: 0, ny: 0, x: 0, y: 0 };
+export function rockCircleQuery(b, px, py) {
+  const sh = rockShapeOf(b);
+  const v = sh.v, n = v.length >> 1, r = b.radius || 1;
+  const rot = b.rot || 0;
+  // The QUERY POINT goes into the body's local unit frame, not the other way
+  // round: one rotation instead of one per vertex.
+  const cs = Math.cos(rot), sn = Math.sin(rot);
+  const wx = (px - b.x) / r, wy = (py - b.y) / r;
+  const qx = wx * cs + wy * sn, qy = -wx * sn + wy * cs;
+
+  let bestD2 = Infinity, bpx = 0, bpy = 0, inside = false;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = v[i * 2], ay = v[i * 2 + 1];
+    const ex = v[j * 2] - ax, ey = v[j * 2 + 1] - ay;
+    // Even-odd crossing count along +x. Winding-agnostic and correct for a
+    // concave outline, which is the case that matters here.
+    if ((ay > qy) !== (v[j * 2 + 1] > qy)) {
+      if (qx < ax + ((qy - ay) / ey) * ex) inside = !inside;
+    }
+    // Closest point on this segment, clamped to its endpoints — so a corner
+    // reports the corner, which is the correct contact for a circle on a vertex.
+    const L2 = ex * ex + ey * ey;
+    let u = L2 > 1e-18 ? ((qx - ax) * ex + (qy - ay) * ey) / L2 : 0;
+    u = u < 0 ? 0 : u > 1 ? 1 : u;
+    const cx = ax + ex * u, cy = ay + ey * u;
+    const ddx = qx - cx, ddy = qy - cy, d2 = ddx * ddx + ddy * ddy;
+    if (d2 < bestD2) { bestD2 = d2; bpx = cx; bpy = cy; }
+  }
+  const dist = Math.sqrt(bestD2);
+  // Outward normal = the direction from the closest boundary point to the query
+  // point, reversed when the point is inside (so it always points OUT of the
+  // rock, i.e. the shortest way out). Degenerate only when the point sits
+  // exactly on the boundary, where radial is as good an answer as any.
+  // THE FLIP BELONGS INSIDE THE MEASURED BRANCH. On the boundary itself
+  // "inside" is meaningless — the even-odd count can land either way on a point
+  // that IS the edge — so negating the radial fallback there would hand back an
+  // INWARD normal while `pen` still reads positive, and the contact would push
+  // the round party further in for one substep. Measure-zero (1e-9 local units
+  // is ~1e-7 world units on a 137-unit rock) and self-correcting, but the
+  // fallback's whole job is to be a safe answer.
+  let nx, ny;
+  if (dist > 1e-9) {
+    nx = (qx - bpx) / dist; ny = (qy - bpy) / dist;
+    if (inside) { nx = -nx; ny = -ny; }
+  } else { const L = Math.hypot(qx, qy) || 1; nx = qx / L; ny = qy / L; }
+  _cq.d = (inside ? -dist : dist) * r;
+  _cq.nx = nx * cs - ny * sn; _cq.ny = nx * sn + ny * cs;
+  _cq.x = b.x + (bpx * cs - bpy * sn) * r;
+  _cq.y = b.y + (bpx * sn + bpy * cs) * r;
+  return _cq;
+}
+
 // Surface radius toward a world bearing — what render and the predictor ask for.
 // Ray-marches the outline rather than the hulls: the drawn silhouette keeps
 // every vertex the bake produced, and this is the query that has to agree with
 // what the player can see.
+//
+// A RADIAL REDUCTION, AND THE BAKED OUTLINES ARE NOT ALL RADIAL FUNCTIONS — see
+// rockCircleQuery above for the measurement (17 of 68 shapes, worst 1.40 body
+// radii). Everything the PLAYER can hit goes through that exact query instead;
+// what is left here is cosmetic sampling (render's decal ring) and the one
+// collision case with no circle on either side — a landmark against a crystal
+// world or a cratered limb, where both parties are non-circular and the radial
+// sum is the shared approximation. Don't hand this function a new collider.
 // One ray march, two answers: how far the surface is along a bearing, and which
 // EDGE the ray leaves through. Both callers want the same walk, and doing it
 // once means the radius and the normal can never disagree about which face the

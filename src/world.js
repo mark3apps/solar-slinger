@@ -483,10 +483,22 @@ export function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
 
 // Skewed small (down to pebbles), occasionally chunky — and ~12% are
 // BOULDERS, a class between common rocks and moons that keeps the size
-// ladder readable.
+// ladder readable. The small tail sits HIGHER than it used to (user call,
+// 2026-08: pebbles up to ~twice their old mass): floor 15 -> 40 and skew
+// 2.2 -> 1.8 double the ~30-300 pebble band while the 1,000+ rock and the
+// branch ceiling (2,600, where boulders take over) stay where they were —
+// every draw still lands in the same beam classes, so TIERS is untouched.
+// KNOW WHAT RETUNING THIS COSTS: the draw COUNT is unchanged (two per rock,
+// so the append-only rng contract below holds), but mass feeds radius feeds
+// placement/packing retries, so ANY change to these numbers deals the same
+// seed a different sky downstream — every fixed-seed expectation that leans
+// on world layout re-rolls. Measured 2026-08: this exact retune left the
+// first moon bit-identical yet broke mechTest's dock staging (4 of 31) purely
+// through downstream reshuffle. Re-run the full mechTest after touching this,
+// and expect worldgen bench churn that is knock-on, not regression.
 function asteroidMass(rng) {
   if (rng() < 0.12) return 2600 + rng() * 3400;   // boulder: 2600-6000
-  return 15 + Math.pow(rng(), 2.2) * 2585;
+  return 40 + Math.pow(rng(), 1.8) * 2560;
 }
 
 export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
@@ -572,9 +584,13 @@ export function generateWorld(game, seed = 20260721) {
   // every rock's baked shape (rockshape.rockShapeOf) and its sprite detail, so
   // without this the same seed builds the same layout wearing different rock:
   // identical worldgen checksum, different collisions half a second later. The
-  // reset goes BEFORE generateWorld's bodies are minted, and the ship is minted
-  // inside it too, so a run's ids are a pure function of the seed. See the note
-  // on NEXT_ID in entities.js.
+  // reset goes BEFORE generateWorld's bodies are minted, and nothing OUTSIDE
+  // generateWorld mints an id-bearing object: only Body and Alien draw
+  // NEXT_ID++, `Ship` carries no id at all (generateWorld does not build one —
+  // respawnShip just repositions main.js's single import-time Ship), and
+  // regenWorld clears game.aliens before this runs. That is why the ids minted by
+  // generateWorld are a pure function of the seed — check this ordering again if Ship ever gains
+  // an id. See the note on NEXT_ID in entities.js.
   resetBodyIds();
 
   // ONE sun, vast and dangerous, with the whole map as its system.
@@ -1125,7 +1141,7 @@ function seedDebrisBelts(bodies, planets, rng) {
     // test below needs the full list (down to the 5-unit ring pellets) while
     // the lane search only wants the ones big enough to hold a lane — but both
     // used to walk the whole `bodies` array, the slot test once per slot. This
-    // pass runs AFTER seedDenseFields, so the array already holds ~7,600 shoal
+    // pass runs AFTER seedDenseFields, so the array already holds ~3,643 shoal
     // rocks and every one of them is railed: the parent compare alone ran into
     // millions of iterations per generateWorld. One walk, two lists. Same
     // membership, so placement is unchanged. (generateWorld now also runs on a
@@ -1532,6 +1548,18 @@ function findLanes(f, rng, slots) {
   for (let i = 0; i + 2 < nodes.length; i += 2) pairs.push([nodes[i], nodes[i + 2]]);
   // Each edge takes the quietest of a few bows, so an individual road still
   // picks its way through what is actually there.
+  //
+  // NO SEPARATION TERM, ON PURPOSE. Cost is rock displacement alone: nothing
+  // here pushes two roads apart. There used to be a documented/tuned constant
+  // for this (config's FIELD_LANE_APART, now deleted), but `findLanes` never
+  // actually read it. The network form makes it the wrong idea rather than an
+  // unfinished one. Measured over 3 seeds x 4 pockets, of the pairs
+  // running closest together essentially all are indices >= 8 — the junction
+  // CHAIN and the CHORDS — while the 8 rim edges stay well clear of each
+  // other. That is the topology, not a defect: a chord from node i to i+2
+  // exists to shortcut the chain through i+1, so it is DEFINED as running
+  // alongside it. A separation cost would push chords off the chains they are
+  // built to close, and buy nothing on the rim edges, which never needed it.
   const lanes = [];
   for (const [a, b] of pairs) {
     const span = Math.hypot(b.tan - a.tan, b.rad - a.rad);
@@ -2289,7 +2317,20 @@ function seedDenseFields(game, sun, rng) {
         // Cheap radius guess for the clearance test — the true one needs the
         // mass draw below, and the ladder's spread is narrow enough at this
         // scale that a mid estimate keeps pebbles apart without wasting draws.
-        if (!gravelClear(x, y, 13)) { if (tries < 7) continue; }
+        // NO LAST-TRY ESCAPE HERE, unlike the density taper below. The taper is
+        // a preference — accepting a rim draw on the final try only costs a
+        // slightly flatter gradient. This is the clearance test, and swallowing
+        // it seeds a pebble INSIDE another pebble: both are railed field rock,
+        // so collideBodies' railed-pair pass-through freezes them exactly where
+        // worldgen put them, and stuckPair can only fire once they are inside
+        // each other's surfReach. Measured before this: 1-5 interpenetrating
+        // gravel pairs per world, worst 21.9 units of overlap on ~13-unit rocks
+        // — fully buried, and visible from the first frame. `gcells` was added
+        // for precisely this (21 of 27 overlapping pairs in the whole sky were
+        // gravel on gravel); the escape hatch was undoing it on one try in
+        // eight. Falling out to `if (!sited) continue;` drops the pebble, which
+        // is what the landmark `clash` path already does.
+        if (!gravelClear(x, y, 13)) continue;
         for (const g of bigs) {
           // Against the SHAPE, for the same reason the masonry is packed against
           // it: a landmark's corners reach past its nominal radius, so a circle
