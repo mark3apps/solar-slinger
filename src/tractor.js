@@ -141,7 +141,8 @@ function flingSpeedFor(game, mass, body = null) {
     game.tetherMul = mul;
   }
   // Hard cap the throw speed — Kinetic Sling 6 × tether × Berserker could reach
-  // ~4900, fast enough to tunnel through small targets and inject absurd impulse.
+  // ~4900 under the old 150/rank sling slope (~3,050 under the 50/rank one),
+  // fast enough to tunnel through small targets and inject absurd impulse.
   return Math.min(speed, 3000);
 }
 

@@ -336,25 +336,24 @@ give directions by). Rules that keep it from breaking the invariants above:
       every hit ADDS energy and the pocket boils itself apart. Field rocks are also EXEMPT from the
       gentle-contact absorb rule against each other: a pocket that ate every soft touch with a 15x
       mass ratio digested itself around its own giants.
-    - **Tough against its own kind, DANGEROUS TO YOU** (`FIELD_SHIP_DMG` 2.5, the mirror of
-      `FIELD_TOUGH` below, applied in `collideShipBody`). The pockets are meant to be **high risk /
-      high reward** and were reading as pure reward, because a rigid pocket is SAFE: match its orbit
-      and every rock is nearly stationary relative to you, so the `closing > 25` gate left a farmer
-      sitting inside ~910 rocks barely scratched. The multiplier rides `closing`, so it weights the
-      danger toward LOOSE, stirred-up rock — the mess you made — while ambient jostling stays minor.
-      Hull does not self-heal, so that attrition is the real price of working a shoal.
-      **Field rock also keeps the BASE mass-saturation knee at every tier**, which mattered far more
-      than the multiplier: the knee normally grows with tier (`1500 × (1 + tier×1.2)`) so a
-      dreadnought shrugs off pebbles, and that made the shoals get SAFER the stronger you got — a
-      median field rock at 300 closing went 31% of hull at tier 0, 7% at tier 3, **4% at tier 5**,
-      i.e. harmless at exactly the tier you farm them. Flat knee ⇒ the same absolute bite at every
-      tier, so a bigger hull endures more of a shoal without ever becoming immune to one. A big ship
-      in a dense field is a big target.
-      **`FIELD_SHIP_DMG` is deliberately NOT applied to alien-thrown rock** — a lurker shove already
-      carries its own `thrown` multiplier and its own speed/mass tuning, and the two stacked put a
-      single body-check on the 45%-per-hit cap at every tier (a two-shot kill from an ambush, with
-      three hunting). Keeping them separate is also what lets the shoal and its predator be tuned
-      independently instead of through each other.
+    - **Dangerous to you by QUANTITY and by the flat knee — not by a multiplier.** The
+      `FIELD_SHIP_DMG` multiplier (1.0 → 2.5 → 1.3) is **REMOVED, 2026-08** (user call: "remove this
+      multiplier altogether") — under the tempered damage curve it was the last flat amplifier in
+      the sky, and a stirred pocket fed rock after rock into the 45%-per-hit hull cap. Shoal rock
+      now prices exactly like any rock of its mass and closing speed; a rigid pocket stays SAFE to
+      fly (match its orbit and relative speeds are ~0, under the `closing > 25` gate), and the cost
+      of working one is the stirred-up rock you yourself set moving. Hull does not self-heal, so
+      that attrition is still a real price.
+      **Field rock keeps the BASE mass-saturation knee at every tier** — this always mattered more
+      than the multiplier, and it is the shoal's remaining structural danger: the knee normally
+      grows with tier (`1500 × (1 + tier×1.2)`) so a dreadnought shrugs off pebbles, and that made
+      the shoals get SAFER the stronger you got — a median field rock at 300 closing went 31% of
+      hull at tier 0, 7% at tier 3, **4% at tier 5**, i.e. harmless at exactly the tier you farm
+      them. Flat knee ⇒ the same absolute bite at every tier, so a bigger hull endures more of a
+      shoal without ever becoming immune to one. A big ship in a dense field is a big target.
+      To make shoals scarier again, tune the knee or the lurkers — do not reintroduce a flat field
+      multiplier. (The old multiplier was never applied to alien-thrown rock; `LURKER_SHOVE` keeps
+      its own independent tuning, unchanged by the removal.)
     - **Tough against its own kind** (`FIELD_TOUGH` 0.08 damage scale, `FIELD_HP_MUL` 6 hp): hits
       send rocks flying, they don't erase them. The damp covers EVERY field-vs-field impact —
       including lurker body-checks and chain caroms, which are 'thrown' and at full damage vaporized

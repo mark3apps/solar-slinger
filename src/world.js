@@ -483,10 +483,14 @@ export function asteroidRadius(mass) { return 0.5 + Math.cbrt(mass) * 0.62; }
 
 // Skewed small (down to pebbles), occasionally chunky — and ~12% are
 // BOULDERS, a class between common rocks and moons that keeps the size
-// ladder readable.
+// ladder readable. The small tail sits HIGHER than it used to (user call,
+// 2026-08: pebbles up to ~twice their old mass): floor 15 -> 40 and skew
+// 2.2 -> 1.8 double the ~30-300 pebble band while the 1,000+ rock and the
+// branch ceiling (2,600, where boulders take over) stay where they were —
+// every draw still lands in the same beam classes, so TIERS is untouched.
 function asteroidMass(rng) {
   if (rng() < 0.12) return 2600 + rng() * 3400;   // boulder: 2600-6000
-  return 15 + Math.pow(rng(), 2.2) * 2585;
+  return 40 + Math.pow(rng(), 1.8) * 2560;
 }
 
 export function spawnAsteroid(bodies, x, y, vx, vy, mass) {
