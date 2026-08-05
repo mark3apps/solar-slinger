@@ -81,8 +81,14 @@ function hullMetrics(sh) {
 // vertex error feeding a contact normal, on the file whose entire job is that
 // the depth and the direction come from the SAME measurement. So the rebuild is
 // made cheap enough not to need hiding — metrics hoisted per shape above,
-// buffers allocated ONCE per body below — and the cache keeps the honest key,
-// where it still hits for every settled or railed rock in the sky.
+// buffers allocated ONCE per body below — and the cache keeps the honest key.
+// BE CLEAR ABOUT WHERE IT HITS: WITHIN a substep, where one rock is queried
+// against every neighbour the sweep paired it with, and for dormant rock whose
+// `rot` is frozen. It does NOT hit across substeps for anything awake —
+// physics.js's integrate loop writes `b.rot` ABOVE its `if (b.onRails)
+// continue;`, so railed field rock turns exactly like a free body, and nothing
+// damps landmark spin to zero. Do not read this as a cross-substep cache for
+// the 3,643 railed rocks and go hunting the collider's cost elsewhere.
 function hullsWorld(b) {
   const sh = rockShapeOf(b);
   const rot = b.rot || 0, r = b.radius;
