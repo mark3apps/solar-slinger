@@ -1359,11 +1359,13 @@ export function updateHud(game) {
     // back down — a HAULER with no afterburner at all can still coast
     // through 500 on a good slingshot, and the dial pegging well under that
     // (an afterburner-only widened scale, ×1.12) read as broken on exactly
-    // the ship that has no burner to explain the overshoot. Folded against
-    // burnCap too, since a boosted scout's sustained cap is already wider
-    // than SPEED_HARD alone — the scale always covers whichever ceiling is
-    // actually the ship's tallest. ×1.05: a little headroom past even THAT
-    // peak, so a value sitting exactly on SPEED_HARD doesn't kiss the tip.
+    // the ship that has no burner to explain the overshoot. Math.max against
+    // burnCap too — NOT because it currently wins (burnCap tops out at 1.8,
+    // config.js; SPEED_HARD is 1.9, so today SPEED_HARD is always the taller
+    // of the two) but so the scale stays correct on its own the day burnCap
+    // is retuned past SPEED_HARD again, without anyone having to remember to
+    // revisit this line. ×1.05: a little headroom past even THAT peak, so a
+    // value sitting exactly on the ceiling doesn't kiss the tip.
     const ab = st.afterburner;
     const capMul = Math.max(CFG.SPEED_HARD, ab > 0 ? burnCap(ab) : 1);
     const velMax = st.maxSpeed * capMul * 1.05;
