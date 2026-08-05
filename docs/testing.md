@@ -8,7 +8,8 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
 - `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
   `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "17/17", moons: "59/59", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }`.
+  `{ planets: "N/N", moons: "N/N", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }` —
+  the denominators are the run's own start-of-soak census (per-seed since the seeded layout).
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
   **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
@@ -99,6 +100,7 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 Run these from `javascript_tool` against the preview (the pane suspends rAF when hidden, so `window.tick`
 /`window.soak`/`window.mechTest` are the way to advance the sim; `window.speed` needs the pane visible to
 actually render). Two skills wrap all this: **`mechanics-test`** (fast "did I break the game loop?" —
-runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against the
-17-planet/59-moon baseline — the 17 is the layout's 15 worlds plus the crystal binary's
-companion and The Wanderer's Star, the expedition layer's hidden dark dwarf).
+runs `mechTest` and judges it) and **`balance-test`** (long-horizon stability — runs `soak` against
+the run's own start-of-run census; the layout is seeded per run since the 2026-08 pass: 17 planets
+— the fixed 15 anchors plus the crystal binary's companion and The Wanderer's Star — and ~70–80
+moons, with an optional co-orbital pairing rearranging the outer band on some seeds).

@@ -16,7 +16,11 @@
 // If flight ever needs its old cruise back, raise the sun's mass by the same
 // factor (world.js) — sky speed and this constant are the pair, and the
 // camera-zoom note in docs/physics-invariants.md applies to that knob alone.
-const SYS = 1.3;
+// 1.69 = the original 1.3 grown a further 30% (2026-08 user call: "the solar
+// system should get up to 30% larger") — the second growth pass rides the
+// first, so every note written against 1.3 still describes the SHAPE, just
+// spread wider again.
+const SYS = 1.69;
 
 // All gameplay tuning lives here.
 export const CFG = {
@@ -155,22 +159,35 @@ export const CFG = {
   // reaches out proportionally rather than absolutely: a gas giant is now
   // something you fly ALONG, not something that snatches you. Raise
   // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
-  PLANET_R_MUL: 3,
-  MOON_R_MUL: 2,
+  // 5.25 = the previous 3 grown 1.75x (2026-08 user call: "planets should be
+  // 1.5x to 2x bigger"). The 1.5-2x SPREAD comes from world.js's per-planet
+  // seeded size jitter (x0.86-1.14 on the authored radius), so each world
+  // lands somewhere in 4.5-6x authored — 1.5-2x the sky this note was written
+  // against — and no two seeds grow the same world the same amount.
+  PLANET_R_MUL: 5.25,
+  // 5 = the previous 2 grown 2.5x (same pass: "moons should be 2x to 3x
+  // bigger"); spawnMoon's own seeded x0.8-1.2 jitter spans the 2-3x range.
+  // EVERY clearance margin sized to cover moon radii rides this constant
+  // (moonZone's floor, spawnMoon's sibling margin, replenishWorld's refill
+  // clearance) — that is what lets it move without re-deriving them.
+  MOON_R_MUL: 5,
   // How far out a planet holds moons, as a multiple of its HILL radius
   // (world.moonZone). Rails hold a moon on its orbit regardless of the sun's
   // tide, so the zone deliberately reaches past raw Hill stability — this is
-  // the "wide, majestic moon systems" knob, and 1.95 is the authored 1.5 taken
-  // 30% wider so a family spreads further than the system scale alone would
-  // give it. It pairs with the moon COUNTS in the layout table: both moved by
-  // the same 1.3, which leaves spawnMoon's per-moon slot width — and with it
-  // every sibling-clearance margin the no-crossing rule depends on —
-  // unchanged. Move one without the other and you are re-tuning how tightly
-  // packed a family is, not how wide it is.
+  // the "wide, majestic moon systems" knob, and 2.9 is the previous 1.95 taken
+  // ~1.5x wider (2026-08 user call: "the moon orbiting radius should be able
+  // to be about 1.5x larger"). It pairs with the moon COUNTS in the layout:
+  // counts grew up to 1.5x in the same pass (a seeded x1-1.5 per planet), so
+  // spawnMoon's per-moon slot width — and with it every sibling-clearance
+  // margin the no-crossing rule depends on — holds on average, and addPlanet
+  // now CLAMPS a family's count to what its zone can actually slot (the
+  // 180*MOON_R_MUL floor) so an unlucky draw degrades to fewer moons, never
+  // to a crossing pair. Move one of these without the other and you are
+  // re-tuning how tightly packed a family is, not how wide it is.
   // Hill goes with orbitR x cbrt(mass), so this widens the BIGGEST worlds most
   // in absolute terms, which is the point: a gas giant's family should read as
   // a system you fly through, not a bracelet.
-  MOON_ZONE_MUL: 1.95,
+  MOON_ZONE_MUL: 2.9,
   // Eccentricity ceiling for an elliptical moon rail (spawnMoon's eCap). Read
   // by moonZone as well, to turn a zone into the apoapsis it can actually
   // reach — the two MUST agree or the boundary clamp under-counts the reach it
@@ -204,8 +221,14 @@ export const CFG = {
   // world.js and on SHIP_ZOOM). Never touch one without considering the other.
   STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
-  // a world should FEEL like entering its well (total = SHIP_GRAV * this)
-  PLANET_GRAV_SHIP: 3.0,
+  // a world should FEEL like entering its well (total = SHIP_GRAV * this).
+  // 4.2 = the old 3.0 x 1.4 (2026-08 user call: "planet gravity generally
+  // about 1.4x as strong"), cashing in the invitation the WORLD SCALE note
+  // above makes: the growth pass left masses alone, so surface pull fell as
+  // 1/mul² while the worlds grew — this claws the felt grab back toward how
+  // big they now look. Ship-only, like everything in this family: rails,
+  // moon orbits, thrown rocks and damage never read it.
+  PLANET_GRAV_SHIP: 4.2,
   // LONG ARMS (ship only): beyond SHIP_WELL_START planet radii, the
   // ship-felt pull of a world falls off as 1/r instead of 1/r² until the
   // boost caps at SHIP_WELL_MAX — wells reach farther WITHOUT deepening
@@ -383,27 +406,37 @@ export const CFG = {
   // Solar flares: the sun RARELY erupts plasma at ships that fly close.
   // A direct hit is a real event now: EMP kills the engines for
   // FLARE_ENGINE_OUT seconds and blows half the orbit shield loose.
-  FLARE_RANGE: 5500,       // only fires while the ship is this close to the sun
+  // The flare family is keyed to the SUN'S RADIUS in spirit (fire while close,
+  // fizzle past the graveyard) — both moved when the sun doubled to 4800:
+  // range 5500→11000 keeps "close" the same ~2.3 sun radii it always was, and
+  // life 6→8 keeps the fizzle reach (surface + speed*life ≈ 10,800) covering
+  // the ring the range invites you to fight over.
+  FLARE_RANGE: 11000,      // only fires while the ship is this close to the sun
   FLARE_SPEED: 750,
-  FLARE_LIFE: 6,           // seconds of flight — flares fizzle ~4500 out
+  FLARE_LIFE: 8,           // seconds of flight — flares fizzle ~6000 out
   FLARE_DMG: 26,
   FLARE_ENGINE_OUT: 3,     // seconds of dead engines after a direct hit
 
   // CORONA HEAT on BODIES/ALIENS: everything melts inside HEAT_ZONE x the
   // sun's radius (dps ramps depth²). Lava-born things are immune.
-  // HEAT_ZONE must keep this zone's outer edge INSIDE the graveyard ring
-  // (~3160): 1.30 x 2400 = 3120 — raise it and the wrecks start cooking
-  // (any damage at all derails them; there is no "subtle" for railed bodies).
+  // HEAT_ZONE must keep this zone's outer edge INSIDE the graveyard ring:
+  // the ring is derived from the sun's radius in world.js (sunR x 1.36, so
+  // ~6530 against 1.30 x 4800 = 6240, wrecks scattered ±90 stay ~200 clear) —
+  // raise it and the wrecks start cooking (any damage at all derails them;
+  // there is no "subtle" for railed bodies).
   HEAT_ZONE: 1.30,
   HEAT_DPS_BODY: 0.12,     // fraction of a body's maxHp per second at surface
   // CORONA HEAT on the SHIP: a wide envelope with an EXPONENTIAL ramp —
   // dps = HEAT_SHIP_DPS * e^(-(d - sunR) / HEAT_SHIP_FALLOFF). At the zone
-  // edge it's a whisper (~0.01), at the graveyard ring ~2.5/s, at the
+  // edge it's a whisper (~0.01), at the graveyard ring ~2.4/s, at the
   // photosphere the full 42/s. Warmth warns long before it kills; the kill
   // only happens if you keep going.
+  // The falloff DOUBLED with the sun (300 → 600, 2026-08): the ramp is
+  // measured from the surface, so a 2x sun with the old e-folding read only
+  // ~0.13/s at its graveyard ring — the guarded salvage lost its guard.
   HEAT_SHIP_ZONE: 2.1,     // visual + damage envelope, x sun radius
   HEAT_SHIP_DPS: 42,       // dps at the photosphere
-  HEAT_SHIP_FALLOFF: 300,  // e-folding distance of the ramp
+  HEAT_SHIP_FALLOFF: 600,  // e-folding distance of the ramp
   // Lava worlds radiate the same aura, weaker and SHIP-only (their own
   // moons must never cook on their rails)
   LAVA_HEAT_ZONE: 1.7,     // reach, x planet radius
@@ -621,7 +654,14 @@ export const CFG = {
   // Read through physics.debrisRoom, which is one frame stale for bodies born
   // this frame — the per-event caps below are what actually bound a single
   // burst, the budget bounds the accumulation.
-  DEBRIS_BUDGET: 1500,
+  // 1900 = the old 1500 moved with the 2026-08 growth pass: the moon chunk
+  // shells (and the larger moon census they ride) raised the PERMANENT
+  // non-field population from ~800 to ~1100+ (bench stability, four seeds),
+  // and a ceiling that stood still would have quietly halved the room every
+  // cascade, spall and Cluster Round has to mint into (measured:
+  // minDebrisHeadroom 680 → 260 before this moved). +400 restores the
+  // accumulation room the old margin gave; the per-event caps are untouched.
+  DEBRIS_BUDGET: 1900,
 
   // THE GRAVEL MULTIPLIER — what the debris budget stopped having to bound.
   //

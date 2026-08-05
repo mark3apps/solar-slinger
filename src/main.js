@@ -713,11 +713,21 @@ function exitGame() {
 //   - event flags step() raises (heat, storms, auroras…) are cleared each frame
 //     instead of drained, or they'd all fire as messages the moment START ran.
 // zoomCur for the wide shot (gameplay tier-0 is ~1.15). Pulled back from 0.205
-// to ~1.5x wider: at the old framing the camera's 4400u orbit was about one view
+// to ~1.5x wider: at the old framing the camera's orbit was about one view
 // radius, so the sun sat on the frame edge and the shot read as "near a star"
 // rather than as a system. Wider, the inner lanes and the first belt sweep
 // through together — and the dive onto the ship at START has further to travel.
-const SPLASH_ZOOM = 0.14;
+// HALVED AGAIN (0.14 → 0.07) when the sun doubled to 4800 (the 2026-08 growth
+// pass), in lockstep with the orbit below: 2x radius x 1/2 zoom leaves the sun
+// the same ~340px disc it was tuned at, and the inner lanes — which grew less
+// than the sun did — sit a touch deeper inside the frame, which errs the shot
+// toward "system", never toward "star". Move this and SPLASH_ORBIT together
+// or the composition (sun size vs how far off-centre it swings) silently
+// changes.
+const SPLASH_ZOOM = 0.07;
+// The camera's orbit around the sun. 8800 = the old 4400 doubled with the
+// sun: at 4400 the camera now sat INSIDE the 4800-radius photosphere.
+const SPLASH_ORBIT = 8800;
 let splashAcc = 0;
 // The establishing shot's framing at splash time t. Lifted OUT of the substep
 // loop because the loop is not guaranteed to run: driftSplash takes zero
@@ -731,8 +741,8 @@ let splashAcc = 0;
 function frameSplash(t) {
   game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
   const a = t * 0.06;                                            // slow orbit of the sun
-  game.cam.x = Math.cos(a) * 4400;
-  game.cam.y = Math.sin(a) * 4400;
+  game.cam.x = Math.cos(a) * SPLASH_ORBIT;
+  game.cam.y = Math.sin(a) * SPLASH_ORBIT;
 }
 function driftSplash(dt) {
   game.time += dt;

@@ -1,6 +1,6 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
-  stormStrength, stormSpent, shelterR } from './config.js';
+  stormStrength, stormSpent, shelterR, SHIP_RADIUS } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { damageShip, parryLive } from './physics.js';
@@ -726,16 +726,30 @@ export function runMechTest(game, hooks, opts = {}) {
       // Attitude wrong (nose along the surface, well outside DOCK_ARC 1.0):
       // contact and stillness hold, so the refusal must be named as 'level'.
       setDown(w, Math.PI / 2);
-      hooks.stepSim(0.4);
+      // SETTLE BEFORE ASSERTING WHICH GATE REFUSES. A teleport placement can
+      // leave the hull a few units proud of the surface for a moment — the
+      // resolver pushes the 0.5u seat-in overlap out, and since the 2026-08
+      // moon growth (2-3x the radius on the same mass) surface gravity is ~6x
+      // weaker, so the fall back to contact can take over a second where it
+      // used to fit inside 0.4s. The contract under test is the STEADY state:
+      // parked nose-off names 'level'. A real approach never teleports.
+      let settled = false;
+      for (let i = 0; i < 60 && !settled; i++) { hooks.stepSim(0.05); settled = !!game.dockCand; }
+      const s = game.ship;
+      const alt = Math.hypot(s.x - w.x, s.y - w.y) - w.radius - s.radius;
+      expect(settled, `no surface contact within 3s of set-down (alt=${alt.toFixed(1)})`);
       expect(!game.dock, 'berthed with the nose off the arc');
-      expect(game.dockGate === 'level', `refusing gate was "${game.dockGate}", wanted "level"`);
-      // Now rockets down, held past DOCK_TIME.
+      expect(game.dockGate === 'level',
+        `refusing gate was "${game.dockGate}", wanted "level" `
+        + `(alt=${alt.toFixed(1)} ang=${s.angle.toFixed(2)} moon r=${w.radius.toFixed(0)})`);
+      // Now rockets down, held past DOCK_TIME — bounded rather than a fixed
+      // window, for the same settle-transient reason as above.
       setDown(w, 0);
-      hooks.stepSim(CFG.DOCK_TIME + 0.6);
-      expect(game.dock, `no berth after ${CFG.DOCK_TIME + 0.6}s of all three gates`);
+      for (let i = 0; i < 80 && !game.dock; i++) hooks.stepSim(0.1);
+      expect(game.dock, 'no berth after 8s of all three gates');
       expect(game.dock.b === w, 'berthed to the wrong body');
       expect(game.docks.length === 1, `docks=${game.docks.length}, wanted 1`);
-      return `gate refused as "level", then latched to ${w.name || 'a moon'} in <=${CFG.DOCK_TIME + 0.6}s`;
+      return `gate refused as "level", then latched to ${w.name || 'a moon'}`;
     });
 
     // T16 — the build window gives NOTHING, and the finished station gives
@@ -938,12 +952,19 @@ export function runMechTest(game, hooks, opts = {}) {
         `${unexpected.length}/${moons.length} moons besides the shepherd are under `
         + `STORM_SHADOW_MIN_R ${CFG.STORM_SHADOW_MIN_R} and cast no lee `
         + `(radii ${unexpected.map((b) => b.radius.toFixed(1)).join(', ')})`);
-      // The flat pad is what makes a small moon's lee a pocket, not a razor edge.
+      // The flat pad is what makes a small moon's lee a pocket, not a razor
+      // edge — and the pad is measured in SHIP-widths (a TITAN must fit in the
+      // slot the radius multiple alone would not leave), so the assertion is
+      // lee minus moon against the biggest hull, NOT a multiple of the moon's
+      // own radius. The old `> 2x radius` form was that multiple, calibrated
+      // when the smallest moon was ~25 units; the 2026-08 moon growth made it
+      // fail on moons whose lee is proportionally MORE generous than ever.
       const small = moons.filter((b) => !b.shepherd)
         .reduce((a, b) => (b.radius < a.radius ? b : a));
-      expect(shelterR(small) > small.radius * 2,
-        `a small moon's lee (${shelterR(small).toFixed(1)}) is barely wider than the moon `
-        + `(${small.radius.toFixed(1)}) — the flat pad is missing`);
+      expect(shelterR(small) - small.radius > SHIP_RADIUS[5],
+        `a small moon's lee (${shelterR(small).toFixed(1)}) leaves only `
+        + `${(shelterR(small) - small.radius).toFixed(1)} over the moon (${small.radius.toFixed(1)}) `
+        + `— a TITAN (${SHIP_RADIUS[5]}) does not fit; the flat pad is missing`);
       return `${moons.length - dark.length}/${moons.length} moons shelter `
         + `(${dark.length} shepherd exempt); smallest r=${small.radius.toFixed(1)}, lee=${shelterR(small).toFixed(1)}`;
     });

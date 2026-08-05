@@ -6,8 +6,10 @@
 
 ## The discovery layer
 
-Combat-free exploration content, deliberately sparse and all seeded to fixed spots (landmarks you can
-give directions by). Rules that keep it from breaking the invariants above:
+Combat-free exploration content, deliberately sparse and all seeded (landmarks you can give
+directions by — within one run's world; since the seeded-layout pass the SPOTS derive from the
+lanes each seed generated, so they differ between seeds but never within one). Rules that keep it
+from breaking the invariants above:
 
 - **Comet Vesper** free-flies an eccentric orbit (peri ~3900 — deliberately above the graveyard ring,
   which otherwise collision-random-walks it into the sun — apo ~20100) and must NEVER be railed —
@@ -90,10 +92,11 @@ give directions by). Rules that keep it from breaking the invariants above:
     re-stroked soft afterwards: a clip cuts with a knife, and a hard in-world edge is against the
     house style.
   - **MOONS SHELTER — all but the very smallest.** The type test always read planet/moon/rogue, but
-    `STORM_SHADOW_MIN_R` sat at 60 and the sky's moons run 25–84 (median 52.5), so **40 of 59 moons
-    silently failed**: "duck behind that moon" worked two times in three with nothing to tell you
-    which. The floor is **24** — every real moon casts a lee, the ring shepherd moonlet at 18 still
-    doesn't (a moonlet the size of the ship shelters nobody). `config.shelterR` adds a **flat
+    `STORM_SHADOW_MIN_R` sat at 60 and the sky's moons then ran 25–84 (median 52.5), so **40 of 59
+    moons silently failed**: "duck behind that moon" worked two times in three with nothing to tell
+    you which. The floor is **24** — every real moon casts a lee (the 2026-08 moon growth to ~50–250
+    radii only widens the margin), the ring shepherd moonlet still doesn't (a moonlet near ship
+    scale shelters nobody). `config.shelterR` adds a **flat
     `STORM_SHADOW_PAD`** on top of the radius multiple, because forgiveness has to be measured in
     ship-widths: `1.15 ×` a 26-radius moon is a 30-unit half-width, which a TITAN (`SHIP_RADIUS` 44.2)
     does not fit through. `shelterR` is the ONE definition — `shelterBody` decides with it and
@@ -230,13 +233,14 @@ give directions by). Rules that keep it from breaking the invariants above:
     ONLY, never moons/planets) killing the next, keeps it going. 2+ shouts a multiplier + bonus scrap.
   - **Ice-moon geysers** (world.js): ice-type moons vent catchable ammo like the far ice planets, but
     close-in and faster — an early harvesting loop.
-  - **Dense asteroid fields** (`world.seedDenseFields`, `CFG.FIELD_*`): four VAST rock shoals at
-    fixed radii — three in the planet-lane gaps (AUTHORED 10400 / 23000 / 33500 — The Shoal, The
-    Grindstones, The Hushfield) and one on the outer band's frost fringe (authored 44300, The
-    Farshoal). Every one of those is an authored radius spread by `CFG.SYS_R_MUL` at seed time
-    (world.js's module-local `SR`), so a pocket keeps riding the lane gap it was placed in however far apart the sky
-    sits — the gaps are the point, not the numbers. Each is ~910 rocks (`CFG.FIELD_ROCKS` 920 is the
-    packer's ceiling; the census lands a few short of it)
+  - **Dense asteroid fields** (`world.seedDenseFields`, `CFG.FIELD_*`): four VAST rock shoals —
+    three riding planet-lane GAPS and one on the outer band's frost fringe (The Shoal, The
+    Grindstones, The Hushfield, The Farshoal). Since the seeded-layout pass the three inner radii
+    are the MIDPOINTS of the gaps the seed actually generated (`buildLayout`'s `fieldMid` slot
+    markers, handed into `seedDenseFields`) — the gaps are the point, not the numbers, and a fixed
+    radius would land ON a lane two seeds out of three. The Farshoal keeps its authored 44300
+    spread by `SR`, pinned to `WORLD_R` (46000 authored) by construction. Each is ~910 rocks
+    (`CFG.FIELD_ROCKS` 920 is the packer's ceiling; the census lands a few short of it)
     across a roughly 6520 x 4860 pocket (`FIELD_LEN`/`FIELD_SPREAD` are HALF-extents), mean
     nearest-neighbour spacing ~148u centre-to-centre and ~26u surface-to-surface — the density the
     user signed off on; SIZE and COUNT are separate knobs and must move together, or you are
