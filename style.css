@@ -105,6 +105,12 @@ html, body {
 body.preGame #hud::after { opacity: 0; }
 #hud.lowhull { --fr: #ff5c48; }
 #hud.heat:not(.lowhull) { --fr: var(--amber); }
+/* The system chart replaces the whole cockpit (syncMenus) — but by VISIBILITY,
+   not display: display:none restarts every CSS animation on re-show, and
+   closing the chart then replayed the ship panel's entrance cascade in one
+   corner of an already-booted console — the splash boot's "reads as a glitch"
+   law. visibility hides without rebooting anything. */
+#hud.occluded { visibility: hidden; }
 
 /* ---------------------------------------------------------------------------
    #fx — the full-screen reaction layer. The world hits back through it:
@@ -810,19 +816,428 @@ body.preGame #hud::after { opacity: 0; }
 }
 #speedBadge.lag { color: #ff9a6c; border-color: rgba(255, 150, 100, .6); }
 
+/* ---------------------------------------------------------------------------
+   Bottom-right: the SHIP DATA panel — what the run's picks have actually made
+   of the ship, printed as a stat block. The PILOT CARD'S build, MIRRORED:
+   luminous spine on the RIGHT edge (this corner's anchor), outline dissolving
+   up and LEFT, square corners, and a sheer glass bed you can see the sky
+   through — it is a readout printed on the canopy, not a panel bolted over it
+   (the same law as #bottomleft; fix any legibility problem with text shadow,
+   never by filling the bed in). CHROME, not instrument: every colour here is
+   the locale accent, because none of these numbers is hull/shield/lives.
+
+   #bottomright is the corner's one column: the perf overlay (debug) stacks
+   ABOVE the panel with the same right anchor, so the two things that share
+   this corner can never overlap — and with the panel hidden (title screen)
+   the badge sits in the corner exactly where it always did.
+   ------------------------------------------------------------------------ */
+#bottomright {
+  position: absolute; right: 14px; bottom: 12px; z-index: 0;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  pointer-events: none;
+}
 /* Perf overlay (Settings: FPS counter / Performance metrics). Same amber as
    the speed badge on purpose — amber is this HUD's established helper/debug
    colour, so instrumentation never competes with the semantic instruments
-   (hull green, shield blue, lives pink). Bottom-right is the one free corner:
-   #topleft, #bottomleft and #radar own the other three. Monospace + tabular
-   figures so the digits don't jitter the line width as they tick over. */
+   (hull green, shield blue, lives pink). Monospace + tabular figures so the
+   digits don't jitter the line width as they tick over. */
 #perfBadge {
-  position: absolute; right: 14px; bottom: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-variant-numeric: tabular-nums;
   font-size: 11px; line-height: 1.5; text-align: right; white-space: pre;
   color: #ffd27a; text-shadow: 0 0 6px rgba(255, 190, 90, .45), 0 1px 2px rgba(0, 0, 0, .9);
   pointer-events: none;
+}
+/* NO BED, NO FRAME, NO HEADER — the vitals-stick law applied to this corner:
+   the instruments sit directly on the canopy, each carrying its own well and
+   glow, with nothing drawn around the group. Legibility problems get fixed
+   with an element's own shadow, never by putting a slab back. */
+#shipPanel {
+  position: relative;
+  width: 240px;
+  font-size: 11px; letter-spacing: 1px;
+  display: flex; flex-direction: column; gap: 7px;
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .5);
+}
+/* AN INSTRUMENT CLUSTER, not a table: the primary flight dial up top, an
+   engine-gauge row of sub-dials for the build stats, then tape and stores
+   readouts. Every gauge sweeps 270 degrees from the lower-left (conic
+   `from 135deg`) — the airspeed-indicator convention — and reads its angle
+   off ONE inline `--va` custom property hud.js writes guarded, so a dial's
+   arc and needle can never disagree. Registered as a real <angle> so the
+   sub-dials GLIDE when a rank moves them (unsupported browsers just snap —
+   the reading is identical). */
+/* inherits:true is load-bearing: hud.js writes the vars on #velDial and the
+   band CHILDREN (.sdvel / .sdthr) read them — inherits:false would hand the
+   children the initial value instead of the dial's live one. */
+@property --va { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+@property --vb { syntax: '<angle>'; inherits: true; initial-value: 225deg; }
+@property --vt { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+@property --vtx { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+@property --vf { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+/* .spu blocks share the entrance sweep. The power-on stagger rides a VAR,
+   never per-block animation-delay rules: the .up flash swaps animations, and
+   a higher-specificity delay rule would push that flash late by a different
+   lag per block — on a signal whose whole job is answering the instant a
+   stat moves. The longhand (after the shorthand, so it wins in-rule) reads
+   the var; nth-child sets only the var. */
+.spu {
+  animation: spRowIn .32s cubic-bezier(.2, .9, .3, 1) backwards;
+  animation-delay: var(--d, 0s);
+}
+#shipPanel .spu:nth-child(2) { --d: .05s; }
+#shipPanel .spu:nth-child(3) { --d: .1s; }
+#shipPanel .spu:nth-child(4) { --d: .15s; }
+#shipPanel .spu:nth-child(5) { --d: .2s; }
+@keyframes spRowIn { from { opacity: 0; transform: translateX(10px); } }
+.sprow { padding: 1px 0; }
+/* Readout rows: sprite, word, figure — the figure (or the pips) pushed to
+   the right edge so the three rows' numbers rail up like a weight card. */
+.sphd {
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap; margin-bottom: 2px;
+}
+.sphd .spval, .sphd .sppips { margin-left: auto; }
+.spobj { width: 26px; height: 26px; flex: none; }
+.splab {
+  font-size: 9px; letter-spacing: 2.4px;
+  color: var(--ink-dim);
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .4);
+}
+.spval {
+  font-size: 11.5px; font-weight: bold; letter-spacing: 1px;
+  font-variant-numeric: tabular-nums;
+  color: #efe8ff;
+  text-shadow: 0 0 8px rgba(var(--zone-rgb), .75), 0 1px 2px rgba(0, 0, 0, .9);
+}
+/* A stat MOVED — a rank landed, a tier refit the ship. One white-hot pop on
+   the instrument that changed (the vitals' barHit idiom); the writes behind
+   it are diff-guarded, so this fires exactly when a value really moves.
+   The flash rides the block's CHILDREN, never the block itself: the block
+   owns the resting spRowIn entrance, and swapping an element's animation out
+   and back RESTARTS it — a flash living on the block replayed the entrance
+   sweep the moment it was lifted. The children have no resting animation to
+   disturb. initHud lifts .up on the first statUp animationend. */
+.spu.up > * { animation: statUp .55s ease; }
+@keyframes statUp {
+  0% { filter: brightness(2.4); }
+  100% { filter: brightness(1); }
+}
+
+/* ---- The primary dial (VELOCITY) --------------------------------------- */
+.spdialbox { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.spdial {
+  --va: 0deg;
+  position: relative; width: 200px; height: 200px; border-radius: 50%;
+  margin: 0 auto;                          /* centred over the grid below */
+  /* NO CSS transition on --va/--vb/--vt/--vtx, on THIS element or any
+     descendant — hud.js eases all four in JS (the file's own established
+     idiom: dispHull/dispShield use the identical per-frame-decay approach)
+     and writes already-smoothed degrees every frame. Two real, measured
+     bugs came out of trying to let CSS do it: transitioning `transform`
+     (interpolated as a 2D MATRIX) while retriggering it nearly every frame
+     left the engine computing the WRONG final angle — a settled 270deg
+     rendering the needle as if it were still 0, a full quarter-turn short,
+     on exactly the frames the needle was reported going "past" the dial;
+     and once moved to transitioning the registered <angle> PROPERTIES
+     themselves, listing more than one in a single `transition` shorthand
+     made every one of them read back as its registered initial-value
+     instead of the live inline override. Both are this engine's bugs in a
+     narrow feature (registered custom properties + transitions), not a
+     property of the design — but sidestepping the feature entirely is the
+     robust fix. Easing costs nothing extra: the numbers were already
+     computed fresh every frame, this just blends them before they're
+     written instead of after. */
+  /* the instrument face — a well, like every gauge bed in the kit; the two
+     gauge BANDS are children (.sdvel / .sdthr), each masked to its own
+     annulus so velocity and thrust read as separate concentric rings */
+  background: radial-gradient(circle, rgba(8, 4, 20, .55) 0 100%);
+}
+/* The OUTER band is the SCALE, not a gauge fill: track, ticks, the redline
+   and the two marks live here, and the NEEDLE alone carries the reading — a
+   fill arc shadowing the needle was the same number drawn twice (user call),
+   and cutting it is also what keeps this band visually distinct from the
+   thrust ring, which IS an arc-fill instrument. Vars inherit from #velDial. */
+.sdvel {
+  position: absolute; inset: 0; border-radius: 50%;
+  background:
+    conic-gradient(from 135deg,
+      rgba(var(--zone-rgb), .16) 0 270deg, transparent 270deg),
+    radial-gradient(circle, rgba(12, 6, 26, .5) 0 100%);
+  /* `circle closest-side`, not bare `circle`: on a SQUARE box, a sizeless
+     circle mask defaults to farthest-corner (the box's DIAGONAL, √2× the
+     true radius), so a stop written as "X%" lands at X% of the diagonal —
+     past the element's own circular clip entirely, rendering nothing.
+     closest-side is exactly the box's half-width for a square, i.e. this
+     element's own true radius, so every percentage below means what it
+     says. (This silently broke every mask in the dial that leaned on a
+     stop near 100% — the redline included; see .sdover's own note.)
+     THE OUTER SCALE IS NOW SMALLER, and PULLED OFF THE RIM (user call): it
+     no longer reaches 100%, and its own thickness shrank again — moving
+     THIS ring, not growing the thrust ring, is how the gap between the two
+     closes to the requested 1/3, while the thrust ring keeps the exact
+     footprint it had. Everything else that used to assume this band ran to
+     100% — the ticks, the redline, the needle and rated-bug's own reach —
+     moves in to meet its new edge (70%) with it; see each element's note.
+     THE TRAILING `transparent 71%` IS LOAD-BEARING: a radial-gradient with
+     no stop past its last one just holds that colour out to the gradient's
+     own end (closest-side's 100%) — dropping the band's last stop from 100%
+     to 70% without ALSO adding a stop to close it back to transparent left
+     the mask fully opaque from 58.8% all the way to the true rim, i.e. the
+     "shrunk" ring rendered as a ring nearly three times its intended
+     thickness. `.sdthr` never hit this because it was always written with
+     an explicit closing stop; these three (also .sdover, the tick ring)
+     were written assuming their last stop coincided with the gradient's own
+     end, which stopped being true the moment that stop moved off 100%. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 57.8%, #000 58.8% 70%, transparent 71%);
+  mask: radial-gradient(circle closest-side, transparent 0 57.8%, #000 58.8% 70%, transparent 71%);
+}
+/* The REDLINE: everything past YOUR rated bug, drawn the way an instrument
+   draws it — a thin amber arc ALONG THE RIM, never a tinted sector. At a low
+   tier most of the absolute scale is past your ceiling, and a sector that
+   size drowned the whole dial brown; a rim stripe says the same thing at any
+   proportion. */
+.sdover {
+  position: absolute; inset: 0; border-radius: 50%;
+  /* NO transition — --vb arrives from hud.js already eased (.spdial's note). */
+  background: conic-gradient(from 135deg,
+    transparent 0 var(--vb, 225deg), rgba(255, 175, 80, .26) var(--vb, 225deg) 270deg, transparent 270deg);
+  /* closest-side, not bare circle — see .sdvel's note. This one was the
+     worst case: 93% of the default farthest-corner (a SQUARE box's
+     diagonal) is well past the element's own edge, so the redline has been
+     rendering fully transparent since it shipped — never actually visible,
+     on any ship, at any speed, until this fix.
+     Same 7-point-thick strip, moved to sit at the outer band's NEW edge
+     (70%, not 100% — see .sdvel's note) instead of the old rim. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 63%, #000 64% 70%, transparent 71%);
+  mask: radial-gradient(circle closest-side, transparent 0 63%, #000 64% 70%, transparent 71%);
+}
+/* The INNER ring: LIVE ENGINE OUTPUT on its own ABSOLUTE scale
+   (STAT_RANGES.thrustOut — the hardest any engine can push, burner and all),
+   so your rated output lives somewhere mid-ring exactly as the needle lives
+   mid-dial. Two segments, split by SOURCE, not by whether the total happens
+   to cross rated (user call: the old split only went blue once output
+   PASSED rated, so a moderate burn that never quite got there read as pure
+   amber — the burner engaged with nothing to show for it): throttle-derived
+   thrust is AMBER, and whatever the afterburner itself is contributing —
+   engine output minus what this same throttle/spool would make WITHOUT the
+   boost multiplier (hud.js's unboostedOut) — is a darker BLUE (--vt to
+   --vtx), so the split reads as "thrust" vs "afterburner" at any output
+   level, not just past the rated mark. Darker on purpose (user call) —
+   distinct from both the shield's pale cyan (lives on the vitals, nowhere
+   near this ring) and the plume's own paler ice-blue in-world, so the
+   instrument reads as its own thing rather than trying to colour-match the
+   exhaust. A faint track to the ring's end keeps an idle engine reading as
+   an instrument at zero. */
+.sdthr {
+  position: absolute; inset: 0; border-radius: 50%;
+  /* NO transition — --vt/--vtx arrive from hud.js already eased (.spdial's
+     note). */
+  background:
+    conic-gradient(from 135deg,
+      rgba(255, 190, 110, .95) 0 calc(var(--vt, 0deg) - .5deg), transparent var(--vt, 0deg)),
+    conic-gradient(from 135deg,
+      transparent 0 var(--vt, 0deg),
+      rgba(58, 120, 210, .95) var(--vt, 0deg) calc(var(--vtx, 0deg) - .3deg),
+      transparent var(--vtx, 0deg)),
+    conic-gradient(from 135deg,
+      rgba(255, 190, 110, .07) 0 270deg, transparent 270deg);
+  /* closest-side, not bare circle — see .sdvel's note. This ring's own
+     percentages happened to stay inside the visible area even under the
+     wrong (farthest-corner) scaling, which is why it always looked right;
+     fixing the sizing keyword moved it to what these numbers actually say
+     (slightly further in, slightly narrower) — and stays exactly HERE
+     (user call: keep the thrust ring's own size where it was). Closing the
+     gap to the outer band is the OUTER band's job now — see .sdvel. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 36%, #000 37% 48%, transparent 49%);
+  mask: radial-gradient(circle closest-side, transparent 0 36%, #000 37% 48%, transparent 49%);
+}
+/* The tick ring: 12 divisions of 22.5deg over the absolute scale. Hard conic
+   stops, masked to the outer band so the marks read as bezel engraving, not
+   spokes. Solid marks cut into a lit ring — segmentation, not a dashed
+   stroke. The rated mark is NOT here — the moving amber bug carries it.
+   Each mark is 1.4deg wide and reaches only the outer 6.5% of the radius
+   (1/3 of an earlier pass's length — user call) — a light engraving right
+   at the rim instead of a spoke reaching into the band. */
+.spdial::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(from 135deg,
+    rgba(var(--zone-soft-rgb), .55) 0 .7deg, transparent .7deg 21.8deg,
+    rgba(var(--zone-soft-rgb), .55) 21.8deg 23.2deg, transparent 23.2deg 44.3deg,
+    rgba(var(--zone-soft-rgb), .55) 44.3deg 45.7deg, transparent 45.7deg 66.8deg,
+    rgba(var(--zone-soft-rgb), .55) 66.8deg 68.2deg, transparent 68.2deg 89.3deg,
+    rgba(var(--zone-soft-rgb), .55) 89.3deg 90.7deg, transparent 90.7deg 111.8deg,
+    rgba(var(--zone-soft-rgb), .55) 111.8deg 113.2deg, transparent 113.2deg 134.3deg,
+    rgba(var(--zone-soft-rgb), .55) 134.3deg 135.7deg, transparent 135.7deg 156.8deg,
+    rgba(var(--zone-soft-rgb), .55) 156.8deg 158.2deg, transparent 158.2deg 179.3deg,
+    rgba(var(--zone-soft-rgb), .55) 179.3deg 180.7deg, transparent 180.7deg 201.8deg,
+    rgba(var(--zone-soft-rgb), .55) 201.8deg 203.2deg, transparent 203.2deg 224.3deg,
+    rgba(var(--zone-soft-rgb), .55) 224.3deg 225.7deg, transparent 225.7deg 246.8deg,
+    rgba(var(--zone-soft-rgb), .55) 246.8deg 248.2deg, transparent 248.2deg 269.3deg,
+    rgba(var(--zone-soft-rgb), .55) 269.3deg 270deg, transparent 270deg);
+  /* closest-side, not bare circle — see .sdvel's note; same fix.
+     Same 6.5%-of-radius length, moved to sit at the outer band's NEW edge
+     (70%, not 100% — see .sdvel's note) instead of the old rim. */
+  -webkit-mask: radial-gradient(circle closest-side, transparent 0 63.5%, #000 64.5% 70%, transparent 71%);
+  mask: radial-gradient(circle closest-side, transparent 0 63.5%, #000 64.5% 70%, transparent 71%);
+}
+/* The RATED BUG: the amber marker an airspeed bug is — your ship's current
+   ceiling, pinned to the absolute scale and gliding up it on a tier or an
+   engine rank. Throttle amber (the envelope's own family), rim-length only. */
+.sdbug {
+  position: absolute; left: calc(50% - 1.5px); bottom: 50%;
+  /* height: 35% reaches exactly 70% of the true radius — the outer band's
+     NEW edge (.sdvel's note); a bug reaching the old 100% would now
+     overshoot past the shrunk scale into empty space. */
+  width: 3px; height: 35%;
+  transform-origin: 50% 100%;
+  /* +135, matching the conic scale's own `from 135deg` start — the marks and
+     the needle must agree with the band about where zero IS (a -135 here had
+     the whole pointer layer reading a quarter-turn off the scale). */
+  transform: rotate(calc(var(--vb, 225deg) + 135deg));
+  background: linear-gradient(0deg, transparent 0 76%, #ffcf8a 76% 100%);
+  filter: drop-shadow(0 0 4px rgba(255, 180, 90, .9));
+  /* NO transition — --vb arrives from hud.js ALREADY eased (see .spdial's
+     note); this transform just recomputes live off the current value. */
+}
+/* The needle: rooted at the hub, riding the same --va the arc fills to. */
+.sdneedle {
+  position: absolute; left: calc(50% - 1px); bottom: 50%;
+  /* height: 35% reaches exactly 70% of the true radius — the outer band's
+     NEW edge (.sdvel's note); matches .sdbug so both pointers terminate at
+     the same scale instead of one overshooting the other. */
+  width: 2px; height: 35%;
+  transform-origin: 50% 100%;
+  transform: rotate(calc(var(--va) + 135deg));   /* +135: see .sdbug's note */
+  background: linear-gradient(0deg, transparent 0 26%, #f6efff 26% 100%);
+  box-shadow: 0 0 6px rgba(var(--zone-rgb), .95);
+  /* NO transition — --va arrives from hud.js ALREADY eased (see .spdial's
+     note); this transform just recomputes live off the current value. */
+}
+/* The digital core: the readout under glass at the hub — sized INSIDE the
+   thrust ring (its word lives on the .sdrated card below the dial now).
+   Two figures: the velocity, and under it the CURRENT THRUST in the ring's
+   own amber — the number and the arc are one reading in two forms. */
+.sdcore {
+  position: absolute; inset: 33%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 34%, rgba(40, 18, 78, .55), rgba(8, 4, 20, .92) 72%);
+  border: 1px solid rgba(var(--zone-rgb), .35);
+  box-shadow: 0 0 10px rgba(var(--zone-rgb), .25);
+}
+.sdnum {
+  font-size: 21px; font-weight: bold; letter-spacing: .4px; line-height: 1;
+  font-variant-numeric: tabular-nums; color: #efe8ff;
+  text-shadow: 0 0 9px rgba(var(--zone-rgb), .8);
+}
+.sdthrN {
+  font-size: 9px; font-weight: bold; letter-spacing: .4px; line-height: 1;
+  font-variant-numeric: tabular-nums; color: #ffd88a;
+  text-shadow: 0 0 7px rgba(255, 180, 90, .8);
+}
+/* The rated ceiling, printed under the dial where an airspeed card would sit */
+.sdrated {
+  font-size: 8.5px; letter-spacing: 2.4px; color: var(--ink-dim);
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .4);
+}
+.sdrated span {
+  font-size: 10.5px; font-weight: bold; letter-spacing: 1px;
+  font-variant-numeric: tabular-nums; color: #efe8ff;
+  text-shadow: 0 0 8px rgba(var(--zone-rgb), .75);
+}
+/* The mass chip on the dial's data card: glyph + figure, one short line —
+   ship identity beside the rated figure it belongs with. */
+.sdmass {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 8.5px; letter-spacing: 2.4px; color: var(--ink-dim);
+  text-shadow: 0 0 6px rgba(var(--zone-rgb), .4);
+}
+.sdmass .spobj { width: 18px; height: 18px; }
+.sdmass b {
+  font-size: 10.5px; letter-spacing: 1px;
+  font-variant-numeric: tabular-nums; color: #efe8ff;
+  text-shadow: 0 0 8px rgba(var(--zone-rgb), .75);
+}
+
+/* ---- THROW: the live launch-speed gauge --------------------------------- */
+/* Bar fraction = live throw speed over the rated fling, so holding a heavy
+   load drops it and the wind-up climbs it back — the beam's wind-up made
+   READABLE at the cockpit, while the in-world rule stands (no meter near
+   the aim point; the beam's colour and the release pop stay the in-world
+   readout). .charged runs the fill near-white — the charged beam's OWN
+   colour — so the two surfaces say "full power" in the same voice. */
+.spbar.throw .spfill {
+  transition: width .12s linear;
+}
+#rowThrow.charged .spfill {
+  background: linear-gradient(90deg, rgba(var(--zone-soft-rgb), .9), #dcf8ff);
+  box-shadow: 0 0 8px rgba(190, 235, 255, .8);
+}
+#rowThrow.charged .spval { color: #dcf8ff; text-shadow: 0 0 9px rgba(190, 235, 255, .8); }
+
+/* ---- LIFT tape + STOW stores ------------------------------------------- */
+/* The tape: the six-cell beam-class ladder with a chevron riding the current
+   position — lit through your tier, the live cell filling as catch ranks buy
+   mass inside it ("a rank buys mass inside your class, never the class
+   above" — this tape is that law, drawn). */
+.sptape { position: relative; padding-top: 6px; }
+.sptape .sppoint {
+  /* --tpos, NOT --va: --va is registered document-wide as an <angle> (the
+     dial's needle), so a PERCENTAGE written to it here was invalid at that
+     registered type and silently fell back to the var()'s 0% default —
+     the chevron never actually moved. Its own, unregistered, untyped name. */
+  position: absolute; top: 0; left: var(--tpos, 0%);
+  width: 7px; height: 5px; transform: translateX(-50%);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+  background: rgb(var(--zone-soft-rgb));
+  filter: drop-shadow(0 0 4px rgba(var(--zone-rgb), .9));
+  transition: left .25s ease;
+}
+.spbar {
+  position: relative; height: 5px;
+  border-radius: 2px; overflow: hidden;
+  background: rgba(var(--zone-rgb), .14);
+}
+.spbar .spfill {
+  display: block; height: 100%; width: 0;
+  border-radius: 1px;
+  background: linear-gradient(90deg, rgba(var(--zone-deep-rgb), .8), rgba(var(--zone-soft-rgb), .95));
+  box-shadow: 0 0 6px rgba(var(--zone-rgb), .55);
+  transition: width .25s ease;
+}
+.spbar.cells::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(90deg,
+    transparent 0 calc(16.666% - 1px), rgba(9, 4, 20, .9) calc(16.666% - 1px) 16.666%);
+}
+/* STOW slots: the 7-slot ring as pips — lit slots are yours, dark sockets
+   the ranks to come (the lives-pip idea, in the chrome's own colour; pips
+   because slots are a COUNT, and a bar over a count reads as a fraction). */
+.sppips { display: flex; gap: 6px; padding: 2px 0 1px 2px; }
+.sppips .pp {
+  width: 7px; height: 7px;
+  transform: rotate(45deg) scale(.82);
+  border: 1px solid rgba(var(--zone-rgb), .4);
+  background: rgba(24, 12, 44, .6);
+}
+.sppips .pp.on {
+  background: radial-gradient(circle at 35% 35%, #f4ecff, rgb(var(--zone-rgb)) 75%);
+  border-color: rgba(var(--zone-soft-rgb), .9);
+  box-shadow: 0 0 6px rgba(var(--zone-rgb), .8);
+}
+/* PAST the rated mark the dial runs HOT: amber arc, amber needle, amber
+   digits — throttle amber, the burn tank's own family, never a semantic
+   instrument colour. The envelope is drawn, so the state change reads as the
+   needle crossing the redline, exactly as it should. */
+#shipPanel.over .sdneedle {
+  background: linear-gradient(0deg, transparent 0 26%, #ffd88a 26% 100%);
+  box-shadow: 0 0 7px rgba(255, 180, 90, .95);
+}
+#shipPanel.over .sdnum {
+  color: #fff0cf;
+  text-shadow: 0 0 9px rgba(255, 200, 110, .9);
 }
 
 /* ---------------------------------------------------------------------------

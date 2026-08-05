@@ -7,7 +7,7 @@ import {
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
 import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
-import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
+import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
@@ -93,6 +93,10 @@ const game = {
   flingDelayT: 0,          // >0 briefly after a fling — holds the pick offer back so a
                            // threshold crossed mid-throw doesn't pop cards up mid-aim
   orbit: [],               // bodies circling the ship as a shield
+  ramFx: [],               // brawler: rocks mid-crush into the ram (render only)
+  ramEating: false,        // RMB held: the ram keeps eating what the cursor crosses
+  ramTierDropT: 0,         // >0 just after the barrier lost a density tier (render shudder)
+  ramEatCd: 0,             // seconds until the held-button sweep may crush again
   orbitAngle: 0,
   aim: { x: 0, y: 0 },
   controls: { f: 0, b: 0, boost: 0 },   // boost = Afterburner (hold Shift)
@@ -304,6 +308,7 @@ function regenWorld(seed) {
   game.aliens.length = 0; game.debris.length = 0; game.particles.length = 0;
   game.flares.length = 0; game.bolts.length = 0; game.glowPockets.length = 0;
   game.orbit.length = 0; game.pickups.length = 0;
+  if (game.ramFx) game.ramFx.length = 0;   // crush effects point at the old world's rocks
   game.held = null; game.held2 = null;
   sfx.setBeam(false);   // the hum is edge-triggered — a reset must drop it too
   // The dock and the home port pin to BODIES, so they die with the world the
@@ -419,13 +424,16 @@ initInput(canvas, {
       // Anything that fits your orbit is captured into it automatically — but a
       // Twin Grip SECOND grab (held2 filled) is a big rock held alongside, kept in hand.
       const b = game.held;
-      if (!game.held2 && canStow(game.st, b) && game.orbit.length < game.st.maxOrbiters) {
+      // The brawler is deliberately excluded from auto-stow: its stow is the
+      // RAM, and the ram is built on a deliberate right-click, never as a side
+      // effect of picking something up. A left-click grab is still just a grab —
+      // you can throw it instead, which is the choice the spec is built on.
+      if (!game.st.frontRam && !game.held2 && canStow(game.st, b)
+          && game.orbit.length < game.st.maxOrbiters) {
         addToOrbit(game);
         if (!game.tut.orbited) {
           game.tut.orbited = true;
-          hud.message(game.st.trailStow
-            ? 'Racked in your wake! Trailing rocks are shotgun ammo. Hold RIGHT MOUSE to charge — longer hold arms more rocks.'
-            : 'Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
+          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
         }
       } else if (!game.tut.grabbed) {
         game.tut.grabbed = true;
@@ -463,6 +471,33 @@ initInput(canvas, {
   },
   onRmbDown: () => {
     if (menuBlocking() || dockBlocking()) return;
+    // BRAWLER: RIGHT-CLICK IS THE RAM, and it has exactly one meaning — eat the
+    // rock you are pointing at. It is tried FIRST and before the held-rock
+    // branch, because a rock already in the beam is the most obvious thing in
+    // the world to want to crush. (Routing it through addToOrbit first was the
+    // bug: the brawler has no ring, so a held rock went to a stow with zero
+    // slots, failed, and got dropped on the floor.) There is NO release move on
+    // this button and no way to throw the ram at all — it is a structure you
+    // build and ride behind, spent only by ramming, and the one way to lose it
+    // is to let something hit it.
+    if (game.st.frontRam) {
+      // HOLDING the button keeps eating: ramEating arms a per-substep sweep in
+      // update() that crushes ANY rock the cursor passes over while the button
+      // stays down — mow the cursor through a debris field and the ram hoovers
+      // it up. The immediate call keeps a tap responsive (one click, one rock).
+      game.ramEating = true;
+      if (absorbIntoRam(game)) {
+        // Arm the sweep's cooldown too: the immediate crush and the held-button
+        // sweep share ONE cadence, or a single click absorbed twice inside the
+        // 0.12s window — once here, once in update()'s sweep on the next frame.
+        game.ramEatCd = 0.12;
+        if (!game.tut.orbited) {
+          game.tut.orbited = true;
+          hud.message('Crushed into your ram! Rocks fuse into ONE mass riding ahead of your bow — the bigger it is, the harder you hit, and it eats head-on damage until it is gone. HOLD RIGHT MOUSE and sweep over rocks to keep feeding it.', 6);
+        }
+      }
+      return;
+    }
     if (game.held) {
       // Send the held rock (back) into your orbit; too big -> gentle drop
       if (!addToOrbit(game)) releaseHeld(game, false);
@@ -472,8 +507,11 @@ initInput(canvas, {
     if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => {
+    game.ramEating = false;
     if (menuBlocking()) { game.volleyCharging = false; return; }
-    // Release fires whatever the hold has armed (a tap = 1 rock)
+    // Release fires whatever the hold has armed (a tap = 1 rock). The brawler
+    // never charges — its right-click is the ram absorb, and the ram cannot be
+    // thrown or fired at all.
     if (game.volleyCharging && game.orbit.length && game.ship.alive) fireVolley();
     game.volleyCharging = false;
   },
@@ -1369,6 +1407,12 @@ const EVENT_MSGS = [
     first: ['CRYSTAL RESONANCE — the impact rang a facet loose. A dense core shard is adrift — premium salvage.', 5.5] },
   { flag: 'ringDecayName', snd: sfx.sfxChime,
     first: [(v) => `The shepherd moon is gone — ${v}'s ring is beginning to scatter.`, 6] },
+  // THE RAM (brawler). Losing it is BAD NEWS — sfxWarnLow, per the audio grammar
+  // — because the ship that was immune to head-on hits a second ago no longer
+  // is, and nothing else on screen says so as loudly as it needs to.
+  { flag: 'ramLostWarn', tut: 'ramLost', snd: sfx.sfxWarnLow,
+    first: ['RAM SHATTERED — it took that hit so your hull did not. You are bare-nosed now: RIGHT-CLICK rock to build a new one.', 5.5],
+    repeat: ['Ram gone — head-on hits reach the hull again.', 3] },
   { flag: 'volcWarn', tut: 'volc', snd: sfx.sfxChime,
     first: ['FORGE MOON — this moon is volcanically alive. Its ejecta cools into dense slinging rock.', 5.5] },
   { flag: 'heatWarn', tut: 'heat', snd: sfx.sfxAlarm,
@@ -1527,7 +1571,15 @@ function update(dtReal) {
     const preRankHullMax = game.st.hullMax;
     game.st = shipStats(game.prog);
     game.ship.radius = game.st.radius;
-    game.ship.mass = game.st.shipMass;   // tier-scaled; the taut tether reads it
+    // Tier-scaled, PLUS the ram: rock crushed onto the bow is real mass the
+    // ship now carries, so everything that resolves by mass ratio — the taut
+    // tether, and the collision-side effective mass in collideShipBody — feels
+    // a loaded brawler as the freight train it is. 0.35 rather than 1.0
+    // because the ram rides the field ahead of the hull, not inside it: the
+    // coupling transmits most of the load's inertia, not all of it. At a full
+    // rank-6 ram (~33k) that is ~+11.5k on a 375-mass tier-3 hull — the whole
+    // point; an empty nose is exactly st.shipMass.
+    game.ship.mass = game.st.shipMass + (game.ship.ram || 0) * 0.35;
     if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe
@@ -1733,6 +1785,29 @@ function update(dtReal) {
       s.shield = Math.min(game.st.shieldMax, s.shield + game.st.regen * dtReal);
     }
     if (s.shieldHitT > 0) s.shieldHitT -= dtReal;
+    if (s.ramHitT > 0) s.ramHitT -= dtReal;   // ram crush/impact slam (render)
+    if (game.ramTierDropT > 0) game.ramTierDropT -= dtReal;   // pack-shudder window
+    // HELD RIGHT MOUSE: the ram keeps eating. Every rock the cursor crosses is
+    // crushed in, on a short cooldown — the throttle is for READABILITY, not
+    // balance (each crush is its own flash + spring slam, and back-to-back on
+    // the same frame they smear into one). absorbIntoRam itself re-checks every
+    // gate per call, so this sweep can never take anything a single click
+    // couldn't. Berthing mid-hold disarms it outright — a dock is where you
+    // stop working, and a held button must not keep a system live through one.
+    if (game.ramEatCd > 0) game.ramEatCd -= dtReal;
+    if (game.ramEating && dockBlocking()) game.ramEating = false;
+    if (game.ramEating && game.st.frontRam && s.alive) {
+      if (game.ramEatCd <= 0 && absorbIntoRam(game)) game.ramEatCd = 0.12;
+    }
+    // The absorb-crush effects (render.drawShip). Cosmetic easing with no
+    // quantized target, so dtReal is the right clock — and they are advanced
+    // and retired HERE rather than in render, because render must stay a pure
+    // read of state (a hidden pane stops drawing, and effects that aged on the
+    // draw call would freeze mid-flight and never clear).
+    if (game.ramFx && game.ramFx.length) {
+      for (const fx of game.ramFx) fx.t += dtReal;
+      game.ramFx = game.ramFx.filter((fx) => fx.t < fx.dur);
+    }
 
     // DOCKED REPAIR — the second sanctioned exception to "the hull never
     // self-heals" (docs/design-laws.md). It is what makes putting the ship

@@ -1,6 +1,6 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
-  canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR,
+  canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
 } from './config.js';
 import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive } from './physics.js';
 import * as gravel from './gravel.js';
@@ -4233,13 +4233,16 @@ function gripPoints(game, fromX, fromY, obj, n, spread) {
   return { pts, base, spread };
 }
 
-function drawBeam(game, fromX, fromY, obj, color, grip = 1, heavy = 0) {
+function drawBeam(game, fromX, fromY, obj, color, grip = 1, heavy = 0, bite = true, widthMul = 1) {
   const g = clamp(grip, 0.15, 1);
   const z = Math.max(game.cam.zoom, 0.4);
   // A struggling emitter flutters; a settled one hums. Same breath either way,
   // faster and deeper the less grip there is.
   const pulse = 1 + Math.sin(game.time * (16 + 26 * (1 - g))) * (0.18 + 0.4 * (1 - g));
-  const w = (1.4 + 2.1 * g) * pulse / z;
+  // widthMul fattens every stroke together (envelope and strands both derive
+  // from w) — the ram's per-stone rigs use it, drawn small enough that the
+  // standard gauge read as thread at gameplay zoom.
+  const w = (1.4 + 2.1 * g) * pulse * widthMul / z;
   const n = heavy > 0 ? 4 : 2;
   const { pts, base, spread } = gripPoints(game, fromX, fromY, obj, n, 0.5 + 0.75 * heavy);
   // The axis runs to the NEAR RIM, not the centre — everything that travels
@@ -4306,11 +4309,16 @@ function drawBeam(game, fromX, fromY, obj, color, grip = 1, heavy = 0) {
     ctx.fillStyle = bloom;
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
   }
-  ctx.strokeStyle = color + hexA(0.12 + 0.30 * g);
-  ctx.lineWidth = (1 + 2.4 * g) / z;
-  ctx.beginPath();
-  ctx.arc(obj.x, obj.y, obj.radius * 0.97, base - spread, base + spread);
-  ctx.stroke();
+  // The rim arc between the grip points — skippable (`bite`): on the brawler's
+  // ram the slab is a jagged pack, not a disc, and an arc drawn at its nominal
+  // radius floated as a stray "half energy circle" in open space.
+  if (bite) {
+    ctx.strokeStyle = color + hexA(0.12 + 0.30 * g);
+    ctx.lineWidth = (1 + 2.4 * g) / z;
+    ctx.beginPath();
+    ctx.arc(obj.x, obj.y, obj.radius * 0.97, base - spread, base + spread);
+    ctx.stroke();
+  }
   ctx.restore();
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
@@ -4713,9 +4721,12 @@ const SCOUT_TIERS = [
 // behind a fence. The deflector is deliberately thinner and narrower now: it
 // FRAMES the ram, it does not compete with it.
 //
-// Tier 0 has one too. `ramProw` is in the brawler's STARTING KIT (config.js
-// SPECS) — the innate ram is its frame-one identity, so a tier-0 hull with no
-// prow was the art contradicting the kit.
+// Tier 0 has one too. War Rack is in the brawler's STARTING KIT (config.js
+// SPECS) and the fused ram is its frame-one identity, so a tier-0 hull with no
+// prow was the art contradicting the kit. (This used to cite `ramProw`, a
+// separate ability that was deleted when the ram became War Rack's fused rock
+// prow — the art is unchanged and still right: the hull prow is the MOUNT the
+// rocks pack onto, drawn whether or not anything is fused to it yet.)
 // `prowW` is a multiple of the HULL half-width, so it is literally "how many
 // times wider than the ship is the ram". It never drops below 1.20 — the ram
 // overhangs the hull on BOTH sides at every tier, including tier 0, because a
@@ -6024,6 +6035,111 @@ function drawHaulerHull(game, t, tier, dmg, u, lw) {
 const MORPH_T = 0.9;
 let morphTierSeen = -1, morphStart = -1e9, morphFromVisR = 0, morphLastVisR = 0;
 
+// THE RAM's spring + rubber-band + rocklet state (see the ram block in
+// drawShip). Spring: gap fraction, 1 = free length — the scoutSplit shape.
+let ramSprGap = 1, ramSprVel = 0, ramSprStamp = -1, ramHitPrev = 0, ramDropPrev = 0;
+// THE RUBBER BAND: the slab's offset from the ship, kept in WORLD AXES and
+// eased toward the nose anchor in CARTESIAN space. This is the whole
+// difference from the old bearing-lag model: easing an ANGLE swings the slab
+// along an arc centred on the ship — a fulcrum — while easing the offset
+// VECTOR cuts the chord, which is what an elastic coupling actually does when
+// its far end is dragged sideways. The slab's facing comes from the offset
+// direction, so it noses along the band rather than staying parallel-parked.
+let ramOffX = null, ramOffY = null;
+// The field's colour walks cyan -> near-white as the ram fills, the same
+// "full power is a COLOUR" ramp the throw charge uses. Hex because the beam
+// pass concatenates alpha (hexA) onto it.
+function ramFieldColor(fill) {
+  const mix = (a, b) => Math.round(a + (b - a) * fill);
+  const h = (v) => v.toString(16).padStart(2, '0');
+  // Deep blue at empty, brightening as it fills but STOPPING WELL SHORT OF
+  // WHITE — the previous ramp topped out at #d8ecff, so a near-full ram wore
+  // beams that read white, not blue (user design pass: "more blue"). The top
+  // is now a saturated sky blue; fullness still reads in the brightening,
+  // just inside the blue family the whole way.
+  return '#' + h(mix(0x3d, 0x86)) + h(mix(0x8e, 0xc2)) + 'ff';
+}
+// THE SIX BARRIER TIERS, as rocklets — and the tier is DENSITY, not rank
+// (config.ramTier): feed the ram and the pack visibly climbs from loose
+// rubble toward a fused wall; let hits spend it and it comes back apart. War
+// Rack's rank only caps how high the ladder goes. Same fixed-seed discipline
+// as everything else the ram draws: one seed per tier, cached on the
+// quantized frame, identical every frame and session.
+//
+// The cache also carries the MATTRESS: per-rocklet spring state (pos/vel along
+// the nose axis, plus a scheduled-kick queue), so a hit ripples across the
+// pack rock by rock instead of the whole thing moving as one — the impact
+// point gives first, its neighbours follow a beat later, and the ring-back is
+// each rocklet's own. Fresh arrays on every rebuild; the rebuild jolt below
+// seeds them ringing, which is the tier-change animation in both directions.
+let ramRocksCache = null, ramRocksKey = '';
+function ramTierRocks(tier, halfW, depth) {
+  const key = tier + ':' + ((halfW * 4) | 0) + ':' + ((depth * 4) | 0);
+  if (ramRocksCache && ramRocksKey === key) return ramRocksCache;
+  const rng = mulberry32(0x52414d00 + tier);
+  // ROWS DEEP, NOT ROCKS BIG (user design rule). A higher tier packs MORE
+  // rocks in MORE rows — one row of rubble at tiers 1-2, a double course at
+  // 3-4, a triple wall at 5-6 — with the individual stones staying modest
+  // (the 0.8 factor below trims them ~20% from the single-row sizing). Depth
+  // already grows with tier in config.ramPlate, which is what gives the extra
+  // rows room without the pack outgrowing its physics footprint.
+  const rows = tier <= 2 ? 1 : tier <= 4 ? 2 : 3;
+  const perRow = 2 + tier;                 // 3 across at tier 1 -> 8 at tier 6
+  const packK = 0.68 + tier * 0.13;        // gaps when loose -> overlap when fused
+  const slot = (halfW * 2) / perRow;
+  const rocks = [];
+  for (let row = 0; row < rows; row++) {
+    // Front row leads; each course behind sits deeper along the nose axis,
+    // brick-offset by half a slot so the wall bonds instead of gridding.
+    const rowX = depth * (0.28 - row * (0.56 / Math.max(1, rows - 1) || 0));
+    const shift = (row % 2) * slot * 0.5;
+    // Back rows lose a stone: the brick offset walks them inward, and a full
+    // course back there would poke past the pack's shoulders.
+    const inRow = perRow - (row % 2);
+    for (let i = 0; i < inRow; i++) {
+      const t = inRow === 1 ? 0 : (i / (inRow - 1)) * 2 - 1;   // -1..1 across
+      const r = 0.8 * Math.min(depth * 0.5,
+        slot * 0.5 * packK * (0.55 + 0.5 * (1 - Math.abs(t) * 0.55)) * (0.85 + rng() * 0.3));
+      rocks.push({
+        // The SLIGHT ARC (user design call): the course bows around the bow —
+        // centre stones lead, the wings sweep back — so the wall reads as a
+        // plough curved to the ship rather than a fence nailed across it. The
+        // 1.7 exponent keeps the middle flat and folds only the outer stones.
+        x: rowX + (rng() - 0.5) * depth * 0.18
+          - Math.pow(Math.abs(t), 1.7) * depth * 0.55,
+        y: t * (halfW - r * 0.7) + (t === 0 ? shift * 0.4 : shift * (t > 0 ? -1 : 1) * 0.4),
+        r,
+        rot: rng() * TAU,
+        ring: rockJagRing(rng, Math.max(6, r)),
+        // A stone TONE per rocklet plus a fixed shade bearing — neighbouring
+        // rocks must not be the same swatch, or the fill-only pack (no
+        // outlines, by design) melts into one pastel blob. Four tones, seeded,
+        // spanning dark-cold to pale-dry; the crescent drawn at `shade` gives
+        // each stone a modelled dark side without reintroducing an edge line.
+        tone: ['#57504a', '#645a51', '#6f645a', '#79706b'][(rng() * 4) | 0],
+        shade: rng() * TAU,
+      });
+    }
+  }
+  ramRocksKey = key;
+  const n = rocks.length;
+  ramRocksCache = {
+    rocks,
+    pos: new Float64Array(n),
+    vel: new Float64Array(n),
+    kickT: new Float64Array(n).fill(-1),
+    kickV: new Float64Array(n),
+  };
+  // THE REBUILD JOLT: the pack just reorganised (a tier crossed, or the frame
+  // grew), so every rocklet arrives ringing. Deterministic velocities — no
+  // draw from any RNG stream — alternating sign so the pack visibly shuffles
+  // rather than breathing in unison.
+  for (let i = 0; i < n; i++) {
+    ramRocksCache.vel[i] = ((i % 2 === 0 ? 1 : -1) * (0.6 + ((i * 37) % 5) / 5)) * depth * 5;
+  }
+  return ramRocksCache;
+}
+
 function drawShip(game) {
   const s = game.ship;
   if (!s.alive) return;
@@ -6168,6 +6284,305 @@ function drawShip(game) {
     }
   }
 
+  // THE CRUSH: absorbed rocks flying into the bow. Drawn BEFORE the ram itself
+  // so the incoming piece slides UNDER the growing mass and is swallowed by it,
+  // which is the read we want — the ram eats the rock — rather than the rock
+  // landing on top of the thing it is becoming part of.
+  // Rides `dtReal` (main.js decays it): it is pure cosmetic easing with no
+  // quantized target, which is exactly the case the fixed-step rule exempts.
+  if (game.ramFx && game.ramFx.length) {
+    const z = game.cam.zoom;
+    // Where the crush lands: ON THE SLAB — the rubber band's current position,
+    // so the rock is seen slamming into the mass it is about to become part of
+    // (and the slab visibly recoils on the same frame, because the crush pulsed
+    // s.ramHitT and the spring reads that).
+    const pl = ramPlate(game.st, s.ram);
+    const tipD = pl ? pl.back + pl.gap * ramSprGap + pl.depth * 0.5 : s.radius * 1.1;
+    const tx = ramOffX !== null ? s.x + ramOffX : s.x + Math.cos(s.angle) * tipD;
+    const ty = ramOffY !== null ? s.y + ramOffY : s.y + Math.sin(s.angle) * tipD;
+    ctx.save();
+    for (const fx of game.ramFx) {
+      const k = Math.min(1, fx.t / fx.dur);          // 0 -> 1
+      const ease = 1 - Math.pow(1 - k, 3);           // cubic ease-out: snaps in, settles
+      const px = fx.x + (tx - fx.x) * ease;
+      const py = fx.y + (ty - fx.y) * ease;
+      // FLATTENED ALONG THE TRAVEL as it lands — a rock being crushed onto a
+      // hull is squashed, not shrunk uniformly, and the squash is what sells it
+      // as compaction rather than a pickup vanishing into a bag.
+      const squash = 1 - 0.75 * ease;
+      const grow = 1 - 0.35 * ease;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(s.angle);
+      ctx.scale(squash, grow);
+      ctx.rotate(fx.spin * fx.t);
+      ctx.beginPath();
+      // A rough eight-sided lump, deterministic off the rock's own id — render
+      // must never draw from the sim's RNG stream (determinism law).
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU;
+        const wob = 0.78 + 0.30 * (((fx.id * 37 + i * 61) % 17) / 17);
+        const rr = fx.r * wob;
+        const qx = Math.cos(a) * rr, qy = Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(qx, qy); else ctx.lineTo(qx, qy);
+      }
+      ctx.closePath();
+      ctx.fillStyle = `rgba(150, 138, 128, ${0.95 - 0.25 * ease})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(205, 192, 178, ${0.7 * (1 - ease)})`;
+      ctx.lineWidth = 1.2 / z;
+      ctx.stroke();
+      ctx.restore();
+      // The impact spark, only as it actually arrives.
+      if (ease > 0.55) {
+        const f = (ease - 0.55) / 0.45;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = `rgba(255, 226, 180, ${0.75 * (1 - f)})`;
+        ctx.lineWidth = 2 / z;
+        ctx.beginPath();
+        ctx.arc(tx, ty, fx.r * (0.6 + f * 1.9), 0, TAU);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+    ctx.restore();
+  }
+
+  // THE BRAWLER'S RAM: a barrier of crushed rock RIDING AHEAD OF THE BOW on an
+  // elastic energy coupling. Four machines in one block, all on game.time so
+  // they freeze with the sim:
+  //   SPRING   the coupling's length — compresses under thrust, slams on hits
+  //   BAND     the slab's position — eased in Cartesian space, so a turn drags
+  //            it across the chord like a stretched rubber band, never swings
+  //            it on an arc like a fulcrum
+  //   TIERS    density picks the build (config.ramTier -> ramTierRocks):
+  //            loose rubble when it is nearly spent, a fused wall when packed
+  //   MATTRESS per-rocklet springs — a hit lands at a point and RIPPLES
+  //            outward, each rocklet giving and ringing back on its own beat,
+  //            never the whole pack moving as one
+  // The hit response is deliberately ALL MOTION, no colour: the pack does not
+  // light up when struck (user design rule) — it shudders, and on a density
+  // tier lost, physics spalls real rock loose alongside the shudder.
+  {
+    const plate = ramPlate(game.st, s.ram);
+    if (plate) {
+      const z = game.cam.zoom;
+      const { back, gap, depth, halfW, fill, tier } = plate;
+      const rocksC = ramTierRocks(tier, halfW, depth);
+      // ---- spring + band + mattress, one clock ----
+      if (game.time !== ramSprStamp) {
+        const dt = ramSprStamp < 0 ? 0 : Math.max(0, Math.min(0.1, game.time - ramSprStamp));
+        ramSprStamp = game.time;
+        const freshHit = s.ramHitT > 0.2 && ramHitPrev <= 0.05;
+        if (freshHit) ramSprVel = Math.min(ramSprVel, -10);
+        ramHitPrev = s.ramHitT;
+        const freshDrop = (game.ramTierDropT || 0) > 0.4 && ramDropPrev <= 0.1;
+        ramDropPrev = game.ramTierDropT || 0;
+        // Thrust drives the spring's TARGET (the scout split-drive's three
+        // settings): coasting rides free, burning presses to ~2/3, the
+        // afterburner hardest. Impact slams stack on top; only they reach the
+        // 0.12 coil bind.
+        const th = s.thrusting ? (game.burnerOn ? 1 : 0.72) : 0;
+        const target = 1 - 0.42 * th;
+        const steps = Math.max(1, Math.ceil(dt / 0.016));
+        const h = dt / steps;
+        for (let n = 0; n < steps; n++) {
+          ramSprVel += ((target - ramSprGap) * 240 - ramSprVel * 8.5) * h;
+          ramSprGap += ramSprVel * h;
+          if (ramSprGap < 0.12) {
+            ramSprGap = 0.12;
+            if (ramSprVel < 0) ramSprVel = -ramSprVel * 0.45;
+          } else if (ramSprGap > 1.30) {
+            ramSprGap = 1.30;
+            if (ramSprVel > 0) ramSprVel = 0;
+          }
+        }
+        // THE BAND (see the state block for why Cartesian, not angular).
+        const anchorD = back + gap * ramSprGap + depth * 0.5;
+        const tx = Math.cos(s.angle) * anchorD, ty = Math.sin(s.angle) * anchorD;
+        if (ramOffX === null) { ramOffX = tx; ramOffY = ty; }
+        else {
+          const k = 1 - Math.exp(-7.5 * dt);
+          ramOffX += (tx - ramOffX) * k;
+          ramOffY += (ty - ramOffY) * k;
+          const len = Math.hypot(ramOffX, ramOffY) || 1;
+          const cl = clamp(len, back + depth * 0.4, anchorD * 1.28);
+          let ba = Math.atan2(ramOffY, ramOffX);
+          const trail = angDiff(ba, s.angle);   // angDiff(a,b)=b-a: nose minus band
+          if (trail > 0.5) ba = s.angle - 0.5;
+          else if (trail < -0.5) ba = s.angle + 0.5;
+          ramOffX = Math.cos(ba) * cl; ramOffY = Math.sin(ba) * cl;
+        }
+        // THE MATTRESS. A fresh hit schedules a kick for every rocklet, delayed
+        // by its distance from the impact point — the wave crosses the pack at
+        // a readable speed — and sized down with that distance, so the far end
+        // stirs where the near end slams. A tier drop is the same wave from
+        // the centre, harder: the shudder that goes with the spalled rock.
+        const bandAng = Math.atan2(ramOffY ?? Math.sin(s.angle), ramOffX ?? Math.cos(s.angle));
+        if (freshHit || freshDrop) {
+          const hitA = s.ramHitAng ?? s.angle;
+          const impY = freshDrop ? 0
+            : clamp(Math.sin(angDiff(bandAng, hitA)) * (back + gap + depth), -halfW, halfW);
+          const mag = depth * (freshDrop ? 13 : 8);
+          const { rocks, kickT, kickV } = rocksC;
+          for (let i = 0; i < rocks.length; i++) {
+            const d = Math.abs(rocks[i].y - impY);
+            kickT[i] = d / (halfW * 7 + 1);
+            kickV[i] = mag / (1 + d / (halfW * 0.5 + 1));
+          }
+        }
+        // Fire due kicks, then integrate each rocklet's own little spring.
+        {
+          const { pos, vel, kickT, kickV } = rocksC;
+          for (let i = 0; i < pos.length; i++) {
+            if (kickT[i] >= 0) {
+              kickT[i] -= dt;
+              if (kickT[i] < 0) { vel[i] -= kickV[i]; kickV[i] = 0; }
+            }
+            for (let n = 0; n < steps; n++) {
+              vel[i] += (-pos[i] * 260 - vel[i] * 7) * h;
+              pos[i] += vel[i] * h;
+            }
+          }
+        }
+      }
+      const strain = clamp(1.35 * (1 - ramSprGap), 0, 1);
+      const col = ramFieldColor(fill);
+      const slabX = s.x + (ramOffX ?? Math.cos(s.angle) * (back + gap + depth * 0.5));
+      const slabY = s.y + (ramOffY ?? Math.sin(s.angle) * (back + gap + depth * 0.5));
+      const slabAng = Math.atan2(slabY - s.y, slabX - s.x);
+
+      // ---- the coupling: THE TRACTOR BEAM, PER STONE (user design call:
+      // "more like the tractor beam effect but each rock gets its own"). No
+      // hand-rolled effect at all any more — three custom couplings were
+      // built and none read right — each gripped stone simply gets its own
+      // drawBeam call, the SAME function the held-rock beam runs: envelope,
+      // side-gripping strands, travelling charge, blooms at the bite. Aiming
+      // drawBeam at the whole pack failed earlier because its grip points
+      // ride the target's disc and the pack is a ragged wall; a single
+      // ROCKLET genuinely is its little disc, so every grip point lands on
+      // real stone. The rim arc stays off (bite=false — the "half circle").
+      //   - roots spread across the bow in the stones' own lateral order, so
+      //     the rigs fan without crossing
+      //   - rear-row stones only (nearest the ship), 4 + tier of them
+      {
+        const glow = clamp(0.5 + 0.3 * fill + 0.3 * strain, 0, 1);
+        const r0x = s.x + Math.cos(s.angle) * back * 0.95;
+        const r0y = s.y + Math.sin(s.angle) * back * 0.95;
+        const wpx = -Math.sin(s.angle), wpy = Math.cos(s.angle);
+        const { rocks: bR, pos: bP } = rocksC;
+        const ca = Math.cos(slabAng), sa = Math.sin(slabAng);
+        // 70% of the old 4 + tier count (user design pass: at gameplay scale
+        // a rig per rear stone was too busy at the top tiers) — 4 rigs low,
+        // 7 at tier 6, floored so the low tiers keep a real fan.
+        const nPick = Math.max(3, Math.round((4 + tier) * 0.7));
+        const picks = bR.map((_, i) => i)
+          .sort((a, b) => (bR[a].x + bP[a]) - (bR[b].x + bP[b]))
+          .slice(0, Math.min(bR.length, nPick))
+          .sort((a, b) => bR[a].y - bR[b].y);
+        picks.forEach((ri, k) => {
+          const rk = bR[ri];
+          const sxL = rk.x + bP[ri], syL = rk.y;
+          const stone = {
+            x: slabX + sxL * ca - syL * sa,
+            y: slabY + sxL * sa + syL * ca,
+            radius: rk.r,
+          };
+          const t = picks.length === 1 ? 0 : (k / (picks.length - 1)) * 2 - 1;
+          drawBeam(game,
+            r0x + wpx * t * s.radius * 0.55,
+            r0y + wpy * t * s.radius * 0.55,
+            stone, col, glow, 0, false, 1.5);
+        });
+      }
+
+      // ---- the barrier: this tier's rocklets, each on its own spring ----
+      // The rim-light each stone wears (see the loop) shares the zone's colour
+      // and master intensity, computed once out here.
+      const ramLitCol = col;
+      // Brightness up, reach still tight (user design pass: "more glowy", after
+      // "much tighter"): the rim stays a narrow band on the ship-facing edge —
+      // the falloff only runs a third into the stone — but within that band it
+      // genuinely BURNS, saturating toward the 0.85 ceiling as the ram fills.
+      // ...AND IT FLICKERS WITH THE BEAMS (user design call): this is drawBeam's
+      // own pulse expression, fed the same grip value the ram's rigs pass in,
+      // on the same clock — so the stones brighten and dim exactly in phase
+      // with the strands feeding them, one breathing system. If drawBeam's
+      // pulse formula is ever retuned, retune this copy with it.
+      const litGrip = clamp(0.5 + 0.3 * fill + 0.3 * strain, 0.15, 1);
+      const litPulse = 1 + Math.sin(game.time * (16 + 26 * (1 - litGrip)))
+        * (0.18 + 0.4 * (1 - litGrip));
+      const ramLitA0 = hexA(Math.min(0.85,
+        (0.38 + 0.3 * fill) * (0.6 + 0.4 * fill + 0.25 * strain) * (0.62 + 0.38 * litPulse)));
+      const { rocks, pos } = rocksC;
+      ctx.save();
+      ctx.translate(slabX, slabY);
+      ctx.rotate(slabAng);
+      for (let i = 0; i < rocks.length; i++) {
+        const rk = rocks[i];
+        ctx.save();
+        ctx.translate(rk.x + pos[i], rk.y);
+        ctx.rotate(rk.rot);
+        ctx.beginPath();
+        const m = rk.ring.length;
+        for (let j = 0; j < m; j++) {
+          const a = (j / m) * TAU;
+          const rr = rk.ring[j] * rk.r;
+          if (j === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+          else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        }
+        ctx.closePath();
+        // FILL ONLY — no outline (user design call): the stones read by
+        // silhouette, tone and shadow, and an edge stroke on two dozen small
+        // overlapping rocklets turned the pack into a wireframe. The per-rock
+        // TONE plus the shade crescent below are what keep the outline-less
+        // pack from reading as one flat pastel blob.
+        ctx.fillStyle = rk.tone;
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
+        // The dark side: a big offset disc clipped to the stone, at the rock's
+        // own fixed bearing — cheap modelling, never an edge.
+        ctx.fillStyle = 'rgba(20, 16, 12, 0.28)';
+        ctx.beginPath();
+        ctx.arc(Math.cos(rk.shade) * rk.r * 0.75, Math.sin(rk.shade) * rk.r * 0.75,
+          rk.r * 0.95, 0, TAU);
+        ctx.fill();
+        if (rk.r > depth * 0.35) {
+          ctx.fillStyle = 'rgba(0,0,0,0.28)';
+          ctx.beginPath();
+          ctx.arc(rk.r * 0.3, -rk.r * 0.2, rk.r * 0.3, 0, TAU);
+          ctx.fill();
+        }
+        // THE FIELD LIGHTS THE STONE (user design call: the rocks themselves
+        // must light up, or the energy and the pack read as two unrelated
+        // drawings). Additive rim-light on the SHIP-FACING side of every
+        // stone — the side the field actually strikes. In this stone's local
+        // frame the ship direction is (-1, 0) in slab space rotated back by
+        // the stone's own rot; alpha rides the same master glow as the zone,
+        // so the whole assembly brightens and dims as ONE thing.
+        {
+          const gdx = -Math.cos(rk.rot), gdy = Math.sin(rk.rot);
+          const lit = ctx.createLinearGradient(gdx * rk.r, gdy * rk.r, -gdx * rk.r, -gdy * rk.r);
+          lit.addColorStop(0, ramLitCol + ramLitA0);
+          lit.addColorStop(0.34, ramLitCol + '00');
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.fillStyle = lit;
+          ctx.fillRect(-rk.r, -rk.r, rk.r * 2, rk.r * 2);
+          ctx.globalCompositeOperation = 'source-over';
+        }
+        ctx.restore();
+        ctx.restore();
+      }
+      ctx.restore();
+    } else if (ramSprGap !== 1 || ramSprVel !== 0 || ramOffX !== null) {
+      // No slab: settle everything so the next build starts clean.
+      ramSprGap = 1; ramSprVel = 0; ramSprStamp = -1; ramHitPrev = 0; ramDropPrev = 0;
+      ramOffX = null; ramOffY = null;
+      ramRocksCache = null; ramRocksKey = '';
+    }
+  }
+
   // DEFLECTOR ARMED RAIL: a thin bracketed arc across the nose, spanning the
   // exact wedge the parry field scans (PARRY_ARC). This is the reload tell,
   // and it is a STATE, not a meter — no bar, no sweep, no countdown to read.
@@ -6284,7 +6699,11 @@ function drawShip(game) {
     const burner = !!game.burnerOn;
     // The afterburner plume is nearly twice the flame — the burn should LOOK
     // like an event (it's spending a slow-refilling tank, not a free hold).
-    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1);
+    // The whole flame rides the engine SPOOL (physics' s.spool): it grows in
+    // over the ramp instead of appearing full-length on the first frame, so
+    // the exhaust and the thrust the ship actually has agree.
+    const spool = 0.35 + 0.65 * Math.min(1, Math.abs(s.spool ?? 1));
+    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1) * spool;
     const g = ctx.createLinearGradient(rearX, 0, rearX - bodyR * 1.9 * f, 0);
     g.addColorStop(0, burner ? 'rgba(160, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
@@ -8984,18 +9403,38 @@ export function render(game) {
       // is a promise about what the next click does, so a hand-rolled mass test
       // here would lie the moment the class gate refused a light planet.
       const canOrbit = canStow(st, hov) && game.orbit.length < st.maxOrbiters && !hov.fort;
+      // RAM FOOD (brawler): right-click would crush this rock into the ram.
+      // Its own hue — the armed-amber the game already uses for "this rock is
+      // ammunition" — because for this spec the green auto-orbit promise is
+      // never true (no ring) and cyan only promises a HOLD. Same gate the
+      // absorb itself runs (canStow + room in the ram), so the ring can't
+      // promise a crush that absorbIntoRam would refuse.
+      const canRam = st.frontRam && st.ramCap > 0 && game.ship.ram < st.ramCap
+        && canStow(st, hov) && !hov.fort;
       const canGrab = canLift(st, hov) && !hov.fort;
       const inRange = Math.hypot(hov.x - game.ship.x, hov.y - game.ship.y) <= st.range + hov.radius;
       const pulse = 1 + Math.sin(game.time * 6) * 0.18;
       const alpha = (inRange ? 0.85 : 0.3) * (0.7 + 0.3 * Math.sin(game.time * 6));
       const rr = hov.radius + (7 + 4 * pulse) / game.cam.zoom;
       ctx.lineWidth = 2 / game.cam.zoom;
-      if (canOrbit) ctx.strokeStyle = `rgba(120, 255, 180, ${alpha})`;
+      if (canRam) ctx.strokeStyle = `rgba(255, 200, 90, ${alpha})`;
+      else if (canOrbit) ctx.strokeStyle = `rgba(120, 255, 180, ${alpha})`;
       else if (canGrab) ctx.strokeStyle = `rgba(90, 200, 255, ${alpha})`;
       else ctx.strokeStyle = `rgba(255, 95, 80, ${alpha})`;
       ctx.setLineDash(canGrab ? [] : [5 / game.cam.zoom, 5 / game.cam.zoom]);
       ctx.beginPath(); ctx.arc(hov.x, hov.y, rr, 0, TAU); ctx.stroke();
       ctx.setLineDash([]);
+      if (canRam) {
+        // Crush chevrons: two short ticks biting inward at the ring's sides —
+        // "this gets COMPRESSED", pointed at the rock rather than away like the
+        // grab ring's glow. Solid strokes; the ring above is already the shape.
+        for (const m of [0, Math.PI]) {
+          ctx.beginPath();
+          ctx.moveTo(hov.x + Math.cos(m) * (rr + 6 / game.cam.zoom), hov.y + Math.sin(m) * (rr + 6 / game.cam.zoom));
+          ctx.lineTo(hov.x + Math.cos(m) * (rr - 2 / game.cam.zoom), hov.y + Math.sin(m) * (rr - 2 / game.cam.zoom));
+          ctx.stroke();
+        }
+      }
       if (!canGrab) {   // slash it: clearly beyond the beam
         ctx.beginPath();
         ctx.moveTo(hov.x - rr * 0.7, hov.y + rr * 0.7);
@@ -9227,4 +9666,88 @@ export function render(game) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, vw, vh);
   }
+}
+
+// ---- SHIP SYSTEMS cluster icons --------------------------------------------
+// hud.js owns the nodes; this owns the ink (render.js is where canvas drawing
+// lives). The GRAB/STOW instruments say "the biggest thing the beam can take"
+// as a PICTURE — the beam-class ladder as sprites, sized up the rungs so the
+// ramp itself is the reading. The rock rungs come off util.rockJagRing, the
+// ONE outline generator (the icon of a rock is still not a perturbed
+// primitive), seeded FIXED per rung: an emblem, never a re-roll. Repainted
+// only when a class or tier changes — hud.js guards the calls.
+// Neutral pale-violet ink on a dark well, like the shell's own glyphs: the
+// icons are chrome, not instruments, but a canvas can't spend a CSS var, so
+// they hold the house hue rather than chasing the locale accent.
+const ICON_INK = '#ded2f7';
+const ICON_WELL = 'rgba(16, 8, 34, .85)';
+export function drawStatIcon(cv, kind, idx) {
+  const c = cv.getContext('2d');
+  const S = cv.width, h = S / 2;
+  c.save();
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.clearRect(0, 0, S, S);
+  c.translate(h, h);
+  c.lineWidth = 2;
+  c.strokeStyle = ICON_INK;
+  c.fillStyle = ICON_WELL;
+  c.shadowColor = 'rgba(176, 112, 255, .8)';
+  c.shadowBlur = 5;
+  if (kind === 'ship') {
+    // The hull grows radius 4 -> 44 across the tiers; the glyph rides a tamed
+    // version of that ramp so tier 5 still fits the cell.
+    const r = 7 + idx * 2.2;
+    c.beginPath();
+    c.moveTo(0, -r);                       // nose
+    c.lineTo(r * 0.78, r * 0.72);          // starboard wingtip
+    c.lineTo(0, r * 0.34);                 // tail notch
+    c.lineTo(-r * 0.78, r * 0.72);         // port wingtip
+    c.closePath();
+    c.fill(); c.stroke();
+    c.shadowBlur = 0;
+    c.fillStyle = ICON_INK;
+    c.beginPath(); c.arc(0, -r * 0.3, 1.6, 0, TAU); c.fill();
+  } else {
+    const rung = Math.max(0, Math.min(5, idx));
+    const r = [6, 8.5, 11, 13.5, 16.5, 20][rung];
+    if (rung <= 2) {
+      // Pebble / belt rock / boulder: a real rock silhouette.
+      const ring = rockJagRing(mulberry32(0xC0FFEE + rung * 7919), r * 3);
+      const n = ring.length;
+      c.beginPath();
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * TAU;
+        const rr = r * ring[i];
+        if (i === 0) c.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        else c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      c.closePath();
+      c.fill(); c.stroke();
+    } else if (rung <= 4) {
+      // Small / large moon: a cratered disc.
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill(); c.stroke();
+      c.shadowBlur = 0;
+      c.lineWidth = 1.2;
+      const craters = rung === 3 ? [[-0.35, -0.2, 0.3], [0.3, 0.35, 0.22]]
+        : [[-0.4, -0.25, 0.28], [0.35, 0.3, 0.2], [0.05, -0.5, 0.16]];
+      for (const [cx, cy, cr] of craters) {
+        c.beginPath(); c.arc(cx * r, cy * r, cr * r, 0, TAU); c.stroke();
+      }
+    } else {
+      // A world: banded disc — the bands clipped to the disc, like drawBody's
+      // gas banding at glyph scale.
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill(); c.stroke();
+      c.shadowBlur = 0;
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.clip();
+      c.lineWidth = 1.4;
+      c.globalAlpha = 0.75;
+      for (const y of [-0.42, -0.05, 0.38]) {
+        c.beginPath();
+        c.moveTo(-r, y * r); c.quadraticCurveTo(0, y * r + r * 0.14, r, y * r);
+        c.stroke();
+      }
+      c.globalAlpha = 1;
+    }
+  }
+  c.restore();
 }

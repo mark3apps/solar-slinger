@@ -256,6 +256,12 @@ export class Ship {
     this.hull = 67;
     this.shield = 33;        // recharging layer; absorbs damage before the hull
     this.shieldHitT = 0;
+    // BRAWLER's ram: absorbed rock MASS, welded to the nose as one structure.
+    // Not a rank and not a pool that refills — you build it by eating rocks
+    // (tractor.absorbIntoRam) and it is spent taking hits (physics.spendRam).
+    this.ram = 0;
+    this.ramHitT = 0;        // one-shot pulse on a crush or an impact (render)
+    this.ramHitAng = 0;      // world bearing of the last hit — the ripple's origin
     this.alive = true;
     this.invuln = 0;
     this.thrusting = false;

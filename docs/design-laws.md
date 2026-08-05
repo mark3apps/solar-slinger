@@ -121,6 +121,14 @@ code "works."
   would be noise on the loop the player spends most of the game in.
   (History: this first shipped as an amber filling arc with pips and a halo at completion; the arc
   and the steady ring were cut — "just the color / pop at the end".)
+  - **The law is about the AIM POINT, and it has ONE sanctioned meter** (user call, with the SHIP
+    SYSTEMS cluster): the cockpit's THROW gauge, bottom-right, reads the live launch speed of the
+    held rock — `game.throwSpd`, published by `tractor.updateTractor` off the SAME `flingSpeedFor`
+    call the release and the lead markers use, so the gauge, the ✕ and the actual launch can never
+    disagree. It lives on the instrument panel, never near the rock you are aiming at, and at full
+    power it runs the beam's own charged near-white off the same gate (`game.throwCharged`:
+    `CHARGE_SHOW_HEFT` + a closed grip) at the same instant. A meter beside the crosshair is still
+    the thing this law forbids.
 - **THE BEAM GRIPS THE SIDES OF A BODY, NEVER ITS MIDDLE** (`render.gripPoints`). Strands that
   converge on the centre read as passing straight THROUGH the rock, and on a moon or a world — whose
   disc is most of the screen — they bury the whole effect under the sprite where none of it can be
