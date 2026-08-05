@@ -267,8 +267,11 @@ Plus the three scaling rules that make a big debris cascade affordable:
   The winch holds on the button and on range, never on the cursor, and its seconds carry into the
   wind-up — but capped, so **full power always lands after the latch** (`WINDUP_AFTER_LATCH`).
   **Gas giants can never be picked up at all** (`LIFT_NEVER`) — strip one and carry its core.
-- **Full throw power is a COLOUR and a POP, never a progress bar** — the beam runs near-white while
-  charged, plus a one-shot bloom on the crossing (`render.drawCharge`); only above `CHARGE_SHOW_HEFT`.
+- **Full throw power is a COLOUR and a POP, never a progress bar IN-WORLD** — the beam runs
+  near-white while charged, plus a one-shot bloom on the crossing (`render.drawCharge`); only above
+  `CHARGE_SHOW_HEFT`. The ONE sanctioned meter is the cockpit cluster's THROW gauge (hud.js, off
+  `game.throwSpd`/`game.throwCharged` published by tractor.js): it lives on the instrument panel,
+  never near the aim point, and runs the same near-white off the same gate at the same instant.
 - **At full power the tether can't be broken** — it goes taut at `TETHER_MAX_MUL` × the beam ring and
   resolves as a rope (take separating velocity, split by mass). It **rubber-bands** into that limit
   (`TETHER_STRETCH`), and the rope's length is **state** (`b.ropeL`, reeled in at `TETHER_REEL`) —

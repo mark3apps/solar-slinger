@@ -6699,7 +6699,11 @@ function drawShip(game) {
     const burner = !!game.burnerOn;
     // The afterburner plume is nearly twice the flame — the burn should LOOK
     // like an event (it's spending a slow-refilling tank, not a free hold).
-    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1);
+    // The whole flame rides the engine SPOOL (physics' s.spool): it grows in
+    // over the ramp instead of appearing full-length on the first frame, so
+    // the exhaust and the thrust the ship actually has agree.
+    const spool = 0.35 + 0.65 * Math.min(1, Math.abs(s.spool ?? 1));
+    const f = (1 + Math.sin(game.time * 40) * 0.3) * (1 + lv.thrust * 0.15) * (burner ? 1.9 : 1) * spool;
     const g = ctx.createLinearGradient(rearX, 0, rearX - bodyR * 1.9 * f, 0);
     g.addColorStop(0, burner ? 'rgba(160, 220, 255, 0.95)' : 'rgba(120, 200, 255, 0.9)');
     g.addColorStop(1, 'transparent');
@@ -9662,4 +9666,88 @@ export function render(game) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, vw, vh);
   }
+}
+
+// ---- SHIP SYSTEMS cluster icons --------------------------------------------
+// hud.js owns the nodes; this owns the ink (render.js is where canvas drawing
+// lives). The GRAB/STOW instruments say "the biggest thing the beam can take"
+// as a PICTURE — the beam-class ladder as sprites, sized up the rungs so the
+// ramp itself is the reading. The rock rungs come off util.rockJagRing, the
+// ONE outline generator (the icon of a rock is still not a perturbed
+// primitive), seeded FIXED per rung: an emblem, never a re-roll. Repainted
+// only when a class or tier changes — hud.js guards the calls.
+// Neutral pale-violet ink on a dark well, like the shell's own glyphs: the
+// icons are chrome, not instruments, but a canvas can't spend a CSS var, so
+// they hold the house hue rather than chasing the locale accent.
+const ICON_INK = '#ded2f7';
+const ICON_WELL = 'rgba(16, 8, 34, .85)';
+export function drawStatIcon(cv, kind, idx) {
+  const c = cv.getContext('2d');
+  const S = cv.width, h = S / 2;
+  c.save();
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.clearRect(0, 0, S, S);
+  c.translate(h, h);
+  c.lineWidth = 2;
+  c.strokeStyle = ICON_INK;
+  c.fillStyle = ICON_WELL;
+  c.shadowColor = 'rgba(176, 112, 255, .8)';
+  c.shadowBlur = 5;
+  if (kind === 'ship') {
+    // The hull grows radius 4 -> 44 across the tiers; the glyph rides a tamed
+    // version of that ramp so tier 5 still fits the cell.
+    const r = 7 + idx * 2.2;
+    c.beginPath();
+    c.moveTo(0, -r);                       // nose
+    c.lineTo(r * 0.78, r * 0.72);          // starboard wingtip
+    c.lineTo(0, r * 0.34);                 // tail notch
+    c.lineTo(-r * 0.78, r * 0.72);         // port wingtip
+    c.closePath();
+    c.fill(); c.stroke();
+    c.shadowBlur = 0;
+    c.fillStyle = ICON_INK;
+    c.beginPath(); c.arc(0, -r * 0.3, 1.6, 0, TAU); c.fill();
+  } else {
+    const rung = Math.max(0, Math.min(5, idx));
+    const r = [6, 8.5, 11, 13.5, 16.5, 20][rung];
+    if (rung <= 2) {
+      // Pebble / belt rock / boulder: a real rock silhouette.
+      const ring = rockJagRing(mulberry32(0xC0FFEE + rung * 7919), r * 3);
+      const n = ring.length;
+      c.beginPath();
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * TAU;
+        const rr = r * ring[i];
+        if (i === 0) c.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        else c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      c.closePath();
+      c.fill(); c.stroke();
+    } else if (rung <= 4) {
+      // Small / large moon: a cratered disc.
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill(); c.stroke();
+      c.shadowBlur = 0;
+      c.lineWidth = 1.2;
+      const craters = rung === 3 ? [[-0.35, -0.2, 0.3], [0.3, 0.35, 0.22]]
+        : [[-0.4, -0.25, 0.28], [0.35, 0.3, 0.2], [0.05, -0.5, 0.16]];
+      for (const [cx, cy, cr] of craters) {
+        c.beginPath(); c.arc(cx * r, cy * r, cr * r, 0, TAU); c.stroke();
+      }
+    } else {
+      // A world: banded disc — the bands clipped to the disc, like drawBody's
+      // gas banding at glyph scale.
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill(); c.stroke();
+      c.shadowBlur = 0;
+      c.beginPath(); c.arc(0, 0, r, 0, TAU); c.clip();
+      c.lineWidth = 1.4;
+      c.globalAlpha = 0.75;
+      for (const y of [-0.42, -0.05, 0.38]) {
+        c.beginPath();
+        c.moveTo(-r, y * r); c.quadraticCurveTo(0, y * r + r * 0.14, r, y * r);
+        c.stroke();
+      }
+      c.globalAlpha = 1;
+    }
+  }
+  c.restore();
 }

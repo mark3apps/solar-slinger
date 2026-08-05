@@ -1,10 +1,13 @@
-import { PROG, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS } from './config.js';
+import {
+  CFG, PROG, TIERS, burnCap, burnThrust, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS,
+} from './config.js';
 import { ACHIEVEMENTS, CATEGORIES, ACH_TOTAL, ACH_MAX_POINTS, isSecret } from './achievements.js';
 import {
   chart, contactLabel, contactClass, contactLevel, waypointLabel, waypointPos,
   pointLabel, MAX_WAYPOINTS,
 } from './starmap.js';
 import { mulberry32 } from './util.js';
+import { drawStatIcon } from './render.js';
 
 const el = {};
 let msgTimer = null;
@@ -17,6 +20,17 @@ let prevSpec = '';         // spec chip identity — restyle only when it change
 let livesSig = '';         // lives-pip signature — rebuild on change
 let iconSig = '';          // acquired-upgrade chip signature — rebuild on change
 let abilBars = [];         // cached { fill, row, id, cost } per learned ability — the per-frame XP fills
+let spPrev = null;         // SHIP SYSTEMS panel's last drawn strings — null until a run is live,
+                           // so the first fill of a run never fires the stat-up flash
+let spSlots = -1;          // stow pips drawn (slot count) — rebuilt only when it moves
+// The dial's pointer degrees, EASED IN JS (never a CSS transition — see the
+// note on .spdial in style.css for why: transitioning a registered <angle>
+// custom property is measurably broken in this engine, both as the source
+// of a `transform`'s own transition and, worse, when transitioned directly
+// itself alongside a sibling var in one shorthand). null until a run starts,
+// so the first frame snaps to its target instead of easing in from 0.
+let easedVa = null, easedVb = null, easedVt = null, easedVtx = null;
+let spIconSig = '';        // grab/stow/ship sprite state — repainted only when a class moves
 let abilHoverId = null;    // ability row the cursor is on, or null — see abilHover
 let abilHoverRow = null;   // that row's node, held so the .hover class can be lifted off it
 let abilNextEl = null;     // the open readout's live "next rank" line
@@ -47,11 +61,26 @@ function setVar(node, name, value) {
   if (lastText.get(key) !== value) { lastText.set(key, value); node.style.setProperty(name, value); }
 }
 
+// Guarded write of the ship cluster's gauge vars. setVar keys its guard on
+// the var NAME alone (right for the app-wide one-off vars it serves); the
+// dial alone owns four of these (--va/--vb/--vt/--vtx), so this one keys on
+// element AND name.
+const gaugeCache = new Map();
+function setGauge(node, name, value) {
+  const key = `${node.id}|${name}`;
+  if (gaugeCache.get(key) !== value) { gaugeCache.set(key, value); node.style.setProperty(name, value); }
+}
+
 export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
+    // SHIP SYSTEMS cluster (bottom right): dial, throw gauge, sprite rows
+    'shipPanel', 'spVel', 'spThrN', 'velDial', 'spVelRated',
+    'rowThrow', 'spFling', 'spFlingFill',
+    'grabIcon', 'stowIcon', 'shipIcon', 'spAllow', 'spLiftFill', 'liftTape',
+    'rowStow', 'spStowPips', 'spMass',
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'xpNext', 'upList2', 'bottomleft',
     'abilOut', 'offerBox',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
@@ -78,6 +107,18 @@ export function initHud(game) {
   // which is PICKS_PER_TIER picks PLUS the milestone (see the span math in
   // updateHud) — divide by that same total or the ticks drift off the picks.
   el.xpBar.style.setProperty('--tick', `${100 / (PROG.PICKS_PER_TIER + 1)}%`);
+  // The ship panel's stat-moved flash must be truly ONE-SHOT: an instrument
+  // left wearing .up would replay the white-hot flash — a stat-moved signal
+  // with no stat moved — every time the panel re-displays (display:none
+  // restarts CSS animations). statUp runs on the flashed block's CHILDREN
+  // (see .spu.up in the stylesheet for why), so the first child to finish
+  // lifts the class; its siblings are at their own final frame, so nothing
+  // visibly cuts.
+  el.shipPanel.addEventListener('animationend', (e) => {
+    if (e.animationName !== 'statUp') return;
+    const box = e.target.closest('.up');
+    if (box) box.classList.remove('up');
+  });
   initAchPanel(game);
 }
 
@@ -704,7 +745,11 @@ function syncMenus(game) {
     // instruments claiming the same top-right corner, one of them a dial
     // showing a slice of the very system the other is showing whole. Same
     // replacement law as every other panel, just applied to the whole HUD.
-    el.hud.classList.toggle('hidden', mapOpen);
+    // By VISIBILITY, not display: display:none restarts every CSS animation
+    // on re-show, so closing the chart replayed the ship panel's entrance
+    // cascade in one corner of an already-booted cockpit — the splash boot's
+    // own "reads as a glitch" rule (see playBoot's gating below).
+    el.hud.classList.toggle('occluded', mapOpen);
     if (mapOpen) routeSig = null;   // force the journey rail to rebuild on open
     // Rebuilt ON OPEN and only then (see the buildAchList comment). The sig
     // guard means this runs on the transition, not every frame the panel is up.
@@ -737,6 +782,8 @@ function syncMenus(game) {
     // the card hides them — they no longer need toggles of their own. (The
     // hover readout is NOT inside it; the hudLive gate above drops that one.)
     el.bottomleft.classList.toggle('hidden', !game.started);
+    // The SHIP DATA panel is run state like the pilot card — no run, no ship.
+    el.shipPanel.classList.toggle('hidden', !game.started);
     // Blur the frozen world into a soft backdrop behind the splash (incl. the
     // settings modal opened from it); cleared the instant the game begins.
     document.body.classList.toggle('preGame', !game.started);
@@ -868,6 +915,13 @@ function refreshChart(game) {
 
 const fmtRange = (d) => (d >= 1000 ? `${(d / 1000).toFixed(1)}k` : `${Math.round(d)}`);
 const dist = (game, p) => Math.hypot(p.x - game.ship.x, p.y - game.ship.y);
+
+// Mass figures for the SHIP DATA panel. The beam ladder spans 10 → 1.2M, so
+// the row needs k/M steps to stay one line at every tier.
+const fmtMass = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
+  : v >= 1e4 ? `${Math.round(v / 1000)}K`
+    : v >= 1e3 ? `${(v / 1000).toFixed(1)}K`
+      : String(Math.round(v)));
 
 // The data line for a body: how far to go, how far out it sits, and — for a
 // charted world — how many moons it keeps, which is the one fact the portrait
@@ -1282,6 +1336,149 @@ export function updateHud(game) {
     abilHide();
     abilTrack(abilBars.length > 0);
   }
+  // ---- SHIP SYSTEMS (bottom right): the instrument cluster. Every value
+  // comes off game.st or a value the sim publishes for it. The primary dial
+  // is VELOCITY — FLOW-RELATIVE speed (game.flowSpd, published by the
+  // governor in physics.step), because sky-frame speed near the sun outruns
+  // maxSpeed on flow alone and would park the needle in the redline while
+  // merely cruising. THROW is the live launch speed of whatever is in the
+  // beam (game.throwSpd, from tractor.updateTractor). An instrument the
+  // build doesn't have is display:none'd — it doesn't exist, no LOCKED
+  // placeholder. Static readouts are diff-guarded writes that FLASH when a
+  // pick, a rank or a tier moves them — the moment the build changes, the
+  // corner that describes the build answers.
+  if (game.started) {
+    // PER-SHIP scales (user call): each gauge tops out at what THIS ship can
+    // actually do. The rated BUG marks the no-burner ceiling; with no
+    // afterburner there is no headroom and the redline's width is zero. The
+    // NEEDLE alone is the reading — the fill arc that used to shadow it was
+    // the same number drawn twice, and was cut.
+    // THE SCALE'S TOP is the governor's own TRANSIENT ceiling, not the rated
+    // one: physics.step's speed governor lets a slingshot or a knockback
+    // ride up to CFG.SPEED_HARD (1.9x the current cap) before bleeding it
+    // back down — a HAULER with no afterburner at all can still coast
+    // through 500 on a good slingshot, and the dial pegging well under that
+    // (an afterburner-only widened scale, ×1.12) read as broken on exactly
+    // the ship that has no burner to explain the overshoot. Math.max against
+    // burnCap too — NOT because it currently wins (burnCap tops out at 1.8,
+    // config.js; SPEED_HARD is 1.9, so today SPEED_HARD is always the taller
+    // of the two) but so the scale stays correct on its own the day burnCap
+    // is retuned past SPEED_HARD again, without anyone having to remember to
+    // revisit this line. ×1.05: a little headroom past even THAT peak, so a
+    // value sitting exactly on the ceiling doesn't kiss the tip.
+    const ab = st.afterburner;
+    const capMul = Math.max(CFG.SPEED_HARD, ab > 0 ? burnCap(ab) : 1);
+    const velMax = st.maxSpeed * capMul * 1.05;
+    const spd = game.flowSpd ?? Math.hypot(s.vx, s.vy);
+    setText(el.spVel, String(Math.round(spd)));
+    // The inner ring: LIVE ENGINE OUTPUT against YOUR engine's full-burn
+    // ceiling (config.burnThrust). game.engineOut (published beside the
+    // thrust math in physics.step) is output over RATED thrust, so ×
+    // st.thrust puts it back in absolute units: amber up to your rated mark,
+    // the afterburner's over-drive painted past it as the ice-blue
+    // extension. No burner: rated IS the top, and full throttle closes the
+    // ring exactly. The small amber figure under the velocity digits is the
+    // same number — the ring made readable.
+    const thrMax = st.thrust * (ab > 0 ? burnThrust(ab) : 1);
+    const outAbs = (s.alive ? game.engineOut || 0 : 0) * st.thrust;
+    setText(el.spThrN, String(Math.round(outAbs)));
+    // AMBER vs BLUE is split by SOURCE, not by whether the total happens to
+    // cross rated: unboostedOutAbs is what THIS SAME throttle/spool would
+    // make with the burner's own multiplier divided back out (s.burnK is
+    // the eased boost-engagement fraction physics.step already computed —
+    // reading it here, rather than re-deriving it, is the one-source rule).
+    // ab=0 ships never engage the burner (burnK stays 0), so boostMul is
+    // always exactly 1 for them regardless of guarding burnThrust(0).
+    const boostMul = ab > 0 ? 1 + (burnThrust(ab) - 1) * (s.burnK || 0) : 1;
+    const unboostedOutAbs = outAbs / boostMul;
+    // EASED IN JS, never via CSS transition — see .spdial's note in
+    // style.css. Targets first, blended toward exactly like
+    // dispHull/dispShield above; a null eased value (fresh run) snaps
+    // straight to its target instead of sweeping in from zero.
+    const targetVa = Math.min(1, spd / velMax) * 270;
+    const targetVb = Math.min(1, st.maxSpeed / velMax) * 270;
+    const targetVt = Math.min(1, unboostedOutAbs / thrMax) * 270;
+    const targetVtx = Math.min(1, outAbs / thrMax) * 270;
+    easedVa = easedVa == null ? targetVa : easedVa + (targetVa - easedVa) * 0.5;
+    easedVb = easedVb == null ? targetVb : easedVb + (targetVb - easedVb) * 0.14;
+    easedVt = easedVt == null ? targetVt : easedVt + (targetVt - easedVt) * 0.35;
+    easedVtx = easedVtx == null ? targetVtx : easedVtx + (targetVtx - easedVtx) * 0.35;
+    setGauge(el.velDial, '--va', `${easedVa.toFixed(1)}deg`);
+    setGauge(el.velDial, '--vb', `${easedVb.toFixed(1)}deg`);
+    setGauge(el.velDial, '--vt', `${easedVt.toFixed(1)}deg`);
+    setGauge(el.velDial, '--vtx', `${easedVtx.toFixed(1)}deg`);
+    el.shipPanel.classList.toggle('over', spd > st.maxSpeed * 1.02);
+    // THROW: the live launch speed of the rock in the beam — climbing with
+    // the wind-up, sagging with heft — and IDLING AT ZERO (user call): an
+    // empty beam throws nothing, so the gauge rests dark and lights the
+    // moment something is tethered. The bar is that speed over the rated
+    // fling; .charged runs it near-white off tractor's own full-power gate,
+    // so this gauge and the in-world colour-and-pop say "full power" at the
+    // same instant. Live, so it writes directly, never through the flash.
+    const thr = game.throwSpd ?? 0;
+    setText(el.spFling, String(Math.round(thr)));
+    setWidth(el.spFlingFill, `${(Math.max(0, Math.min(1, thr / st.fling)) * 100).toFixed(1)}%`);
+    el.rowThrow.classList.toggle('charged', !!game.throwCharged);
+    // LIFT: six cells = the beam-class ladder, lit through the tier; the live
+    // cell fills with the catch channel's progress toward the class ceiling
+    // (TIERS.caps -> ceil — the same asymptote shipStats' capacity rides).
+    // The chevron rides the fill's leading edge off the same fraction.
+    const classFill = Math.max(0, Math.min(1,
+      (st.capacity - TIERS.caps[st.tier]) / Math.max(1, TIERS.ceil[st.tier] - TIERS.caps[st.tier])));
+    const liftPct = `${(((st.tier + classFill) / 6) * 100).toFixed(1)}%`;
+    setWidth(el.spLiftFill, liftPct);
+    setGauge(el.liftTape, '--tpos', liftPct);
+    // The sprites: the biggest thing the beam can GRAB, the biggest it can
+    // STOW, and the ship itself at tier scale (render.drawStatIcon owns the
+    // ink). Repainted only when a class or the tier actually moves.
+    // Gated on maxOrbiters, NOT orbitTier: the brawler's orbit channel now
+    // feeds the front ram (config's frontRam), which sets orbitTier/orbitCap
+    // to describe the RAM's class while maxOrbiters stays hard 0 — a brawler
+    // has no stow slots at all, so orbitTier>=0 alone would show a
+    // permanent, meaningless "0/7 STOW" instead of the row simply not
+    // existing for a spec it doesn't apply to.
+    const stowed = st.maxOrbiters > 0;
+    const iconSig = `${st.tier}|${stowed ? st.orbitTier : -1}`;
+    if (iconSig !== spIconSig) {
+      spIconSig = iconSig;
+      drawStatIcon(el.grabIcon, 'class', st.tier);
+      if (stowed) drawStatIcon(el.stowIcon, 'class', st.orbitTier);
+      drawStatIcon(el.shipIcon, 'ship', st.tier);
+    }
+    // STOW exists only once an orbit ability does. Its pips are the 7-slot
+    // cap with the slots owned lit — a COUNT, so pips, never a bar. Rebuilt
+    // only when the count moves.
+    el.rowStow.classList.toggle('hidden', !stowed);
+    if (!stowed) spSlots = -1;
+    else if (spSlots !== st.maxOrbiters) {
+      spSlots = st.maxOrbiters;
+      el.spStowPips.innerHTML = Array.from({ length: 7 }, (_, i) =>
+        `<span class="pp${i < st.maxOrbiters ? ' on' : ''}"></span>`).join('');
+    }
+    const vals = {
+      spVelRated: String(st.maxSpeed),
+      spAllow: fmtMass(st.capacity),
+      spMass: fmtMass(st.shipMass),
+    };
+    for (const k in vals) {
+      // A key spPrev has never seen is an instrument ARRIVING (stow's
+      // unlock) — the entrance sweep carries that moment; the flash is for
+      // values MOVING (the live figures — velocity, thrust, throw — write
+      // directly and never flash).
+      if (spPrev && spPrev[k] !== undefined && spPrev[k] !== vals[k]) {
+        flash(el[k].closest('.spu'), 'up');
+      }
+      setText(el[k], vals[k]);
+    }
+    // Dropped through GAME OVER too, not just the title screen: resetRun never
+    // clears game.started, so a new run's fresh tier-0 stats would otherwise
+    // diff against the dead run's and fire the .up flash on every row at once.
+    spPrev = game.gameOver ? null : vals;
+  } else {
+    spPrev = null; spSlots = -1; spIconSig = '';
+    easedVa = easedVb = easedVt = easedVtx = null;   // fresh run: snap, don't sweep in
+  }
+
   const bank = prog.abilXp || {};
   for (const b of abilBars) {
     // A maxed track's cost is Infinity — that divides to 0, so it's pinned full

@@ -544,6 +544,18 @@ export function releaseHeld(game, fling) {
 export function updateTractor(game, dt) {
   springHeld(game, game.held, dt, 0);
   if (game.held2) springHeld(game, game.held2, dt, 1);
+  // The LIVE throw speed for the HUD's THROW gauge (hud.js reads it): what
+  // the held rock would leave at if released THIS frame — the same call the
+  // release and the lead-marker solver make, so the gauge, the ✕ markers and
+  // the actual launch can never disagree. Null when nothing is in the beam;
+  // the gauge falls back to the rated figure. throwCharged mirrors
+  // drawCharge's own gate (CHARGE_SHOW_HEFT + a closed grip) — read off
+  // b.throwCharged, which springHeld (just above) already stashed from the
+  // SAME heft/f this substep, rather than a second beamGrip(st, b) call.
+  if (game.held) {
+    game.throwSpd = flingSpeedFor(game, game.held.mass, game.held);
+    game.throwCharged = !!game.held.throwCharged;
+  } else { game.throwSpd = null; game.throwCharged = false; }
 }
 
 function springHeld(game, b, dt, slot) {
@@ -563,6 +575,10 @@ function springHeld(game, b, dt, slot) {
   // it goes TAUT (the rope below) and the ship and the rock fight over the
   // momentum from there. Death still drops it; distance no longer can.
   const atFull = f >= 1;
+  // Stashed for updateTractor's THROW-gauge readout, so it can reuse THIS
+  // heft/f instead of a second beamGrip(st, b) call every substep — heft
+  // and atFull are already sitting right here.
+  b.throwCharged = heft > CFG.CHARGE_SHOW_HEFT && atFull;
   if (!b.alive || !s.alive ||
       (!atFull && Math.hypot(b.x - s.x, b.y - s.y) > st.range * 1.6 + b.radius)) {
     dropSlot(game, slot);

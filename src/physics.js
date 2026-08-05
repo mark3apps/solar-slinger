@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
-  ramKeep, ramArc, ramFace, ramTier, dmgMass,
+  burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -4986,7 +4986,16 @@ export function step(game, dt) {
     // thrust and the BURN bar disagree). The burn is much harder than the old
     // hold-Shift overdrive because the tank makes it scarce.
     const boosting = game.burnerOn && s.engineOutT <= 0;
-    if (boosting) th *= 1.75 + 0.175 * game.st.afterburner;
+    // The burner's boost fades IN over its own half-second (CFG.BURN_KICK) —
+    // the kick is an event you feel arrive, never a step function on the
+    // frame Shift lands. Fading OUT is DELIBERATELY SLOWER (CFG.BURN_DECAY,
+    // ~3s — user call): the burn spends a scarce tank, so letting go should
+    // still coast on the shove for a beat rather than cutting instantly, the
+    // same asymmetry the main thrust spool/decay already runs on.
+    const burnRate = boosting ? CFG.BURN_KICK : CFG.BURN_DECAY;
+    s.burnK = (s.burnK || 0) + ((boosting ? 1 : 0) - (s.burnK || 0)) * (1 - Math.exp(-burnRate * dt));
+    if (s.burnK < 0.005) s.burnK = 0;
+    if (s.burnK > 0) th *= 1 + (burnThrust(game.st.afterburner) - 1) * s.burnK;
     // Reverse thrust is an UPGRADE (Retro Jets) — reversePower is 0 until it's
     // unlocked, so S does nothing and only forward thrust drives the ship. Its
     // ranks then scale the braking authority (1.0x at rank 1, 1.5x at rank 6).
@@ -5014,8 +5023,35 @@ export function step(game, dt) {
       s.thrusting = throttle > 0;
       s.braking = throttle < 0;
     }
-    const tx = Math.cos(s.angle) * th * throttle;
-    const ty = Math.sin(s.angle) * th * throttle;
+    // THE ENGINE SPOOLS, IT DOESN'T STEP (user call): output BUILDS over
+    // CFG.THRUST_SPOOL_T seconds of held throttle — a normalized exponential
+    // approach that lands exactly at full power at T, passing ~75% at 2s
+    // (THRUST_SPOOL_K is the shape). Release is an exponential FALLOFF —
+    // quick at first, gentle at the tail, spent in about a second
+    // (THRUST_DECAY). The ramp keeps NO clock of its own: each powered
+    // substep inverts the curve for the time equivalent to the CURRENT
+    // spool, so re-pressing mid-decay resumes seamlessly from wherever the
+    // falloff left the engine. A direction flip restarts from zero (full
+    // reverse is not free the instant after a full forward burn). The plume
+    // art and the HUD's thrust ring both read s.spool, so what you see IS
+    // the ramp.
+    if (throttle === 0) {
+      s.spool = (s.spool || 0) * Math.exp(-CFG.THRUST_DECAY * dt);
+      if (Math.abs(s.spool) < 0.005) s.spool = 0;
+    } else {
+      const T = CFG.THRUST_SPOOL_T, K = CFG.THRUST_SPOOL_K, D = 1 - Math.exp(-K * T);
+      const same = (s.spool || 0) !== 0 && Math.sign(s.spool) === Math.sign(throttle);
+      const shape = same ? Math.min(0.9995, Math.abs(s.spool / throttle)) : 0;
+      const t = Math.min(T, -Math.log(1 - shape * D) / K + dt);
+      s.spool = throttle * ((1 - Math.exp(-K * t)) / D);
+    }
+    const tx = Math.cos(s.angle) * th * s.spool;
+    const ty = Math.sin(s.angle) * th * s.spool;
+    // Live engine output for the HUD's thrust ring (hud.js reads it): the
+    // fraction of RATED thrust actually leaving the engine this substep —
+    // spool, storm derate and afterburner boost included, reverse counted at
+    // its own authority. Same stash idiom as game.speedFrac below.
+    game.engineOut = th * Math.abs(s.spool) / Math.max(1, game.st.thrust);
 
     // Afterburner exhaust wash: hot particles streaming off the stern.
     // Throttled cadence — this runs at 120Hz (render adds the plume art).
@@ -5427,7 +5463,7 @@ export function step(game, dt) {
     let cap = game.st.maxSpeed;
     // AFTERBURNER raises the ceiling too, so the burn actually reaches speed
     // (gated on the fuel tank via game.burnerOn, same as the thrust boost).
-    if (game.burnerOn && s.engineOutT <= 0) cap *= 1.35 + 0.125 * game.st.afterburner;
+    if (game.burnerOn && s.engineOutT <= 0) cap *= burnCap(game.st.afterburner);
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
@@ -5447,6 +5483,12 @@ export function step(game, dt) {
     // deviation points behind the nose.
     game.speedFrac = Math.min(1.2, Math.max(0,
       ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / cap));
+    // ...and for the HUD's SHIP DATA readout: the flow-relative speed itself
+    // (full magnitude, post-bleed) — the number the ceiling actually governs.
+    // Sky-frame speed is the WRONG readout against TOP SPEED: near the sun the
+    // flow alone outruns maxSpeed, so a raw |v| pins the gauge and parks its
+    // overspeed alarm on for the whole inner system while merely cruising.
+    game.flowSpd = Math.hypot(s.vx - flow.vx, s.vy - flow.vy);
     s.x += s.vx * dt; s.y += s.vy * dt;
     if (s.invuln > 0) s.invuln -= dt;
 
