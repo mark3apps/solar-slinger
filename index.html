@@ -81,7 +81,77 @@
        into the dial's rim, never a square parked beside it. -->
   <button id="mapBtn" class="hidden" title="System chart (M)" aria-label="Open system chart"><span class="mbg">&#9678;</span></button>
   <div id="speedBadge" class="hidden"></div>
-  <div id="perfBadge" class="hidden"></div>
+  <!-- Bottom-right: SHIP SYSTEMS — the ship this run has actually built, as a
+       stack of small GAUGES rather than a table of figures. Every row is a
+       label/value line over a range bar showing where that stat sits on its
+       whole ladder (config.STAT_RANGES): a fresh scout reads as a panel of
+       near-empty rails, a maxed titan as a wall of light. LIFT's bar is the
+       six-cell beam-class ladder itself (lit through your tier, the live cell
+       filling as catch ranks buy mass inside the class); STOW is slot pips.
+       A row the build doesn't have yet DOES NOT EXIST — no LOCKED
+       placeholders; the stow row arrives (with its entrance sweep) the moment
+       an orbit ability is learned. hud.js fills everything from game.st.
+       The perf overlay shares this column ABOVE the panel, so debug text and
+       the readout can never overlap in the one corner they both claim. -->
+  <div id="bottomright">
+    <div id="perfBadge" class="hidden"></div>
+    <!-- Free-floating instruments, no bed and no frame — the vitals-stick
+         law applied to this corner: readouts printed on the canopy, never a
+         box parked over the game. -->
+    <div id="shipPanel" class="hidden">
+      <!-- THE PRIMARY INSTRUMENT: an airspeed-style dial on an ABSOLUTE
+           scale (config.STAT_RANGES.vel — the fastest any build can rate, a
+           maxed scout under full burn), so the needle means the same thing
+           at every tier. The amber BUG is your ship's current rated
+           ceiling, and the sector past the bug is your overspeed zone: the
+           needle crossing your own bug IS the over readout. -->
+      <div class="spu spdialbox">
+        <div class="spdial" id="velDial">
+          <span class="sdvel"></span>
+          <span class="sdover"></span>
+          <span class="sdthr"></span>
+          <span class="sdbug"></span>
+          <span class="sdneedle"></span>
+          <!-- Two live figures under glass: the big velocity, and beneath it
+               the CURRENT THRUST in the ring's own amber — number and arc
+               are the same reading in two forms. -->
+          <span class="sdcore"><span class="sdnum" id="spVel">0</span><span class="sdthrN" id="spThrN">0</span></span>
+        </div>
+        <div class="sdrated">VELOCITY &middot; RATED <span id="spVelRated">280</span></div>
+        <!-- The ship's mass rides the dial's data card — it is ship identity,
+             like the rated figure, and the glyph keeps the number meaning
+             something (it grows with the hull it describes). -->
+        <div class="sdmass"><canvas class="spobj" id="shipIcon" width="52" height="52"></canvas>MASS <b id="spMass">10</b></div>
+      </div>
+      <!-- THROW: the LIVE launch speed — what the rock in the beam would
+           leave at if released right now (tractor publishes game.throwSpd
+           off the same call the release makes), climbing with the wind-up
+           and sagging with heft; the rated figure when the beam is empty.
+           The bar runs near-white while fully charged — the beam's own
+           charged colour. -->
+      <div class="spu sprow" id="rowThrow">
+        <div class="sphd"><span class="splab">THROW</span><span class="spval" id="spFling"></span></div>
+        <div class="spbar throw"><span class="spfill" id="spFlingFill"></span></div>
+      </div>
+      <!-- GRAB: the biggest thing the beam can take, shown as the THING —
+           render.drawStatIcon paints the class rung's sprite (rock silhouette
+           / cratered moon / banded world) — plus the allowance mass and the
+           six-cell class tape with its position chevron. -->
+      <div class="spu sprow" id="rowGrab">
+        <div class="sphd"><canvas class="spobj" id="grabIcon" width="52" height="52"></canvas><span class="splab">GRAB</span><span class="spval" id="spAllow"></span></div>
+        <div class="sptape" id="liftTape">
+          <span class="sppoint"></span>
+          <div class="spbar cells"><span class="spfill" id="spLiftFill"></span></div>
+        </div>
+      </div>
+      <!-- STOW: the stores row — the biggest stowable class as a sprite,
+           slot pips lit to the slots owned. Absent until an orbit ability
+           exists; no LOCKED placeholder. -->
+      <div class="spu sprow hidden" id="rowStow">
+        <div class="sphd"><canvas class="spobj" id="stowIcon" width="52" height="52"></canvas><span class="splab" id="spStowLab">STOW</span><span class="sppips" id="spStowPips"></span></div>
+      </div>
+    </div>
+  </div>
   <div id="msg" class="hidden"></div>
 </div>
 

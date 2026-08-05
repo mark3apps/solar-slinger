@@ -765,6 +765,28 @@ export const CFG = {
   VIEW_REF_DIAG: Math.hypot(1920, 1080),
 
   SHIP_TURN: 9,            // rad/s — the nose tracks the mouse
+  // Engine SPOOL: thrust BUILDS over a long ramp rather than stepping to
+  // full — THRUST_SPOOL_T seconds from a standing start to 100%, on a
+  // normalized exponential approach that lands EXACTLY at full power at T,
+  // tuned to pass ~75% at 2s (user call). Release is a fast exponential
+  // FALLOFF — quick at first, gentle at the tail, spent in about a second —
+  // and re-pressing mid-decay RESUMES the ramp from wherever the falloff
+  // left the engine (physics inverts the curve, so there is no jump either
+  // way); a direction flip still restarts from zero. physics.step owns the
+  // state (s.spool); the plume art and the HUD thrust ring read it.
+  THRUST_SPOOL_T: 6,       // seconds, standing start -> full thrust
+  THRUST_SPOOL_K: 0.7,     // 1/s — curve steepness (~75% of full by 2s)
+  THRUST_DECAY: 4,         // 1/s — release falloff (~13% left by 0.5s, spent ~1s)
+  // The afterburner's own spool: the boost multiplier fades IN over half a
+  // second of the tank opening (user call: "kick on fully within 0.5s") —
+  // never a step on the frame Shift lands. Releasing is DELIBERATELY SLOWER
+  // (user call: "should take 3 seconds to come down after it stops") — the
+  // burn is spending a scarce tank, so the extra shove it bought should
+  // linger a beat past letting go rather than cutting the instant the key is
+  // up. Same exponential-approach math as THRUST_SPOOL/_DECAY, just applied
+  // to the boost fraction (s.burnK) instead of the throttle itself.
+  BURN_KICK: 9,            // 1/s — ~99% of the boost within 0.5s
+  BURN_DECAY: 1.8,         // 1/s — release falloff, spent in ~3s
   // The SHIELD recharges after a quiet spell; the HULL never self-heals — it
   // mends only by collecting glow-pocket motes (glow.js)
   SHIP_REGEN: 9,           // shield/s once recharging
@@ -3411,3 +3433,25 @@ export function shipStats(prog) {
     totalLevel,
   };
 }
+
+// The ADVERTISED span of each headline stat, for the HUD's SHIP SYSTEMS
+// gauges: [tier-0 base, all-in ceiling]. The ceiling is tier 5 plus a maxed
+// six-rank channel (reach also counts the stacked 12-rank orbit channel's
+// +20/rank). These are shipStats' own formulas evaluated at their two ends and
+// nothing else — KEEP THEM IN STEP with the expressions above, or a gauge's
+// pin sits past its rail: the mirror-drift trap (dockDomeR's law), applied to
+// a readout. They live HERE, beside the formulas, for exactly that reason.
+// The afterburner's two envelope multipliers, at a given afterburner channel
+// rank. ONE source on purpose: physics.step applies them while burning, and
+// the HUD's dial and thrust ring SCALE themselves by them (each gauge tops
+// out at what THIS ship can actually do under full burn) — two copies of
+// these expressions is the mirror-drift trap.
+// burnCap's RANK-1 value is untouched (1.475 — a hard, near-50% burn from
+// the moment you own it), but the per-rank step above that was too steep: a
+// maxed (rank 6) tank more than DOUBLED sustained speed (×2.1), which read
+// as too high (user call). The ceiling is pulled back to ×1.8 — still a
+// real, ship-defining burn, not a mild nudge — by shrinking only the growth
+// PAST rank 1 (0.125/rank -> 0.065/rank); the early game is unchanged.
+// (History: flat 1.35 + 0.125·ab, rank1 1.475 -> rank6 2.1.)
+export const burnCap = (ab) => 1.475 + 0.065 * (ab - 1);   // × maxSpeed while burning
+export const burnThrust = (ab) => 1.75 + 0.175 * ab;        // × thrust while burning

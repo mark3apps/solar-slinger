@@ -543,6 +543,18 @@ export function releaseHeld(game, fling) {
 export function updateTractor(game, dt) {
   springHeld(game, game.held, dt, 0);
   if (game.held2) springHeld(game, game.held2, dt, 1);
+  // The LIVE throw speed for the HUD's THROW gauge (hud.js reads it): what
+  // the held rock would leave at if released THIS frame — the same call the
+  // release and the lead-marker solver make, so the gauge, the ✕ markers and
+  // the actual launch can never disagree. Null when nothing is in the beam;
+  // the gauge falls back to the rated figure. throwCharged mirrors
+  // drawCharge's own gate (CHARGE_SHOW_HEFT + a closed grip), so the gauge
+  // and the in-world colour-and-pop say "full power" at the same instant.
+  if (game.held) {
+    const g = beamGrip(game.st, game.held);
+    game.throwSpd = flingSpeedFor(game, game.held.mass, game.held);
+    game.throwCharged = g.heft > CFG.CHARGE_SHOW_HEFT && g.f >= 1;
+  } else { game.throwSpd = null; game.throwCharged = false; }
 }
 
 function springHeld(game, b, dt, slot) {
