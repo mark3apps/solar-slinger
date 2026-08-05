@@ -572,9 +572,13 @@ export function generateWorld(game, seed = 20260721) {
   // every rock's baked shape (rockshape.rockShapeOf) and its sprite detail, so
   // without this the same seed builds the same layout wearing different rock:
   // identical worldgen checksum, different collisions half a second later. The
-  // reset goes BEFORE generateWorld's bodies are minted, and the ship is minted
-  // inside it too, so a run's ids are a pure function of the seed. See the note
-  // on NEXT_ID in entities.js.
+  // reset goes BEFORE generateWorld's bodies are minted, and nothing OUTSIDE
+  // generateWorld mints an id-bearing object: only Body and Alien draw
+  // NEXT_ID++, `Ship` carries no id at all (generateWorld does not build one —
+  // respawnShip just repositions main.js's single import-time Ship), and
+  // regenWorld clears game.aliens before this runs. That is why a run's ids are
+  // a pure function of the seed — check this ordering again if Ship ever gains
+  // an id. See the note on NEXT_ID in entities.js.
   resetBodyIds();
 
   // ONE sun, vast and dangerous, with the whole map as its system.
