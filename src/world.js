@@ -2289,7 +2289,20 @@ function seedDenseFields(game, sun, rng) {
         // Cheap radius guess for the clearance test — the true one needs the
         // mass draw below, and the ladder's spread is narrow enough at this
         // scale that a mid estimate keeps pebbles apart without wasting draws.
-        if (!gravelClear(x, y, 13)) { if (tries < 7) continue; }
+        // NO LAST-TRY ESCAPE HERE, unlike the density taper below. The taper is
+        // a preference — accepting a rim draw on the final try only costs a
+        // slightly flatter gradient. This is the clearance test, and swallowing
+        // it seeds a pebble INSIDE another pebble: both are railed field rock,
+        // so collideBodies' railed-pair pass-through freezes them exactly where
+        // worldgen put them, and stuckPair can only fire once they are inside
+        // each other's surfReach. Measured before this: 1-5 interpenetrating
+        // gravel pairs per world, worst 21.9 units of overlap on ~13-unit rocks
+        // — fully buried, and visible from the first frame. `gcells` was added
+        // for precisely this (21 of 27 overlapping pairs in the whole sky were
+        // gravel on gravel); the escape hatch was undoing it on one try in
+        // eight. Falling out to `if (!sited) continue;` drops the pebble, which
+        // is what the landmark `clash` path already does.
+        if (!gravelClear(x, y, 13)) continue;
         for (const g of bigs) {
           // Against the SHAPE, for the same reason the masonry is packed against
           // it: a landmark's corners reach past its nominal radius, so a circle
