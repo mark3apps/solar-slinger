@@ -3221,7 +3221,7 @@ function updateDock(game, dt) {
         const i = docks.findIndex((q) => q !== game.home && q !== d);
         if (i >= 0) {
           const gone = docks.splice(i, 1)[0];
-          game.dockRetiredName = gone.b.hidden ? 'an unresolved mass' : (gone.b.name || 'a world');
+          game.dockRetiredName = placeName(gone.b);
         }
       }
       game.dockBuildName = placeName(b);
@@ -4859,7 +4859,7 @@ export function step(game, dt) {
     if (game.dock) {
       if (!game.launch && throttle > 0) {
         game.launch = { t: 0 };
-        game.launchName = game.dock.b.hidden ? 'an unresolved mass' : (game.dock.b.name || 'the pad');
+        game.launchName = placeName(game.dock.b);
       }
       throttle = 0;
       // The plume IS the sequence's second act — s.thrusting drives render's
