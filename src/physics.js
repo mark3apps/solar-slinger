@@ -3195,19 +3195,38 @@ function collideShipBody(game, s, b, dt) {
     // going and finding more rock.
     // Front arc ONLY, the same bargain War Plating makes: the ram is welded to
     // the bow and does nothing for a hit that comes in past the shoulders.
+    //
+    // DON'T REGRESS: THE RAM IS ONLY BILLED FOR A HIT THAT COULD HAVE REACHED
+    // THE HULL. The hit gate — invariant 3's ambient floor (`closing > 25`)
+    // plus the noise floor (`> 1.5`) — is hoisted ABOVE spendRam, not left
+    // sitting under it. Billing first and gating afterwards made every
+    // front-arc GRAZE pay: leaning on a 2,500-mass rock at closing 10 on a
+    // tier-3 hull is dmg ~0.48, damage-free by design, but it ate ~57 mass a
+    // substep — ~6,900/s at 120 Hz, a full 33k ram gone in ~5 seconds of
+    // resting against a boulder. And ramKeep suppressing the bounce above
+    // holds the ship IN that contact, so the drain fed itself. A contact that
+    // cannot reach the hull must not be allowed to bill the ram either.
+    //
+    // The gate reads `dmg` — the hit as it ARRIVED — and not `hullDmg`. Those
+    // differ exactly when the ram does its job: a real hit the ram swallows
+    // whole leaves hullDmg 0, and "ram spent, hull untouched" is the entire
+    // point of the ability, so it must stay inside the gate. Only the
+    // damageShip call re-tests the remainder.
     let hullDmg = dmg;
-    if (dmg > 0 && s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
-      hullDmg = spendRam(game, dmg, hitAng);
-    }
-    if (hullDmg > 1.5 && closing > 25) {
-      // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
-      // the damage lands, checked after, because that's the only moment both
-      // facts are true at once.
-      const own = b.thrownBy === 'player' && b.thrownTimer > 0;
-      damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
-        thrown > 1 ? 'Hit by an alien-thrown rock.' :
-        `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
-      if (own && !s.alive) bump(game, 'ownGoal');
+    if (dmg > 1.5 && closing > 25) {
+      if (s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
+        hullDmg = spendRam(game, dmg, hitAng);
+      }
+      if (hullDmg > 1.5) {
+        // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
+        // the damage lands, checked after, because that's the only moment both
+        // facts are true at once.
+        const own = b.thrownBy === 'player' && b.thrownTimer > 0;
+        damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
+          thrown > 1 ? 'Hit by an alien-thrown rock.' :
+          `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
+        if (own && !s.alive) bump(game, 'ownGoal');
+      }
     }
   }
 }
