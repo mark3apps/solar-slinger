@@ -141,7 +141,8 @@ function flingSpeedFor(game, mass, body = null) {
     game.tetherMul = mul;
   }
   // Hard cap the throw speed — Kinetic Sling 6 × tether × Berserker could reach
-  // ~4900, fast enough to tunnel through small targets and inject absurd impulse.
+  // ~4900 under the old 150/rank sling slope (~3,050 under the 50/rank one),
+  // fast enough to tunnel through small targets and inject absurd impulse.
   return Math.min(speed, 3000);
 }
 
@@ -749,6 +750,66 @@ export function addToOrbit(game) {
   return true;
 }
 
+// BRAWLER: CRUSH A ROCK INTO THE RAM (main.onRmbDown). The rock is DESTROYED —
+// it does not join a formation, it stops existing and its mass becomes part of
+// one structure welded to the nose (`ship.ram`). That is the whole verb: the
+// brawler does not pick rocks up and consider them, it eats them, and what it
+// is flying behind gets bigger.
+//
+// It reuses pickTarget, so what right-click absorbs is EXACTLY what left-click
+// would have grabbed — one target rule for both buttons, and the hover hint
+// ring keeps telling the truth about both. Returns false when there is nothing
+// in reach, the ram is full, or the rock is too big; a false simply means
+// nothing happened this call — there is no release move on the button (the
+// Scattergun fallback this used to hand off to is deleted), and the held-
+// button sweep in main.update just tries again as the cursor moves.
+//
+// Deliberately NOT a winch: the ram is boulder-capped (shipStats) and nothing
+// below the moon rungs winches, so an absorb is always the instant version.
+export function absorbIntoRam(game) {
+  const st = game.st, s = game.ship;
+  if (!st.frontRam || !s.alive || !(st.ramCap > 0)) return false;
+  if ((s.ram || 0) >= st.ramCap) return false;
+  const { best, ownThrow } = pickTarget(game);
+  // Your own shot is the lowest-precedence target (design law) — with a ram
+  // already built it must not be what the next right-click eats, or a brawler
+  // that fires and rebuilds is just re-absorbing its own blast.
+  if (!best || (ownThrow && (s.ram || 0) > 0)) return false;
+  if (best.type === 'nest') return false;
+  if (!canStow(st, best)) {
+    // Say why, on the same channel the beam uses — silence here reads as a dead
+    // button rather than "that rock is too big to crush onto your nose".
+    game.tooHeavy = best;
+    game.tooHeavyT = 1.2;
+    return false;
+  }
+  // BANK THE MASS, THEN DESTROY THE ROCK. Capped, and the overflow is simply
+  // not taken — a rock is absorbed whole or not at all, so the ram can't be
+  // topped up by feeding it something it has no room for.
+  s.ram = Math.min(st.ramCap, (s.ram || 0) + best.mass);
+  s.ramHitT = 0.22;                     // render: the crush slam
+  s.ramHitAng = s.angle;                // a crush arrives frontal: ripple from the middle
+  // THE CRUSH ANIMATION. The body is destroyed on this frame, so the rock the
+  // player watched fly in has to be handed to render as its own short-lived
+  // effect or it simply blinks out of existence mid-grab — which reads as the
+  // click having deleted the rock rather than eaten it. One record per absorb:
+  // where it started, how big it was, and the spin it was carrying, so render
+  // can fly it into the bow and crush it flat (render.drawRamFx).
+  (game.ramFx || (game.ramFx = [])).push({
+    x: best.x, y: best.y, r: best.radius, spin: best.spin || 0,
+    id: best.id, t: 0, dur: 0.3,
+  });
+  clearHoldState(game, best);           // in case it was in hand when the button went down
+  best.alive = false;
+  best.heldBy = null;
+  if (game.held === best) game.held = game.held2 || null, game.held2 = null;
+  if (game.held2 === best) game.held2 = null;
+  addXp(game, fieldXp(game, best, PROG.XP_ORBIT));
+  bump(game, 'stows');
+  sfx.sfxOrbitCapture();
+  return true;
+}
+
 // RECOVERY TETHER (hauler): a rock you throw flies out, then curves back and
 // drops into your orbit shield if a slot fits — a boomerang. Runs every substep.
 export function updateTethers(game, dt) {
@@ -919,43 +980,14 @@ export function updateOrbit(game, dt) {
 
   const n = game.orbit.length;
 
-  // BRAWLER TRAIL STOW (st.trailStow): captured rocks don't orbit — they hang
-  // in a loose staggered pack BEHIND the ship, packed nose-to-tail down the
-  // wake. It's an ammo train for the shotgun, NOT a shield: no interception
-  // (the brawler's protection is its front-arc plating — though the pack does
-  // incidentally eat shots that come in through the wake). Slots swing with
-  // the nose; the bounded approach speed below makes the tail drag through
-  // turns instead of snapping, which is the whole look.
-  if (game.st.trailStow) {
-    const bx = -Math.cos(s.angle), by = -Math.sin(s.angle);   // aft axis
-    const px = -by, py = bx;                                  // lateral axis
-    let dist = s.radius * 2 + 34;
-    for (let i = 0; i < n; i++) {
-      const b = game.orbit[i];
-      const phase = b.id * 1.73;
-      dist += b.radius;
-      // Stagger alternate rocks either side of the wake, with a soft organic
-      // sway (same breathing idiom as the ring slots).
-      const side = i % 2 === 0 ? 1 : -1;
-      const lat = side * (b.radius * 0.55 + 10) + Math.sin(game.time * 0.8 + phase) * 6;
-      const sway = Math.sin(game.time * 0.6 + phase * 2.1) * 8;
-      const tx = s.x + bx * (dist + sway) + px * lat;
-      const ty = s.y + by * (dist + sway) + py * lat;
-      dist += b.radius * 1.15 + 12;
-      // Same bounded spring as the ring path: capped approach speed, then
-      // capped acceleration authority scaled by the beam force vs rock mass.
-      let dvx = (tx - b.x) * 4.5, dvy = (ty - b.y) * 4.5;
-      const dm = Math.hypot(dvx, dvy);
-      if (dm > 380) { dvx *= 380 / dm; dvy *= 380 / dm; }
-      const desVx = dvx + s.vx, desVy = dvy + s.vy;
-      let ax = (desVx - b.vx) * 3.5, ay = (desVy - b.vy) * 3.5;
-      const cap = Math.min(900, Math.max(260, (game.st.force * 1.5) / b.mass));
-      const am = Math.hypot(ax, ay);
-      if (am > cap) { ax *= cap / am; ay *= cap / am; }
-      b.extAx = ax; b.extAy = ay;
-    }
-    return;
-  }
+  // NOTE: there is no brawler branch here any more. A brawler's stow is not a
+  // formation of bodies at all — absorbed rock is destroyed on contact with the
+  // beam and banked as `ship.ram` mass (absorbIntoRam), so game.orbit is always
+  // EMPTY for that spec (shipStats pins its maxOrbiters to 0) and this whole
+  // function is dead code for it. The previous build parked seven real rocks in
+  // a wedge on the bow and called that a ram; they collided with the target
+  // individually, died before the hull arrived, and read as a cloud of debris
+  // rather than as one thing bolted to the front of the ship.
 
   const rings = orbiterRings(game);
 

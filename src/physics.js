@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
-  burnCap, burnThrust,
+  burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -2302,7 +2302,7 @@ function collideBodies(game, a, b) {
       // the speed term is quadratic and a late-game sling would otherwise end a
       // gas giant in two throws.
       const dmg = Math.min(giant.maxHp * CFG.GAS_HIT_CAP,
-        CFG.DMG_BODY * eff * eff * rock.mass * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
+        CFG.DMG_BODY * eff * eff * dmgMass(rock.mass) * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
       // ENTRY PLUME: the cloud tops boil where it went in, in the giant's own
       // colour, thrown back OUT along the entry bearing (this runs before the
       // shared normal is computed, so it takes its own).
@@ -2571,8 +2571,10 @@ function collideBodies(game, a, b) {
     // Applied only to the damage the big rock TAKES, never to what it deals:
     // it is the target's toughness being re-priced, not the impact.
     const domIn = (x, target) => (target.bigShape ? Math.pow(x, CFG.FIELD_BIG_DOM_EXP) : x);
-    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domIn(domA, a);
-    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * domIn(1 - domA, b);
+    // The mass term is TEMPERED (config.dmgMass) — dominance above stays on
+    // raw mass; only the magnitude of the blow saturates, not its direction.
+    let dmgToA = CFG.DMG_BODY * eff * eff * dmgMass(b.mass) * mult * natural * 2 * domIn(domA, a);
+    let dmgToB = CFG.DMG_BODY * eff * eff * dmgMass(a.mass) * mult * natural * 2 * domIn(1 - domA, b);
     // Comparable-mass natural hits never one-shot: cap at 70% of remaining
     // hp so they crunch (and spall, below) instead of vanishing. Truly
     // lopsided impacts (8x+) keep their insta-crush — big IS stronger.
@@ -2729,16 +2731,119 @@ function sweptContact(ax, ay, arad, b, dt) {
 }
 let _swvx = 0, _swvy = 0;   // the other party's velocity, set by the caller
 
+// THE RAM'S COVERAGE comes from the PLATE ITSELF (config.ramArc, measured off
+// the slab's own corners), not from a constant sitting next to it. Both of the
+// ram's directional effects — what it absorbs and the inertia it keeps — read
+// that one function, so the edge that protects you is by construction the edge
+// you can see, and a plate that has grown wider genuinely does cover more.
+// It stays well short of a hemisphere at every size (~38° empty, ~48° full):
+// the flank is the price the whole ability is costed against, and a ram that
+// crept round to an omnidirectional immunity would be a different thing.
+
+// HOW FULL THE BRAWLER'S RAM IS, 0..1 (config.shipStats ramCap). 0 for every
+// other spec and for a bare nose — which is the point of deleting the innate
+// ram: an unbuilt brawler is EXACTLY the base ship, and every point of ram is
+// rock it went and crushed on.
+function ramFill(game) {
+  const st = game.st, s = game.ship;
+  if (!st.frontRam || !(st.ramCap > 0) || !(s.ram > 0)) return 0;
+  return clamp(s.ram / st.ramCap, 0, 1);
+}
+
+// SPEND THE RAM ON A HIT. Front-arc damage is taken by the ram INSTEAD of the
+// hull — all of it, not a percentage — and the ram shrinks by what it ate.
+// Returns whatever damage the ram could NOT cover, which is what reaches the
+// hull: a ram with 20 hull-points left in it that takes a 50-point hit absorbs
+// 20, dies, and lets 30 through on the same frame. So the protection is total
+// right up until the moment it isn't, with no cliff and no bookkeeping.
+//
+// A TIER BOUNDARY CROSSED DOWNWARD SHEDS REAL ROCK. The barrier's tier is its
+// density (config.ramTier), so losing enough mass to drop a band means the
+// pack has visibly come apart — and "visibly" has to be true in the SIM, not
+// just the sprite: a couple of small rocks spall loose at the slab, flying
+// outward, absorbable again if you chase them. Deliberately small and
+// TERMINAL (plain spawnAsteroid pebbles, no credit, no split) — this is
+// spillage, not a debris event, and it must never chain (invariant 7).
+function spendRam(game, dmg, hitAng) {
+  const s = game.ship;
+  if (!(s.ram > 0) || !(dmg > 0)) return dmg;
+  const t0 = ramTier(game.st, s.ram);
+  const canEat = s.ram / CFG.RAM_ABSORB;     // hull points this much mass is worth
+  const eaten = Math.min(dmg, canEat);
+  s.ram = Math.max(0, s.ram - eaten * CFG.RAM_ABSORB);
+  s.ramHitT = 0.25;                          // render: the impact slam
+  s.ramHitAng = hitAng ?? s.angle;           // render: where the mattress ripple starts
+  const t1 = ramTier(game.st, s.ram);
+  if (t1 < t0) {
+    // Where the slab roughly is — the nose anchor. Render's rubber band drifts
+    // a few units off this, which does not matter for spall origins.
+    const face = ramFace(game.st, Math.max(1, s.ram));
+    const ox = s.x + Math.cos(s.angle) * face * 0.85;
+    const oy = s.y + Math.sin(s.angle) * face * 0.85;
+    const n = 2 + (t0 >= 4 ? 1 : 0);         // a big pack sheds a little more
+    for (let i = 0; i < n; i++) {
+      const a = s.angle + (Math.random() - 0.5) * 2.4;
+      const sp = 90 + Math.random() * 120;
+      spawnAsteroid(game.bodies, ox + Math.cos(a) * 8, oy + Math.sin(a) * 8,
+        s.vx + Math.cos(a) * sp, s.vy + Math.sin(a) * sp, 120 + Math.random() * 220);
+    }
+    addParticles(game, ox, oy, s.vx * 0.4, s.vy * 0.4, 14, '#b5a898', 160, 0.9);
+    game.ramTierDropT = 0.5;                 // render: the pack-shudder animation
+    sfx.sfxBoom(0.8);
+  }
+  if (s.ram <= 0) {
+    s.ram = 0;
+    game.ramLostWarn = true;                 // main.js drains this into a message
+  }
+  return dmg - eaten;
+}
+
 function collideShipBody(game, s, b, dt) {
   if (b.sinkT > 0) return;   // already under the cloud tops
   let dx = b.x - s.x, dy = b.y - s.y;
-  let rr = s.radius + b.radius;
+  // THE RAM IS THE FRONT OF THE SHIP. Inside the slab's covered arc the contact
+  // edge is its leading face (config.ramFace), not the hull — the drawn slab
+  // floats well ahead of the nose, and a rock that visibly struck it while the
+  // sim waited for the hull buried behind was the "collision doesn't match"
+  // bug. Every contact path below (swept, shaped, plain) measures against the
+  // same effective radius.
+  const hasRam = game.st.frontRam && s.ram > 0;
+  const rArc = hasRam ? ramArc(game.st, s.ram) : 0;
+  const onArc = (px, py) =>
+    Math.abs(angDiff(Math.atan2(py - s.y, px - s.x), s.angle)) <= rArc;
+  let sR = s.radius;
+  if (hasRam && onArc(b.x, b.y)) sR = ramFace(game.st, s.ram);
+  let rr = sR + b.radius;
   let d2 = dx * dx + dy * dy;
   if (d2 > rr * rr && !shaped(b)) {
     _swvx = s.vx; _swvy = s.vy;
-    if (sweptContact(s.x, s.y, s.radius, b, dt)) {
+    // TUNNELING vs THE RAM: the bearing test above read the END-of-substep
+    // position, so a shot fast enough to cross the bow in one dt ends up
+    // BEHIND the ship, fails the arc test, and would be swept at hull size —
+    // sailing through the slab it visibly hit (review finding on PR #134).
+    // So when the end position missed the arc, sweep at RAM size first and
+    // re-test the arc at the actual touch point: on the bow, the ram takes it
+    // (position stands, sR upgrades); off the bow, the rock is restored and
+    // falls through to the honest hull-sized sweep. A hull hit is a subset of
+    // the ram-sized swept volume, so a failed ram sweep needs no second try.
+    if (hasRam && sR !== ramFace(game.st, s.ram)) {
+      const bx0 = b.x, by0 = b.y;
+      const rFace = ramFace(game.st, s.ram);
+      if (sweptContact(s.x, s.y, rFace, b, dt)) {
+        if (onArc(b.x, b.y)) {
+          sR = rFace;
+          dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
+        } else {
+          b.x = bx0; b.y = by0;
+          if (sweptContact(s.x, s.y, sR, b, dt)) {
+            dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
+          }
+        }
+      }
+    } else if (sweptContact(s.x, s.y, sR, b, dt)) {
       dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
     }
+    rr = sR + b.radius;   // sR may have upgraded inside the sweep
   }
   // The ship lands on (and skims along) the real surface — a crystal world's
   // shard polygon, a cratered world's notched limb — not the mean disc. Same
@@ -2759,11 +2864,15 @@ function collideShipBody(game, s, b, dt) {
   // rather than merely bounded.
   let exOn = false, exNx = 0, exNy = 0;
   if (shaped(b)) {
-    const bound = s.radius + surfReach(b);
+    const bound = sR + surfReach(b);
     if (d2 > bound * bound) return;
     if (b.bigShape) {
+      // sR, not s.radius (merge of the ram branch with the exact-contact fix):
+      // inside the ram's covered arc the ship's contact edge is the slab face,
+      // and the exact penetration has to be measured against that same edge or
+      // a loaded brawler's front contact regresses to the bare hull.
       const q = rockCircleQuery(b, s.x, s.y);
-      const pen = s.radius - q.d;
+      const pen = sR - q.d;
       if (pen <= 0) return;
       // Expressed as an `rr` so every reader below — the separation, the skim,
       // the bounce — keeps working in the one currency this function has always
@@ -2771,7 +2880,7 @@ function collideShipBody(game, s, b, dt) {
       rr = Math.sqrt(d2) + pen;
       exOn = true; exNx = q.nx; exNy = q.ny;   // outward from the rock
     } else {
-      rr = s.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
+      rr = sR + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
     }
   }
   if (d2 > rr * rr) return;
@@ -2948,7 +3057,17 @@ function collideShipBody(game, s, b, dt) {
     // Ship bounces away, scaled by the impactor's mass and hard-capped — a
     // flat closing*1.3 kick let alien-thrown rocks launch the ship at 900+.
     const mEff = Math.min(b.mass, 4e5);
-    const kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
+    let kick = Math.min(200, closing * 1.35 * (mEff / (mEff + 900)));
+    // THE RAM CARRIES YOU THROUGH. A big ram keeps the ship's momentum across a
+    // front-on impact instead of handing it back as a bounce — that is what
+    // makes a loaded brawler feel like a charge rather than a pinball. Front arc
+    // ONLY: a ram cannot help with something that hits the flank, and it must
+    // not turn into an omnidirectional anti-knockback field. Saturating on
+    // ABSOLUTE ram mass (config.ramKeep), because "bigger" has to mean bigger —
+    // a full rank-1 ram is still a small ram and still bounces.
+    const ramF = ramFill(game);
+    const onRam = ramF > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram);
+    if (onRam) kick *= 1 - ramKeep(s.ram);
     s.vx -= nx * kick; s.vy -= ny * kick;
 
     // Audible contact even when the bounce does no damage — gentle hits are
@@ -2961,7 +3080,16 @@ function collideShipBody(game, s, b, dt) {
     // ship's effective ram mass grows with level — a scout nudges pebbles,
     // a titan bulldozes boulders. Planets barely notice (mass ratio kills
     // the kick before it can derail anything heavy), so orbits stay safe.
-    const shipM = 30 + game.st.totalLevel * 25;
+    // THE RAM'S ROCK COUNTS, on a front-arc hit only: what strikes the target
+    // is the crushed mass riding the bow, so it joins the effective mass — a
+    // full rank-6 ram (~33k x 0.06 ≈ +2k) turns the push and the damage below
+    // into a freight-train hit, which is most of "the ram hits way harder".
+    // Flank and tail contacts are the bare hull and stay at the level curve.
+    // The field-rock branch below CAPS its kick (FIELD_SHIP_KICK_MAX) after
+    // this is folded in, so a loaded ram cannot re-open the one-ram shoal
+    // cascade that cap exists to forbid — it saturates the cap sooner, and the
+    // extra shows up as damage rather than as launch velocity.
+    const shipM = 30 + game.st.totalLevel * 25 + (onRam ? s.ram * 0.06 : 0);
     const bKick = Math.min(260, closing * 1.1 * (shipM / (shipM + b.mass)));
     // FIELD ROCK ANSWERS THE SHIP, AND IT TURNS WHEN IT DOES.
     //
@@ -3009,13 +3137,18 @@ function collideShipBody(game, s, b, dt) {
       }
     }
     const effB = Math.max(0, closing - 100);
-    // RAM PROW / JUGGERNAUT boost the ram (st.ramMul); BERSERKER adds more as the
-    // ship's hull drops. Brawler-only — and the brawler's ramMul/ramArmor have an
-    // INNATE spec-DNA floor (config.shipStats), so it bonks from frame one even
-    // before Ram Prow ranks (other specs stay at exactly 1 / 1).
+    // THE RAM is the brawler's ram damage (War Rack — config.shipStats
+    // ramBiteMax, scaled by how full the ram is); BERSERKER adds more as the
+    // ship's hull drops. st.ramMul is a flat 1 for every spec now, so a bare
+    // nose bonks exactly like a scout's.
     const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
-    const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.15 * (1 - ramHullFrac) : 1);
-    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
+    const aggro = game.st.ramMul * (1 + game.st.ramBiteMax * ramF)
+      * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.15 * (1 - ramHullFrac) : 1);
+    // dmgMass, not raw shipM (merge with the damage-temper pass): the ram-mass
+    // fold rides the same tempered curve as every other mass-derived damage in
+    // the sky, so a loaded ram hits harder on the rebalanced scale, not the
+    // old raw one.
+    const ramDmg = CFG.DMG_BODY * effB * effB * dmgMass(shipM) * 2 * aggro;
     // Ramming is "running into things", not a throw — it damages the body but
     // pays out NO scrap and no fling growth (credit 'ram', not 'player').
     if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'ram', s.x, s.y);
@@ -3031,39 +3164,47 @@ function collideShipBody(game, s, b, dt) {
     // gravel and WRONG for a rock storm: it made the shoals get SAFER the
     // stronger you got (a median field rock at 300 closing: 31% of hull at tier
     // 0, 7% at tier 3, 4% at tier 5 — the tier you actually farm them at, which
-    // is why they read as harmless no matter how high FIELD_SHIP_DMG went).
+    // is why they read as harmless no matter how high the since-removed
+    // FIELD_SHIP_DMG multiplier was pushed).
     // Field rock therefore keeps the BASE knee at every tier: the same absolute
     // bite from tier 0 to 5, so a bigger hull endures more of a shoal without
     // ever becoming immune to one. A big ship in a dense field is a big target.
     const knee = 1500 * (b.fieldRock ? 1 : 1 + game.st.tier * 1.2);
     const massSat = b.mass / (b.mass + knee);
-    // SHOAL ROCK BITES (CFG.FIELD_SHIP_DMG) — the exact mirror of FIELD_TOUGH:
-    // field rock is tough against ITS OWN KIND and dangerous to YOU. This is
-    // what makes a dense field high-risk/high-reward instead of just high-
-    // reward. It costs nothing to fly through one: the pocket is RIGID (one
-    // shared rail w, zero relative drift), so ambient closing speeds are ~0 and
-    // the `closing > 25` gate below means gentle contact still cannot hurt. The
-    // danger is entirely SELF-INFLICTED — once you start smashing, the space
-    // around you fills with fast loose rock, and a Shockwave detonation is now
-    // a genuine double-edged sword rather than free area denial.
-    // NOT applied to an alien-thrown rock, which already carries its own
-    // `thrown` multiplier and its own tuning (LURKER_SHOVE speed + mass). The
-    // two stacked put a single lurker body-check on the 45% per-hit cap at
-    // EVERY tier — a two-shot kill from an ambush you may not have seen, with
-    // three of them hunting. Keeping them separate is also what lets the shoal
-    // and its predator be tuned independently instead of through each other.
-    const field = b.fieldRock && !(b.thrownBy === 'alien' && b.thrownTimer > 0)
-      ? CFG.FIELD_SHIP_DMG : 1;
-    // RAM PROW / JUGGERNAUT: a reinforced prow takes less from impacts (ramArmor
-    // <= 1; exactly 1 for non-ram builds, so nothing else changes).
-    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * field * game.st.ramArmor,
+    // SHOAL ROCK MULTIPLIER — REMOVED (user call, 2026-08, the damage-temper
+    // pass). CFG.FIELD_SHIP_DMG (1.0 -> 2.5 -> 1.3 -> gone) multiplied ship-
+    // taken damage from field rock; with the rest of the sky's damage tempered
+    // it was the one flat amplifier left, and a stirred pocket fed rock after
+    // rock into the 45% per-hit cap. Field rock now prices exactly like any
+    // other rock of its mass and speed. What KEEPS a shoal dangerous is the
+    // base knee above (no tier scaling on massSat in a field — a big ship is a
+    // big target) and pure quantity; what keeps it fair is that the pocket is
+    // RIGID (ambient closing ~0, the `closing > 25` gate below) so the danger
+    // stays self-inflicted. Alien-thrown rock was always exempt from the
+    // multiplier — LURKER_SHOVE keeps its own tuning, nothing changes there.
+    // st.ramArmor is a flat 1 for every spec now (the innate brawler 0.85 and
+    // the Ram Prow / Juggernaut ranks that scaled it are all gone). What takes
+    // the hit off the hull instead is the RAM, below.
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
       game.st.maxHull * 0.45);
-    if (dmg > 1.5 && closing > 25) {
+    // THE RAM TAKES THE WHOLE HIT UNTIL IT IS GONE. Not a percentage: while any
+    // ram is left, a front-on impact costs the hull NOTHING and costs the ram
+    // its mass instead (spendRam). When the ram runs out mid-hit the remainder
+    // reaches the hull on that same frame, so there is no free frame and no
+    // cliff — protection is total, then it is over, and rebuilding it means
+    // going and finding more rock.
+    // Front arc ONLY, the same bargain War Plating makes: the ram is welded to
+    // the bow and does nothing for a hit that comes in past the shoulders.
+    let hullDmg = dmg;
+    if (dmg > 0 && s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
+      hullDmg = spendRam(game, dmg, hitAng);
+    }
+    if (hullDmg > 1.5 && closing > 25) {
       // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
       // the damage lands, checked after, because that's the only moment both
       // facts are true at once.
       const own = b.thrownBy === 'player' && b.thrownTimer > 0;
-      damageShip(game, dmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
+      damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
         thrown > 1 ? 'Hit by an alien-thrown rock.' :
         `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
       if (own && !s.alive) bump(game, 'ownGoal');
@@ -3669,12 +3810,13 @@ function collideAlienBody(game, al, b, dt) {
     const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
     const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
-    let dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
+    let dmg = CFG.DMG_BODY * effA * effA * dmgMass(b.mass) * bonus * 2;
     // LURKERS TAKE A MINIMUM NUMBER OF HITS. Rock damage is QUADRATIC in
-    // closing speed and linear in mass, so it spans three orders of magnitude
-    // (a 200-mass lob at 400 does 139; a 1400-mass rock at 1000 does 7422) and
-    // NO hp value is tunable across that range — every one is either one-shot
-    // by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
+    // closing speed and sublinear in mass (config.dmgMass — the temper helps
+    // but the speed term still rules), so it spans well over an order of
+    // magnitude (a 200-mass lob at 400 does ~180; a 1400-mass rock at 1000
+    // does ~6,100) and NO hp value is tunable across that range — every one is
+    // either one-shot by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
     // alone changed literally nothing: both were one-shot by all nine sample
     // throws. So the per-hit damage is capped at a fraction of max hp, the same
     // idiom invariant 3 uses to stop comparable rocks one-shotting each other.

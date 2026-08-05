@@ -36,6 +36,27 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
    weighted; natural celestial hits are damped and
    capped at 70% of remaining hp when masses are within 8× (comparable rocks crunch + spall, they don't
    one-shot). (`physics.js:377`, `config.js:40`)
+   **The mass term in DEALT damage is TEMPERED, across the WHOLE throwable range** (user calls,
+   2026-08: damage "shouldn't increase exponentially as things get bigger", then "it shouldn't just
+   affect the top end, it should affect the whole thing"): every dealt-damage formula — body-vs-body,
+   the gas-giant entry, the ram, the alien hit — runs the impactor's mass through `config.dmgMass`:
+   `LOW_MUL·m` up to `DMG_MASS_KNEE` 600 and `LOW_MUL·KNEE·(m/KNEE)^0.46` above it. The knee is the
+   BOTTOM of the combat ladder; `DMG_MASS_LOW_MUL` 1.3 lifts the small end (user call: the gap from
+   boulders to planets read too wide) and the exponent 0.5→0.46 pays for it, so the lift TAPERS to
+   ~zero at gas-giant mass. Net factors vs raw mass: a 2500 rock lands ×0.60, a 6000 boulder ×0.38,
+   a 13k moon ×0.25, a mid planet ×0.074, a gas giant ×0.03. Sub-knee dust rides the flat ×1.3
+   rather than the power curve's boost (normalizing a sublinear curve anywhere above the floor
+   BUFFS everything under the pivot — and an uncompensated pivot was a 2.4x pebble buff). Mass DOMINANCE stays
+   on RAW mass — dominance is a direction (who hurts whom), the temper is a magnitude, and tempering
+   the dominance ratio would let a big body start taking real damage from pebbles. Ship TAKEN damage
+   is not run through it (`massSat` already saturates, on its own tier-scaled knee). This
+   deliberately re-priced every celestial kill ladder — the authoritative post-temper hit-counts are
+   the combat bench baseline's `ladder[...]` rows. `PLANET_HP_BASE` was re-priced WITH it (18000 →
+   7000, same flat-base shape): the old base was sized against linear damage, and under the temper
+   it made worlds read unkillable. Post-retune the original feel-ladder holds again: a hard (~900)
+   fling of a comparable planet one-shots, a moon slam is ~11 to a mid world, a boulder ~55, rock
+   chips in the hundreds. A first pass (knee 6000 / exp 0.6, top-end-only) was rejected as not
+   enough — don't quietly restore it.
 4. **>20× mass ratio → the heavy body is immovable**; natural celestial-vs-celestial impulse is damped
    (×0.25). Thrown bodies keep full impulse (planet billiards stay glorious). (`physics.js:330`, `:347`)
 5. **Ship bounce kick is hard-capped at 200** — an uncapped kick let alien-thrown rocks fling the ship
@@ -102,8 +123,9 @@ comments in [physics.js](../src/physics.js) / [config.js](../src/config.js) — 
    throttles what a small impactor does to a heavy body (damage ≈ 1/targetMass), so mass-proportional
    hp punished big worlds twice while leaving SMALL planets — barely heavier than a big moon, so
    dominance barely shields them — as paper: one thrown moon (4.7k–12k damage) vaporized a 96-hp
-   world outright. The intended ladder is **rock chips it → moon wounds it (it SURVIVES one; ~7 slams
-   kill a mid planet) → a thrown PLANET is the killing blow.** Raising hp does NOT quiet the damage:
+   world outright. The intended ladder is **rock chips it → moon wounds it (it SURVIVES one; ~11 slams
+   kill a mid planet under the invariant-3 temper + the 7000 base) → a thrown PLANET is the killing
+   blow (a hard ~900 fling one-shots a comparable world).** Raising hp does NOT quiet the damage:
    scars, crater bites, chunk spray and mass loss are gated on ABSOLUTE damage as well as hp fraction
    (invariant 7's dual gate exists for exactly this reason), and corona heat is a fraction of maxHp
    per second, so a planet still melts in the sun at the same rate. (`entities.js Body`, `config.js

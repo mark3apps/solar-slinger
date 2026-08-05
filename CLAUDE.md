@@ -209,7 +209,8 @@ changing anything it touches.**
 
 1. Snapshot every acceleration before integrating anyone (Phase 1 / Phase 2).
 2. Hierarchical gravity weight is symmetric per pair; neighbour stars stay damped.
-3. Ambient collisions below a closing-speed threshold do no damage; comparable-mass hits are capped.
+3. Ambient collisions below a closing-speed threshold do no damage; comparable-mass hits are capped;
+   dealt damage's mass term saturates above a knee (`config.dmgMass`) — dominance stays on raw mass.
 4. >20× mass ratio → the heavy body is immovable; natural celestial impulse is damped, thrown is not.
 5. Ship bounce kick is hard-capped at 200.
 6. `WORLD_R` exceeds every system's outermost reach — enforced by construction in `world.moonZone`,

@@ -80,7 +80,7 @@ export function initHud(game) {
     'shipPanel', 'spVel', 'spThrN', 'velDial', 'spVelRated',
     'rowThrow', 'spFling', 'spFlingFill',
     'grabIcon', 'stowIcon', 'shipIcon', 'spAllow', 'spLiftFill', 'liftTape',
-    'rowStow', 'spStowLab', 'spStowPips', 'spMass',
+    'rowStow', 'spStowPips', 'spMass',
     'pauseScreen', 'specLabel', 'tierLabel', 'livesText', 'xpBar', 'xpFill', 'xpNext', 'upList2', 'bottomleft',
     'abilOut', 'offerBox',
     'upgradeScreen', 'upTitle', 'upList', 'upHint',
@@ -1429,7 +1429,13 @@ export function updateHud(game) {
     // The sprites: the biggest thing the beam can GRAB, the biggest it can
     // STOW, and the ship itself at tier scale (render.drawStatIcon owns the
     // ink). Repainted only when a class or the tier actually moves.
-    const stowed = st.orbitTier >= 0;
+    // Gated on maxOrbiters, NOT orbitTier: the brawler's orbit channel now
+    // feeds the front ram (config's frontRam), which sets orbitTier/orbitCap
+    // to describe the RAM's class while maxOrbiters stays hard 0 — a brawler
+    // has no stow slots at all, so orbitTier>=0 alone would show a
+    // permanent, meaningless "0/7 STOW" instead of the row simply not
+    // existing for a spec it doesn't apply to.
+    const stowed = st.maxOrbiters > 0;
     const iconSig = `${st.tier}|${stowed ? st.orbitTier : -1}`;
     if (iconSig !== spIconSig) {
       spIconSig = iconSig;
@@ -1439,7 +1445,7 @@ export function updateHud(game) {
     }
     // STOW exists only once an orbit ability does. Its pips are the 7-slot
     // cap with the slots owned lit — a COUNT, so pips, never a bar. Rebuilt
-    // only when the count moves; the brawler's trailing rack owns its name.
+    // only when the count moves.
     el.rowStow.classList.toggle('hidden', !stowed);
     if (!stowed) spSlots = -1;
     else if (spSlots !== st.maxOrbiters) {
@@ -1452,7 +1458,6 @@ export function updateHud(game) {
       spAllow: fmtMass(st.capacity),
       spMass: fmtMass(st.shipMass),
     };
-    if (stowed) vals.spStowLab = st.trailStow ? 'RACK' : 'STOW';
     for (const k in vals) {
       // A key spPrev has never seen is an instrument ARRIVING (stow's
       // unlock) — the entrance sweep carries that moment; the flash is for
