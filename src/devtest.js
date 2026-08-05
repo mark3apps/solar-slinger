@@ -1115,7 +1115,12 @@ export function runMechTest(game, hooks, opts = {}) {
   window.lastMechReport = report;
   // eslint-style side channel for humans watching the console; the report
   // object is the machine-readable truth
-  console.table(results.map((r) => ({ test: r.name, pass: r.pass, detail: r.detail })));
+  // `draws` rides in the table, not just the report: it is the documented
+  // determinism tripwire (docs/testing.md, the mechanics-test skill), and a
+  // reviewer diffing two runs by eye reads THIS, not window.lastMechReport.
+  // The `detail` strings often do not move first, which is the whole reason
+  // the column exists.
+  console.table(results.map((r) => ({ test: r.name, pass: r.pass, draws: r.draws, detail: r.detail })));
 
   if (opts.download) {
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
