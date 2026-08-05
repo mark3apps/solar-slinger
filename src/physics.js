@@ -1,5 +1,6 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
+  dmgMass,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -2301,7 +2302,7 @@ function collideBodies(game, a, b) {
       // the speed term is quadratic and a late-game sling would otherwise end a
       // gas giant in two throws.
       const dmg = Math.min(giant.maxHp * CFG.GAS_HIT_CAP,
-        CFG.DMG_BODY * eff * eff * rock.mass * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
+        CFG.DMG_BODY * eff * eff * dmgMass(rock.mass) * mult * CFG.GAS_IMPACT_MUL * 2 * dom);
       // ENTRY PLUME: the cloud tops boil where it went in, in the giant's own
       // colour, thrown back OUT along the entry bearing (this runs before the
       // shared normal is computed, so it takes its own).
@@ -2570,8 +2571,10 @@ function collideBodies(game, a, b) {
     // Applied only to the damage the big rock TAKES, never to what it deals:
     // it is the target's toughness being re-priced, not the impact.
     const domIn = (x, target) => (target.bigShape ? Math.pow(x, CFG.FIELD_BIG_DOM_EXP) : x);
-    let dmgToA = CFG.DMG_BODY * eff * eff * b.mass * mult * natural * 2 * domIn(domA, a);
-    let dmgToB = CFG.DMG_BODY * eff * eff * a.mass * mult * natural * 2 * domIn(1 - domA, b);
+    // The mass term is TEMPERED (config.dmgMass) — dominance above stays on
+    // raw mass; only the magnitude of the blow saturates, not its direction.
+    let dmgToA = CFG.DMG_BODY * eff * eff * dmgMass(b.mass) * mult * natural * 2 * domIn(domA, a);
+    let dmgToB = CFG.DMG_BODY * eff * eff * dmgMass(a.mass) * mult * natural * 2 * domIn(1 - domA, b);
     // Comparable-mass natural hits never one-shot: cap at 70% of remaining
     // hp so they crunch (and spall, below) instead of vanishing. Truly
     // lopsided impacts (8x+) keep their insta-crush — big IS stronger.
@@ -3014,7 +3017,7 @@ function collideShipBody(game, s, b, dt) {
     // before Ram Prow ranks (other specs stay at exactly 1 / 1).
     const ramHullFrac = clamp(s.hull / Math.max(1, game.st.maxHull), 0, 1);
     const aggro = game.st.ramMul * (game.st.berserk > 0 ? 1 + game.st.berserk * 0.15 * (1 - ramHullFrac) : 1);
-    const ramDmg = CFG.DMG_BODY * effB * effB * shipM * 2 * aggro;
+    const ramDmg = CFG.DMG_BODY * effB * effB * dmgMass(shipM) * 2 * aggro;
     // Ramming is "running into things", not a throw — it damages the body but
     // pays out NO scrap and no fling growth (credit 'ram', not 'player').
     if (ramDmg > 0.5) damageBody(game, b, ramDmg, 'ram', s.x, s.y);
@@ -3030,32 +3033,27 @@ function collideShipBody(game, s, b, dt) {
     // gravel and WRONG for a rock storm: it made the shoals get SAFER the
     // stronger you got (a median field rock at 300 closing: 31% of hull at tier
     // 0, 7% at tier 3, 4% at tier 5 — the tier you actually farm them at, which
-    // is why they read as harmless no matter how high FIELD_SHIP_DMG went).
+    // is why they read as harmless no matter how high the since-removed
+    // FIELD_SHIP_DMG multiplier was pushed).
     // Field rock therefore keeps the BASE knee at every tier: the same absolute
     // bite from tier 0 to 5, so a bigger hull endures more of a shoal without
     // ever becoming immune to one. A big ship in a dense field is a big target.
     const knee = 1500 * (b.fieldRock ? 1 : 1 + game.st.tier * 1.2);
     const massSat = b.mass / (b.mass + knee);
-    // SHOAL ROCK BITES (CFG.FIELD_SHIP_DMG) — the exact mirror of FIELD_TOUGH:
-    // field rock is tough against ITS OWN KIND and dangerous to YOU. This is
-    // what makes a dense field high-risk/high-reward instead of just high-
-    // reward. It costs nothing to fly through one: the pocket is RIGID (one
-    // shared rail w, zero relative drift), so ambient closing speeds are ~0 and
-    // the `closing > 25` gate below means gentle contact still cannot hurt. The
-    // danger is entirely SELF-INFLICTED — once you start smashing, the space
-    // around you fills with fast loose rock, and a Shockwave detonation is now
-    // a genuine double-edged sword rather than free area denial.
-    // NOT applied to an alien-thrown rock, which already carries its own
-    // `thrown` multiplier and its own tuning (LURKER_SHOVE speed + mass). The
-    // two stacked put a single lurker body-check on the 45% per-hit cap at
-    // EVERY tier — a two-shot kill from an ambush you may not have seen, with
-    // three of them hunting. Keeping them separate is also what lets the shoal
-    // and its predator be tuned independently instead of through each other.
-    const field = b.fieldRock && !(b.thrownBy === 'alien' && b.thrownTimer > 0)
-      ? CFG.FIELD_SHIP_DMG : 1;
+    // SHOAL ROCK MULTIPLIER — REMOVED (user call, 2026-08, the damage-temper
+    // pass). CFG.FIELD_SHIP_DMG (1.0 -> 2.5 -> 1.3 -> gone) multiplied ship-
+    // taken damage from field rock; with the rest of the sky's damage tempered
+    // it was the one flat amplifier left, and a stirred pocket fed rock after
+    // rock into the 45% per-hit cap. Field rock now prices exactly like any
+    // other rock of its mass and speed. What KEEPS a shoal dangerous is the
+    // base knee above (no tier scaling on massSat in a field — a big ship is a
+    // big target) and pure quantity; what keeps it fair is that the pocket is
+    // RIGID (ambient closing ~0, the `closing > 25` gate below) so the danger
+    // stays self-inflicted. Alien-thrown rock was always exempt from the
+    // multiplier — LURKER_SHOVE keeps its own tuning, nothing changes there.
     // RAM PROW / JUGGERNAUT: a reinforced prow takes less from impacts (ramArmor
     // <= 1; exactly 1 for non-ram builds, so nothing else changes).
-    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * field * game.st.ramArmor,
+    const dmg = Math.min(CFG.DMG_SHIP * closing * massSat * thrown * game.st.ramArmor,
       game.st.maxHull * 0.45);
     if (dmg > 1.5 && closing > 25) {
       // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
@@ -3668,12 +3666,13 @@ function collideAlienBody(game, al, b, dt) {
     const playerRock = b.thrownTimer > 0 && b.thrownBy === 'player';
     const bonus = playerRock ? 2.5 : 1;
     const effA = Math.max(0, closing - 60);   // aliens are squishier than planets
-    let dmg = CFG.DMG_BODY * effA * effA * b.mass * bonus * 2;
+    let dmg = CFG.DMG_BODY * effA * effA * dmgMass(b.mass) * bonus * 2;
     // LURKERS TAKE A MINIMUM NUMBER OF HITS. Rock damage is QUADRATIC in
-    // closing speed and linear in mass, so it spans three orders of magnitude
-    // (a 200-mass lob at 400 does 139; a 1400-mass rock at 1000 does 7422) and
-    // NO hp value is tunable across that range — every one is either one-shot
-    // by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
+    // closing speed and sublinear in mass (config.dmgMass — the temper helps
+    // but the speed term still rules), so it spans well over an order of
+    // magnitude (a 200-mass lob at 400 does ~180; a 1400-mass rock at 1000
+    // does ~6,100) and NO hp value is tunable across that range — every one is
+    // either one-shot by a real throw or immortal to a weak one. Raising LURKER_HP 34 -> 90
     // alone changed literally nothing: both were one-shot by all nine sample
     // throws. So the per-hit damage is capped at a fraction of max hp, the same
     // idiom invariant 3 uses to stop comparable rocks one-shotting each other.
