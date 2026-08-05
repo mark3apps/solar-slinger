@@ -32,11 +32,30 @@ import { input } from './input.js';
 //      session-monotonic while rockshape.rockShapeOf keys the baked silhouette
 //      off it, so a re-run built the same layout wearing DIFFERENT rock and
 //      diverged within half a second. world.generateWorld resets it.
+//   3. The VIEW may not reach the sim (issue #104) — LATENT, not observed.
+//      game.viewR sizes the spawn ring and the leash in world.replenishWorld,
+//      and the `continue` past that leash SKIPS the rng() draws behind it — so
+//      viewR gates draw COUNTS; cam.zoom carries the same dependence into
+//      game.aim. But main.js's fair view cancels the window out of viewR, and
+//      MEASURED that cancellation is exact in float, not just in algebra:
+//      viewR is byte-identical (7867.525607436779) at 1024x736, 1440x868 and
+//      1920x1018, and this suite's whole report — every `draws` column and
+//      every detail string — matches across all three with NO pin. So unlike
+//      1 and 2, nothing was caught misbehaving here. VIEW_PIN below makes the
+//      window-independence structural instead of inherited from that float
+//      coincidence, restored in the finally beside Math.random.
 // `draws` on every result is the tripwire for a recurrence: it is the RNG
 // draw count at that test's boundary, and two runs of the same seed must
-// produce the same sequence of them. A drifting draws column localises the
-// culprit to one test in a single diff, which is how both of the above were
-// found.
+// produce the same sequence of them — on any machine, at any window size. A
+// drifting draws column localises the culprit to one test in a single diff,
+// which is how 1 and 2 were both found.
+
+// The view the whole suite runs at. 1920x1080 is CFG.VIEW_REF_DIAG's own
+// basis, so a pinned run sits EXACTLY at the fair-view reference: the
+// normalization ratio is 1, cam.zoom === zoomCur, and viewR is exactly
+// VIEW_REF_DIAG/2/zoomCur — no rounding to differ about. It is also an
+// ordinary full-screen play window, so the suite exercises what people fly.
+const VIEW_PIN = { vw: 1920, vh: 1080 };
 
 // Assertion helper: numbers land in the detail string so a failure is
 // diagnosable straight from the report, without re-running.
@@ -104,6 +123,12 @@ export function runMechTest(game, hooks, opts = {}) {
   // Math.random, for exactly the same reason.
   const wasMouseX = input.mouseX, wasMouseY = input.mouseY;
   const wasKeys = new Set(input.keys);
+  // THE WINDOW IS SHARED STATE TOO, and it is not the suite's to inherit — see
+  // note 3 above. main.js's simView() honours this for every SIM reader of the
+  // view (applyZoom, and update()'s viewR + mouseWorld); the chart's DOM
+  // handlers keep the real one, which the suite never touches.
+  const wasViewPin = game.viewPin;
+  game.viewPin = VIEW_PIN;
   // Mute the SFX bus for the scripted burst (there are no audio toggles any
   // more — the volume slider IS the control; game.sfxVol still holds the
   // user's level to restore).
@@ -544,13 +569,15 @@ export function runMechTest(game, hooks, opts = {}) {
     // velocity and aim the nose straight up, which is what the three gates want.
     // The aim matters — `s.angle` chases `game.aim`, so without pointing it
     // outward the level gate refuses and a berth never forms.
-    // Cursor 300 screen-px along `bearing` from the view centre. render.js
-    // sizes the view off window.innerWidth/Height in CSS px, which is exactly
-    // what input.mouseX/Y carry, so the same numbers go straight back in.
+    // Cursor 300 screen-px along `bearing` from the view centre. input.mouseX/Y
+    // carry CSS px and update() maps them back through the same view width, so
+    // the same numbers go straight back in — as long as both halves agree about
+    // how wide the view is. They read VIEW_PIN rather than the real window on
+    // purpose: unpinned, 300px is a different world distance on every monitor
+    // (it is divided by cam.zoom), and the suite is bit-repeatable by contract.
     const aimAt = (bearing) => {
-      const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
-      input.mouseX = vw / 2 + Math.cos(bearing) * 300;
-      input.mouseY = vh / 2 + Math.sin(bearing) * 300;
+      input.mouseX = VIEW_PIN.vw / 2 + Math.cos(bearing) * 300;
+      input.mouseY = VIEW_PIN.vh / 2 + Math.sin(bearing) * 300;
     };
     // THE MOUSE IS THE HELM. `s.angle` chases `game.aim`, and update() rebuilds
     // `game.aim` from `input.mouseX/Y` every frame — so setting game.aim here
@@ -902,7 +929,30 @@ export function runMechTest(game, hooks, opts = {}) {
       return `key -> ${want0}, click -> ${want1}, paused digit refused`;
     });
 
-    // T19 — the suite's own drama must not have shredded the sky
+    // T24 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
+    // window it ran in (issue #104). Everything above this line integrates
+    // through game.viewR — the spawn ring and both leashes in
+    // world.replenishWorld, the wake bubble, the glow field — and steers
+    // through cam.zoom (the parked cursor becomes game.aim every frame). Both
+    // derive from the view size. Today the fair view cancels the window out of
+    // viewR exactly — measured identical across a 2x window range — so this
+    // case guards a LATENT dependency, not a live bug: it fails the moment
+    // something stops routing the sim's view through simView().
+    // Asserted with === on purpose: at VIEW_PIN the fair-view ratio is exactly
+    // 1, so cam.zoom is EXACTLY zoomCur and viewR exactly VIEW_REF_DIAG/2/
+    // zoomCur — an unpinned run only lands there if the real window happens to
+    // be 1920x1080. Takes no step of its own, so it disturbs nothing
+    // downstream: it reads the view the last stepSim above left behind.
+    t('harness view is pinned', () => {
+      expect(game.viewPin === VIEW_PIN, 'the view pin is not in force');
+      expect(game.cam.zoom === game.zoomCur,
+        `cam.zoom ${game.cam.zoom} != zoomCur ${game.zoomCur} — the sim is reading the real window`);
+      const want = CFG.VIEW_REF_DIAG / 2 / game.zoomCur;
+      expect(game.viewR === want, `viewR ${game.viewR} != ${want}`);
+      return `${VIEW_PIN.vw}x${VIEW_PIN.vh}, zoom=${game.cam.zoom.toFixed(4)}, viewR=${game.viewR.toFixed(1)}`;
+    });
+
+    // T25 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {
       const now = census(game);
       expect((now.planet || 0) === (skyBefore.planet || 0),
@@ -913,6 +963,7 @@ export function runMechTest(game, hooks, opts = {}) {
     });
   } finally {
     Math.random = realRandom;
+    game.viewPin = wasViewPin;
     game.autoUpgrade = wasAuto;
     setSfxVolume(game.sfxVol);
     game.godMode = false;
