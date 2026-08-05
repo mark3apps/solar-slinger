@@ -2173,13 +2173,19 @@ export function stormClass(roll) {
 // the geometric in-world edge the house style will not have). A class's whole
 // geography lives in these two numbers; see the STORM_CLASSES notes.
 // A CLASS'S `fade` MUST BE < 1 — it is a fraction of `reach`, so at 1 the taper
-// has zero width and the divide below is 0. The three shipped classes are
-// 0.62 / 0.68 / 0.858, but a fourth row written with `fade: 1` (a plausible way
-// to say "no taper at all") would return NaN here, and `k` multiplies every
-// bite and every alpha downstream — so the whole wave would silently go NaN and
-// only surface later as a `game.nanEvents` tripwire, far from its cause. The
-// floor makes that row degrade to a one-unit taper instead of poisoning the run.
-// It is not a substitute for the invariant; it is what keeps a violation legible.
+// has zero width and above 1 it has negative width. The three shipped classes
+// are 0.62 / 0.68 / 0.858; the `Math.max(1, …)` floor is what keeps a fourth
+// row that breaks the rule legible rather than catastrophic, and the two ways
+// to break it fail differently:
+//   `fade: 1` (a plausible way to say "no taper at all") — without the floor
+//   the divide is by 0, giving Infinity and therefore k = 0 for any r > `fadeR`.
+//   Not NaN: a wave that BLINKS OUT at an exact radius, which is the
+//   geometric in-world edge the house style will not have.
+//   `fade > 1` — without the floor the denominator goes NEGATIVE and k comes
+//   back ABOVE 1 (measured 1.139 at r = 44056 for `fade: 1.2`), i.e. a wave
+//   stronger than full strength, amplifying every bite and every alpha.
+// The floor degrades both to a one-unit taper. It is not a substitute for the
+// invariant; it is what stops a bad row from silently rewriting the sun.
 export function stormStrength(wave) {
   const reachR = CFG.WORLD_R * wave.reach;
   const fadeR = reachR * wave.fade;
