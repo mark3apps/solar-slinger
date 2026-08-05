@@ -179,14 +179,29 @@ export function runMechTest(game, hooks, opts = {}) {
     });
 
     // T4 — orbit shield: it's ABILITY-gated (orbit channel rank 0 = no ring
-    // at all), then with a rank it captures, and the shotgun launches it
+    // at all), then with a rank it captures, and the shotgun launches it.
+    // PROBED AS A HAULER: the ring is that spec's machinery now — a BRAWLER's
+    // orbit ability feeds its ram instead and shipStats pins its maxOrbiters
+    // to 0 outright, so on the suite's own spec this gate is trivially closed
+    // and proves nothing. The spec and the orbit upgrades are restored after,
+    // because every later test assumes the brawler build.
     t('orbit gate, capture + shotgun fling', () => {
       const s = game.ship;
       const r2 = spawnAsteroid(game.bodies, s.x + 100, s.y - 40, 0, 0, 60);
       game.aim.x = r2.x; game.aim.y = r2.y;
       expect(tryGrab(game) === 'held', 'setup: second grab failed');
+      const wasSpec = game.prog.spec;
+      // Strip EVERY orbit-channel rank (the brawler kit's own War Rack included
+      // — channels sum across specs, so a leftover rank would open slots).
+      const hadRack = game.prog.upgrades.bulwarkRing || 0;
+      const hadSling = game.prog.upgrades.orbitalSling || 0;
+      delete game.prog.upgrades.bulwarkRing;
+      delete game.prog.upgrades.orbitalSling;
+      game.prog.spec = 'hauler';
+      game.st = shipStats(game.prog);
+      expect(game.st.maxOrbiters === 0, 'setup: orbit channel not actually empty');
       expect(!addToOrbit(game), 'orbit accepted a rock with NO orbit ability (gate broken)');
-      game.prog.upgrades.bulwarkRing = 1;        // BRAWLER's orbit-channel ability
+      game.prog.upgrades.orbitalSling = 1;       // HAULER's orbit-channel ability
       game.st = shipStats(game.prog);
       expect(game.st.maxOrbiters > 0, 'orbit rank opened no slots');
       expect(addToOrbit(game), 'addToOrbit refused a light rock with the ability owned');
@@ -195,7 +210,13 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(n === 1, `shotgun launched ${n} rocks, wanted 1`);
       expect(game.orbit.length === 0, 'orbit not empty after shotgun');
       expect(r2.thrownBy === 'player', 'shotgun rock not player-credited');
-      return 'capture -> launch OK';
+      // Put the brawler build back exactly as it was.
+      game.prog.spec = wasSpec;
+      if (hadRack) game.prog.upgrades.bulwarkRing = hadRack;
+      if (hadSling) game.prog.upgrades.orbitalSling = hadSling;
+      else delete game.prog.upgrades.orbitalSling;
+      game.st = shipStats(game.prog);
+      return 'capture -> launch OK (probed as hauler; ring is not a brawler system)';
     });
 
     // T5 — DESIGN LAW: an owed pick is DEFERRED while flingDelayT runs, then
@@ -557,15 +578,48 @@ export function runMechTest(game, hooks, opts = {}) {
     // would be overwritten within one step and the nose would swing back off
     // the arc. Park the cursor instead: the camera is ship-centred and the
     // world axes are the screen axes, so +x on screen is bearing 0 in world.
+    // SEAT IT PROPERLY, not on the contact boundary. This used to place the hull
+    // 0.5 units into the surface, which is less than the ship drifts outward
+    // while the settle runs: the contact gate then came down to whether the last
+    // substep happened to leave it a fraction inside or a fraction outside, and
+    // outside means updateDock finds no candidate and names NO gate at all —
+    // which reads as "the gate logic broke" when the gate logic was never
+    // reached. It survived only by luck of one exact trajectory, so any change
+    // that perturbed the sim at all failed four docking tests at once with a
+    // symptom pointing nowhere near the cause.
+    // A radius-proportional seat is deep enough that 0.4s of gravity and surface
+    // friction cannot lift the hull clear, at every tier, so contact is a
+    // CONSTANT of these tests and the thing under test is the gate.
     const setDown = (world, upOff = 0) => {
       const s = game.ship;
-      s.x = world.x + (world.radius + s.radius - 0.5);
+      s.x = world.x + (world.radius + s.radius - Math.max(1.5, s.radius * 0.35));
       s.y = world.y;
       const sv = surfaceVel(world, s.x, s.y);
       s.vx = sv.vx; s.vy = sv.vy; s.spin = 0; s.alive = true;
       s.angle = upOff;                       // 0 = straight up off this contact point
       game.cam.x = s.x; game.cam.y = s.y;
       aimAt(upOff);
+    };
+    // HOLD IT DOWN while the gates are read, instead of seating it once and
+    // hoping. Seating alone puts the hull just inside the surface and the
+    // contact resolver immediately pushes it back out to exactly the boundary,
+    // so whether any given substep sees CONTACT is a floating-point coin flip —
+    // and contact is not one gate among three, it is the carrier for the other
+    // two: `landing.gate` is recomputed and cleared every single updateDock
+    // (only the LAST substep survives into game.dockGate), and the latch drains
+    // at DOCK_DRAIN x off-surface, so a flickering contact both reports no gate
+    // at all and can never fill. That is a fixture on a knife edge, not a test:
+    // it passed on one exact trajectory and any unrelated change tipped it,
+    // failing four docking tests with a symptom that pointed at the gate logic
+    // rather than at the seating. Re-seating each substep is also the honest
+    // model of the thing being tested — a pilot holds the ship against the
+    // surface on thrust — and it stops at the berth, because from there the
+    // clamps own the hull and that is exactly what the next tests check.
+    const holdDown = (world, upOff, seconds) => {
+      for (let t = 0; t < seconds; t += 1 / 60) {
+        if (!game.dock) setDown(world, upOff);
+        hooks.stepSim(1 / 60);
+      }
     };
     // Put the ship well off the world and let the landing latch drain, so the
     // berth is genuinely lost rather than re-formed on the next substep.
@@ -591,13 +645,11 @@ export function runMechTest(game, hooks, opts = {}) {
       const w = aWorld();
       // Attitude wrong (nose along the surface, well outside DOCK_ARC 1.0):
       // contact and stillness hold, so the refusal must be named as 'level'.
-      setDown(w, Math.PI / 2);
-      hooks.stepSim(0.4);
+      holdDown(w, Math.PI / 2, 0.4);
       expect(!game.dock, 'berthed with the nose off the arc');
       expect(game.dockGate === 'level', `refusing gate was "${game.dockGate}", wanted "level"`);
       // Now rockets down, held past DOCK_TIME.
-      setDown(w, 0);
-      hooks.stepSim(CFG.DOCK_TIME + 0.6);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, `no berth after ${CFG.DOCK_TIME + 0.6}s of all three gates`);
       expect(game.dock.b === w, 'berthed to the wrong body');
       expect(game.docks.length === 1, `docks=${game.docks.length}, wanted 1`);
@@ -695,8 +747,7 @@ export function runMechTest(game, hooks, opts = {}) {
       game.docks = []; game.dock = null; game.home = null;
       const s = game.ship, st = game.prog.ach.stats;
       const w = aWorld();
-      setDown(w, 0);
-      hooks.stepSim(CFG.DOCK_TIME + 0.6);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth');
       // The save bookkeeping only runs at a FINISHED station — the whole block
       // sits behind `dk.t >= DOCK_BUILD` — so the build has to complete first.
@@ -720,8 +771,7 @@ export function runMechTest(game, hooks, opts = {}) {
       expect((st.dockSaves || 0) === 0, 'a save scored for a repair that never happened at a dock');
       // …and the genuine article still pays: limp in, repair AT the berth.
       // Re-berths at the station just built, so this costs no second build.
-      setDown(w, 0);
-      hooks.stepSim(CFG.DOCK_TIME + 0.6);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock && game.dock.t >= CFG.DOCK_BUILD, 'setup: no re-berth at the built station');
       st.dockHurt = 0; st.dockHurtHull = undefined; st.dockSaves = 0;
       s.hull = game.st.hullMax * 0.10;
