@@ -6,10 +6,15 @@ description: Run Solar Slinger's scripted, fixed-seed mechanics suite (window.me
 # Mechanics test
 
 `window.mechTest()` scripts a fixed set of player actions against a **fixed-seed** fresh run and asserts
-each core mechanic — and several design laws — still behaves. It is **bit-repeatable**: the world seed is
-fixed, `Math.random` is swapped for a seeded RNG, and the view is pinned to 1920x1080 for the duration,
-so two runs on the same code return identical reports — on any machine, at any window size (the pin is
-what makes the window-independence a guarantee rather than a float coincidence; see issue #104 below).
+each core mechanic — and several design laws — still behaves. The world seed is fixed, `Math.random` is
+swapped for a seeded RNG, the cursor is parked at the pinned view's centre, and the view is pinned to
+1920x1080 for the duration — so the report is **window-independent** (the pin is what makes that a
+guarantee rather than a float coincidence; see issue #104 below).
+
+It is **not yet bit-repeatable**, despite the above: measured 2026-08-05 on a clean tree, **14 of 31
+rows differ between two back-to-back runs in one page session**, from a one-draw gap that snowballs.
+All 31 still pass either way. **Read pass/fail as authoritative; read a moved `draws` column as a
+lead, not proof.** See docs/testing.md for the detail.
 A run takes ~4s wall (the docking cases fly real approaches).
 
 This is the fast "did I break the game loop?" check. It complements, not replaces, the `balance-test`

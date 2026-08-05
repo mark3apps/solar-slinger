@@ -4,7 +4,7 @@ import {
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW, resetBodyIds } from './entities.js';
 import { seedGlowPockets } from './glow.js';
-import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel } from './util.js';
+import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel, placeName } from './util.js';
 import { pickShapeId, reachAt, shapeReach, rockOverlap, rockReach } from './rockshape.js';
 import * as gravel from './gravel.js';
 import { sfxPing } from './sfx.js';
@@ -2640,6 +2640,28 @@ function seedDenseFields(game, sun, rng, fieldRs) {
       // substep if it is deep, and sits visibly interpenetrated if it is not,
       // and being railed field rock nothing ever separates it. Dropping the rock
       // costs one pebble out of hundreds; keeping it costs a bug.
+      //
+      // THIS MOVED THE SEEDED STREAM, DELIBERATELY, AND THE SHIFT IS DECLARED
+      // HERE (issue #149). Until the gravel-clearance escape hatch was closed,
+      // a pebble that failed `gravelClear` on the LAST of 8 tries fell through
+      // and SPAWNED, drawing the 2% cache test plus fieldMass's two draws and
+      // maybeCore's mass-gated one. Dropping it instead draws none of those, so
+      // every draw after this point in seedDenseFields — and seedDebrisBelts,
+      // which runs after it — lands differently: measured on seed 20260721 the
+      // Farshoal's heart moves from (-26202,-51284) to (52454,23774), a whole
+      // shoal on a different bearing.
+      //
+      // NOT re-aligned by drawing-and-discarding here, though that is the
+      // project's usual rule. This `!sited` exit is reached by TWO paths — the
+      // landmark `clash` path, which already dropped silently and drew nothing
+      // before the change, and the gravel-clearance path, which is the only one
+      // that used to spawn. Draining draws on both would invent a THIRD stream
+      // that matches neither, and draining only the second means reconstructing
+      // the old bug's exact conditions (run the `bigs` clash loop after a
+      // clearance failure purely to decide how many draws to throw away) —
+      // encoding a deleted bug's draw pattern into the code forever. The layout
+      // for a given seed is therefore different from before this fix, on
+      // purpose. `?seed=` is still reproducible; it just reproduces a new sky.
       if (!sited) continue;
       const v = orbitVel(sun, x, y, 1);
       // The mass ladder is drawn against where the rock LANDED, not where it
@@ -3278,7 +3300,7 @@ export function replenishWorld(game, dt) {
         // the front is shredding, and an aurora over a world a dying squall
         // merely drifted across is a promise the sky does not keep.
         if (wave.k > 0.35 && !(p.auroraT > 0)
-            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
+            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = placeName(p);
         if (wave.k > 0.35) p.auroraT = 7;
       }
     }
@@ -3304,7 +3326,7 @@ export function replenishWorld(game, dt) {
         const qr = Math.hypot(q.x, q.y);
         if (qr > pr && qr - pr < bd) { bd = qr - pr; next = q; }
       }
-      if (next) { next.ember = 0.08; game.emberSeededName = next.name; }
+      if (next) { next.ember = 0.08; game.emberSeededName = placeName(next); }
     }
   }
 

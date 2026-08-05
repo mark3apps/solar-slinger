@@ -1859,9 +1859,17 @@ function shaped(body) {
 // is the crumble law narrowing in the one case nobody is looking at, which is
 // exactly where a regression survives. The circle-vs-outline query is only
 // valid when the other party really has no profile of its own.
+// The scar clause MIRRORS surfRadius's own predicate, `type !== 'asteroid'`,
+// and must keep mirroring it. An asteroid is a circle TO THE PROFILE — both
+// surfRadius and shaped decline to honour its scars — but damageBody's canWear
+// scars small rock routinely (frac >= 0.15 && radius >= 5), which in a shoal is
+// every other pebble. Rejecting those here dropped them out of the exact branch
+// into the radial fallback for a body state that is common AND permanent,
+// bringing the phantom-collider bug (issue #102) straight back: up to 1.40 body
+// radii of daylight on a 300-unit landmark.
 function roundParty(body) {
   return body.ptype !== 'crystal' && body.bigShape !== true
-    && !(body.scars && body.scars.length > 0);
+    && !(body.type !== 'asteroid' && body.scars && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
 // must clear the TALLEST feature, not the mean disc — a chunk born inside a
@@ -2367,7 +2375,7 @@ function collideBodies(game, a, b) {
         if (rk.thrownBy === 'player' && rk.thrownTimer > 0) {
           dropScrap(game, rk.x, rk.y, pl.vx * 0.6, pl.vy * 0.6, 150);
         }
-        game.emberCleansedName = pl.name;
+        game.emberCleansedName = placeName(pl);
       }
     }
   }
@@ -2770,10 +2778,25 @@ function ramFill(game) {
 function spendRam(game, dmg, hitAng) {
   const s = game.ship;
   if (!(s.ram > 0) || !(dmg > 0)) return dmg;
+  // THE RAM IS BEHIND THE SAME DOOR THE HULL IS. damageShip early-outs on dead
+  // / invulnerable / godMode / berthed-at-a-finished-dock; a hit that cannot
+  // touch the hull must not quietly eat the ram either, or the "total damage
+  // immunity" safe harbour costs a brawler its whole pack to a rock that
+  // drifts onto the bow while it sits on its own pad. Same predicate, one
+  // place, so the two can't drift apart.
+  if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return dmg;
   const t0 = ramTier(game.st, s.ram);
   const canEat = s.ram / CFG.RAM_ABSORB;     // hull points this much mass is worth
   const eaten = Math.min(dmg, canEat);
-  s.ram = Math.max(0, s.ram - eaten * CFG.RAM_ABSORB);
+  // SNAP, don't subtract, when the hit finishes the pack. `s.ram - (s.ram /
+  // K) * K` is not exactly 0 in floats — measured, ~2.9% of values leave a
+  // positive residue like 3.6e-12. That residue is a PHANTOM RAM: `s.ram <= 0`
+  // stays false so no "RAM SHATTERED" ever fires, ramTier still reads 1 so the
+  // tier-drop spall is skipped, and hasRam keeps the front contact radius at
+  // ~2.2x the hull — the ship bounces off things two hull-radii early with
+  // nothing on screen.
+  if (eaten >= canEat) s.ram = 0;
+  else s.ram = Math.max(0, s.ram - eaten * CFG.RAM_ABSORB);
   s.ramHitT = 0.25;                          // render: the impact slam
   s.ramHitAng = hitAng ?? s.angle;           // render: where the mattress ripple starts
   const t1 = ramTier(game.st, s.ram);
@@ -2801,6 +2824,52 @@ function spendRam(game, dmg, hitAng) {
   return dmg - eaten;
 }
 
+// THE RAM'S PER-BODY SCRATCH. collideShipBody runs for every awake, non-dormant
+// body every substep — thousands in a shoal, at 120 Hz — so nothing inside it
+// may allocate (CLAUDE.md, and the sweep side-table below exists for the same
+// reason). The arc test used to build a fresh `onArc` closure for EVERY spec,
+// call ramFace/ramArc up to four times (each one a fresh ramPlate object
+// literal), and run an atan2, per body: ~500k allocations/s on a loaded
+// brawler.
+//
+// These are a pure function of (st, s.ram, s.angle), so they are cached — but
+// as a MEMO ON THOSE INPUTS, not a stamp at the top of the substep. spendRam
+// changes s.ram from inside this very loop, and a rock that empties the pack
+// must leave the next rock in the same substep facing a bare hull. A stamp
+// would hand it a phantom slab.
+//
+// DO NOT EXPECT A WALL-CLOCK WIN FROM THIS, and do not "restore" the closure
+// because a profile failed to show one. Measured by INTERLEAVED A/B against the
+// same tree (the only method this machine supports — a saved baseline drifts
+// enough to invent a 40% swing that survives eight consecutive re-runs and is
+// still an artefact): main vs this, 8 rounds on `perf debris-heavy`, medians
+// 1.789 vs 1.871 ms, mine slower in 5 of 8. That is a WASH — main's own spread
+// on identical code was 1.766-2.220, wider than the gap between the branches.
+// The justification here is the allocation rate itself, plus roundParty's fix
+// below deliberately spending MORE time (a scarred pebble goes back through the
+// exact collider), which is a correctness trade this loop happily pays.
+let _ramSt = null, _ramRam = -1, _ramAng = NaN;
+let _ramHas = false, _ramFaceR = 0, _ramArcCos = 1, _ramCa = 1, _ramSa = 0;
+function ramScratch(game, s) {
+  if (game.st === _ramSt && s.ram === _ramRam && s.angle === _ramAng) return;
+  _ramSt = game.st; _ramRam = s.ram; _ramAng = s.angle;
+  _ramHas = !!(game.st.frontRam && s.ram > 0);
+  _ramFaceR = _ramHas ? ramFace(game.st, s.ram) : s.radius;
+  // The COSINE of the half-angle, so the bearing test is a dot product against
+  // the nose vector instead of atan2 + angDiff. Exact, not an approximation:
+  // both |angDiff| and the arc live in [0, pi] where cos is monotone, so
+  // `|angDiff| <= arc` and `cos(angDiff) >= cos(arc)` are the same test.
+  _ramArcCos = _ramHas ? Math.cos(ramArc(game.st, s.ram)) : 1;
+  _ramCa = Math.cos(s.angle); _ramSa = Math.sin(s.angle);
+}
+// Is (px, py) inside the slab's covered arc? Caller must have run ramScratch.
+function ramOnArc(s, px, py) {
+  const ax = px - s.x, ay = py - s.y;
+  const l2 = ax * ax + ay * ay;
+  if (l2 <= 0) return true;             // dead centre is inside the ram by any reading
+  return (ax * _ramCa + ay * _ramSa) >= _ramArcCos * Math.sqrt(l2);
+}
+
 function collideShipBody(game, s, b, dt) {
   if (b.sinkT > 0) return;   // already under the cloud tops
   let dx = b.x - s.x, dy = b.y - s.y;
@@ -2810,12 +2879,9 @@ function collideShipBody(game, s, b, dt) {
   // sim waited for the hull buried behind was the "collision doesn't match"
   // bug. Every contact path below (swept, shaped, plain) measures against the
   // same effective radius.
-  const hasRam = game.st.frontRam && s.ram > 0;
-  const rArc = hasRam ? ramArc(game.st, s.ram) : 0;
-  const onArc = (px, py) =>
-    Math.abs(angDiff(Math.atan2(py - s.y, px - s.x), s.angle)) <= rArc;
+  ramScratch(game, s);
   let sR = s.radius;
-  if (hasRam && onArc(b.x, b.y)) sR = ramFace(game.st, s.ram);
+  if (_ramHas && ramOnArc(s, b.x, b.y)) sR = _ramFaceR;
   let rr = sR + b.radius;
   let d2 = dx * dx + dy * dy;
   if (d2 > rr * rr && !shaped(b)) {
@@ -2826,26 +2892,26 @@ function collideShipBody(game, s, b, dt) {
     // sailing through the slab it visibly hit (review finding on PR #134).
     // So when the end position missed the arc, sweep at RAM size first and
     // re-test the arc at the actual touch point: on the bow, the ram takes it
-    // (position stands, sR upgrades); off the bow, the rock is restored and
-    // falls through to the honest hull-sized sweep. A hull hit is a subset of
-    // the ram-sized swept volume, so a failed ram sweep needs no second try.
-    if (hasRam && sR !== ramFace(game.st, s.ram)) {
+    // (position stands, sR upgrades); off the bow, the rock is restored.
+    //
+    // AND THEN THE HULL SWEEP ALWAYS GETS ITS TURN. The ram-sized sweep is NOT
+    // a superset of the hull-sized one: sweptContact early-outs on
+    // `seg2 <= rr*rr`, and rr is ~3x larger at ram size, so a rock whose
+    // relative displacement lands between hullRR and ramRR makes the ram sweep
+    // return false — and skipping the hull try there dropped exactly the class
+    // the pre-test exists to catch (tier 0: a ~1,800 u/s shot, seg 15, past
+    // hullRR 10 but short of ramRR 18.8). The capsule geometry is a superset;
+    // the early-out is not.
+    let hit = false;
+    if (_ramHas && sR !== _ramFaceR) {
       const bx0 = b.x, by0 = b.y;
-      const rFace = ramFace(game.st, s.ram);
-      if (sweptContact(s.x, s.y, rFace, b, dt)) {
-        if (onArc(b.x, b.y)) {
-          sR = rFace;
-          dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
-        } else {
-          b.x = bx0; b.y = by0;
-          if (sweptContact(s.x, s.y, sR, b, dt)) {
-            dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
-          }
-        }
+      if (sweptContact(s.x, s.y, _ramFaceR, b, dt)) {
+        if (ramOnArc(s, b.x, b.y)) { sR = _ramFaceR; hit = true; }
+        else { b.x = bx0; b.y = by0; }
       }
-    } else if (sweptContact(s.x, s.y, sR, b, dt)) {
-      dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
     }
+    if (!hit && sweptContact(s.x, s.y, sR, b, dt)) hit = true;
+    if (hit) { dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy; }
     rr = sR + b.radius;   // sR may have upgraded inside the sweep
   }
   // The ship lands on (and skims along) the real surface — a crystal world's
@@ -2991,7 +3057,7 @@ function collideShipBody(game, s, b, dt) {
     const vT = Math.hypot(tvx, tvy);
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
       const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
-      damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
+      damageShip(game, grind, `Ground apart skimming ${placeName(b, 'a ' + b.type)}.`, hitAng);
       // Skating a surface is risky XP — and BANDED MOONS are the skate park:
       // same grind, same hull cost, triple the payout. DESERT WORLDS' dune
       // seas pay double, same law (bonus XP, hull cost never discounted).
@@ -3201,19 +3267,29 @@ function collideShipBody(game, s, b, dt) {
     // layer in front of the hull — War Plating, which used to make the same
     // trade with a regenerating plate, is deleted — so the arc is what keeps
     // "point at the thing hurting you" a real demand on the spec.
+    //
+    // THE RAM ONLY PAYS FOR DAMAGE THAT WOULD OTHERWISE LAND. The ambient
+    // gates come FIRST: invariant 3 says a contact under the closing-speed
+    // floor does no damage at all, so it must cost the ram nothing. Spending
+    // it on the sub-threshold hits instead drained ~6,900 mass/s at 120 Hz
+    // from merely leaning on a rock — and ramKeep suppresses the bounce that
+    // would end the contact, so the drain fed itself until the pack was gone.
+    // That matters MORE now the ram is the only layer there is.
     let hullDmg = dmg;
-    if (dmg > 0 && s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
-      hullDmg = spendRam(game, dmg, hitAng);
-    }
-    if (hullDmg > 1.5 && closing > 25) {
-      // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
-      // the damage lands, checked after, because that's the only moment both
-      // facts are true at once.
-      const own = b.thrownBy === 'player' && b.thrownTimer > 0;
-      damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
-        thrown > 1 ? 'Hit by an alien-thrown rock.' :
-        `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
-      if (own && !s.alive) bump(game, 'ownGoal');
+    if (dmg > 1.5 && closing > 25) {
+      if (s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
+        hullDmg = spendRam(game, dmg, hitAng);
+      }
+      if (hullDmg > 1.5) {
+        // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
+        // the damage lands, checked after, because that's the only moment both
+        // facts are true at once.
+        const own = b.thrownBy === 'player' && b.thrownTimer > 0;
+        damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
+          thrown > 1 ? 'Hit by an alien-thrown rock.' :
+          `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
+        if (own && !s.alive) bump(game, 'ownGoal');
+      }
     }
   }
 }
@@ -3274,7 +3350,7 @@ function updateDock(game, dt) {
     const dead = docks.splice(i, 1)[0];
     if (game.dock === dead) game.dock = null;
     if (game.home === dead) {
-      game.homeLostName = dead.b.name || 'your home world';
+      game.homeLostName = placeName(dead.b, 'your home world');
       game.home = null;
     }
   }
@@ -3369,7 +3445,10 @@ function updateDock(game, dt) {
         const i = docks.findIndex((q) => q !== game.home && q !== d);
         if (i >= 0) {
           const gone = docks.splice(i, 1)[0];
-          game.dockRetiredName = placeName(gone.b);
+          // Site-specific fallback: the RETIRED dock is by definition not the
+          // one you are standing on, so the generic 'this world' would name the
+          // wrong place.
+          game.dockRetiredName = placeName(gone.b, 'a distant world');
         }
       }
       game.dockBuildName = placeName(b);
@@ -3719,6 +3798,9 @@ function collideAlienBody(game, al, b, dt) {
       dx = b.x - al.x; dy = b.y - al.y; d2 = dx * dx + dy * dy;
     }
   }
+  // The exact outline normal, when the contact is against a landmark. Held
+  // here because rockshape's query returns a shared scratch object.
+  let exOn = false, exNx = 0, exNy = 0;
   if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
@@ -3728,12 +3810,25 @@ function collideAlienBody(game, al, b, dt) {
       // replaces reported the FAR wall on the 17 shapes that are not radial
       // functions (see rockshape.rockCircleQuery), which parked an alien
       // bouncing off nothing in a visible notch. Only the DEPTH is taken from
-      // it: the separation and bounce below stay on the centre-line normal
-      // aliens have always used, deliberately — the face normal is scoped to
-      // the ship and to landmark pairs, where the contact geometry is what the
-      // player is reading.
-      const pen = al.radius - rockCircleQuery(b, al.x, al.y).d;
+      // it: the BOUNCE below stays on the centre-line normal aliens have always
+      // used, deliberately — the face normal is scoped to the ship and to
+      // landmark pairs, where the contact geometry is what the player is
+      // reading.
+      //
+      // THE SEPARATION, THOUGH, HAS TO RIDE THE AXIS THE DEPTH WAS MEASURED ON.
+      // Depth along the outline normal and a push along the centre line are two
+      // different axes, and mixing them does not merely under-separate by
+      // 1/cos — where the outward normal points back across the centre line the
+      // factor flips SIGN and the push drives the alien INTO the far wall of a
+      // bite. Measured over the baked library: 19 of the 68 shapes have such a
+      // band, worst dot -0.853 (s0_14), covering ~10.5% of the band on s2_34.
+      // `pen` then grows every substep, so the alien grinds or tunnels instead
+      // of converging. Before the exact query, depth and direction were both
+      // radial — self-consistent even where they were wrong.
+      const q = rockCircleQuery(b, al.x, al.y);
+      const pen = al.radius - q.d;
       if (pen <= 0) return;
+      exOn = true; exNx = q.nx; exNy = q.ny;
       rr = Math.sqrt(d2) + pen;   // so `rr - d` below is that exact depth
     } else {
       rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
@@ -3758,7 +3853,9 @@ function collideAlienBody(game, al, b, dt) {
       !(b.thrownTimer > 0 && b.thrownBy === 'player')) {
     const nx0 = dx / d, ny0 = dy / d;
     const overlap0 = rr - d;   // the narrow phase's reach, never the raw radii
-    al.x -= nx0 * overlap0; al.y -= ny0 * overlap0;
+    // Exact outline normal where we have one — see the bigShape branch above.
+    if (exOn) { al.x += exNx * overlap0; al.y += exNy * overlap0; }
+    else { al.x -= nx0 * overlap0; al.y -= ny0 * overlap0; }
     const sh = game.ship;
     // ONLY a committed charge throws. At shoal density (~88u between rocks)
     // a lurker brushes rocks constantly just manoeuvring, and letting those
@@ -3808,7 +3905,10 @@ function collideAlienBody(game, al, b, dt) {
   const nx = dx / d, ny = dy / d;
   const closing = -((b.vx - al.vx) * nx + (b.vy - al.vy) * ny);
   const overlap = rr - d;   // shaped surfaces: eject to the surface, not the disc
-  al.x -= nx * overlap; al.y -= ny * overlap;
+  // Exact outline normal where we have one — see the bigShape branch above.
+  // The bounce below stays on the centre line; only the push moves.
+  if (exOn) { al.x += exNx * overlap; al.y += exNy * overlap; }
+  else { al.x -= nx * overlap; al.y -= ny * overlap; }
   if (closing > 0) {
     const mEffA = Math.min(b.mass, 4e5);
     const kickA = Math.min(380, closing * 1.2 * (mEffA / (mEffA + 500)));
@@ -4553,6 +4653,25 @@ export function promoteGravel(game, i) {
   b.inertT = gravel.inertT[i];        // a fresh fragment stays inert across the change
   if (gravel.flags[i] & gravel.FLAG_ICE) b.ice = true;
   if (gravel.flags[i] & gravel.FLAG_CORED) b.cored = true;
+  // CARRY THE POCKET, TOO. A promoted grain that lost `fieldRock`/`field`
+  // walked straight out of config.fieldXp — no flat damp, and no charge against
+  // the pocket's FIELD_XP_BUDGET — so shoal gravel paid UNDAMPED XP forever
+  // while the shoal rock beside it was budgeted, and a hard hit sprays ~60
+  // fresh grains. The field XP gate is meant to be double (per-rock multiplier
+  // AND per-field budget); this was the hole under both.
+  //
+  // Recovered from POSITION rather than stored: the gravel SoA is four typed
+  // arrays chosen for cache behaviour and a shared worker mirror, and a grain
+  // is only ever promoted at the moment the beam reaches it — once, in the
+  // player's hands, never in a hot loop. fieldFrac is the same pocket footprint
+  // ai.js and the LOD use, so "in the shoal" means one thing everywhere.
+  // Deliberately NOT world.markFieldRock: that also applies the field HP
+  // multiplier, and this grain's hp came across from the SoA already.
+  if (game.fields) {
+    for (let fi = 0; fi < game.fields.length; fi++) {
+      if (fieldFrac(game.fields[fi], b.x, b.y) <= 1) { b.fieldRock = true; b.field = fi; break; }
+    }
+  }
   b.attractor = false;                // debris is never an attractor, at any mass
   gravel.kill(i);
   return b;

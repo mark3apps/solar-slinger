@@ -465,7 +465,17 @@ export const CFG = {
   //     giant's own rail, which its moons are handed to so a system survives
   //     losing its primary. Killing a gas giant transforms it rather than
   //     deleting it, which is also why the planet count holds.
-  GAS_IMPACT_MUL: 0.5,     // an impact spent sinking into atmosphere, not cratering
+  // REPRICED WITH THE PLANET HP PASS (0.5 -> 2.0). Gas hp rides PLANET_HP_BASE,
+  // so when planets were re-priced it fell 25,200 -> 14,200 (x0.56) — but the
+  // moon-mass impactor was tempered x0.25 in the same pass, and the gas class
+  // was carried along rather than re-derived. Net: the ladder went 16 -> 35
+  // moon slams, 3.5-5x off the stated target below, and GAS_HIT_CAP stopped
+  // binding at any reachable fling speed (0.079 of maxHp, needing ~2,500+
+  // closing against a 1,005 ceiling) — a documented bound that never fired.
+  // Measured back into band via `bench run combat`: 9 moon slams, 39 boulders,
+  // and gasSingleHitFraction back to the full 0.18, i.e. the cap engages again
+  // at the top of the fling range, which is the whole point of it.
+  GAS_IMPACT_MUL: 2.0,     // an impact spent sinking into atmosphere, not cratering
   // NO SINGLE IMPACT STRIPS A GIANT. Collision damage is QUADRATIC in closing
   // speed, and a late-game fling throws a moon three times faster than a mid
   // one — measured, a heavy moon at full tier-5 sling computed 2.7x the giant's

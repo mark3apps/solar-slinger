@@ -668,34 +668,42 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 10),
   A('abil12', 'build', PTS.hard, 'Overqualified', 'Own twelve abilities at once.',
     (g, s, c) => c.owned >= 12),
-  A('abil14', 'build', PTS.brutal, 'Everything on the Rack', 'Own fourteen abilities at once.',
-    (g, s, c) => c.owned >= 14),
-  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95).
-  // Every ability is six ranks now, so the same run banks ~1.6x the ranks it
-  // used to (measured over the full climb: ~44 before, ~69 after) — at the old
-  // thresholds 'Master of the Craft' went from the hardest rank row in the game
-  // to something every spec passes without trying, which is the freebie failure
-  // mode wearing a different hat. Scaled by the measured ratio, so each row
-  // still asks for what it used to ask for.
+  // 13, NOT 14. The SCOUT pool is exactly 14 rows, so a 14 here demands a
+  // literally perfect build from one spec — every card it is ever offered,
+  // taken. Same unevenness the rank row below is priced against. Every count
+  // row must clear the biggest STARTING kit and stay under the SMALLEST pool.
+  A('abil13', 'build', PTS.brutal, 'Everything on the Rack', 'Own thirteen abilities at once.',
+    (g, s, c) => c.owned >= 13),
+  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95), and
+  // the top row moved AGAIN when the catalog shrank. Every ability is six
+  // ranks, so a run banks ~1.6x the ranks it used to (measured over the full
+  // climb: ~44 before, ~69 after) — at the old thresholds 'Master of the Craft'
+  // was a freebie, which is why it went to 95.
   //
-  // THE TOP ROW IS BOUNDED BY THE SHORTEST SPEC'S POOL, and it has to be
-  // re-checked whenever a catalog row is added or deleted. `c.ranks` sums
-  // `prog.upgrades`, so a spec's ceiling is (offerable rows) x 6:
-  // brawler 15 x 6 = 90, hauler 15 x 6 = 90, scout 14 x 6 = 84. 95 was set
-  // against the brawler's old 16-row, 96-rank ceiling; deleting War Plating
-  // took that to 90 and left the row MATHEMATICALLY UNREACHABLE for every
-  // build in the game — a dead row, which is the freebie failure mode running
-  // backwards. 85 keeps it the hardest rank row (it still wants ~14 rows
-  // maxed, above 'Everything on the Rack') and keeps it winnable on the two
-  // specs that could ever reach it.
+  // THEN THE POOL WAS CUT TWICE AND 95 WENT OFF THE END OF IT. `c.ranks` sums
+  // prog.upgrades, so a spec's ceiling is (rows it can be offered) x 6, counting
+  // the `also` cross-spec rows. Measured from the live catalog after War
+  // Plating's deletion: brawler 15 rows / 90, hauler 15 / 90, SCOUT 14 / 84.
+  //
+  // 78, NOT 85. 85 was tried and is wrong for the same reason 95 was: it sits
+  // ABOVE scout's 84, so it leaves the row mathematically unreachable for one
+  // spec of three — and "winnable on the two specs that could ever reach it" is
+  // just a dead row with a smaller blast radius. Unearnable is as broken as a
+  // freebie (the standard the catalog cut itself invoked). 78 clears
+  // 'Seasoned' at 70, sits ~9 above a typical full climb, and leaves 6 ranks of
+  // headroom under the SMALLEST ceiling, so it is the hardest rank row in the
+  // game for every spec and impossible for none.
+  //
+  // THE BINDING NUMBER IS SCOUT'S 84. Re-measure it before adding or deleting
+  // any ability row, and keep the id matching the threshold.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
     (g, s, c) => c.ranks >= 40),
   A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
     (g, s, c) => c.ranks >= 70),
-  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 85 ability ranks.',
-    (g, s, c) => c.ranks >= 85),
+  A('ranks78', 'build', PTS.hard, 'Master of the Craft', 'Earn 78 ability ranks.',
+    (g, s, c) => c.ranks >= 78),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',

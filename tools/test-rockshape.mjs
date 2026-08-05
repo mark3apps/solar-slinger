@@ -136,8 +136,10 @@ function pointExcess(deep) {
     const c = rockContact(a, b);
     if (!c) continue;
     for (const p of c.points) {
+      // No per-point `depth` any more — the manifold carries one depth for the pair.
+      // What actually measures point PLACEMENT is finiteness plus the eA/eB reach
+      // accumulation below; asserting on the dropped field only ever read undefined.
       ok(Number.isFinite(p.x) && Number.isFinite(p.y), 'non-finite contact point');
-      ok(p.depth >= 0, 'negative point depth');
       eA = Math.max(eA, Math.hypot(p.x - a.x, p.y - a.y) / rockReach(a));
       eB = Math.max(eB, Math.hypot(p.x - b.x, p.y - b.y) / rockReach(b));
     }
