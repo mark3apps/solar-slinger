@@ -1534,10 +1534,10 @@ function findLanes(f, rng, slots) {
   // picks its way through what is actually there.
   //
   // NO SEPARATION TERM, ON PURPOSE. Cost is rock displacement alone: nothing
-  // here pushes two roads apart. That was a real rule once (config's
-  // FIELD_LANE_APART, now deleted) back when a pocket held three independent
-  // rim-to-rim curves and two of them stacking read as one wide gap. The
-  // network form retired it. Measured over 3 seeds x 4 pockets, of the pairs
+  // here pushes two roads apart. There used to be a documented/tuned constant
+  // for this (config's FIELD_LANE_APART, now deleted), but `findLanes` never
+  // actually read it. The network form makes it the wrong idea rather than an
+  // unfinished one. Measured over 3 seeds x 4 pockets, of the pairs
   // running closest together essentially all are indices >= 8 — the junction
   // CHAIN and the CHORDS — while the 8 rim edges stay well clear of each
   // other. That is the topology, not a defect: a chord from node i to i+2
