@@ -138,10 +138,10 @@ export function runMechTest(game, hooks, opts = {}) {
   const wasAuto = game.autoUpgrade;
   game.autoUpgrade = true;
   // PAUSE IS SHARED STATE TOO. T23 forces `paused = false` to prove a digit
-  // cannot be spent into a paused run, and nothing in update() reads the flag
-  // (only hud.syncMenus and music.js do) — so a suite run from the console
-  // with the game paused would resume the run under the player's hands on the
-  // very next rAF. Restored in the finally beside Math.random and input.keys.
+  // cannot be spent into a paused run, and main.js's frame loop gates the sim
+  // update on `game.paused` — so running the suite from the console while
+  // paused would resume the run under the player's hands on the very next rAF.
+  // Restored in the finally beside Math.random and input.keys.
   const wasPaused = game.paused;
   // THE INPUT DEVICE IS SHARED STATE, and the suite drives it: the docking and
   // pilot-card cases park the cursor (input.mouseX/Y feed game.aim every frame)
