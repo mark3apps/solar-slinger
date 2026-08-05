@@ -896,7 +896,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const R = CFG.WORLD_R;
       const seen = [];
       for (const c of cs) {
-        expect(c.fade < 1, `${c.key}: fade ${c.fade} >= 1 would make stormStrength divide by zero`);
+        expect(c.fade < 1, `${c.key}: fade ${c.fade} >= 1 collapses the taper — at 1 the wave blinks out at a hard radius, above 1 stormStrength returns k > 1`);
         const reachR = R * c.reach, fadeR = reachR * c.fade;
         expect(stormStrength({ ...c, r: fadeR }) === 1, `${c.key}: not full strength at its fade radius`);
         expect(stormStrength({ ...c, r: reachR }) === 0, `${c.key}: still biting at its reach limit`);
