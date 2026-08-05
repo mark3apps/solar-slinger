@@ -2179,8 +2179,8 @@ export function stormClass(roll) {
 // row that breaks the rule legible rather than catastrophic, and the two ways
 // to break it fail differently:
 //   `fade: 1` (a plausible way to say "no taper at all") — without the floor
-//   the divide is by 0, giving Infinity and therefore k = 0 one unit past
-//   `fadeR`. Not NaN: a wave that BLINKS OUT at an exact radius, which is the
+//   the divide is by 0, giving Infinity and therefore k = 0 for any r > `fadeR`.
+//   Not NaN: a wave that BLINKS OUT at an exact radius, which is the
 //   geometric in-world edge the house style will not have.
 //   `fade > 1` — without the floor the denominator goes NEGATIVE and k comes
 //   back ABOVE 1 (measured 1.139 at r = 44056 for `fade: 1.2`), i.e. a wave
