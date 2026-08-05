@@ -11,7 +11,7 @@ import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tr
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
-  newAchState, updateAchievements, bump, best, noteDeath, ACH_EVENT_STATS,
+  newAchState, updateAchievements, bump, best, noteDeath, noteHullGrant, ACH_EVENT_STATS,
 } from './achievements.js';
 import { initRender, render, setRenderScale } from './render.js';
 import {
@@ -925,6 +925,10 @@ function healOnHullGain(oldHullMax) {
   const gain = game.st.hullMax - oldHullMax;
   if (gain > 0 && game.ship.alive) {
     game.ship.hull = Math.min(game.st.hullMax, game.ship.hull + gain * 1.2);
+    // Re-baseline the one stat this invalidates. A ceiling gain is a grant, not
+    // a repair, and an automatic rank landing mid-flight must not disarm a
+    // "Limped In" run in progress — see achievements.noteHullGrant.
+    noteHullGrant(game);
   }
 }
 
