@@ -782,27 +782,33 @@ code "works."
 
   A `shield`-channel ability UNLOCKS the regenerating
   shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
-  quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
-  - **BRAWLER (War Plating)** — a THIN, FAST-RE-FORMING FRONT PLATE (12%→26% of the pool) covering
-    **35% of bearings** (`shieldArc` = 0.35π, ±63° off the nose), with the quickest cycle in the game
-    (regen ×1.5, regenDelay ×0.35 — ~1.75s and the nose is covered again). **Its identity is the
-    CYCLE, not the capacity.** (History: it was 38%→65% of the pool, which made it simply the best
-    shield in the game — converting most of a brawler's health into a regenerating layer meant the
-    front-arc drawback never cost anything, because the pool never ran out while you faced the right
-    way. And the arc was a clean π/2, i.e. 50%, which covered everything ahead of the beam — "front
-    arc only" was barely a drawback in practice. 35% is a genuinely narrow nose plate: you have to
-    point at what is hurting you.) A directional hit from behind (`hitAng` in `physics.damageShip`)
-    skips the shield entirely — the tail is bare, so facing the threat matters. **Directionless
-    damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) can't be dodged by
-    aiming, so it is SPLIT by coverage: the shield soaks `arc / π` and the rest goes straight to hull.
-    Soaking all of it made the front-arc drawback free in exactly the places it should bite. Full-wrap
-    shields are unaffected (share 1). **Anything asserting that share must DERIVE it from
-    `st.shieldArc`** (devtest T6 does) — a hardcoded half re-breaks every time the angle is tuned.
-    Render clips every shield visual to the covered wedge — the bare tail must READ.
-  - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
-    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. Both shields are thin now, so
-    the CYCLE is what separates them: the brawler's is smaller and returns nearly twice as fast, the
-    scout's is a touch slower back but covers every angle.
+  quiet time. **THE SHIELD IS SCOUT-ONLY** (`shipStats`) — exactly one row in the whole catalog feeds
+  the `shield` channel, and the other two specs answer an incoming hit with mass instead:
+  - **SCOUT (Phase Screen)** — WEAK (16%→26% of the pool) but FULL-WRAP and snappy: scout-only
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. A thin layer that covers every
+    angle and comes back fast is the whole of the scout's defence — it is a forgiveness mechanic for
+    a ship with no armour, and it is deliberately not enough to stand and trade with.
+  - **HAULER — none.** The orbit rock wall is its protection; Rockwall / Reinforced Hull harden that
+    identity instead.
+  - **BRAWLER — none.** Its protection is hull plus what the fused War Rack prow eats head-on
+    (`physics.collideShipBody` → `spendRam`), which is spent by what it absorbs and rebuilt only by
+    going and finding more rock. (History: it carried **War Plating**, a thin front-arc plate at
+    12%→26% of the pool covering 35% of bearings with the fastest cycle in the game — regen ×1.5,
+    regenDelay ×0.35, before that 38%→65% of the pool at a π/2 arc. It is DELETED, ability and
+    spec-DNA recharge multipliers together. A regenerating layer is a forgiveness mechanic, and on
+    the spec that is already the tank it undid the ram's own bargain: charge in, lose the plate, back
+    off for a heartbeat, charge again. The ram only costs something if the damage it eats is damage
+    you actually keep.)
+
+  **The ARC mechanism outlives its user.** `st.shieldArc` is the plate's half-angle around the nose:
+  a directional hit (`hitAng` in `physics.damageShip`) landing outside it skips the shield entirely,
+  and **directionless damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) is
+  SPLIT by coverage, the shield soaking `arc / π` and the rest going straight to hull. Render feathers
+  every shield visual to the same wedge. No live ability produces a partial arc — Phase Screen is a
+  full wrap (share 1) — but the mechanism is kept as the one place a directional shield is expressed,
+  and **devtest T6 exercises it against an EXPLICIT wedge written onto `game.st`** so it cannot rot
+  unnoticed between users. **Anything asserting the split must DERIVE it from `st.shieldArc`** — a
+  hardcoded half re-breaks every time the angle moves.
   - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
     Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
@@ -954,8 +960,8 @@ at a glance is the whole point of splitting them:
   **From tier 3 the hull SPLITS** — see below.
 - **BRAWLER** (`BRAWLER_TIERS`) — a ram, and the ram is the class. `prowW >= 1.20` on every tier,
   so the prow overhangs the hull on BOTH sides; it owns the front ~44% of the length. The stern
-  is drawn BARE on every tier because `st.shieldArc < PI` covers the front arc only — the spec's
-  weakness is visible from the hull alone.
+  is drawn BARE on every tier because the spec has NO shield at all and its one layer (the ram) is
+  welded to the bow — the weakness is visible from the hull alone.
 
 **A TIER MUST CHANGE THE OUTLINE, NOT JUST THE DETAIL** (user design rule). Both new ladders were
 first built varying only surface flags over one fixed shape, and six tiers read as ONE ship at six

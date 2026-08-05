@@ -57,8 +57,8 @@ Drawn from what the code already enforces, so the art doesn't fight the sim:
   The escalation axis is **hardpoint count and wingspan**, and the sensor gear climbs alongside as
   fire control. Its full-wrap shield reads as emitter *posts* around the rim — hardware, not a ring,
   because the shield glow is drawn in code.
-- **Brawler is front-heavy with a bare tail**, because `st.shieldArc < PI` genuinely covers the front
-  arc only. The weakness is visible.
+- **Brawler is front-heavy with a bare tail**, because the spec carries no shield and its one layer —
+  the War Rack ram — is welded to the bow. The weakness is visible.
 - **Neither gets ring-arms or spinning assemblies.** That is the hauler's silhouette signature and
   the thing that keeps the three specs readable at a glance.
 - **Do not draw the ships to true relative scale.** The real footprint ladder spans about 11× from

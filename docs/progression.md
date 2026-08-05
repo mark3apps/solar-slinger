@@ -198,8 +198,9 @@
     pocket faster than the eye could follow.) **FRIENDLY FIRE** (`CFG.BLAST_SELF_DMG` 0.6) is keyed to
     `dmgR` alone: standing inside it costs the same damage with the same falloff (~63 at point blank,
     a fifth of a tier-3 hull, and hull does not self-heal), so the blast is no longer the one brawler
-    tool with no downside. `hitAng` points from ship to blast, so a BRAWLER's front-arc shield really
-    does cover a detonation it is facing. The body-count caps (20 swept, **10 damaged**) are what
+    tool with no downside. `hitAng` points from ship to blast, so a directional layer really does
+    cover a detonation it is facing — for the brawler that is the War Rack ram's own front arc, its
+    only layer now that War Plating is gone. The body-count caps (20 swept, **10 damaged**) are what
     actually bind inside a shoal — a pocket puts ~100 rocks inside any of these radii versus a handful
     of belt rock — so treat them as the field limiter, not just a perf guard; Wall Splat (`st.wallSplat`,
     `physics.wallSplat`) rides its OWN flag instead — `collideBodies` sets `body.splatWall` around
@@ -244,8 +245,8 @@
     ship→cursor direction and its fallback),
     additive glow (event motion). The War Rack stow (`st.trailStow`) is a TRAILING ammo pack, not a
     protective ring: `tractor.updateOrbit` branches to aft slots that drag behind the nose, with
-    NO interceptor (protection is the front-arc plating; the pack only incidentally blocks shots
-    through the wake), and its stow is clamped to BOULDER CLASS (`orbitTier` 2) at every tier
+    NO interceptor (protection is the ram itself, welded to the bow; the pack only incidentally
+    blocks shots through the wake), and its stow is clamped to BOULDER CLASS (`orbitTier` 2) at every tier
     (config.shipStats) — shotgun ammo, never a planet garage. (That clamp read "moon class /
     `TIERS.caps[1]`" when tier 1's label was 'Moons' and its cap was 6,000; on the class ladder
     6,000 is boulder weight, and holding the rack at `ceil[2]` = 6,200 is what keeps the brawler's
