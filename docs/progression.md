@@ -235,7 +235,7 @@
     Solid stroke: it is equipment, not aiming UI. **A DOCK STANDS THE FIELD DOWN, TELLS INCLUDED**:
     `updateParry` returns at a berth (releasing any frozen rock — never an early `return` above that
     release, or the catch is welded to the hull for the run), and `physics.parryLive`
-    (`deflect > 0 && !game.dock && !(parryCd > 0)`) is the ONE definition of "can catch" that the
+    (`game.st.deflect > 0 && !game.dock && !(game.parryCd > 0)`) is the ONE definition of "can catch" that the
     sim's field scan, the rail and `drawDeflectable` all read — private copies left both tells lit
     over a stood-down field (#103). The cooldown deliberately keeps DRAINING while berthed, so
     stopping to repair never costs a reload; the re-arm bloom it fires is invisible behind the same
