@@ -131,12 +131,17 @@ export function runMechTest(game, hooks, opts = {}) {
   const wall0 = performance.now();
 
   // ---- determinism + quiet: seeded RNG swap, sound off, picks auto-resolved
+  // CAPTURE EVERYTHING FIRST, MUTATE NOTHING UNTIL INSIDE THE TRY. Every
+  // restore below lives in the finally, so any mutation made BEFORE `try` is
+  // unprotected: setSfxVolume in particular calls sfxBus.gain.setTargetAtTime,
+  // which throws InvalidStateError on a closed AudioContext — and a throw there
+  // used to leave Math.random permanently stubbed and the view permanently
+  // pinned, i.e. exactly the leak this teardown exists to prevent, reached
+  // through the teardown's own setup. T23's comment states the convention; this
+  // block now follows it.
   const realRandom = Math.random;
   const rng = mulberry32(seed ^ 0x5f3759df);
-  draws = 0;
-  Math.random = () => { draws++; return rng(); };
   const wasAuto = game.autoUpgrade;
-  game.autoUpgrade = true;
   // PAUSE IS SHARED STATE TOO. T23 forces `paused = false` to prove a digit
   // cannot be spent into a paused run, and main.js's frame loop gates the sim
   // update on `game.paused` — so running the suite from the console while
@@ -157,16 +162,39 @@ export function runMechTest(game, hooks, opts = {}) {
   // view (applyZoom, and update()'s viewR + mouseWorld); the chart's DOM
   // handlers keep the real one, which the suite never touches.
   const wasViewPin = game.viewPin;
-  game.viewPin = VIEW_PIN;
-  // Mute the SFX bus for the scripted burst (there are no audio toggles any
-  // more — the volume slider IS the control; game.sfxVol still holds the
-  // user's level to restore).
-  setSfxVolume(0);
-  game.collisionLog = [];
-  game.deathLog = [];
-  game.nanEvents = 0;
+  // GOD MODE AND `started` ARE SHARED STATE, and the suite was FORCING them
+  // rather than restoring them: the old finally set `game.godMode = false`
+  // outright, so running mechTest() under window.god(true) silently disarmed
+  // it, and hooks.freshRun sets `game.started = true` and never put it back, so
+  // running from the splash returned you a live run playing behind the overlay.
+  const wasGod = game.godMode;
+  const wasStarted = game.started;
 
   try {
+    draws = 0;
+    Math.random = () => { draws++; return rng(); };
+    game.autoUpgrade = true;
+    game.viewPin = VIEW_PIN;
+    // PARK THE CURSOR AT THE PINNED CENTRE. The suite restored input.mouseX/Y
+    // but never INITIALISED them, and update() rebuilds game.aim from them
+    // every frame — so every case before the docking block (grab, fling, orbit,
+    // picks, shield, glow, death, delivery, chart) ran on wherever the player's
+    // real cursor happened to be. That is the +95-vs-+83 delivery XP wobble the
+    // note above records, and it is also why the view pin alone was not enough:
+    // pre-pin the offset was (mouseX - realVw/2)/zoom, so a centred cursor gave
+    // exactly zero on ANY window; post-pin it became (mouseX - 960)/zoom, which
+    // for that same centred cursor varies WITH the window. Pinning the cursor
+    // to the pinned view's centre restores the zero and closes both halves.
+    input.mouseX = VIEW_PIN.vw / 2;
+    input.mouseY = VIEW_PIN.vh / 2;
+    // Mute the SFX bus for the scripted burst (there are no audio toggles any
+    // more — the volume slider IS the control; game.sfxVol still holds the
+    // user's level to restore).
+    setSfxVolume(0);
+    game.collisionLog = [];
+    game.deathLog = [];
+    game.nanEvents = 0;
+
     // T0 — the achievement catalog is id-unique. The whole track is id-keyed:
     // `award` returns early on `st.got[a.id]`, so a duplicate id silently
     // forfeits the second row's points and XP while the panel — keyed the same
@@ -914,11 +942,19 @@ export function runMechTest(game, hooks, opts = {}) {
       const station = game.dock;
       // The KEY, not game.controls — readControls rebuilds controls from
       // input.keys every frame, so a field poked here is gone within one step.
+      // HELD IN A finally, not released mid-body: the `expect` between the two
+      // steps throws, makeT catches it and carries on, and the key stayed down
+      // — so T19b then ran with thrust held, the ship flew off the pad, and all
+      // four of its dock assertions failed pointing at dock logic instead of at
+      // a stuck key. Same convention as T23.
       input.keys.add('KeyW');
-      hooks.stepSim(0.1);
-      expect(game.launch, 'thrust at a berth did not start a launch sequence');
-      hooks.stepSim(2.0);                       // > LAUNCH_TIME
-      input.keys.delete('KeyW');
+      try {
+        hooks.stepSim(0.1);
+        expect(game.launch, 'thrust at a berth did not start a launch sequence');
+        hooks.stepSim(2.0);                       // > LAUNCH_TIME
+      } finally {
+        input.keys.delete('KeyW');
+      }
       expect(!game.dock, 'still berthed after the launch sequence finished');
       expect(game.docks.includes(station), 'the station vanished when the ship left it');
       expect(station.t >= 10, 'the finished station lost its build progress');
@@ -1196,7 +1232,9 @@ export function runMechTest(game, hooks, opts = {}) {
     game.autoUpgrade = wasAuto;
     game.paused = wasPaused;
     setSfxVolume(game.sfxVol);
-    game.godMode = false;
+    // RESTORE, never force — see the capture note above.
+    game.godMode = wasGod;
+    game.started = wasStarted;
     input.mouseX = wasMouseX; input.mouseY = wasMouseY;
     input.keys.clear();
     for (const k of wasKeys) input.keys.add(k);

@@ -31,12 +31,22 @@ export const senseBlind = (g) => !!(g.dustCloak || g.stormBlind);
 // Wanderer IS landable on purpose, and every dock event prints the place's
 // name across the screen (main.js EVENT_MSGS), so the one instrument nobody
 // guarded would have spent the relay questline's payoff the moment you set
-// down. Kept here, a leaf, for the same reason as senseBlind: physics.js's
-// five flags and main.js's sixth must not each carry their own copy of the
-// rule. Matches render.js's dwarf-star readout wording.
-export const placeName = (b) =>
+// down. Kept here, a leaf, for the same reason as senseBlind: every flag in
+// physics.js, world.js and main.js that prints a place must not each carry its
+// own copy of the rule — the leak set was under-enumerated once already (six
+// dock/launch flags routed, five more sites left naming it: the aurora, the
+// ember seed and its cleanse, the lost home port and the skim death), and each
+// site that spells the test out by hand is another chance to miss one.
+// Matches render.js's dwarf-star readout wording.
+//
+// `fallback` is for the sites where "this world" would be a LIE about WHICH
+// world is meant: a RETIRED dock is by definition not the one you are standing
+// on, a lost home port wants naming as your home, and the skim death can be
+// against a star or a rock. The hidden rule stays in one place; only the
+// nameless-body wording is per-site.
+export const placeName = (b, fallback) =>
   (b.hidden ? 'an unresolved mass' : b.name) ||
-  (b.type === 'moon' ? 'this moon' : 'this world');
+  fallback || (b.type === 'moon' ? 'this moon' : 'this world');
 
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }

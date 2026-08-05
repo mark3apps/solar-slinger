@@ -2078,10 +2078,15 @@ function updateStorm(dtReal) {
       // no name at all, and `game.stormLeeName = ''` is falsy, so the message
       // table would drop the one message that teaches the counterplay. Same
       // fallback shape starmap.contactLabel uses for a nameless moon.
+      // Through placeName like every other place-printing flag: shelterBody
+      // takes ANY planet over STORM_SHADOW_MIN_R, and the Wanderer's Star is a
+      // planet of radius 70*PLANET_R_MUL — so its lee is real, reachable before
+      // the relay, and was naming it.
       if (game.stormShelter && !game.tut.stormLee) {
         const b = game.stormShelter;
-        game.stormLeeName = b.name
-          || (b.type === 'moon' && b.parent && b.parent.name ? `a moon of ${b.parent.name}` : 'this world');
+        const kin = b.type === 'moon' && b.parent && b.parent.name
+          ? `a moon of ${placeName(b.parent)}` : null;
+        game.stormLeeName = placeName(b, kin);
       }
     }
   }

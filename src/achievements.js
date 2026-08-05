@@ -668,23 +668,35 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 10),
   A('abil12', 'build', PTS.hard, 'Overqualified', 'Own twelve abilities at once.',
     (g, s, c) => c.owned >= 12),
-  A('abil14', 'build', PTS.brutal, 'Everything on the Rack', 'Own fourteen abilities at once.',
-    (g, s, c) => c.owned >= 14),
-  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95).
-  // Every ability is six ranks now, so the same run banks ~1.6x the ranks it
-  // used to (measured over the full climb: ~44 before, ~69 after) — at the old
-  // thresholds 'Master of the Craft' went from the hardest rank row in the game
-  // to something every spec passes without trying, which is the freebie failure
-  // mode wearing a different hat. Scaled by the measured ratio, so each row
-  // still asks for what it used to ask for.
+  // 13, NOT 14. The SCOUT pool is exactly 14 rows, so a 14 here would demand a
+  // literally perfect build from one spec and 14-of-16 from the brawler — the
+  // same unevenness the rank row below was repriced for. Every count row must
+  // clear the biggest STARTING kit and stay under the SMALLEST pool.
+  A('abil13', 'build', PTS.brutal, 'Everything on the Rack', 'Own thirteen abilities at once.',
+    (g, s, c) => c.owned >= 13),
+  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95), then
+  // the top row moved again when the catalog SHRANK. Every ability is six ranks,
+  // so a run banks ~1.6x the ranks it used to (measured over the full climb:
+  // ~44 before, ~69 after) — at the old thresholds 'Master of the Craft' was a
+  // freebie, which is why it went to 95.
+  //
+  // THEN THE POOL WAS CUT AND 95 WENT OFF THE END OF IT. Measured ceilings from
+  // the live catalog (6 ranks x the rows a spec can be offered, counting the
+  // `also` cross-spec rows): brawler 16 rows / 96, hauler 15 / 90, scout 14 /
+  // 84. A 95 was flatly unearnable for two of the three specs and a perfect
+  // 95-of-96 for the third — unearnable is as broken as a freebie, which is the
+  // standard the pool cut itself invoked. 78 sits ~9 above a typical full climb
+  // and 6 under the SMALLEST ceiling, so it is the hardest rank row in the game
+  // for every spec and impossible for none. THE BINDING NUMBER IS SCOUT'S 84:
+  // re-measure it before adding or deleting an ability row.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
     (g, s, c) => c.ranks >= 40),
   A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
     (g, s, c) => c.ranks >= 70),
-  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 95 ability ranks.',
-    (g, s, c) => c.ranks >= 95),
+  A('ranks78', 'build', PTS.hard, 'Master of the Craft', 'Earn 78 ability ranks.',
+    (g, s, c) => c.ranks >= 78),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',

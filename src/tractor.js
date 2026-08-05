@@ -808,7 +808,20 @@ export function absorbIntoRam(game) {
   best.heldBy = null;
   if (game.held === best) game.held = game.held2 || null, game.held2 = null;
   if (game.held2 === best) game.held2 = null;
-  addXp(game, fieldXp(game, best, PROG.XP_ORBIT));
+  // PAY BY MASS, BECAUSE THE RAM IS BUDGETED BY MASS. A flat per-rock payout
+  // against a per-MASS capacity is an arbitrage: the same rank-6 ram is 8
+  // absorbs of boulders (64 XP) or ~360 absorbs of 90-mass gravel (~2,900 XP,
+  // against a whole-run climb of ~7,875), and the sweep runs at 8.3 absorbs/s
+  // off held RMB with unlimited ammunition — a hard hit sprays ~60 grains.
+  // The hauler's stow is throttled by a 7-slot ring and a manual grab per rock;
+  // this one is throttled ONLY by mass, so the payout has to be denominated the
+  // same way. `orbitCap` is the denominator because canStow is what gates the
+  // absorb: a rock at the largest size you can crush pays full freight.
+  // The 0.1 floor mirrors XP_CATCH's — a payout that rounds to nothing reads as
+  // a broken button — and it is what keeps the residual spread bounded rather
+  // than zero.
+  const w = clamp(best.mass / Math.max(1, st.orbitCap), 0.1, 1);
+  addXp(game, fieldXp(game, best, PROG.XP_ORBIT * w));
   bump(game, 'stows');
   sfx.sfxOrbitCapture();
   return true;
