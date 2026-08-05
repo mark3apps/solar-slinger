@@ -1026,6 +1026,18 @@ export function mark(game, key) {
   const s = ledger(game);
   if (s) s[key] = 1;
 }
+// A HULL CEILING GAIN IS NOT A REPAIR. The "Limped In" arm below disqualifies
+// on any hull RISE off the pad, which is the right rule for the glow-pocket
+// exploit it was written for — but main.js's hull-upgrade heal raises hull on
+// any gain in hullMax, and ability RANKS are automatic and land mid-flight with
+// no card. Without this, limping back to a berth you were bumped off could be
+// silently disarmed by a Reinforced Hull rank the player never chose, with no
+// cause and no message. main.js calls this straight after the heal so the
+// baseline moves with the hull instead of reading as healing somewhere else.
+export function noteHullGrant(game) {
+  const s = ledger(game);
+  if (s && game.ship) s.dockHurtHull = game.ship.hull;
+}
 // Running maximum (heaviest catch, top speed, longest snipe…).
 export function best(game, key, v) {
   const s = ledger(game);
