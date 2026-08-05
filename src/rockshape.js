@@ -88,7 +88,7 @@ function hullMetrics(sh) {
 // physics.js's integrate loop writes `b.rot` ABOVE its `if (b.onRails)
 // continue;`, so railed field rock turns exactly like a free body, and nothing
 // damps landmark spin to zero. Do not read this as a cross-substep cache for
-// the 3,643 railed rocks and go hunting the collider's cost elsewhere.
+// the ~3.6k railed field rocks and go hunting the collider's cost elsewhere.
 function hullsWorld(b) {
   const sh = rockShapeOf(b);
   const rot = b.rot || 0, r = b.radius;
