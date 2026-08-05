@@ -100,8 +100,8 @@ window.soak(600, { idle: true });   // 10 idle sim-minutes
 ```
 
 Returns `{ simSeconds, wallMs, planets: "N/N", moons: "N/N", ship, lives, tier, deaths: [...],
-impacts, nanEvents }` — the denominators are the run's own start-of-soak census, which varies per
-seed since the seeded-layout pass (~18–20 planets, ~70–80 moons). `idle: true` removes the ship
+impacts, nanEvents }` — the denominators are the run's own start-of-soak census: planets hold at
+17 on every seed, moons vary (~70–80) since the seeded-layout pass. `idle: true` removes the ship
 first (no life spent). Note its `moons` figure is
 a live census, and its `deaths` are formatted strings — see the caveats below. Chunk long runs
 (`2 x 300s`) to stay inside the pane's ~30s console eval budget.
