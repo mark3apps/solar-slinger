@@ -1234,12 +1234,11 @@ export const CFG = {
   // would delete its own walls.
   FIELD_LANE_MIN: 85,
   FIELD_LANE_TRIES: 40,
-  // How far apart chosen lanes are pushed, world units. Routes that stack read
-  // as one wide gap and waste the pocket. Scored, not enforced — a crowded
-  // pocket still gets its full count rather than silently dropping a lane.
-  // Down with the lane count — 8 routes cannot be held 420 apart in a pocket
-  // that fitted 5, and forcing it just makes the extra ones fail to place.
-  FIELD_LANE_APART: 300,
+  // (There is deliberately no lane-separation constant. There WAS —
+  // FIELD_LANE_APART, from when a pocket held three independent rim-to-rim
+  // curves and two of them stacking wasted the pocket. `findLanes` never read
+  // it, and the network form made it the wrong idea rather than an unfinished
+  // one: see the note on the edge loop in world.js.)
   // PER-ROCK SIZE VARIATION on top of the class multiplier — every big rock
   // draws its own factor in this band. Without it the giants all came out
   // within a whisker of the same size (their masses span 14k-60k, but radius
