@@ -747,9 +747,10 @@ export function addToOrbit(game) {
 // It reuses pickTarget, so what right-click absorbs is EXACTLY what left-click
 // would have grabbed — one target rule for both buttons, and the hover hint
 // ring keeps telling the truth about both. Returns false when there is nothing
-// in reach, the ram is full, or the rock is too big; main.js reads that false
-// and charges the Scattergun release instead, which is how one button carries
-// both halves of the loop without a modifier key.
+// in reach, the ram is full, or the rock is too big; a false simply means
+// nothing happened this call — there is no release move on the button (the
+// Scattergun fallback this used to hand off to is deleted), and the held-
+// button sweep in main.update just tries again as the cursor moves.
 //
 // Deliberately NOT a winch: the ram is boulder-capped (shipStats) and nothing
 // below the moon rungs winches, so an absorb is always the instant version.

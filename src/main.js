@@ -486,9 +486,15 @@ initInput(canvas, {
       // stays down — mow the cursor through a debris field and the ram hoovers
       // it up. The immediate call keeps a tap responsive (one click, one rock).
       game.ramEating = true;
-      if (absorbIntoRam(game) && !game.tut.orbited) {
-        game.tut.orbited = true;
-        hud.message('Crushed into your ram! Rocks fuse into ONE mass riding ahead of your bow — the bigger it is, the harder you hit, and it eats head-on damage until it is gone. HOLD RIGHT MOUSE and sweep over rocks to keep feeding it.', 6);
+      if (absorbIntoRam(game)) {
+        // Arm the sweep's cooldown too: the immediate crush and the held-button
+        // sweep share ONE cadence, or a single click absorbed twice inside the
+        // 0.12s window — once here, once in update()'s sweep on the next frame.
+        game.ramEatCd = 0.12;
+        if (!game.tut.orbited) {
+          game.tut.orbited = true;
+          hud.message('Crushed into your ram! Rocks fuse into ONE mass riding ahead of your bow — the bigger it is, the harder you hit, and it eats head-on damage until it is gone. HOLD RIGHT MOUSE and sweep over rocks to keep feeding it.', 6);
+        }
       }
       return;
     }

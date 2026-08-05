@@ -2886,12 +2886,13 @@ export const PROG = {
 // first picks a non-choice. Same rule, same fix, different failure mode —
 // SCOUT once shipped with a lone rankable track behind Retro Jets.)
 export const SPECS = [
-  // Kit carries the COMPLETE RAM LOOP, not stat sliders: War Rack builds the
-  // prow out of rocks you eat and Scattergun spends it, so the brawler's
-  // frame-one identity is a MECHANIC with a build phase and a release phase.
+  // Kit carries the COMPLETE RAM LOOP, not stat sliders: War Rack IS the loop
+  // — built by eating rocks, spent by what it absorbs and rams (there is no
+  // release ability; Scattergun was deleted with the old trailing rack) — so
+  // the brawler's frame-one identity is a mechanic you build and ride behind.
   // Heavy Winch stays a strong early pool card. (The old kit rule — at least
   // three rankable rows — is satisfied by construction now that every ability
-  // is six ranks; a kit is four climbing bars from frame one.)
+  // is six ranks; a kit is three climbing bars from frame one.)
   // NO INNATE ABILITIES: a spec is its kit and its pool, nothing else. The
   // brawler used to bonk harder than everyone at rank 0 through a spec-DNA
   // floor in shipStats, which meant its signature move was partly invisible —

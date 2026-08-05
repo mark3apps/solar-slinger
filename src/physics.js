@@ -2805,20 +2805,45 @@ function collideShipBody(game, s, b, dt) {
   // edge is its leading face (config.ramFace), not the hull — the drawn slab
   // floats well ahead of the nose, and a rock that visibly struck it while the
   // sim waited for the hull buried behind was the "collision doesn't match"
-  // bug. One bearing test up front, then every contact path below (swept,
-  // shaped, plain) measures against the same effective radius.
+  // bug. Every contact path below (swept, shaped, plain) measures against the
+  // same effective radius.
+  const hasRam = game.st.frontRam && s.ram > 0;
+  const rArc = hasRam ? ramArc(game.st, s.ram) : 0;
+  const onArc = (px, py) =>
+    Math.abs(angDiff(Math.atan2(py - s.y, px - s.x), s.angle)) <= rArc;
   let sR = s.radius;
-  if (game.st.frontRam && s.ram > 0 &&
-      Math.abs(angDiff(Math.atan2(dy, dx), s.angle)) <= ramArc(game.st, s.ram)) {
-    sR = ramFace(game.st, s.ram);
-  }
+  if (hasRam && onArc(b.x, b.y)) sR = ramFace(game.st, s.ram);
   let rr = sR + b.radius;
   let d2 = dx * dx + dy * dy;
   if (d2 > rr * rr && !shaped(b)) {
     _swvx = s.vx; _swvy = s.vy;
-    if (sweptContact(s.x, s.y, sR, b, dt)) {
+    // TUNNELING vs THE RAM: the bearing test above read the END-of-substep
+    // position, so a shot fast enough to cross the bow in one dt ends up
+    // BEHIND the ship, fails the arc test, and would be swept at hull size —
+    // sailing through the slab it visibly hit (review finding on PR #134).
+    // So when the end position missed the arc, sweep at RAM size first and
+    // re-test the arc at the actual touch point: on the bow, the ram takes it
+    // (position stands, sR upgrades); off the bow, the rock is restored and
+    // falls through to the honest hull-sized sweep. A hull hit is a subset of
+    // the ram-sized swept volume, so a failed ram sweep needs no second try.
+    if (hasRam && sR !== ramFace(game.st, s.ram)) {
+      const bx0 = b.x, by0 = b.y;
+      const rFace = ramFace(game.st, s.ram);
+      if (sweptContact(s.x, s.y, rFace, b, dt)) {
+        if (onArc(b.x, b.y)) {
+          sR = rFace;
+          dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
+        } else {
+          b.x = bx0; b.y = by0;
+          if (sweptContact(s.x, s.y, sR, b, dt)) {
+            dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
+          }
+        }
+      }
+    } else if (sweptContact(s.x, s.y, sR, b, dt)) {
       dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
     }
+    rr = sR + b.radius;   // sR may have upgraded inside the sweep
   }
   // The ship lands on (and skims along) the real surface — a crystal world's
   // shard polygon, a cratered world's notched limb — not the mean disc. Same
