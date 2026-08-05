@@ -8,7 +8,7 @@ import { spawnAsteroid, markFieldRock, asteroidRadius, setFieldHome } from './wo
 import { computeFlingVelocity, clearHoldState, standDown } from './tractor.js';
 import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
-  surfaceVel, padPos,
+  surfaceVel, padPos, placeName,
 } from './util.js';
 import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
 import { bump, best, noteKill } from './achievements.js';
@@ -3180,7 +3180,7 @@ function updateDock(game, dt) {
       if (d.t < CFG.DOCK_BUILD) {
         d.t = Math.min(CFG.DOCK_BUILD, d.t + dt);
         if (d.t >= CFG.DOCK_BUILD) {
-          game.dockReadyName = d.b.name || (d.b.type === 'moon' ? 'this moon' : 'this world');
+          game.dockReadyName = placeName(d.b);
           game.dockFlashT = 0.9;
           // The one thing the dockReadyName flag can't carry: WHAT you built on.
           if (d.b.type === 'moon') bump(game, 'docksMoon');
@@ -3221,10 +3221,10 @@ function updateDock(game, dt) {
         const i = docks.findIndex((q) => q !== game.home && q !== d);
         if (i >= 0) {
           const gone = docks.splice(i, 1)[0];
-          game.dockRetiredName = gone.b.name || 'a world';
+          game.dockRetiredName = gone.b.hidden ? 'an unresolved mass' : (gone.b.name || 'a world');
         }
       }
-      game.dockBuildName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+      game.dockBuildName = placeName(b);
     } else {
       // RE-SEAT THE PAD TO THE SHIP THAT IS USING IT. `rf` is the hull's
       // standoff as a fraction of the world's radius, and it was measured off
@@ -3235,7 +3235,7 @@ function updateDock(game, dt) {
       // Re-measuring on each berth is also honest about what the station is:
       // the art already refits to your current tier, and so does the berth.
       d.rf = dist / Math.max(1, b.radius);
-      game.dockedName = b.name || (b.type === 'moon' ? 'this moon' : 'this world');
+      game.dockedName = placeName(b);
       game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
     }
     game.dock = d;
@@ -4859,7 +4859,7 @@ export function step(game, dt) {
     if (game.dock) {
       if (!game.launch && throttle > 0) {
         game.launch = { t: 0 };
-        game.launchName = game.dock.b.name || 'the pad';
+        game.launchName = game.dock.b.hidden ? 'an unresolved mass' : (game.dock.b.name || 'the pad');
       }
       throttle = 0;
       // The plume IS the sequence's second act — s.thrusting drives render's
