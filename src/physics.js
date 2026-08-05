@@ -1792,7 +1792,7 @@ function surfRadius(body, ang) {
   // the ones you get close enough to see).
   // `bigShape` is stamped by world.js on the rocks that earn it; everything
   // smaller stays the circle it was, which is what keeps the sweep affordable
-  // at ~7,600 field rocks.
+  // at ~3,643 field rocks.
   // SCARS NO LONGER COMPOSE ONTO A ROCK'S OUTLINE. Damage on shaped rock is a
   // decal plus an hp value; the way a rock expresses being hurt is that it comes
   // APART, into pieces cut from its own silhouette (see docs/rock-fracture.md).
@@ -4433,7 +4433,7 @@ export function step(game, dt) {
     // big rock's corners do the same (a slab's diagonal is ~1.1r, a wedge's
     // point further). The sweep must see the TALLEST feature or those hits get
     // pruned before the narrow phase ever runs. Everything else: _bp IS the
-    // radius — one property read, no shape lookup, on the ~7,600 pebbles.
+    // radius — one property read, no shape lookup, on the ~3,643 pebbles.
     b._bp = b.ptype === 'crystal' ? b.radius * CRYSTAL_REACH
       : b.bigShape ? rockReach(b)
       : b.radius;
