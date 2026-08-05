@@ -3084,7 +3084,15 @@ export const ABILITIES = [
   // throw wearing a different name.
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'RIGHT-CLICK rock to crush it into the ram riding ahead of your bow. It grows as it feeds — hits harder, shrugs off knockback, and eats head-on damage until it is spent.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
-  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
+  // BRAWLER has NO energy shield ON PURPOSE (design law), the same way HAULER
+  // doesn't: its protection is MASS — Reinforced Hull plus what the fused War
+  // Rack prow soaks head-on before the hull ever sees it. War Plating (a thin
+  // front-arc plate on the `shield` channel) is DELETED and nothing may replace
+  // it: a regenerating layer is a forgiveness mechanic, and handing one to the
+  // spec that is already the tank meant the brawler could charge in, lose the
+  // plate, back off for a heartbeat and charge again — the ram's "spent by what
+  // it absorbs" bargain only costs something if the damage it eats is the
+  // damage you actually keep. SCOUT is now the only spec with a shield channel.
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
   { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 6, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
@@ -3450,7 +3458,7 @@ export function shipStats(prog) {
   // finer. Channels stacked by two abilities (ram = Ram Prow + Juggernaut,
   // orbit = Sling + Bay) are scaled against the SUMMED old ceiling, not one
   // row's. Anything that reads a channel and was already six ranks (catch,
-  // reach, engine, fling, magnet, hull, deflect, brawler shield) is untouched.
+  // reach, engine, fling, magnet, hull, deflect) is untouched.
   // CATCH RANKS BUY MASS INSIDE YOUR CLASS, NEVER THE CLASS ABOVE (see the
   // TIERS block for the ladder and for the 3.64x rank multiplier this replaced).
   // The fill is asymptotic on purpose: it approaches the tier's own ceiling
@@ -3466,40 +3474,29 @@ export function shipStats(prog) {
   // them: the brawler's toughness is Reinforced Hull plus what the fused prow
   // soaks for it, and neither is a hidden term in a number the HUD prints.
   const maxHull = 120 + 40 * tier + 55 * hullC;
-  // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
-  // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
-  // bar. It trades max hull for a recharging layer; only the shield regens.
-  // BRAWLER (War Plating) is a SMALL, FAST-RE-FORMING FRONT PLATE — shieldArc is
-  // the half-angle around the nose, and hits from behind skip it entirely
-  // (physics.damageShip). It used to carve a BIG slice of the pool (38% -> 65%),
-  // which made it simply the best shield in the game: converting most of a
-  // brawler's health into a regenerating layer meant the front-arc drawback
-  // never cost anything, because the pool was deep enough to never run out
-  // while you were facing the right way. Its identity is the CYCLE, not the
-  // capacity: a thin plate that soaks one hit and is back almost immediately
-  // (regenDelay below), which rewards a ship built to keep its nose on the
-  // threat. SCOUT (Phase Screen) is a thin FULL WRAP that also recharges fast —
-  // forgiving of any angle, which is what a scout needs. HAULER has no shield
-  // ability at all; the orbit rock wall is its protection.
-  let shieldFrac = 0, shieldArc = Math.PI;
+  // The regenerating shield is an UPGRADE, and it is SCOUT-ONLY (design law):
+  // no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD bar.
+  // It trades max hull for a recharging layer; only the shield regens.
+  // SCOUT (Phase Screen) is a thin FULL WRAP that recharges fast — forgiving of
+  // any angle, which is what a scout needs. NEITHER other spec has a shield
+  // ability: HAULER's protection is the orbit rock wall, BRAWLER's is hull plus
+  // what the fused War Rack prow eats head-on (see the ABILITIES catalog for
+  // why the brawler's War Plating was deleted rather than retuned).
+  //
+  // `shieldArc` is the plate's HALF-ANGLE around the nose and stays a published
+  // stat: physics.damageShip skips a directional hit landing outside it and
+  // soaks only `arc / PI` of directionless damage (heat, gas crush, Oort
+  // grind), and render feathers the visual to the same wedge. Nothing in the
+  // catalog produces a partial arc today — every live shield is a full wrap —
+  // but the mechanism is the one place a directional shield would be expressed,
+  // so it stays intact and devtest T6 still exercises it against an explicit
+  // wedge rather than an ability's value.
+  let shieldFrac = 0;
+  const shieldArc = Math.PI;
   if (shieldC > 0) {
-    if (prog.spec === 'brawler') {
-      shieldFrac = Math.min(0.26, 0.12 + 0.028 * (shieldC - 1));
-      // Coverage is `shieldArc / PI` — the fraction of all bearings the plate
-      // covers, and the exact share it soaks from DIRECTIONLESS damage (heat,
-      // gas crush, Oort grind) in physics.damageShip. Deliberately well UNDER
-      // half: at a clean 50% the plate covered everything ahead of the beam, so
-      // "front arc only" was barely a drawback in practice — anything you were
-      // flying toward was covered. 35% is a genuinely NARROW nose plate (±63°):
-      // you have to point at the thing that is hurting you, glancing threats
-      // get through, and an all-over effect is soaked by only about a third.
-      // Render clips the shield visual to this same wedge.
-      shieldArc = Math.PI * 0.35;
-    } else {
-      // Phase Screen went 3 -> 6 ranks, so its step halved: still 0.16 at rank
-      // 1 and 0.26 at the top, reached over five smaller steps.
-      shieldFrac = Math.min(0.28, 0.16 + 0.02 * (shieldC - 1));
-    }
+    // Phase Screen went 3 -> 6 ranks, so its step halved: still 0.16 at rank
+    // 1 and 0.26 at the top, reached over five smaller steps.
+    shieldFrac = Math.min(0.28, 0.16 + 0.02 * (shieldC - 1));
   }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
 
@@ -3716,15 +3713,13 @@ export function shipStats(prog) {
     // sharpens it further — the completionist reward reads through the same
     // stat every consumer already uses.
     sensorMul: (1 + 0.15 * deepC) * (prog.masterChart ? 1.25 : 1),
-    // RECHARGE IS SPEC DNA, like the shield's shape above. Both shields are thin
-    // now, so the CYCLE is what separates them: BRAWLER's plate is the quickest
-    // to re-form of anything in the game (a ~1.75s lull and the nose is covered
-    // again) because that is the whole point of a small front plate on a ship
-    // built to keep charging; SCOUT's wrap is a touch slower to return but
-    // covers every angle. HAULER keeps the base rate — it has no shield anyway.
-    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : prog.spec === 'brawler' ? 1.5 : 1),
-    regenDelay: CFG.SHIP_REGEN_DELAY
-      * (prog.spec === 'scout' ? 0.6 : prog.spec === 'brawler' ? 0.35 : 1),
+    // RECHARGE IS SPEC DNA, and only one spec has a shield to recharge: SCOUT's
+    // thin wrap comes back fast, because a screen that covers every angle is
+    // only a defence if the CYCLE is short. The brawler's 1.5x/0.35x pair went
+    // with War Plating rather than staying as a number no build can reach —
+    // BRAWLER and HAULER both keep the base rate against an empty pool.
+    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
+    regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
     // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.

@@ -668,27 +668,34 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 10),
   A('abil12', 'build', PTS.hard, 'Overqualified', 'Own twelve abilities at once.',
     (g, s, c) => c.owned >= 12),
-  // 13, NOT 14. The SCOUT pool is exactly 14 rows, so a 14 here would demand a
-  // literally perfect build from one spec and 14-of-16 from the brawler — the
-  // same unevenness the rank row below was repriced for. Every count row must
-  // clear the biggest STARTING kit and stay under the SMALLEST pool.
+  // 13, NOT 14. The SCOUT pool is exactly 14 rows, so a 14 here demands a
+  // literally perfect build from one spec — every card it is ever offered,
+  // taken. Same unevenness the rank row below is priced against. Every count
+  // row must clear the biggest STARTING kit and stay under the SMALLEST pool.
   A('abil13', 'build', PTS.brutal, 'Everything on the Rack', 'Own thirteen abilities at once.',
     (g, s, c) => c.owned >= 13),
-  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95), then
-  // the top row moved again when the catalog SHRANK. Every ability is six ranks,
-  // so a run banks ~1.6x the ranks it used to (measured over the full climb:
-  // ~44 before, ~69 after) — at the old thresholds 'Master of the Craft' was a
-  // freebie, which is why it went to 95.
+  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95), and
+  // the top row moved AGAIN when the catalog shrank. Every ability is six
+  // ranks, so a run banks ~1.6x the ranks it used to (measured over the full
+  // climb: ~44 before, ~69 after) — at the old thresholds 'Master of the Craft'
+  // was a freebie, which is why it went to 95.
   //
-  // THEN THE POOL WAS CUT AND 95 WENT OFF THE END OF IT. Measured ceilings from
-  // the live catalog (6 ranks x the rows a spec can be offered, counting the
-  // `also` cross-spec rows): brawler 16 rows / 96, hauler 15 / 90, scout 14 /
-  // 84. A 95 was flatly unearnable for two of the three specs and a perfect
-  // 95-of-96 for the third — unearnable is as broken as a freebie, which is the
-  // standard the pool cut itself invoked. 78 sits ~9 above a typical full climb
-  // and 6 under the SMALLEST ceiling, so it is the hardest rank row in the game
-  // for every spec and impossible for none. THE BINDING NUMBER IS SCOUT'S 84:
-  // re-measure it before adding or deleting an ability row.
+  // THEN THE POOL WAS CUT TWICE AND 95 WENT OFF THE END OF IT. `c.ranks` sums
+  // prog.upgrades, so a spec's ceiling is (rows it can be offered) x 6, counting
+  // the `also` cross-spec rows. Measured from the live catalog after War
+  // Plating's deletion: brawler 15 rows / 90, hauler 15 / 90, SCOUT 14 / 84.
+  //
+  // 78, NOT 85. 85 was tried and is wrong for the same reason 95 was: it sits
+  // ABOVE scout's 84, so it leaves the row mathematically unreachable for one
+  // spec of three — and "winnable on the two specs that could ever reach it" is
+  // just a dead row with a smaller blast radius. Unearnable is as broken as a
+  // freebie (the standard the catalog cut itself invoked). 78 clears
+  // 'Seasoned' at 70, sits ~9 above a typical full climb, and leaves 6 ranks of
+  // headroom under the SMALLEST ceiling, so it is the hardest rank row in the
+  // game for every spec and impossible for none.
+  //
+  // THE BINDING NUMBER IS SCOUT'S 84. Re-measure it before adding or deleting
+  // any ability row, and keep the id matching the threshold.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
