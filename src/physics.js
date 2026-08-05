@@ -2837,6 +2837,17 @@ function spendRam(game, dmg, hitAng) {
 // changes s.ram from inside this very loop, and a rock that empties the pack
 // must leave the next rock in the same substep facing a bare hull. A stamp
 // would hand it a phantom slab.
+//
+// DO NOT EXPECT A WALL-CLOCK WIN FROM THIS, and do not "restore" the closure
+// because a profile failed to show one. Measured by INTERLEAVED A/B against the
+// same tree (the only method this machine supports — a saved baseline drifts
+// enough to invent a 40% swing that survives eight consecutive re-runs and is
+// still an artefact): main vs this, 8 rounds on `perf debris-heavy`, medians
+// 1.789 vs 1.871 ms, mine slower in 5 of 8. That is a WASH — main's own spread
+// on identical code was 1.766-2.220, wider than the gap between the branches.
+// The justification here is the allocation rate itself, plus roundParty's fix
+// below deliberately spending MORE time (a scarred pebble goes back through the
+// exact collider), which is a correctness trade this loop happily pays.
 let _ramSt = null, _ramRam = -1, _ramAng = NaN;
 let _ramHas = false, _ramFaceR = 0, _ramArcCos = 1, _ramCa = 1, _ramSa = 0;
 function ramScratch(game, s) {
