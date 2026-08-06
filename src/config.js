@@ -2858,7 +2858,19 @@ export const SHIP_ZOOM = [2.46, 1.70, 1.16, 0.82, 0.57, 0.40];
 
 // Per-tier ship CLASS name (matches the hull designs drawn in render.js
 // SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
-export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
+// ONE LADDER PER SPEC (2026-08 user call: the name should say what the ship
+// is FOR, not repeat one generic list on every spec). This used to be a
+// single array — literally the HAULER_TIERS hull-art ladder from render.js
+// with tier 0 renamed "Scout" — so a tier-0 BRAWLER or SCOUT was HUD-labelled
+// "Scout" regardless of spec. HAULER keeps that original ladder (with tier 0
+// restored to SKIFF, matching its render.js hull comment); SCOUT and BRAWLER
+// take the ladders already authored for their hull art in
+// docs/ship-art-prompts.md, so the name always matches the silhouette.
+export const SHIP_NAMES = {
+  hauler: ['Skiff', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'],
+  scout: ['Splinter', 'Dart', 'Stiletto', 'Longshot', 'Farsight', 'Oracle'],
+  brawler: ['Bruiser', 'Mauler', 'Breaker', 'Bulwark', 'Rampart', 'Colossus'],
+};
 
 // SIZE-MATCH: EVERY SPEC READS THE SAME SIZE AS THE HAULER (2026-08 user call).
 //
@@ -3951,7 +3963,7 @@ export function shipStats(prog) {
     capacity,
     tier,
     label: TIERS.labels[tier],
-    shipName: SHIP_NAMES[tier],
+    shipName: (SHIP_NAMES[prog.spec] || SHIP_NAMES.hauler)[tier],
     // Beam-reach base is sized against SHIP_ZOOM so the ring stays on-screen at
     // every tier; reach abilities + the orbit ring extend it.
     range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 20 * orbitLvl,
