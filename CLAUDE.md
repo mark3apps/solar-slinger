@@ -20,7 +20,7 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `rockshape.js`, `rockdata.js`, `tools/bake-rocks.mjs`, shaped-rock collision | [docs/rock-fracture.md](docs/rock-fracture.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
-| splash / pause / settings / controls / credits / achievements / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
+| splash / pause / settings / controls / credits / achievements / saved systems / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
 | `starmap.js`, the chart's knowledge ladder, journey waypoints | [docs/design-laws.md](docs/design-laws.md) |
 | `sfx.js`, `music.js`, adding a sound to an event | [docs/audio.md](docs/audio.md) |
 | `electron/`, `package.json` `build:`, release workflow, changelog | [docs/packaging.md](docs/packaging.md) |

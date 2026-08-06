@@ -6,7 +6,7 @@ import {
   chart, contactLabel, contactClass, contactLevel, waypointLabel, waypointPos,
   pointLabel, MAX_WAYPOINTS,
 } from './starmap.js';
-import { mulberry32 } from './util.js';
+import { mulberry32, defaultSystemName } from './util.js';
 import { drawStatIcon } from './render.js';
 
 const el = {};
@@ -92,6 +92,9 @@ export function initHud(game) {
     // Achievements: the run scoreboard, its panel, and the toast rail
     'achievementsScreen', 'achList', 'achFilters', 'achOut', 'achScore', 'achCount', 'achPct',
     'achRail', 'scoreChip', 'gameoverScore',
+    // Saved solar systems: the library panel and the game-over save form
+    'systemsScreen', 'sysSaveRow', 'sysName', 'btnSysSave', 'sysHint', 'sysList',
+    'btnSystemsBack', 'btnSplashSystems', 'btnPauseSystems', 'goName', 'btnGoSave',
     // The system chart: its bezel tab, the panel, and the chrome hud.js fills
     'mapBtn', 'mapScreen', 'starmap', 'mapCharted', 'mapContacts', 'mapZoom',
     'mapRoutePanel', 'mapRouteN', 'mapRouteList', 'mapOut', 'mapMeta',
@@ -186,6 +189,46 @@ export function initMenus(handlers) {
   bind('btnSplashCredits', handlers.onOpenCredits);
   bind('btnPauseAch', handlers.onOpenAchievements);
   bind('btnGameOverAch', handlers.onOpenAchievements);
+  // The saved-solar-systems library: one panel, opened from the splash (to fly
+  // one) and from the pause menu (to save the world you are in).
+  bind('btnSplashSystems', handlers.onOpenSystems);
+  bind('btnPauseSystems', handlers.onOpenSystems);
+  bind('btnSystemsBack', handlers.onCloseShell);
+  // The panel's save form. Enter commits like every other text field here; the
+  // field clears on save so the row appearing at the top of the list IS the
+  // confirmation, with an empty form ready behind it.
+  if (el.btnSysSave) {
+    el.btnSysSave.addEventListener('click', () => {
+      handlers.onSaveSystem(el.sysName.value);
+      el.sysName.value = '';
+    });
+  }
+  if (el.sysName && el.btnSysSave) el.sysName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnSysSave.click(); });
+  // The library rows are DELEGATED like the journey rail — they are rebuilt on
+  // every save/delete, so a listener bound per row would die with its row.
+  // The ✕ is a separate button beside the row (never nested inside it): a
+  // delete must not also be a click on the thing it deletes.
+  if (el.sysList) {
+    el.sysList.addEventListener('click', (e) => {
+      const del = e.target.closest('.sysdel');
+      if (del) { handlers.onDeleteSystem(+del.dataset.i); return; }
+      const go = e.target.closest('.sysgo');
+      if (go) handlers.onPlaySystem(+go.dataset.i);
+    });
+  }
+  // The game-over save form. One shot per game over: the button disarms after
+  // saving (re-saving would only rename the same seed) and setGameOverVisible
+  // re-arms it for the next run's end.
+  if (el.btnGoSave) {
+    el.btnGoSave.addEventListener('click', () => {
+      if (el.btnGoSave.disabled) return;
+      handlers.onSaveSystem(el.goName.value);
+      el.btnGoSave.disabled = true;
+      el.goName.disabled = true;
+      el.btnGoSave.textContent = 'SYSTEM SAVED ✓';
+    });
+  }
+  if (el.goName && el.btnGoSave) el.goName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnGoSave.click(); });
   // Every shell panel backs out the same way (main.closeShellPanel)
   bind('btnSettingsBack', handlers.onCloseShell);
   bind('btnControlsBack', handlers.onCloseShell);
@@ -717,8 +760,9 @@ function syncMenus(game) {
   const controls = !!game.controlsOpen;
   const credits = !!game.creditsOpen;
   const achieve = !!game.achievementsOpen;
+  const systems = !!game.systemsOpen;
   const mapOpen = !!game.mapOpen;
-  const modal = settings || controls || credits || achieve || mapOpen;
+  const modal = settings || controls || credits || achieve || systems || mapOpen;
   const splash = !game.started && !modal;
   const pause = game.started && game.paused && !modal;
   const menuBtn = game.started && !game.paused && !modal &&
@@ -729,7 +773,7 @@ function syncMenus(game) {
   // pick card or a shell modal.
   hudLive = menuBtn;
   if (!hudLive) abilHide();
-  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+mapOpen}${+menuBtn}${+game.started}`;
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+systems}${+mapOpen}${+menuBtn}${+game.started}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
@@ -738,6 +782,7 @@ function syncMenus(game) {
     el.controlsScreen.classList.toggle('hidden', !controls);
     el.creditsScreen.classList.toggle('hidden', !credits);
     el.achievementsScreen.classList.toggle('hidden', !achieve);
+    el.systemsScreen.classList.toggle('hidden', !systems);
     el.mapScreen.classList.toggle('hidden', !mapOpen);
     // THE COCKPIT GOES AWAY UNDER THE CHART. The other shell panels are centred
     // boxes with the flight HUD showing around them, which is right — you are
@@ -755,6 +800,10 @@ function syncMenus(game) {
     // Rebuilt ON OPEN and only then (see the buildAchList comment). The sig
     // guard means this runs on the transition, not every frame the panel is up.
     if (achieve) refreshAchievements(game);
+    // Same rule for the saved-systems library: rebuilt on open, and again by
+    // main.js's own save/delete handlers — never per frame (it is innerHTML).
+    // Open is also when the save field takes its preset-name prefill.
+    if (systems) refreshSystems(game, true);
     // A shell modal fully REPLACES the panel it opened over (the same law that
     // makes the three shell panels mutually exclusive) — and that includes the
     // DEATH and GAME OVER panels, which are centered .panels too: without this
@@ -941,6 +990,57 @@ function bodyMeta(game, hov) {
   }
   parts.push('CLICK TO ADD A STOP');
   return parts.join('  ·  ');
+}
+
+// ---- The saved-solar-systems library ----------------------------------------
+// Fill the SOLAR SYSTEMS panel. Called on the open transition (syncMenus) and
+// again by main.js after a save or delete — never per frame: the list is
+// innerHTML, and the sim behind the panel is frozen anyway. Which half of the
+// panel is live is DERIVED from game.started, not from which button opened it:
+// over a run the save form shows and the rows are a library; on the title
+// screen there is nothing to save and the rows are launch controls.
+export function refreshSystems(game, prefill = false) {
+  if (!el.systemsScreen) return;
+  const inRun = !!game.started;
+  el.sysSaveRow.classList.toggle('hidden', !inRun);
+  // The seed's own PRESET name (one word off each util.defaultSystemName list)
+  // is offered in the field on OPEN — type over it to name the world yourself.
+  // It doubles as the placeholder and the blank-save fallback (main.saveSystem),
+  // so what the empty field shows is exactly what a bare SAVE would store.
+  // Prefill only on the open transition: after a save the field clears, and
+  // refilling it then would dangle the just-saved name as if it hadn't taken.
+  if (inRun) {
+    el.sysName.placeholder = defaultSystemName(game.worldSeed);
+    if (prefill) el.sysName.value = defaultSystemName(game.worldSeed);
+  }
+  const list = game.systems || [];
+  setText(el.sysHint, !list.length
+    ? 'No saved systems yet — save one from the pause menu, or when a run ends.'
+    : inRun
+      ? 'Your saved systems. Fly one from the title screen.'
+      : 'Click a system to fly it.');
+  el.sysList.classList.toggle('noplay', inRun);
+  el.sysList.innerHTML = list.map((s, i) =>
+    `<li class="sysrow"><button class="sysgo" type="button" data-i="${i}"` +
+    `${inRun ? ' disabled' : ` aria-label="Fly ${esc(s.name)}"`}>` +
+    `<span class="sysname">${esc(s.name)}</span>` +
+    `<span class="sysworld">WORLD ${s.seed}</span></button>` +
+    `<button class="sysdel" type="button" data-i="${i}" title="Forget this system" ` +
+    `aria-label="Forget ${esc(s.name)}">&#10005;</button></li>`).join('');
+}
+
+// Re-arm the game-over save form for a fresh run's end. The form is one-shot
+// per game over (initMenus disarms it on save). The field arrives PREFILLED
+// with the seed's preset name (util.defaultSystemName) — accept it with one
+// click, or type over it; the placeholder and blank-save fallback are the same
+// name, so clearing the field changes nothing.
+export function armGameOverSave(worldSeed) {
+  if (!el.btnGoSave) return;
+  el.btnGoSave.disabled = false;
+  el.btnGoSave.textContent = 'SAVE THIS SOLAR SYSTEM';
+  el.goName.disabled = false;
+  el.goName.value = defaultSystemName(worldSeed);
+  el.goName.placeholder = el.goName.value;
 }
 
 export function setDeathVisible(v, cause = '', lives = 0) {

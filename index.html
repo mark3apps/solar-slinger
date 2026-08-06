@@ -166,6 +166,15 @@
   <p id="gameoverCause"></p>
   <!-- The run's final scoreboard line. A run ends on a number, not just a cause. -->
   <div id="gameoverScore"></div>
+  <!-- Keep the SOLAR SYSTEM the run happened in: name it and it joins the saved
+       library (localStorage ss_systems), launchable from the title screen's
+       SAVED SYSTEMS panel. hud.js re-arms the form on every fresh game over. -->
+  <div class="gosave">
+    <input type="text" class="seedin sysnamein" id="goName" placeholder="name this system"
+           maxlength="24" spellcheck="false" autocomplete="off"
+           aria-label="Name this solar system to save it">
+    <button class="menubtn" id="btnGoSave">SAVE THIS SOLAR SYSTEM</button>
+  </div>
   <div class="menucol">
     <button class="menubtn" id="btnGameOverAch">VIEW ACHIEVEMENTS</button>
   </div>
@@ -193,7 +202,8 @@
     <div class="subtitle">A LIVING GRAVITY SANDBOX</div>
   </div>
   <div class="menucol">
-    <button class="menubtn primary" id="btnStart">START GAME</button>
+    <button class="menubtn primary" id="btnStart">NEW SYSTEM</button>
+    <button class="menubtn" id="btnSplashSystems">SAVED SYSTEMS</button>
     <button class="menubtn" id="btnSplashControls">CONTROLS</button>
     <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
     <button class="menubtn" id="btnSplashCredits">CREDITS</button>
@@ -205,6 +215,7 @@
   <h1 class="menuhdr">PAUSED</h1>
   <div class="menucol">
     <button class="menubtn primary" id="btnResume">RESUME</button>
+    <button class="menubtn" id="btnPauseSystems">SAVE SYSTEM</button>
     <button class="menubtn" id="btnPauseAch">ACHIEVEMENTS</button>
     <button class="menubtn" id="btnPauseControls">CONTROLS</button>
     <button class="menubtn" id="btnPauseSettings">SETTINGS</button>
@@ -359,6 +370,28 @@
   </div>
   <div class="menucol">
     <button class="menubtn primary" id="btnAchBack">BACK</button>
+  </div>
+</div>
+
+<!-- SOLAR SYSTEMS: the saved-system library. A system is a NAME over a world
+     seed (the seed rebuilds the layout bit-identically), kept in
+     localStorage['ss_systems'] so it outlives the run — the one shell panel
+     whose contents survive a reset. The save block only exists while a run is
+     live (the pause-menu path); from the title screen the rows LAUNCH.
+     hud.refreshSystems fills #sysList; rows are rebuilt on open and on change,
+     never per frame. -->
+<div id="systemsScreen" class="panel menu hidden">
+  <h2>SOLAR SYSTEMS</h2>
+  <div class="sysave hidden" id="sysSaveRow">
+    <input type="text" class="seedin sysnamein" id="sysName" placeholder="name this system"
+           maxlength="24" spellcheck="false" autocomplete="off"
+           aria-label="Name this solar system to save it">
+    <button class="menubtn" id="btnSysSave">SAVE CURRENT SYSTEM</button>
+  </div>
+  <p class="syshint" id="sysHint"></p>
+  <ul class="syslist" id="sysList"></ul>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnSystemsBack">BACK</button>
   </div>
 </div>
 

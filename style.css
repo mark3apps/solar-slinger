@@ -1619,6 +1619,7 @@ body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
 .boot .menucol .menubtn:nth-child(3) { animation-delay: .80s; }
 .boot .menucol .menubtn:nth-child(4) { animation-delay: .87s; }
 .boot .menucol .menubtn:nth-child(5) { animation-delay: .94s; }
+.boot .menucol .menubtn:nth-child(6) { animation-delay: 1.01s; }
 @keyframes bootFade { from { opacity: 0; } }
 @keyframes bootRise { from { opacity: 0; transform: translateY(9px); } }
 @keyframes bootSpread { from { opacity: 0; letter-spacing: 20px; } }
@@ -2345,6 +2346,79 @@ body.preGame #radar { opacity: 0; }
   font-size: 9px; letter-spacing: 4px; color: rgba(255, 190, 160, .75);
 }
 .gosdet { font-size: 11px; color: var(--ink-dim); margin-top: 4px; letter-spacing: 1px; }
+
+/* ---- Saved solar systems ---------------------------------------------------
+   The library panel (#systemsScreen) and the two save forms — the panel's own
+   (the pause-menu path) and the game-over one. Rows follow the journey rail's
+   grammar: a slab that lights on hover, name leading, data trailing. The ✕ is
+   a SEPARATE button beside the row, never nested inside it — a delete must not
+   also be a click on the thing it deletes. */
+.sysave, .gosave {
+  display: flex; gap: 9px; justify-content: center; align-items: stretch;
+  margin: 14px auto 0; max-width: 380px;
+}
+.gosave { margin-top: 18px; }
+/* The name field: the settings seed box widened into a form row */
+.sysnamein { flex: 1; width: auto; min-width: 0; text-align: left; }
+.sysave .menubtn, .gosave .menubtn {
+  --hx: 10px; flex: none; padding: 9px 16px; font-size: 11px; letter-spacing: 2px;
+}
+/* Spent (one save per game over): reads as the receipt, not a dead control */
+.gosave .menubtn:disabled { cursor: default; --acc: var(--green); color: #a7ffd2; }
+.syshint { margin: 12px 0 8px; font-size: 11px; letter-spacing: 1px; color: var(--ink-dim); }
+.syslist {
+  list-style: none; margin: 0 auto; padding: 0 6px 0 0; max-width: 380px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: min(38vh, 300px); overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(176, 112, 255, .5) transparent;
+  text-align: left;
+}
+.syslist::-webkit-scrollbar { width: 8px; }
+.syslist::-webkit-scrollbar-thumb { background: rgba(176, 112, 255, .45); border-radius: 4px; }
+.sysrow { display: flex; align-items: stretch; gap: 3px; }
+.sysgo {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin: 0; border: 0;
+  border-left: 2px solid rgba(176, 112, 255, .25);
+  background: rgba(120, 60, 220, .05);
+  font: inherit; text-align: left; cursor: pointer;
+  opacity: .7; transition: opacity .1s ease, background .1s ease;
+}
+.sysgo:hover, .sysgo:focus-visible {
+  outline: none; opacity: 1;
+  background: linear-gradient(90deg, rgba(150, 80, 255, .2), rgba(150, 80, 255, .06));
+  border-left-color: rgba(198, 170, 255, .9);
+}
+/* Over a live run the rows are a library to read, not a launch control — the
+   buttons are disabled (main.js refuses anyway), so the hover lift comes off. */
+.syslist.noplay .sysgo { cursor: default; }
+.syslist.noplay .sysgo:hover {
+  opacity: .7; background: rgba(120, 60, 220, .05);
+  border-left-color: rgba(176, 112, 255, .25);
+}
+.sysname {
+  flex: 1; min-width: 0;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 12px; letter-spacing: 1.5px; color: #e6dcfb;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sysgo:hover .sysname, .sysgo:focus-visible .sysname { color: #ffffff; text-shadow: 0 0 9px rgba(198, 170, 255, .6); }
+.syslist.noplay .sysgo:hover .sysname { color: #e6dcfb; text-shadow: none; }
+.sysworld {
+  flex: none; font-family: var(--font-data); font-size: 9.5px; letter-spacing: 1px;
+  color: rgba(206, 170, 255, .6);
+}
+.sysdel {
+  flex: none; width: 30px; margin: 0; padding: 0; border: 0;
+  font: inherit; font-size: 11px; color: rgba(206, 170, 255, .45);
+  background: rgba(120, 60, 220, .05); cursor: pointer;
+  transition: color .1s ease, background .1s ease;
+}
+.sysdel:hover, .sysdel:focus-visible {
+  outline: none; color: #ff9d88;
+  background: rgba(255, 100, 70, .12);
+}
 
 /* ============================================================================
    THE SYSTEM CHART (#mapScreen)

@@ -6,9 +6,9 @@
 
 The game boots to a **splash screen**, not straight into play — flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), and the five **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
-`achievementsOpen` / `mapOpen`.
-Those five are separate flags (each is its own panel) but every gate treats them alike, so they're asked
+`paused` (pause menu), and the six **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
+`achievementsOpen` / `systemsOpen` / `mapOpen`.
+Those six are separate flags (each is its own panel) but every gate treats them alike, so they're asked
 about through one leaf helper — **`util.shellModal(game)`** — which main, hud, music and render all use.
 They're mutually exclusive: each fully REPLACES the panel it opened over, so `openX` clears the others
 rather than stacking (a panel peeking out around another's edges looks broken). That replacement rule
@@ -152,7 +152,36 @@ through a card it is allowed to ignore.
   while `timeScale !== 1` (fast-forward burns a sim budget, not a pixel one) and for the first
   seconds after boot. Defeatable via **Auto quality**, because a 100% setting silently running at 50%
   reads as a broken setting rather than as a ceiling.
-- **THE SYSTEM CHART** (`mapOpen`, **M** or the ◎ tab on the radar bezel) is the fifth shell modal and
+- **SAVED SOLAR SYSTEMS** (`systemsOpen`, the sixth shell modal) is the library of named worlds the
+  player chose to keep — `game.systems`, an array of `{ name, seed }` rows persisted to
+  `localStorage['ss_systems']` (its own key, so a settings wipe and the library can't take each
+  other out; capped at 50, oldest saves fall off). **The seed IS the system**: `generateWorld` is
+  seeded, so a row rebuilds its layout bit-identically — nothing else needs storing. Three ways in,
+  one panel: the splash's **SAVED SYSTEMS** button (START is labelled **NEW SYSTEM** to make the
+  pair read as a choice), the pause menu's **SAVE SYSTEM**, and an inline name-and-save form on the
+  game-over panel. Which half of the panel is live is DERIVED from `game.started`
+  (`hud.refreshSystems`), never from which button opened it: over a run the save form shows and the
+  rows are a library to read; on the title screen the form is gone and **clicking a row FLIES that
+  system** (`main.playSystem` — `regenWorld(seed)` + `startGame()`, so it opens on the spec card
+  exactly like a cold boot). **Launching is title-screen only** — from the pause menu a row click is
+  refused (belt and braces: the buttons are `disabled` AND the handler checks `game.started`),
+  because one click ending the run in progress would be the costliest misclick in the game.
+  Details that guard real traps:
+  - **Every save form arrives PREFILLED with the seed's preset name** — `util.defaultSystemName`,
+    one word off each of two lists (24×24), picked off a private mulberry32 XOR-offset from the
+    world seed, so the same world proposes the same name on every surface. The placeholder and the
+    blank-field fallback are that same name, so an empty field saves exactly what it shows.
+  - **Re-saving a seed already in the library renames it and moves it to the top** — never a
+    duplicate row; the seed is the identity, the name is a label.
+  - **The game-over form is one-shot** (the button disarms to "SYSTEM SAVED ✓") and
+    `hud.armGameOverSave` re-arms it on the next game over — it is called from the death branch in
+    `update()`, so an idle soak (which sets no `deathCause`) never touches it.
+  - The rows are rebuilt on the open transition and by main's save/delete handlers, **never per
+    frame** (innerHTML — same law as the journey rail), and the ✕ is a **separate button beside
+    the row, never nested inside it**: a delete must not also be a click on the thing it deletes.
+  - `game.systems` is deliberately **NOT run state** — `resetRun` leaves it alone; only the
+    explicit delete (or the 50-row cap) removes an entry.
+- **THE SYSTEM CHART** (`mapOpen`, **M** or the ◎ tab on the radar bezel) is a shell modal and
   the only one that is **full-bleed** rather than a centred `.panel`: it IS the screen while it is up,
   because the sky it draws needs every pixel (a 440px octagon would make picking one moon out of a
   family impossible). Three consequences follow from being full-bleed, and each was a real fix:
