@@ -7182,6 +7182,36 @@ function drawShip(game) {
 
   ctx.restore();
 
+  // GUARD SLING: a beam onto every orbiter currently lunging to block, so the
+  // interception reads as the SHIP slinging the rock into the path rather than
+  // the rock swimming there under its own power (user design rule, 2026-08).
+  // Drawn BEFORE the held beams so a held rock's beam lands on top — the thing
+  // in your hand is the thing you are steering, and it should own the fore-
+  // ground. Each emitter roots on the bearing to its own defender, the same way
+  // the winch roots on its target rather than on the cursor.
+  // Iterates game.orbit, never a flag on loose bodies: a rock that has left the
+  // ring is never consulted, so a stale guardBeam cannot paint a beam into
+  // empty space.
+  if (game.orbit.length) {
+    for (const b of game.orbit) {
+      if (!b.guardBeam) continue;
+      const ga = Math.atan2(b.y - s.y, b.x - s.x);
+      // GOLD, NOT CYAN (user call, 2026-08). It shipped the same cyan as the
+      // hold beam on the reasoning that it is the same tractor doing the same
+      // job — but the two fire at once (you are holding a rock exactly when the
+      // screen is working for you), and two cyan beams off one hull read as one
+      // confused effect rather than two systems. Hue is the only channel free to
+      // separate them: they share an emitter, a width band and a moment.
+      // CYAN IS WHAT YOU ARE STEERING, GOLD IS WHAT THE SHIP IS DOING FOR YOU —
+      // the same split the hover rings already make (cyan = the left button's
+      // promise, warm = the right button's).
+      // Dimmer and thinner than the hold beam still: the bite is suppressed (the
+      // rock is being shoved, not gripped for a throw) and the width runs narrow
+      // so a full ring of four defenders does not wash out the cockpit view.
+      drawBeam(game, s.x + Math.cos(ga) * bodyR, s.y + Math.sin(ga) * bodyR, b,
+        '#ffcf4d', 0.55, 0, false, 0.6);
+    }
+  }
   if (game.held || game.latch) {
     // Beams sprout from the DRAWN hull edge (bodyR), not the larger hitbox
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
@@ -9805,10 +9835,15 @@ export function render(game) {
       const canOrbit = canStow(st, hov) && game.orbit.length < st.maxOrbiters && !hov.fort;
       // RAM FOOD (brawler): right-click would crush this rock into the ram.
       // Its own hue — the armed-amber the game already uses for "this rock is
-      // ammunition" — because for this spec the green auto-orbit promise is
-      // never true (no ring) and cyan only promises a HOLD. Same gate the
-      // absorb itself runs (canStow + room in the ram), so the ring can't
-      // promise a crush that absorbIntoRam would refuse.
+      // ammunition" — because for this spec the green STOW promise is never true
+      // (no ring) and cyan only promises a HOLD. Same gate the absorb itself
+      // runs (canStow + room in the ram), so the ring can't promise a crush that
+      // absorbIntoRam would refuse.
+      // GREEN AND AMBER ARE NOW THE SAME BUTTON — since the stow moved to
+      // right-click (2026-08) both hues promise what RIGHT mouse does with this
+      // rock, and cyan promises what LEFT mouse does. Keep it that way: the two
+      // spec-specific hues reading as one grammar is what makes the ring
+      // legible without a legend.
       const canRam = st.frontRam && st.ramCap > 0 && game.ship.ram < st.ramCap
         && canStow(st, hov) && !hov.fort;
       const canGrab = canLift(st, hov) && !hov.fort;

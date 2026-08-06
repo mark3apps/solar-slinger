@@ -7,9 +7,12 @@
 - **Roguelite progression is SPECIALIZATION-based.** There is NO passive leveling. The run OPENS on a
   choice of one of three **specs** (`SPECS` in config.js — BRAWLER / HAULER / SCOUT; `main.openSpec`
   from `startGame`). `applySpec` locks `prog.spec` and grants that spec's **starting-kit**
-  abilities at rank 1. The old **kit rule** (at least three rankable rows, so the ability bars —
-  the minute-one feedback — actually climb while the first card is still minutes out) is satisfied
-  by construction now that EVERY ability is six ranks: a kit is three or four climbing bars.
+  abilities at rank 1. The **kit rule** (at least TWO rankable rows, so the ability bars — the
+  minute-one feedback — actually climb while the first card is still minutes out) is satisfied by
+  construction now that EVERY ability is six ranks: a kit is two to four climbing bars. The floor
+  was THREE until 2026-08 and came down when HAULER dropped Salvage Magnet to the pool — backfilling
+  a third row purely to satisfy an arity rule turns a kit from an identity statement into a quota.
+  It is a FLOOR, not a target: HAULER ships two, BRAWLER three, SCOUT four.
   The spec choice is FREE — it spends no XP, no level, and no tier slot, so the
   XP bar starts empty (a paid opener read as "it skipped my first upgrade").
 - **Named abilities, spec-scoped, one currency.** `ABILITIES` (config.js) is the whole catalog: each
@@ -36,22 +39,26 @@
   fraction of the run's XP left to earn. An optional **`needs: '<channel>'` is a HARD PREREQUISITE**
   (`config.prereqMet`, filtered in `tierChoices`): the row isn't OFFERED until you own an ability
   feeding that channel. It exists only for rows that are literally INERT alone — Scattergun /
-  Rockwall / Aegis Reflector / Recovery Tether all act on ORBIT rocks, and with no orbit ability
-  `shipStats` gives `orbitCap` 0 / `maxOrbiters` 0 so there is never a rock to act on; Impact
+  Rockwall / Guard Sling / Sling Winch / Recovery Tether all act on ORBIT rocks, and with no orbit
+  ability `shipStats` gives `orbitCap` 0 / `maxOrbiters` 0 so there is never a rock to act on; Impact
   Warning is gated behind the plotter inside `shipStats` itself (`hasCrashWarn = collisionC > 0 &&
   hasPredict`). Each was a dead card: it spent the pick, its bar climbed, nothing happened. It names
   a CHANNEL, not an id, so it resolves across specs with no per-spec table (orbit = BRAWLER's War
-  Rack and HAULER's Orbital Sling / Expanded Bay alike). Every channel a `needs` points at has at
+  Rack and HAULER's Orbital Sling alike). Every channel a `needs` points at has at
   least one un-gated tier-0 provider in that spec's pool, so a gate can never deadlock. Do NOT add
   it to the second-track duplicates (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
   Freighter, Juggernaut) — they READ like extensions but work fine standing alone.
   `channel` is the stat bucket it feeds;
   `shipStats` SUMS every owned ability's rank into its channel, so several abilities can stack one
-  channel (e.g. HAULER's Orbital Sling + Expanded Bay both feed `orbit`). Add an ability by adding a
+  channel — though no pair currently does, since the second tracks were deleted under ONE TRACK PER
+  CHANNEL. Add an ability by adding a
   catalog row + reading its channel in `shipStats` — nothing else needs to know it exists.
   **Naming law:** two abilities that DO the same thing share one name/icon/desc even across specs
-  (Heavy Winch = the catch starter in BRAWLER and HAULER; Reinforced Hull = both hull tracks; ids stay
-  distinct). Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
+  (Reinforced Hull = both hull tracks; ids stay distinct). The law cuts BOTH ways, and HAULER's
+  winch is the worked example: it was Heavy Winch alongside BRAWLER's for as long as both fed the
+  beam's `catch` channel, and when it was rebuilt to size the RING alone (`sling`) it had to be
+  renamed **Sling Winch** — two rows sharing a name while moving different numbers is exactly the
+  drift the law exists to stop. Same-spec second tracks (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk
   Freighter, Juggernaut) are the exception — they must stay separately named to coexist as cards, and
   their descs read as "more of the same".
 - **A RANK BUYS MASS INSIDE YOUR CLASS, NEVER THE CLASS ABOVE** (user design law). The beam tier
@@ -64,18 +71,27 @@
   the gap and nothing can round its way into the rung above).
   **The bug this fixes:** capacity was one mass number with an unbounded rank multiplier on it
   (`caps[tier] * (1 + 0.22 * catchC)`), and stacking the catch channel (Heavy Winch 6 + Bulk
-  Freighter 6) ran it to **3.64×**. A tier-2 beam carried 127,000 — most of the solid planets in the
+  Freighter 6) ran it to **3.64×**. (Neither row can produce it now: Bulk Freighter is deleted, and
+  HAULER's winch no longer feeds `catch` at all — `heavyWinch` became Sling Winch on the `sling`
+  channel in 2026-08, so a hauler's `catchC` is 0 and its beam allowance is PURE TIER. Only
+  BRAWLER's Heavy Winch, id `heavyRounds`, feeds `catch` now.) A tier-2 beam carried 127,000 — most of the solid planets in the
   sky — and a tier-3 one carried a gas giant, so ranks were silently buying TIERS and hauling a
   world stopped being the top of the ladder. The stow shows the same shape: a maxed HAULER's orbit
-  ring could hold **1,965,600** of mass (gas giants in your shield), now one class below the beam and
-  capped at large-moon weight.
+  ring could hold **1,965,600** of mass (gas giants in your shield), now capped at large-moon weight.
+  **The ring no longer reads the beam at all** (2026-08): `orbitTier` came off `tier - 1` until a
+  beam tier-up was silently handing the ring a whole new class, which made Sling Winch's own ranks
+  half-invisible behind the tier ladder. HAULER's rung is now `SLING_RUNGS[slingC]` and its mass
+  allowance an asymptotic fill on the `sling` channel floored at 55% of the rung's `caps` — so a
+  rank-0 tier-0 ring is exactly the 605 it always was, and tier moves it by nothing. BRAWLER's ram
+  is untouched and still rides the old beam-derived rung clamped at boulder class.
   **Two type rules ride on top of the mass ladder**, and both are load-bearing: a **world is always
   the top rung** (a mass test hands the 20,000-mass inner lava world over three tiers early), and a
   **moon is never belt rock** (moon mass 900 + 2,400–17,050 overlaps boulders and shoal rock across
   two whole rungs, so a mass test sells a named, charted moon at the boulder tier). Everything else —
   belt rock, crust slabs, shoal monoliths, derelicts — is classed purely by weight.
   **`config.canLift` / `config.canStow` are the only grab tests**: `tractor.tryGrab`, `addToOrbit`,
-  the Recovery Tether's homing capture, `main`'s auto-stow and the hover hint ring all route through
+  the Recovery Tether's homing capture, `tractor.stowFromCursor` (the right-click stow and its
+  sweep) and the hover hint ring all route through
   them, so the ring can never promise a grab the beam refuses. The one thing NOT re-gated is the
   brawler's parry (`parryEligible` / `drawDeflectable`), which is loose-asteroid-only and stays a
   plain `capacity * 1.5` mass window.
@@ -251,13 +267,42 @@
     `TIERS.caps[1]`" when tier 1's label was 'Moons' and its cap was 6,000; on the class ladder
     6,000 is boulder weight, and holding the rack at `ceil[2]` = 6,200 is what keeps the brawler's
     ammo mass where it has always been — the moon rungs would have tripled it.)
-  - HAULER — Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Aegis Reflector
-    (the orbit-intercept block in `physics.collideBodies`), Twin Grip (`game.held2` threaded through
-    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render; its RANKS steady the
+  - HAULER — **Recovery Tether recovers a SPENT shot, never a live one** (2026-08). It used to home
+    0.7s after release UNCONDITIONALLY (~300 units downrange), so it did not recover a rock, it
+    CANCELLED the throw — and made the three snipe achievements (throw-kills at 1,200/2,500/4,000
+    units) unreachable for anyone holding the card. The rock now must have HIT something
+    (`b.tetherHit`, set in `physics.collideBodies` on a real impact) and then be finished, by EITHER
+    of two tests: catchable (under `DMG_THRESH_THROWN` relative to the ship) or QUIET (no fresh
+    contact for `CFG.TETHER_QUIET`, 2.5s). The quiet test is the one that matters, because SPACE HAS
+    NO DRAG — a measured 2,600-mass shot punched through its target and was still doing 375 u/s nine
+    thousand units out, so a speed-only test would never fire for the case the card exists for.
+    Every contact resets the quiet clock, so a flung moon ploughing through a family stays out
+    (measured: 12s across a 12-target corridor) and comes home after. DESTROYED OR NEVER-CONNECTED
+    IS GONE. Ranks buy RELOAD (`st.tetherCool`, 14s -> 4s; `game.tetherT` counts it down) — the old
+    ranks scaled return SPEED, which made every rank recall harder and worsened the defect.
+  - HAULER — the ring is filled by RIGHT-CLICK (`tractor.stowFromCursor` from `main.onRmbDown`,
+    plus a held-button sweep in `update()` on the ram's 0.12s cadence); left-click no longer
+    auto-stows. Recovery Tether (`tractor.updateTethers`, in the `CFG.DT` substep loop), Guard Sling
+    (the interception scan in `tractor.updateOrbit`, which owns the verb Orbital Sling used to
+    include for free; `st.guardCount` gates the whole scan, so an unowned screen costs nothing, and
+    each lunging rock carries `b.guardBeam` for the beam render paints on it — GOLD, not the hold
+    beam's cyan, because both fire at once and hue is the only channel left to separate them:
+    cyan is what you are steering, gold is what the ship is doing for you), Twin Grip
+    (`game.held2` threaded through
+    `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` + a second beam in render; TRIGGERED by
+    `tractor.tryAutoSecond` — a cursor SWEEP over a second rock while one is held, because there is
+    only one grab button and its release throws, which left the ability unreachable for its whole
+    existence; its RANKS steady the
     rig rather than adding a third hand — `st.twinHold` springs the flanking rock harder and
     `st.twinTug` shrinks the per-rock tug, which may only ever go DOWN, since the halved 75 exists to
     keep the COMBINED tug under the 150 the no-recoil law allows), Rockwall (orbit-held
-    rocks take reduced damage in `physics.damageBody` + the wall spins faster in `tractor.updateOrbit`),
+    rocks take reduced damage in `physics.damageBody` and NOTHING ELSE — `dmg /= 1 + 0.111 * r^2`,
+    so rank 1 is 1.11x effective HP and rank 6 is 5.0x. DIVIDING, not scaling, so no amount of
+    channel stacking reaches zero damage; QUADRATIC, so the doubling lands at the capstone. History:
+    it was `dmg *= 1 - 0.1 * r` (2.5x at rank 6, 0x at a hypothetical rank 10 and NEGATIVE past it,
+    healing the rock), and it ALSO multiplied the ring's angular speed by `1 + 0.11 * rockwall` in
+    `tractor.updateOrbit`. That spin term was REMOVED in 2026-08 — a faster wall covers more sky per
+    second, which is a SCREENING effect, and screening is Guard Sling's. Do not re-add it),
     Dead Stop (`st.deadStop`: catching an alien-thrown rock in `tryGrab` sets `b.primed` — a
     multiplier in `flingSpeedFor`, consumed in `releaseHeld`; `flingSpeedFor` takes the BODY as well
     as the mass precisely so the aim solver's ✕ markers price the prime in — an ember halo in
@@ -302,7 +347,8 @@
     `test(game, s, c)` is a PURE READ, evaluated each frame for every row not yet earned; earned rows
     splice out, so the sweep shrinks as the run goes. **No loops, no allocation inside a predicate** —
     anything that needs scanning is computed once into the shared context `c` (the ONE loop the
-    sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it at seven).
+    sweep allows itself is the orbit-mass sum, and only because `st.maxOrbiters` caps it — at 14
+    since the Orbital Sling ladder doubled, still a fixed small bound; see `config.ORBIT_SLOTS`).
     Measured at 0.02 ms per sweep across the whole catalog — 0.1% of a 60 fps frame.
   - **Adding one is a catalog row.** Only reach for a new `bump` if nothing already records the event.
     Several discovery rows ride the existing `EVENT_MSGS` one-shot flags through `ACH_EVENT_STATS`

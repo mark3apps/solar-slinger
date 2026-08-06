@@ -22,7 +22,8 @@ let iconSig = '';          // acquired-upgrade chip signature — rebuild on cha
 let abilBars = [];         // cached { fill, row, id, cost } per learned ability — the per-frame XP fills
 let spPrev = null;         // SHIP SYSTEMS panel's last drawn strings — null until a run is live,
                            // so the first fill of a run never fires the stat-up flash
-let spSlots = -1;          // stow pips drawn (slot count) — rebuilt only when it moves
+let spSlots = -1;          // stow SOCKETS drawn (= slots owned) — structure rebuilt only when it moves
+let spFilled = -1;         // stow pips currently LIT (= rocks in the ring) — classes retoggled only on change
 // The dial's pointer degrees, EASED IN JS (never a CSS transition — see the
 // note on .spdial in style.css for why: transitioning a registered <angle>
 // custom property is measurably broken in this engine, both as the source
@@ -1445,15 +1446,33 @@ export function updateHud(game) {
       if (stowed) drawStatIcon(el.stowIcon, 'class', st.orbitTier);
       drawStatIcon(el.shipIcon, 'ship', st.tier);
     }
-    // STOW exists only once an orbit ability does. Its pips are the 7-slot
-    // cap with the slots owned lit — a COUNT, so pips, never a bar. Rebuilt
-    // only when the count moves.
+    // STOW exists only once an orbit ability does. A COUNT, so pips, never a bar.
+    // THE PIPS ARE A LIVE OCCUPANCY READOUT, not a progression one (user call,
+    // 2026-08): one SOCKET per slot you own, LIT for each slot currently holding
+    // a rock. They used to draw the whole 14-slot ladder with the slots you had
+    // EARNED lit, which meant "unlit" had to carry two different meanings —
+    // empty slot, and rank you haven't bought — and two states cannot say three
+    // things. Occupancy is what you need mid-fight ("how much room is left?");
+    // the ladder is already legible on the ability bar.
+    // So the STRUCTURE is rebuilt only when your capacity moves, and the LIT
+    // state is retoggled only when the fill moves — this runs every frame, and
+    // rewriting innerHTML at 60fps to change a class would be the expensive way
+    // to do nothing.
     el.rowStow.classList.toggle('hidden', !stowed);
-    if (!stowed) spSlots = -1;
-    else if (spSlots !== st.maxOrbiters) {
-      spSlots = st.maxOrbiters;
-      el.spStowPips.innerHTML = Array.from({ length: 7 }, (_, i) =>
-        `<span class="pp${i < st.maxOrbiters ? ' on' : ''}"></span>`).join('');
+    if (!stowed) { spSlots = -1; spFilled = -1; }
+    else {
+      if (spSlots !== st.maxOrbiters) {
+        spSlots = st.maxOrbiters;
+        spFilled = -1;   // force the lit pass below — the sockets are all new
+        el.spStowPips.innerHTML = Array.from({ length: st.maxOrbiters },
+          () => '<span class="pp"></span>').join('');
+      }
+      const filled = Math.min(st.maxOrbiters, game.orbit.length);
+      if (spFilled !== filled) {
+        spFilled = filled;
+        const pips = el.spStowPips.children;
+        for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < filled);
+      }
     }
     const vals = {
       spVelRated: String(st.maxSpeed),

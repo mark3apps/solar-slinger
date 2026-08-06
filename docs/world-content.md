@@ -576,7 +576,7 @@ from breaking the invariants above:
     once); it picks a rock roughly between itself and the ship,
     swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
     launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
-    counter (orbit shield blocks it for XP, Deflector parries it, Dead Stop primes on the catch). Three
+    counter (a ring rock blocks it for XP — passively, or actively once Guard Sling is owned; Deflector parries it, Dead Stop primes on the catch). Three
     rules are load-bearing and each fixed a real failure:
     - **Ambient rock contact does it NO harm.** A predator that died to its own habitat suicided on the
       nearest rock within seconds of spawning. A PLAYER-thrown rock still hurts it — that's the counterplay.

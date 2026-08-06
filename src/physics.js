@@ -1193,9 +1193,19 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     }
     return;
   }
-  // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
-  // wall survives the intercepts it exists to make. Loose rocks are untouched.
-  if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.1 * game.st.rockwall;
+  // ROCKWALL (hauler): rocks serving in the orbit ring are hardened — the wall
+  // survives the hits it exists to take. Loose rocks are untouched.
+  // SUPER-LINEAR IN RANK, and DIVIDING not scaling (user call, 2026-08: the top
+  // end should be "twice as strong as they are now"). Effective HP multiplier is
+  // 1 + 0.111*r^2 — 1.11x at rank 1, exactly what the old `1 - 0.1*r` gave, and
+  // 5.0x at rank 6 against the old 2.5x. Two properties worth keeping: dividing
+  // by a rising number can never reach zero damage however the channel is
+  // stacked (the old subtractive form hit 0x at rank 10 and went NEGATIVE past
+  // it, healing the rock), and the quadratic puts the doubling at the capstone
+  // where it was asked for instead of spreading it across the early ranks.
+  if (body.heldBy === 'orbit' && game.st.rockwall > 0) {
+    dmg /= 1 + 0.111 * game.st.rockwall * game.st.rockwall;
+  }
   // SULFUR MOONS: a hard PLAYER smash (earnsScrap credit — ambient traffic
   // can't trigger it) vents the crust: a queued chain of surface pops that
   // fountain loose sling rock (the world.js hazard loop pops them). Not on
@@ -2435,20 +2445,11 @@ function collideBodies(game, a, b) {
        (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
     addXp(game, PROG.XP_BLOCK);
     bump(game, 'blocks');
-    // AEGIS REFLECTOR (hauler): don't just block — hurl the enemy rock straight
-    // back out as YOUR shot (marked player-thrown, so it can smash the alien).
-    // Once reflected it's no longer 'alien', so this can't re-fire on it.
-    if (game.st.aegis > 0) {
-      const rock = a.thrownBy === 'alien' ? a : b;
-      const sh = game.ship;
-      const rdx = rock.x - sh.x, rdy = rock.y - sh.y, rd = Math.hypot(rdx, rdy) || 1;
-      const spd = 320 + 65 * game.st.aegis;
-      rock.vx = sh.vx + (rdx / rd) * spd; rock.vy = sh.vy + (rdy / rd) * spd;
-      rock.thrownBy = 'player'; rock.thrownTimer = 3;
-      rock.throwX = rock.x; rock.throwY = rock.y;
-      derail(rock);
-      bump(game, 'aegisBack');
-    }
+    // AEGIS REFLECTOR USED TO FIRE HERE and is deleted (see the ABILITIES
+    // catalog for why). Do not re-add a reflect on this line: it hurled the
+    // blocked rock radially outward from the ship at a flat speed under the
+    // hauler's own fling, which is why it never reached anything. A block is now
+    // just a block — the XP above and whatever damage the collision itself did.
   }
 
   // No surface-hugging: a small body drifting gently onto a much bigger one
@@ -2637,6 +2638,14 @@ function collideBodies(game, a, b) {
     const thrown = a.thrownTimer > 0 || b.thrownTimer > 0;
     const eff = Math.max(0, closing - (thrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
     const mult = thrown ? CFG.DMG_THROWN_MULT : 1;
+    // RECOVERY TETHER: mark that a tethered rock has CONNECTED, and restart its
+    // QUIET clock. Set here, at the point a collision is known to be real,
+    // rather than on any proximity: a near miss is a miss. The quiet clock is
+    // what keeps a rampaging shot out in the field — every fresh contact resets
+    // it, so a flung moon ploughing through a whole moon family never qualifies
+    // as spent while it is still connecting. See tractor.updateTethers.
+    if (a.tether) { a.tetherHit = true; a.tetherQuiet = 0; }
+    if (b.tether) { b.tetherHit = true; b.tetherQuiet = 0; }
     // Mass dominance decides who hurts whom: the heavier side deals up to
     // ~2x its base damage while taking almost none from the lighter side.
     // Equal masses keep the old numbers (both factors are 1 at 50/50).
