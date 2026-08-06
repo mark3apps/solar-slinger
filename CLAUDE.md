@@ -424,6 +424,28 @@ Plus the three scaling rules that make a big debris cascade affordable:
   it converges. A spec's drawn reach is now past its collision circle by `vis`, so anything wrapping
   the ART (`shipVisualR`, `ramPlate`) multiplies by it while the collision circle stays one number
   for every spec.
+- **THE RAM IS MADE OF ROCK, AND ROCK HAS ITS OWN SCALE** — the one thing `SHIP_VIS` can't fix, since
+  it matches the slab to the HULL and the problem is the slab against the WORLD. `config.ramPlate`
+  sizes it off `hypot(r, CFG.RAM_MIN_R)`: a SOFT floor, so it never stops growing with the ship and
+  it evaporates where it isn't wanted (+391% at tier 0, +3% at tier 5). **Size it off the STONE, not
+  the slab** — the rocklet is capped by the slab's depth, so 26 is what lands tier-0 stones at radius
+  ~7, mid-class for the belt rock (6-14) the ram is built from. The floor is the SLAB only —
+  `back`/`gap` stay on the true drawn hull, or the ram floats a ship-length out in front.
+  `ramFace`/`ramArc` follow it by the mirror rule, so a low-tier ram's protected arc grows with what
+  you can see (tier 0 rank 1: 27deg -> 31deg); absorption is priced on ram MASS so it doesn't move.
+- **A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH** — the slab's thickness sizes the STONE
+  (`depth x RAM_STONE`) and `halfW` is DERIVED as whatever `ramPerRow(t)` of them occupy shoulder to
+  shoulder at `ramPack(t)` spacing (under 1 at every band, so they always touch — 0.92 jammed at band
+  1 to a 0.79 overlap at band 12). An independent width ramp is the bug this replaced: the slab grew
+  without getting fuller and the stones hung apart on their beams. `ramRows`/`ramPerRow`/`ramPack`/
+  `RAM_STONE` are exported and the plate publishes `stone`, because render builds the layout and
+  config solves the width against it — nothing in `ramTierRocks` may size a stone from the width.
+- **THE RAM'S DENSITY LADDER IS TWELVE BANDS, TWO PER RANK** (`config.RAM_TIERS`), and **band 1 is a
+  PAIR** — two boulders, the one count the old ladder had no rung for. The EVEN bands are
+  the old six-band ladder exactly, so every rank still tops out on the build it always did. Three
+  things are keyed off the length and move with it: `ramPlate`'s `t` coefficients, `ramTierRocks`'
+  rows/perRow/packK ramp and rig count, and `spendRam`'s per-drop spall (a crossing now happens twice
+  as often, and the debris budget is not free).
 - **ONE HULL STROKE WEIGHT, AND IT IS THE HAULER'S** (`render.outlineW(tier, r)`). Never derive it
   per spec: the old `k × u` form looked shared but `u` is an ART-SPACE unit that differs per ladder,
   so equal coefficients drew unequal lines — and `SHIP_VIS` made it worse by scaling two ladders up.

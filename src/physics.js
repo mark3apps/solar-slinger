@@ -2945,7 +2945,12 @@ function spendRam(game, dmg, hitAng) {
     const face = ramFace(game.st, Math.max(1, s.ram));
     const ox = s.x + Math.cos(s.angle) * face * 0.85;
     const oy = s.y + Math.sin(s.angle) * face * 0.85;
-    const n = 2 + (t0 >= 4 ? 1 : 0);         // a big pack sheds a little more
+    // A big pack sheds a little more. HALVED against the old six-band ladder:
+    // config.RAM_TIERS is twelve now, so a downward crossing happens twice as
+    // often and 2-3 pebbles a crossing would double a brawl's spall against one
+    // debris budget (invariant 7). 1-2 a crossing keeps the TOTAL where it was
+    // while every crossing still visibly sheds something.
+    const n = 1 + (t0 >= 8 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const a = s.angle + (Math.random() - 0.5) * 2.4;
       const sp = 90 + Math.random() * 120;
