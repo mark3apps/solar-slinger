@@ -757,6 +757,19 @@ function dropSlot(game, slot) {
 
 // ---------- orbit ring ----------
 
+// GUARD SLING SCAN BUFFERS, module-scope and never re-sized. updateOrbit runs
+// every physics substep, so allocating the threat list and the per-orbiter
+// assignment arrays per pass generates garbage hundreds of times a second — and
+// does it precisely when the frame is most loaded, mid-combat with a full ring.
+// Bounds are tiny and fixed: at most `st.guardCount` threats (4) and
+// `st.maxOrbiters` orbiters (14). Live length travels in `threatN` / `n`, never
+// in `.length`, and body references are nulled out once read so a dead threat
+// parked in a slot can't keep a body alive.
+const gThreatBody = [];   // the guardN soonest threats, nearest-arrival first
+const gThreatTti = [];    // ...and their times-to-impact (parallel, so no {} per threat)
+const gGuardOf = [];      // orbiter index -> the threat body it is blocking, or null
+const gTaken = [];        // orbiter index -> already assigned this pass
+
 // Ring assignment for the whole formation: orbiters are sorted by size and
 // packed outward — smallest hugging the ship, largest patrolling the far
 // edge. Each ring clears the previous rock's bulk.
@@ -1208,7 +1221,7 @@ export function updateOrbit(game, dt) {
   // intercepting (threat gone, ability lost on death/respawn) leaves a beam
   // painted on a rock that is no longer lunging.
   for (let i = 0; i < n; i++) game.orbit[i].guardBeam = 0;
-  let threats = null;
+  let threatN = 0;
   if (guardN > 0) {
     // Active interception: loose rock closing on the ship gets met by the ring
     // rocks best placed to block, which break formation and lunge. Alien throws
@@ -1217,7 +1230,13 @@ export function updateOrbit(game, dt) {
     // MULTI-THREAT: ranks buy simultaneous interceptors, so this collects the
     // guardN soonest-arriving threats instead of only the single best. Kept as
     // an insertion into a tiny array — guardN maxes at 4, so a sort would cost
-    // more than it saves and this stays allocation-free in the common case.
+    // more than it saves.
+    // ALLOCATION-FREE, and it has to be: this whole function runs every physics
+    // substep (120Hz), so a per-threat `{body, tti}` object and a fresh
+    // `new Array(n)` per pass is garbage generated hundreds of times a second
+    // exactly when the frame is busiest — mid-combat, with the ring working.
+    // The buffers are module-scope and their live length is carried in
+    // threatN / n rather than in `.length`, so nothing is ever re-sized.
     const R = st.guardRange;
     for (const b of game.bodies) {
       if (!b.alive || b.heldBy) continue;
@@ -1239,12 +1258,16 @@ export function updateOrbit(game, dt) {
       const miss = Math.abs(dx * rvy - dy * rvx) / (Math.hypot(rvx, rvy) || 1);
       if (!alienShot && miss > 130) continue;
       const tti = d / closing;   // engage whatever hits soonest
-      if (!threats) threats = [];
-      let at = threats.length;
-      while (at > 0 && threats[at - 1].tti > tti) at--;
+      let at = threatN;
+      while (at > 0 && gThreatTti[at - 1] > tti) at--;
       if (at < guardN) {
-        threats.splice(at, 0, { body: b, tti });
-        if (threats.length > guardN) threats.length = guardN;
+        // Shift right by hand into the parallel buffers (splice would allocate).
+        for (let k = Math.min(threatN, guardN - 1); k > at; k--) {
+          gThreatBody[k] = gThreatBody[k - 1];
+          gThreatTti[k] = gThreatTti[k - 1];
+        }
+        gThreatBody[at] = b; gThreatTti[at] = tti;
+        if (threatN < guardN) threatN++;
       }
     }
   }
@@ -1252,27 +1275,34 @@ export function updateOrbit(game, dt) {
   // defender is chosen by its distance to the threat's incoming LINE rather
   // than to the rock itself: with only a bounded shift allowed, an orbiter on
   // the wrong side of the formation can never reach the path however close the
-  // rock passes it. `guardOf[i]` is the threat orbiter i is blocking, or null.
-  const guardOf = threats ? new Array(n).fill(null) : null;
-  if (threats) {
-    const taken = new Array(n).fill(false);
-    for (const t of threats) {
-      const th = t.body;
+  // rock passes it. `gGuardOf[i]` is the threat orbiter i is blocking, or null.
+  // Cleared over the buffer's FULL length, not just 0..n: a shrinking ring
+  // would otherwise leave a dead body referenced in the tail and keep it alive.
+  for (let i = 0; i < gGuardOf.length; i++) gGuardOf[i] = null;
+  if (threatN) {
+    for (let i = 0; i < n; i++) { gGuardOf[i] = null; gTaken[i] = false; }
+    for (let t = 0; t < threatN; t++) {
+      const th = gThreatBody[t];
       const tvm = Math.hypot(th.vx - s.vx, th.vy - s.vy) || 1;
       const ux = (th.vx - s.vx) / tvm, uy = (th.vy - s.vy) / tvm;
       let bd = Infinity, pick = -1;
       for (let i = 0; i < n; i++) {
-        if (taken[i]) continue;
+        if (gTaken[i]) continue;
         const px = game.orbit[i].x - th.x, py = game.orbit[i].y - th.y;
         const ahead = px * ux + py * uy > 0;
         const d = ahead ? Math.abs(px * uy - py * ux) : Math.hypot(px, py);
         if (d < bd) { bd = d; pick = i; }
       }
       if (pick < 0) break;          // ring exhausted — fewer rocks than threats
-      taken[pick] = true;
-      guardOf[pick] = th;
+      gTaken[pick] = true;
+      gGuardOf[pick] = th;
     }
   }
+
+  // Drop the scan's body references now the assignment is read out of them —
+  // the buffers outlive the call, and a dead threat held here is a body the
+  // world cannot collect.
+  for (let t = 0; t < threatN; t++) gThreatBody[t] = null;
 
   for (let i = 0; i < n; i++) {
     const b = game.orbit[i];
@@ -1292,7 +1322,7 @@ export function updateOrbit(game, dt) {
     const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;
     let ty = s.y + Math.sin(ang) * Ri;
-    const threat = guardOf ? guardOf[i] : null;
+    const threat = gGuardOf[i] || null;
     if (threat) {
       // BLOCK, don't chase: the defender only shifts a bounded distance
       // from its own slot toward the threat's incoming line — a shield

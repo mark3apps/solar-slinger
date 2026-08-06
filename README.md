@@ -25,8 +25,8 @@ A top-down 2D space game about **gravity**. Fly a ship through a vast single-sun
 | Hold **Left mouse** | Tractor-grab an object near the cursor |
 | Release **Left mouse** | **Fling** it toward the cursor |
 | **Left mouse** on empty space | Pull a rock back out of your orbit ring |
-| **Right mouse** (while holding) | Stow the rock in your orbit ring |
-| Hold **Right mouse** | Charge the shotgun — release to fire armed orbiters *(ability)* |
+| **Right mouse** on a rock | Stow it in your orbit ring — hold and sweep to keep filling |
+| **Right mouse** (while holding) | Stow the held rock if the ring can take it, else set it down gently |
 | `Shift` | Afterburner *(ability)* |
 | `Space` | Evasion roll *(ability)* |
 | `F` | Slipstream warp *(ability)* |
