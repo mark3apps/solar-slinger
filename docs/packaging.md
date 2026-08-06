@@ -46,8 +46,10 @@ about it — this is a hard rule.
   AppImage is the self-updating Linux format. Four load-bearing wires, each of which silently
   reverts the auto platforms to manual updates if removed: the `build.publish` block in
   package.json (makes electron-builder embed `app-update.yml` in the app and emit the
-  `dist/latest*.yml` feeds — `latest.yml` win, `latest-mac.yml` (feeds the mac check-and-notify),
-  `latest-linux.yml` + `latest-linux-arm64.yml` per-arch), the release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
+  `dist/latest*.yml` feeds — `latest.yml` win, `latest-mac.yml` (uploaded but unread today: mac
+  check-and-notify polls the GitHub releases API; this becomes mac's feed only if signed builds
+  ever join the self-update path), `latest-linux.yml` + `latest-linux-arm64.yml` per-arch), the
+  release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
   (the update feed; blockmaps enable differential downloads), the repo staying public (the feeds
   are unauthenticated), and the SPACE-FREE `nsis.artifactName` / `appImage.artifactName` — with
   electron-builder's default "Solar Slinger …" names, latest.yml points at the dash-sanitized
