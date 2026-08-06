@@ -1,7 +1,8 @@
 export const TAU = Math.PI * 2;
 
-// Is a full-screen shell modal up? Settings, Controls, Credits, Achievements
-// and the system Chart each get their own flag because each is its own panel,
+// Is a full-screen shell modal up? Settings, Controls, Credits, Achievements,
+// the saved-Systems library and the system Chart each get their own flag
+// because each is its own panel,
 // but every gate in the game treats them identically — the sim freezes, player
 // input is blocked, the music ducks, the trajectory forecast hides. Kept here
 // (a leaf) so main, hud, music and render can all ask without importing each
@@ -13,7 +14,8 @@ export const TAU = Math.PI * 2;
 // open. Freezing is also what lets it be a chart at all rather than a live
 // display: the positions you click are the positions you saw.
 export const shellModal = (g) =>
-  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen || g.mapOpen);
+  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen
+    || g.systemsOpen || g.mapOpen);
 
 // Can anything alien find the ship right now? Two unrelated causes, one
 // answer: the dust/shroud cloak (a LOCAL hiding place, computed with release
@@ -102,6 +104,29 @@ export function mulberry32(seed) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// The SUGGESTED name for a saved solar system: one word off each list, picked
+// deterministically off the world seed (XOR-offset so this stream never tracks
+// another consumer of the same seed). The same world therefore proposes the
+// same name wherever it is offered — the pause panel's save form, the game-over
+// form, and the blank-field fallback — and the player types over it freely.
+// Longest combination is 19 chars, safely inside the 24-char name fields.
+const SYS_NAME_A = [
+  'Amber', 'Ancient', 'Ashen', 'Burning', 'Copper', 'Crimson', 'Distant',
+  'Drifting', 'Frozen', 'Gilded', 'Golden', 'Hollow', 'Iron', 'Lonely',
+  'Luminous', 'Pale', 'Radiant', 'Restless', 'Sable', 'Shattered', 'Silent',
+  'Violet', 'Wandering', 'Wild',
+];
+const SYS_NAME_B = [
+  'Anchorage', 'Belt', 'Causeway', 'Cradle', 'Crown', 'Dominion', 'Drift',
+  'Expanse', 'Frontier', 'Furnace', 'Garden', 'Halo', 'Harbor', 'Haven',
+  'Meridian', 'Passage', 'Reach', 'Refuge', 'Sanctum', 'Shoal', 'Spiral',
+  'Threshold', 'Veil', 'Verge',
+];
+export function defaultSystemName(seed) {
+  const r = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  return `${SYS_NAME_A[(r() * SYS_NAME_A.length) | 0]} ${SYS_NAME_B[(r() * SYS_NAME_B.length) | 0]}`;
 }
 
 // Turn a user-typed seed into the uint32 mulberry32 wants. Plain digits stay

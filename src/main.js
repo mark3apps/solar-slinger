@@ -23,7 +23,7 @@ import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import * as zone from './zone.js';
-import { lerp, shellModal, seedFrom, placeName } from './util.js';
+import { lerp, shellModal, seedFrom, placeName, defaultSystemName } from './util.js';
 
 // A run's progression record. config.newProgress builds the roguelite half;
 // the achievement ledger is bolted on HERE rather than inside it because
@@ -44,7 +44,12 @@ const game = {
   controlsOpen: false,     // the control schematic — same shell rules (util.shellModal)
   creditsOpen: false,      // the credits panel  — same shell rules
   achievementsOpen: false, // the run's achievement log — same shell rules
+  systemsOpen: false,      // the saved-solar-systems library — same shell rules
   mapOpen: false,          // the sun-centred system chart — same shell rules (starmap.js)
+  systems: [],             // the saved SOLAR SYSTEMS library: { name, seed } rows,
+                           //   persisted to localStorage['ss_systems']. A seed
+                           //   rebuilds its layout bit-identically, so a row IS
+                           //   the system. NOT run state — resetRun leaves it.
   route: newRoute(),       // the plotted journey: an ordered list of stops the chart
                            //   sets and the radar flies you along. Run state, so
                            //   resetRun clears it; the chart's VIEW is not, and lives
@@ -224,6 +229,61 @@ function saveSettings() {
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
 }
 
+// ---- Saved solar systems ----------------------------------------------------
+// The library the SAVED SYSTEMS panel shows: named worlds the player chose to
+// keep. Only the SEED is stored (plus the name it was given) — generateWorld
+// is seeded, so the seed alone brings the whole system back, layout, names and
+// all. Same host-agnostic localStorage idiom as ss_settings, under its own key
+// so a settings wipe and the library can never take each other out.
+const SYSTEMS_MAX = 50;   // a library, not a landfill — oldest saves fall off
+function loadSystemsLib() {
+  try {
+    const a = JSON.parse(localStorage.getItem('ss_systems') || '[]');
+    if (Array.isArray(a)) {
+      game.systems = a
+        .filter((s) => s && typeof s.name === 'string' && Number.isFinite(s.seed))
+        .map((s) => ({ name: String(s.name).slice(0, 24), seed: s.seed >>> 0 }))
+        .slice(0, SYSTEMS_MAX);
+    }
+  } catch (e) { /* corrupt store — start with an empty library */ }
+}
+function saveSystemsLib() {
+  try { localStorage.setItem('ss_systems', JSON.stringify(game.systems)); }
+  catch (e) { /* private mode / disabled storage — the library just won't persist */ }
+}
+// Save the LIVE world under a name. Blank falls back to the seed's own preset
+// name (util.defaultSystemName — the same one the forms prefill), so a quick
+// save is never refused over an empty field; re-saving a seed already in the
+// library renames it and moves it to the top instead of duplicating it.
+function saveSystem(name) {
+  const seed = game.worldSeed >>> 0;
+  const nm = String(name || '').trim().slice(0, 24) || defaultSystemName(seed);
+  const i = game.systems.findIndex((s) => s.seed === seed);
+  if (i >= 0) game.systems.splice(i, 1);
+  game.systems.unshift({ name: nm, seed });
+  if (game.systems.length > SYSTEMS_MAX) game.systems.length = SYSTEMS_MAX;
+  saveSystemsLib();
+  hud.refreshSystems(game);
+  return nm;
+}
+function deleteSystem(i) {
+  if (!game.systems[i]) return;
+  game.systems.splice(i, 1);
+  saveSystemsLib();
+  hud.refreshSystems(game);
+}
+// Fly a saved system — TITLE SCREEN ONLY. From the pause menu the rows are a
+// library to read, never a launch control: one click ending the run in
+// progress would be the costliest misclick in the game. The title path is the
+// same "build then start" pair a cold boot uses, so the run opens on the spec
+// card over the saved world exactly as it would over a fresh one.
+function playSystem(i) {
+  const s = game.systems[i];
+  if (!s || game.started) return;
+  regenWorld(s.seed);
+  startGame();
+}
+
 // ---- Adaptive render scale --------------------------------------------------
 // Draw cost is fill-bound (render.js: ~1.4ms fixed + ~0.18ms/megapixel on a
 // FAST gpu; old integrated parts are far worse), and a Retina panel asks for 4x
@@ -325,6 +385,7 @@ function regenWorld(seed) {
 }
 
 loadSettings();
+loadSystemsLib();     // the saved-systems library rides its own key (ss_systems)
 applyRenderScale();   // before initRender: render.js's first resize() picks it up
 game.st = shipStats(game.prog);
 regenWorld();
@@ -665,16 +726,21 @@ function pauseGame() {
   if (game.started && !game.paused) { game.paused = true; bump(game, 'pauses'); sfx.sfxMenuOpen(); }
 }
 function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
-// The three shell modals are mutually exclusive — each fully REPLACES the panel
+// The shell modals are mutually exclusive — each fully REPLACES the panel
 // it was opened over, so opening one clears the others rather than stacking.
 function closeShell() {
   game.settingsOpen = false; game.controlsOpen = false;
   game.creditsOpen = false; game.achievementsOpen = false;
-  game.mapOpen = false;
+  game.systemsOpen = false; game.mapOpen = false;
 }
 function openSettings() { closeShell(); game.settingsOpen = true; bump(game, 'openSettings'); sfx.sfxMenuOpen(); }
 function openControls() { closeShell(); game.controlsOpen = true; bump(game, 'openCtrl'); sfx.sfxMenuOpen(); }
 function openCredits() { closeShell(); game.creditsOpen = true; bump(game, 'openCred'); sfx.sfxMenuOpen(); }
+// The saved-solar-systems library. Reached from the splash (SAVED SYSTEMS —
+// pick one and fly it) and from the pause menu (SAVE SYSTEM — name the world
+// you are in and keep it). One panel for both: which half is live is derived
+// from game.started (hud.refreshSystems), not from which button opened it.
+function openSystems() { closeShell(); game.systemsOpen = true; sfx.sfxMenuOpen(); }
 // The run's achievement log. Reachable from the pause menu, the game-over
 // panel, and the V key — it is a RUN readout, so unlike the other three shell
 // panels it says nothing useful before a run has started (the splash doesn't
@@ -885,7 +951,16 @@ hud.initMenus({
   onOpenControls: ui(openControls),
   onOpenCredits: ui(openCredits),
   onOpenAchievements: ui(openAchievements),
+  onOpenSystems: ui(openSystems),
   onOpenMap: ui(openMap),
+  // The saved-systems rows carry an index, so these do their own click sound
+  // (the ui() wrapper takes no arguments — same shape as onRenderScale).
+  // Saving answers with the discovery chime rather than the generic tick:
+  // per the audio grammar a kept system is an opportunity banked, and the
+  // panel gives no other confirmation beyond the row appearing.
+  onSaveSystem: (name) => { sfx.initAudio(); sfx.sfxChime(); saveSystem(name); },
+  onDeleteSystem: (i) => { sfx.initAudio(); sfx.sfxUiClick(); deleteSystem(i); },
+  onPlaySystem: (i) => { sfx.initAudio(); sfx.sfxUiClick(); playSystem(i); },
   onCloseShell: ui(closeShellPanel),
   onClearRoute: ui(() => clearRoute(game)),
   onCentreChart: ui(chartReset),
@@ -1984,6 +2059,9 @@ function update(dtReal) {
       if (game.prog.lives <= 0) {
         game.gameOver = true;
         sfx.sfxGameOver();
+        // Fresh save form for THIS run's end — the last game over may have
+        // spent it (it disarms after one save; the placeholder names the world).
+        hud.armGameOverSave(game.worldSeed);
         hud.setGameOverVisible(true, game.deathCause, game.prog);
       } else {
         hud.setDeathVisible(true, game.deathCause, game.prog.lives);
