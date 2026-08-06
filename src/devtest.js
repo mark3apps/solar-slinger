@@ -8,7 +8,7 @@ import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.j
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel, scarSurfaceAt, TAU } from './util.js';
+import { mulberry32, surfaceVel, scarSurfaceAt, padPos, TAU } from './util.js';
 import { ROCK_SHAPES } from './rockdata.js';
 import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
@@ -1115,6 +1115,87 @@ export function runMechTest(game, hooks, opts = {}) {
       game.prog.tier = wasTier;
       game.st = shipStats(game.prog);
       return `autoland berthed at ${Math.round(pr + 300)}u out; collapse, crater and host-size gates all hold`;
+    });
+
+    // T18d — THE AUTOLAND FLIES A STRAIGHT LINE, so it must only take a ship
+    // that HAS one. Parked on the far side of the pad's own world, inside the
+    // capture radius and perfectly hands-off, it must refuse — engaging there
+    // would drive the ship through the world it is trying to land on.
+    t('dock: autoland refuses a blocked approach', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      // Small enough that the far side is INSIDE CFG.AUTOLAND_R — otherwise the
+      // distance gate would refuse first and this would pass for the wrong
+      // reason, proving nothing about line of sight.
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius * 2 + 60 < CFG.AUTOLAND_R);
+      expect(w, `no moon small enough for the far side to sit inside AUTOLAND_R ${CFG.AUTOLAND_R}`);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      game.dock.t = CFG.DOCK_BUILD;
+      hooks.stepSim(1 / 60);
+      const dk = game.docks[0];
+      liftClear(w);
+      game.autolandCd = 0;
+      // THE FAR SIDE: same distance band as T18c's successful capture, but with
+      // the whole moon in the way.
+      const a = dk.ang + dk.b.rot + Math.PI;
+      const out = dk.b.radius + 40;
+      s.x = dk.b.x + Math.cos(a) * out; s.y = dk.b.y + Math.sin(a) * out;
+      s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a;
+      game.cam.x = s.x; game.cam.y = s.y;
+      const pp = padPos(dk);
+      const gap = Math.hypot(pp.x - s.x, pp.y - s.y);
+      expect(gap < CFG.AUTOLAND_R,
+        `staging put the pad ${Math.round(gap)}u away, outside AUTOLAND_R ${CFG.AUTOLAND_R} — the distance gate would refuse first`);
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the autoland engaged straight through the world it is standing on');
+      return `refused a pad ${Math.round(gap)}u away with ${Math.round(w.radius)}u of moon in the way`;
+    });
+
+    // T18e — THE DOME IS FINITE, NEVER REFILLS, AND ITS DEATH IS THE STATION'S.
+    // A berth used to be total immunity; it is a pool now (CFG.DOCK_SHIELD).
+    // Three things have to hold together or the feature is a lie: damage lands
+    // on the POOL and not the hull, the pool does NOT come back, and the
+    // overflow of the killing blow reaches the hull on that SAME call (the
+    // ram's own no-free-frame rule).
+    t('dock: the dome is a finite pool and takes the station with it', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      const dk = game.dock;
+      expect(dk.hp === CFG.DOCK_SHIELD, `a fresh station carries hp ${dk.hp}, wanted ${CFG.DOCK_SHIELD}`);
+      dk.t = CFG.DOCK_BUILD;
+      hooks.stepSim(1 / 60);
+      s.shield = 0; s.invuln = 0; game.godMode = false;
+      s.hull = game.st.hullMax;
+      const hull0 = s.hull;
+      damageShip(game, 40, 'test');
+      expect(s.hull === hull0, `the dome let ${(hull0 - s.hull).toFixed(1)} through to the hull`);
+      expect(Math.abs(dk.hp - (CFG.DOCK_SHIELD - 40)) < 0.001,
+        `the dome absorbed but banked ${dk.hp}, wanted ${CFG.DOCK_SHIELD - 40}`);
+      // NO RECHARGE — not over time, not at a berth. A full second of berthed
+      // sim must leave the pool exactly where the hit left it.
+      const spent = dk.hp;
+      hooks.stepSim(1);
+      expect(dk.hp <= spent + 0.001, `the dome recharged ${(dk.hp - spent).toFixed(2)} in a second`);
+      // THE KILLING BLOW: 10 left, 60 arrives. The dome eats 10, dies, takes the
+      // station with it, and the remaining 50 lands on the hull NOW.
+      dk.hp = 10;
+      s.hull = game.st.hullMax;
+      const before = s.hull;
+      damageShip(game, 60, 'test');
+      expect(!game.docks.includes(dk), 'the station survived its dome collapsing');
+      expect(!game.dock, 'still berthed at a station that no longer exists');
+      const through = before - s.hull;
+      expect(Math.abs(through - 50) < 0.001,
+        `the hull took ${through.toFixed(1)} of the 60-point blow, wanted the 50 the dome could not cover`);
+      return `pool ${CFG.DOCK_SHIELD}, no recharge, collapse passed 50 of 60 straight through`;
     });
 
     // T19b — "Limped In" must mean what it says. The arm is set at a berth

@@ -355,9 +355,12 @@ Plus the three scaling rules that make a big debris cascade affordable:
   crater line COLLAPSES the station (debris + message; alarm-grade when it was home), and a tier-up
   that outgrows a station's world DECOMMISSIONS it quietly.
 - **A STANDING STATION LANDS YOU ITSELF** (`physics.updateAutoland`, `CFG.AUTOLAND_*`): close, slow
-  and hands-off near a pad you built, and it takes the helm — eases the approach, stands the nose
+  and hands-off near a pad you built **with a clear straight line to it** (`padPathClear` — it flies
+  a straight approach, so a world across the way refuses; the host's own far side falls out of the
+  same test), and it takes the helm — eases the approach, stands the nose
   up, and lets the ordinary gates latch. Any thrust cancels it (cooldown `AUTOLAND_CD`, also set by
-  a launch so the pad can't reel you straight back in); the first landing on bare ground is still
+  a launch so the pad can't reel you straight back in, and by a dash or warp, which never touch the
+  throttle); the first landing on bare ground is still
   flown by hand. Not mirrored in `predictPaths` — see the doc for why.
 - **A HOME RESPAWN ARRIVES BERTHED** (`physics.berthAt`, called from main.js's respawn): docked in
   the clamps, shield and repair live, one thrust from a launch — never hovering over its own pad to
@@ -368,10 +371,18 @@ Plus the three scaling rules that make a big debris cascade affordable:
   that world for the rest of the run; fly back and you berth instantly with everything live.
   `game.docks` holds them (bounded by `DOCK_MAX`), and `game.dock`/`game.home` are REFERENCES into
   it, never copies — the build clock ticks on the station.
-- **A FINISHED DOCK IS A SAFE HARBOUR**: a shield dome over the berth and total damage immunity (one
-  early-out in `damageShip`), plus `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull
-  never self-heals". The dome also **REPELS** loose rock and aliens (`updateDomeShield`) — immunity
-  alone is half a shield. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
+- **A FINISHED DOCK IS A SHIELDED HARBOUR, AND THE SHIELD IS FINITE**: a dome over the berth backed
+  by a fixed pool (`CFG.DOCK_SHIELD` 2400, on the station as `d.hp`) that **never recharges** — and
+  when it runs out the STATION breaks with it (`breakDock`). Damage drains it and the overflow of the
+  killing blow still reaches the hull on that same call (no free frame, the ram's rule). Plus
+  `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull never self-heals". The dome also
+  **REPELS** loose rock and aliens (`updateDomeShield`, which costs charge) — absorption alone is
+  half a shield. **Every velocity in that repel is measured in the dock's own frame** (`surfaceVel`):
+  the dome rides an orbiting world, and read absolutely, a drifting rock bills as a 700 u/s impact
+  and re-bills every substep.
+- **A PAD IS SIZED BY THE HULL AS DRAWN** (`config.berthR` = `st.radius × st.vis`), never by the
+  spec-agnostic collision circle — the scout and brawler art reaches past it, and sizing the deck off
+  the hitbox left them wider than their own berth. `dockHostOk` reads the same expression. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
   is why `DOCK_TIERS` lives in config.js: a field whose pushing edge and drawn edge were two
   expressions is the mirror-drift trap. The ship is **held UPRIGHT** while berthed (`DOCK_UPRIGHT`;
   the mouse stops steering, aiming is unaffected) and **pinned EXACTLY** to the pad — friction is an
@@ -395,8 +406,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
   back. One at a time, and **it dies with its world**. A station is `{ b, ang, rf, t }` — a body, a
   SURFACE-LOCAL bearing, a fraction of its radius (`util.padPos`) and its build seconds — never a
   coordinate: a world orbits AND spins, and a chipped-down world must keep its pad on the surface.
-  HOME is the lives ROSE on all three surfaces (pad, dial, chart) because rose already means "a life"
-  and one meaning must not wear three hues. **The station's ART tracks the SHIP'S TIER**
+  HOME is the lives ROSE — because rose already means "a life" and one meaning must not wear three
+  hues — but IN-WORLD it is a FLAG, NOT A PAINT JOB: the structure stays steel at every station and
+  only a lit spire and pennant go rose. The two instruments (dial, chart) still mark home in it
+  outright, which is their own grammar. **The station's ART tracks the SHIP'S TIER**
   (`config.DOCK_TIERS` via `dockTier`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
   every station you own from a landing slab to a working spaceport.
 - **Hover hint rings:** green = right-click STOWS it, amber = right-click CRUSHES it into the ram

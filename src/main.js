@@ -1517,6 +1517,17 @@ const EVENT_MSGS = [
   // to when you die just changed, which is danger-grade information.
   { flag: 'homeDockLostName', snd: sfx.sfxAlarm,
     first: [(v) => `HOME PORT DESTROYED — the ground under your dock on ${v.toUpperCase()} was blasted away. You respawn at your starting orbit.`, 6] },
+  // THE DOME IS FINITE (CFG.DOCK_SHIELD) and it never refills. Two rows: the
+  // one-shot warning as it crosses DOCK_SHIELD_WARN, and the failure — which
+  // takes the whole station with it, because the dome IS the station's
+  // survival. Not tut-gated: every station has its own pool, so this is news
+  // about THIS harbour every single time.
+  { flag: 'dockShieldLowName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK SHIELD FAILING ON ${v.toUpperCase()} — it does not recharge. Leave, or lose the station.`, 5] },
+  { flag: 'dockShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `DOCK SHIELD COLLAPSED — the station on ${v.toUpperCase()} went with it.`, 5] },
+  { flag: 'homeShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `HOME PORT SHIELD COLLAPSED — ${v.toUpperCase()} is gone with the dock. You respawn at your starting orbit.`, 6] },
   // A tier-up outgrowing a station's world (physics.updateDock's refit sweep).
   // Retired, not destroyed — the wording has to carry that difference.
   { flag: 'dockOutgrownName', snd: sfx.sfxWarnLow,

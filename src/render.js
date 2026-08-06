@@ -3,7 +3,7 @@ import {
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
   shipVis,
 } from './config.js';
-import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive } from './physics.js';
+import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive, dockReady } from './physics.js';
 import * as gravel from './gravel.js';
 import {
   chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
@@ -4371,12 +4371,14 @@ function drawApproach(game) {
 // planet, and a structure whose girders stay 2 screen-pixels wide as you pull
 // away is a HUD element pretending to be scenery.
 //
-// TWO COLOURS, and they say two different things. A plain dock is STEEL: a
-// service you are using right now. A HOME PORT is the lives ROSE (style.css
-// #ff5c7a, the colour of the life pips) because that is precisely what it is —
-// the place a death hands the ship back. Reusing the lives hue rather than
-// inventing a marker colour is the point: the two instruments already agree
-// about what rose means.
+// TWO COLOURS, and the second one is a FLAG, not a paint job. Every station's
+// STRUCTURE is steel; a HOME PORT flies a lit spire and pennant in the lives
+// ROSE (style.css #ff5c7a, the colour of the life pips) and changes in no other
+// way, because a dock is the same building either way and repainting the whole
+// thing said "a different kind of place" when the truth is "the same place, and
+// it's yours". Reusing the lives hue rather than inventing a marker colour is
+// the point: the two instruments already agree about what rose means — and they
+// still mark home in it outright, which is their own grammar.
 const DOCK_STEEL = '207, 228, 255';
 const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (style.css)
 
@@ -4428,10 +4430,11 @@ function bstage(prog, a, b) {
 // is also the bearing the ship parks along — so the pad is drawn in a frame
 // where +y is DOWN into the crust and the whole sprite is authored upright.
 //
-// `release` (0..1) is the launch sequence swinging the clamps open; `dome` asks
-// for the shield bubble (berthed at a finished station); `building` says the
-// build clock is actually TICKING (berthed at an unfinished site) — the
-// worksite fx gate on it, because an abandoned site's clock is paused.
+// `release` (0..1) is the launch sequence swinging the clamps open; `dome` is
+// the shield bubble's remaining CHARGE 0..1 (0 = don't draw it at all: not
+// berthed, or the station isn't finished); `building` says the build clock is
+// actually TICKING (berthed at an unfinished site) — the worksite fx gate on
+// it, because an abandoned site's clock is paused.
 function drawPad(game, pad, ink, home, flash, release, dome, building) {
   const p = padPos(pad);
   if (p.x < view.x0 - 500 || p.x > view.x1 + 500 ||
@@ -4835,7 +4838,13 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
         ctx.globalCompositeOperation = 'lighter';
         const rr = R * 0.2;
         const lamp = ctx.createRadialGradient(lx, ly, 0, lx, ly, rr);
-        lamp.addColorStop(0, `rgba(${ink}, ${(home ? 0.7 : 0.5) * on})`);
+        // NOT modulated by `home`. The deck lamps used to burn 40% hotter at a
+        // home port, which was compensation for the rose `ink`'s luminance back
+        // when the whole building was recoloured. With the structure always
+        // steel that is simply "the rest of the building changes when it's
+        // home" — the thing the flag rule exists to forbid. `home` now has
+        // exactly ONE reader on this pad: the flag block further down.
+        lamp.addColorStop(0, `rgba(${ink}, ${0.5 * on})`);
         lamp.addColorStop(1, `rgba(${ink}, 0)`);
         ctx.fillStyle = lamp;
         ctx.beginPath(); ctx.arc(lx, ly, rr, 0, TAU); ctx.fill();
@@ -4924,23 +4933,32 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
   // a structure, and a ring says nothing about WHAT a home port is. A lit spire
   // does — it is the thing you can see from orbit, it caps the gantry at the
   // tiers that have one, and it competes with nothing.
+  // A HOME PORT IS A FLAG ON AN ORDINARY STATION (user call, 2026-08: "the only
+  // part of it that should change is a flag shows up and it's a red flag, the
+  // colour of the rest of it should not change"). The structure keeps its steel
+  // at every station, home or not — a dock is the same building either way, and
+  // repainting the whole thing said "different kind of place" when the truth is
+  // "same place, and it's yours". So the ROSE lives entirely in this block: the
+  // mast, the pennant and its glow, and nothing else on the pad ever reads it.
+  // (The two INSTRUMENTS still mark home in rose — that is their own grammar,
+  // where a colour is all a two-pixel blip has to work with.)
   if (home && ready) {
     const hx = T.mast ? mx : -R * 0.9;
     const hy = T.mast ? mt : deckY;
     const tip = hy - R * (T.mast ? 0.3 : 0.62);
-    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.strokeStyle = `rgba(${DOCK_HOME}, 0.95)`;
     ctx.lineWidth = R * 0.05;
     ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx, tip); ctx.stroke();
     // The pennant, so the mark has a SHAPE and not just a colour.
-    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.fillStyle = `rgba(${DOCK_HOME}, 0.9)`;
     ctx.beginPath();
     ctx.moveTo(hx, tip); ctx.lineTo(hx + R * 0.34, tip + R * 0.11);
     ctx.lineTo(hx, tip + R * 0.22);
     ctx.closePath(); ctx.fill();
     ctx.globalCompositeOperation = 'lighter';
     const bg = ctx.createRadialGradient(hx, tip, 0, hx, tip, R * 0.55);
-    bg.addColorStop(0, `rgba(${ink}, 0.85)`);
-    bg.addColorStop(1, `rgba(${ink}, 0)`);
+    bg.addColorStop(0, `rgba(${DOCK_HOME}, 0.85)`);
+    bg.addColorStop(1, `rgba(${DOCK_HOME}, 0)`);
     ctx.fillStyle = bg;
     ctx.beginPath(); ctx.arc(hx, tip, R * 0.55, 0, TAU); ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
@@ -4963,7 +4981,22 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
   // Calm and steady, exactly like the ship's own shield rim: no dashes, no idle
   // motion, because a protective field that pulses reads as an alarm. The
   // detail is STRUCTURE — ribs, bands, emitter nodes — never animation.
-  if (dome) {
+  if (dome > 0) {
+    // THE DOME SHOWS WHAT IT HAS LEFT. Its charge is finite and never refills
+    // (CFG.DOCK_SHIELD), so a field down to its last fifth must not look like a
+    // fresh one — but the way to say that is INTENSITY, not motion and not
+    // size. The geometry stays exactly dockDomeR because that is the real
+    // collider (physics.updateDomeShield pushes off it): a dome drawn smaller
+    // than it pushes would be the mirror-drift trap in visual form. So the
+    // field simply gets thinner and dimmer as it is spent, keeping its calm.
+    // Floored well above zero so the last of it still reads as a shield rather
+    // than as a hairline that has already failed.
+    //
+    // The ramp is a POWER, not linear, so the eye leads the alarm: on a linear
+    // ramp CFG.DOCK_SHIELD_WARN (0.2) still looked about half strength while the
+    // cockpit bar was already red, and a warning the field contradicts is worse
+    // than no warning. At 1.5 the warn line lands near a third — visibly spent.
+    const chg = 0.3 + 0.7 * Math.pow(dome, 1.5);
     const Rc = pad.b.radius * pad.rf;            // body centre, in this frame
     // config.dockDomeR — the SAME expression physics.updateDomeShield pushes
     // things off. See the note on the table: drawn edge and pushing edge must
@@ -4979,15 +5012,15 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
 
     ctx.globalCompositeOperation = 'lighter';
     const g2 = ctx.createRadialGradient(0, groundY, dr * 0.2, 0, groundY, dr);
-    g2.addColorStop(0, 'rgba(110, 200, 255, 0.015)');
-    g2.addColorStop(0.7, 'rgba(120, 210, 255, 0.06)');
-    g2.addColorStop(0.93, 'rgba(150, 226, 255, 0.16)');
-    g2.addColorStop(1, 'rgba(190, 240, 255, 0.30)');
+    g2.addColorStop(0, `rgba(110, 200, 255, ${0.015 * chg})`);
+    g2.addColorStop(0.7, `rgba(120, 210, 255, ${0.06 * chg})`);
+    g2.addColorStop(0.93, `rgba(150, 226, 255, ${0.16 * chg})`);
+    g2.addColorStop(1, `rgba(190, 240, 255, ${0.30 * chg})`);
     ctx.fillStyle = g2;
     ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.fill();
     // RIBS + BANDS: the field is panelled, which is what makes it read as
     // engineered rather than as a blur. Static geometry, never motion.
-    ctx.strokeStyle = 'rgba(168, 232, 255, 0.13)';
+    ctx.strokeStyle = `rgba(168, 232, 255, ${0.13 * chg})`;
     ctx.lineWidth = R * 0.022;
     for (let i = 1; i < 6; i++) {
       const a = Math.PI + (i / 6) * Math.PI;
@@ -5002,11 +5035,18 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
     ctx.globalCompositeOperation = 'source-over';
     // The rim: a hard bright edge over a softer inner line, so the field has a
     // definite SURFACE. A single hairline reads as a drawn circle; two weights
-    // read as something with thickness that light is catching.
-    ctx.strokeStyle = 'rgba(120, 200, 240, 0.3)';
-    ctx.lineWidth = R * 0.1;
+    // read as something with thickness that light is catching. The OUTER weight
+    // is what thins as the charge goes — the surface stays, it just has less
+    // behind it.
+    ctx.strokeStyle = `rgba(120, 200, 240, ${0.3 * chg})`;
+    ctx.lineWidth = R * 0.1 * chg;
     ctx.beginPath(); ctx.arc(0, groundY, dr * 0.985, 0, TAU); ctx.stroke();
-    ctx.strokeStyle = 'rgba(206, 245, 255, 0.9)';
+    // The bright edge keeps its OWN floor rather than riding `chg`. Both the
+    // alpha and the outer weight thinning together left a near-empty dome
+    // resting on one 0.27-alpha hairline, which is fine over black sky and
+    // marginal over a lava world's lit limb — and this stroke is the SURFACE.
+    // The surface stays; what thins is everything behind it.
+    ctx.strokeStyle = `rgba(206, 245, 255, ${0.45 + 0.45 * dome})`;
     ctx.lineWidth = R * 0.035;
     ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.stroke();
     // THE BITE. Where the field just threw something off, it flares — an EVENT,
@@ -5017,7 +5057,11 @@ function drawPad(game, pad, ink, home, flash, release, dome, building) {
       const k = clamp(game.domeHitT / 0.3, 0, 1);
       const a = (game.domeHitA || 0) - up - Math.PI / 2;   // world bearing -> pad frame
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k})`;
+      // SCALED BY THE CHARGE, and this one matters most: the bite is the only
+      // in-world signal that the pool is draining, so a nearly-spent dome
+      // flaring exactly as bright as a fresh one reads backwards — the field
+      // looking healthiest at the moment it is being finished off.
+      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k * chg})`;
       ctx.lineWidth = R * 0.09 * k;
       ctx.beginPath();
       ctx.arc(0, groundY, dr, a - 0.5 * (1 - k) - 0.18, a + 0.5 * (1 - k) + 0.18);
@@ -5075,11 +5119,20 @@ function drawDocks(game) {
   for (const d of docks) {
     if (!d.b.alive) continue;
     const berthed = game.dock === d;
-    drawPad(game, d, game.home === d ? DOCK_HOME : DOCK_STEEL, game.home === d,
+    // ALWAYS STEEL. A home port is not a differently-coloured building, it is
+    // an ordinary station flying a rose flag (see drawPad's home block).
+    drawPad(game, d, DOCK_STEEL, game.home === d,
       berthed ? flash : 0,
       berthed ? release : 0,
-      berthed && d.t >= CFG.DOCK_BUILD,
-      berthed && d.t < CFG.DOCK_BUILD);
+      // The dome is up only at a FINISHED station you are berthed at, and it is
+      // drawn at whatever charge is left in it (config.CFG.DOCK_SHIELD).
+      // `dockReady`, never an inline `t >= DOCK_BUILD`: that predicate is what
+      // the dome's PUSH, its draw and its cockpit gauge all key off, and a
+      // private copy in each is the mirror-drift trap that put dockDomeR in
+      // config.js in the first place.
+      berthed && dockReady(d)
+        ? clamp((d.hp ?? CFG.DOCK_SHIELD) / CFG.DOCK_SHIELD, 0, 1) : 0,
+      berthed && !dockReady(d));
   }
 }
 
@@ -8973,7 +9026,7 @@ function drawMinimap(game) {
     // sun-centred plot, but "nothing, ever" has no instrument exceptions.
     if (!dk.b.alive || dk.b.hidden) continue;
     const isHome = game.home === dk;
-    const done = dk.t >= CFG.DOCK_BUILD;
+    const done = dockReady(dk);
     const p = padPos(dk);
     const dx = p.x - fx, dy = p.y - fy;
     const d = Math.hypot(dx, dy) || 1;
@@ -9604,10 +9657,13 @@ export function drawStarMap(game) {
   // way to learn it exists.
   //
   // Rose for HOME, and deliberately against this file's "a UI construct is
-  // painted in chrome ink" note: HOME already means rose on the pad sprite and
-  // on the dial, and one meaning wearing three colours across three instruments
-  // is worse than one construct borrowing a semantic hue. Other stations get
-  // the steel ring with no label — findable, not shouting.
+  // painted in chrome ink" note: HOME already means rose on the dial, and on the
+  // pad it is the colour of the flag the station flies — one meaning wearing
+  // three colours across three instruments is worse than one construct
+  // borrowing a semantic hue. The instruments mark home in rose OUTRIGHT, unlike
+  // the pad's structure, because a two-pixel blip has only its colour to work
+  // with. Other stations get the steel ring with no label — findable, not
+  // shouting.
   if (game.docks) for (const dk of game.docks) {
     if (!dk.b.alive || dk.b.hidden) continue;   // hidden shows NOTHING, chart included
     const isHome = game.home === dk;

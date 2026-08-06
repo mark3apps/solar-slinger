@@ -1569,15 +1569,36 @@ export function damageShip(game, dmg, cause, hitAng, fxDmg = dmg) {
   // godMode is the window.god() dev/test hook — every ship-damage path funnels
   // through here, so this one early-out is the whole feature.
   //
-  // A FINISHED DOCK IS A SAFE HARBOUR (dockReady): its shield dome covers the
-  // berth and nothing gets through, which is what the ten seconds of building
-  // it while exposed bought. Gated on READY, never on merely being berthed —
-  // the build is meant to be the risky part, and a station that protected you
-  // while it was still going up would make its own cost free. It rides here
-  // rather than on s.invuln so that nothing else (a respawn, a dash) can be
-  // confused with it, and so every damage path in the game is covered by the
-  // one test.
-  if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return;
+  if (!s.alive || s.invuln > 0 || game.godMode) return;
+  // A FINISHED DOCK IS A SHIELDED HARBOUR — AND THE SHIELD IS FINITE.
+  //
+  // This used to be a fourth term in the early-out above: berthed at a ready
+  // station meant TOTAL immunity, which made a dock the one place in the game
+  // nothing could ever reach you. It is a POOL now (CFG.DOCK_SHIELD, carried on
+  // the station as `d.hp` and never refilled by anything) — so a harbour is
+  // something you can spend, and eventually lose, rather than a safe room.
+  //
+  // WHEN IT BREAKS, THE DOCK BREAKS: the dome IS the station's survival, so
+  // there is no such thing as a standing station with a dead shield, and the
+  // whole structure goes through the same breakDock the collapse uses.
+  //
+  // NO FREE FRAME, the same rule the ram runs on (spendRam): whatever the pool
+  // could not cover reaches the hull on THIS call. Protection is total, then it
+  // is over, and there is no cliff in between.
+  //
+  // Gated on READY, never on merely being berthed — the build is meant to be
+  // the risky part, and a station that protected you while it was still going
+  // up would make its own cost free.
+  const dk = game.dock;
+  if (dockReady(dk) && dk.hp > 0) {
+    const eaten = Math.min(dk.hp, dmg);
+    dmg -= eaten;
+    fxDmg -= eaten;
+    game.domeHitT = 0.3;                            // render: the rim flares
+    game.domeHitA = hitAng ?? s.angle;
+    spendDome(game, dk, eaten);
+    if (dmg <= 0) return;
+  }
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull. Coverage
   // is `st.shieldArc` (config.shipStats), the half-angle around the nose: a
@@ -2912,11 +2933,12 @@ function spendRam(game, dmg, hitAng) {
   const s = game.ship;
   if (!(s.ram > 0) || !(dmg > 0)) return dmg;
   // THE RAM IS BEHIND THE SAME DOOR THE HULL IS. damageShip early-outs on dead
-  // / invulnerable / godMode / berthed-at-a-finished-dock; a hit that cannot
-  // touch the hull must not quietly eat the ram either, or the "total damage
-  // immunity" safe harbour costs a brawler its whole pack to a rock that
-  // drifts onto the bow while it sits on its own pad. Same predicate, one
-  // place, so the two can't drift apart.
+  // / invulnerable / godMode, and a live dome eats the hit before the hull ever
+  // sees it; a blow that cannot touch the hull must not quietly eat the ram
+  // either, or a berth costs a brawler its whole pack to a rock that drifts
+  // onto the bow while it sits on its own pad. `dockReady` is the right test
+  // for the dome too — a station whose charge runs out is REMOVED (breakDock),
+  // so a ready dock always has a live dome behind it.
   if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return dmg;
   const t0 = ramTier(game.st, s.ram);
   const canEat = s.ram / CFG.RAM_ABSORB;     // hull points this much mass is worth
@@ -3520,6 +3542,61 @@ function padUndermined(q) {
     1 - scarSurfaceAt(q.b.scars, q.b.radius, q.ang) > CFG.DOCK_CRATER_MAX;
 }
 
+// TAKE A STATION OFF THE BOARD. The bookkeeping half only — every way a dock
+// stops existing (its world dies, its ground goes, its dome fails, the ship
+// outgrows it) comes through here so none of them can forget a reference.
+// `game.dock` and `game.home` are references INTO game.docks, so a splice that
+// left either pointing at a retired record would keep clamping the ship to a
+// station that is no longer drawn. Returns whether it was the home port, since
+// every caller words that case differently.
+function removeDock(game, d) {
+  const i = game.docks.indexOf(d);
+  if (i >= 0) game.docks.splice(i, 1);
+  if (game.dock === d) {
+    game.dock = null;
+    game.launch = null;      // a release sequence cannot outlive its pad
+  }
+  if (game.autoland === d) game.autoland = null;
+  const wasHome = game.home === d;
+  if (wasHome) game.home = null;
+  return wasHome;
+}
+
+// ...AND THE BANG. A station that is DESTROYED (rather than quietly retired)
+// goes with debris, shake and a named message — a structure the player spent
+// ten exposed seconds building must never just be missing from the dial.
+// `how` picks the wording; the home-port variant is alarm-grade because where a
+// death puts you back has just changed, and that must never be discovered by
+// dying.
+function breakDock(game, d, how) {
+  const pp = padPos(d, _padScratch);
+  const wasHome = removeDock(game, d);
+  addParticles(game, pp.x, pp.y, d.b.vx, d.b.vy, 20, '#cfe4ff', 170, 0.85, 3);
+  addShake(game, 4);
+  sfx.sfxBoom(0.6, 0.7);
+  const name = placeName(d.b, wasHome ? 'your home world' : 'a distant world');
+  if (how === 'shield') {
+    if (wasHome) game.homeShieldLostName = name; else game.dockShieldLostName = name;
+  } else if (wasHome) game.homeDockLostName = name;
+  else game.dockLostName = name;
+}
+
+// SPEND THE DOME — the ONE place the charge pool is ever debited, so the two
+// things that drain it (damage aimed at the ship, and rock thrown off the rim)
+// cannot disagree about when it warns or when it dies. Nothing anywhere credits
+// it: CFG.DOCK_SHIELD is issued once at the build site and that is the whole
+// supply.
+function spendDome(game, d, cost) {
+  d.hp -= cost;
+  if (d.hp <= 0) { breakDock(game, d, 'shield'); return; }
+  // Failing, announced ONCE on the crossing — a dome two hits from death at a
+  // home port is exactly the thing a player must not discover by losing it.
+  if (!d.warned && d.hp <= CFG.DOCK_SHIELD * CFG.DOCK_SHIELD_WARN) {
+    d.warned = true;
+    game.dockShieldLowName = placeName(d.b);
+  }
+}
+
 // Cleared on a world REGEN as well as a run reset — the bodies these point at
 // are about to be thrown away, exactly like a chart route's stops.
 export function clearDocks(game) {
@@ -3557,36 +3634,17 @@ function updateDock(game, dt) {
     // simply grew past what the world can hold.
     const outgrown = q.b.alive && !undermined && !dockHostOk(game.st, q.b.radius);
     if (q.b.alive && !undermined && !outgrown) continue;
-    const dead = docks.splice(i, 1)[0];
-    if (game.dock === dead) {
-      game.dock = null;
-      game.launch = null;    // a release sequence cannot outlive its pad
-    }
+    // THE COLLAPSE IS AN EVENT (breakDock): debris off the pad point and a
+    // named message, never a station silently missing from the dial. A world
+    // that DIED takes its station quietly by comparison — the world's own
+    // destruction is the event, and homeLostName carries the consequence.
+    if (undermined) { breakDock(game, q, 'undermined'); continue; }
+    const wasHome = removeDock(game, q);
     if (outgrown) {
-      if (game.home === dead) {
-        game.homeOutgrownName = placeName(dead.b, 'your home world');
-        game.home = null;
-      } else {
-        game.dockOutgrownName = placeName(dead.b, 'a distant world');
-      }
-      continue;
-    }
-    if (undermined) {
-      // THE COLLAPSE IS AN EVENT: debris off the pad point and a named message,
-      // never a station silently missing from the dial. Home port gets its own
-      // wording — losing the respawn point is the news; the structure is the
-      // detail. (A dead BODY stays quiet here on purpose: the world's own
-      // destruction is the event, and homeLostName below already carries it.)
-      const pp = padPos(dead, _padScratch);
-      addParticles(game, pp.x, pp.y, dead.b.vx, dead.b.vy, 16, '#cfe4ff', 150, 0.8, 3);
-      addShake(game, 3);
-      if (game.home === dead) game.homeDockLostName = placeName(dead.b, 'your home world');
-      else game.dockLostName = placeName(dead.b, 'a distant world');
-      sfx.sfxBoom(0.6, 0.7);
-    }
-    if (game.home === dead) {
-      if (!undermined) game.homeLostName = placeName(dead.b, 'your home world');
-      game.home = null;
+      if (wasHome) game.homeOutgrownName = placeName(q.b, 'your home world');
+      else game.dockOutgrownName = placeName(q.b, 'a distant world');
+    } else if (wasHome) {
+      game.homeLostName = placeName(q.b, 'your home world');
     }
   }
 
@@ -3670,6 +3728,12 @@ function updateDock(game, dt) {
         ang: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
         rf: dist / Math.max(1, b.radius),
         t: 0,
+        // THE DOME'S CHARGE, spent forever (CFG.DOCK_SHIELD). Issued at the
+        // build site rather than at completion so it is one number for the
+        // station's whole life — nothing anywhere refills it, and a station
+        // that is rebuilt on the same spot is a NEW record with a new pool,
+        // which is the honest reading of having built it again.
+        hp: CFG.DOCK_SHIELD,
       };
       docks.push(d);
       // The bound, not a balance number (CFG.DOCK_MAX). Retire the OLDEST
@@ -3750,6 +3814,39 @@ export function berthAt(game, d) {
   landing.b = b; landing.t = CFG.DOCK_TIME;
   game.dockT = 1; game.dockCand = b; game.dockGate = '';
   game.launch = null; game.autoland = null;
+}
+
+// IS THE WAY IN CLEAR? A segment-vs-disc test from the hull to the pad over
+// every celestial that could be in the way. The autoland flies a STRAIGHT
+// approach — it is a docking aid, not a pathfinder — so engaging it with a
+// world across the path would drive the ship into that world, which is the
+// game doing the exact thing the pilot is trusting it not to.
+//
+// THE PAD'S OWN HOST IS TESTED TOO, and that is the elegant half: the pad sits
+// ON that surface, so a segment ending there only crosses the interior when
+// the ship is OVER THE HORIZON from it. Testing the host at 0.995 of its
+// radius therefore answers "can this berth actually be seen from here?" with
+// the same arithmetic — no special case, no separate far-side test.
+//
+// Walks reg.nonField (~380 bodies, never the ~15,000 shoal rocks) and only
+// after the cheap distance/velocity gates have already picked a candidate, so
+// this runs at most once per substep and only while hands-off beside a pad.
+function padPathClear(game, sx, sy, px, py, host) {
+  const dx = px - sx, dy = py - sy;
+  const L2 = dx * dx + dy * dy;
+  for (const b of frameReg(game).nonField) {
+    if (!b.alive) continue;
+    if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'star') continue;
+    // The host is what the approach ENDS on: shave it so touching its surface
+    // is not "blocked", while the far side still is.
+    const r = b === host ? b.radius * 0.995 : b.radius;
+    // Closest point on the segment to the body's centre.
+    let t = L2 > 0 ? ((b.x - sx) * dx + (b.y - sy) * dy) / L2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = sx + dx * t - b.x, qy = sy + dy * t - b.y;
+    if (qx * qx + qy * qy < r * r) return false;
+  }
+  return true;
 }
 
 // AUTOLAND — A STANDING STATION LANDS YOU ITSELF (CFG.AUTOLAND_*). Close and
@@ -3837,6 +3934,10 @@ function updateAutoland(game, dt) {
   const dist = Math.hypot(dx, dy) || 1;
   // Not plainly LEAVING: a ship receding faster than a drift keeps the helm.
   if ((rvx * dx + rvy * dy) / dist < -40) return;
+  // LAST, because it is the only expensive gate: the approach is a straight
+  // line, so it must actually BE one. Covers the far side of the pad's own
+  // world as well as a moon parked across the way — see padPathClear.
+  if (!padPathClear(game, s.x, s.y, p.x, p.y, b)) return;
   game.autoland = pick;
   game.autolandName = placeName(b);
 }
@@ -3865,6 +3966,11 @@ function updateDomeShield(game, live) {
   const cy = b0.y + Math.sin(up) * b0.radius;
   const dr = dockDomeR(game.st, b0.radius, b0.radius * (d.rf - 1));
   const push = (o, r) => {
+    // THE FIELD CAN DIE MID-PASS. A repel below can empty the pool and take the
+    // whole station with it, and everything from that instant on — cx/cy/dr and
+    // the pool itself — belongs to a dock that no longer exists. One test at the
+    // top of the only entry point stands the rest of the sweep down.
+    if (game.dock !== d) return false;
     const dx = o.x - cx, dy = o.y - cy;
     if (dx > dr + r || dx < -(dr + r) || dy > dr + r || dy < -(dr + r)) return false;
     const dd = Math.hypot(dx, dy);
@@ -3876,12 +3982,40 @@ function updateDomeShield(game, live) {
     const nx = dx / dd, ny = dy / dd;
     if (nx * Math.cos(up) + ny * Math.sin(up) < -0.25) return false;
     o.x = cx + nx * need; o.y = cy + ny * need;
-    const vn = o.vx * nx + o.vy * ny;
-    if (vn < 0) { o.vx -= 2 * vn * nx; o.vy -= 2 * vn * ny; }   // reflect off the field
+    // EVERY VELOCITY HERE IS MEASURED IN THE DOCK'S OWN FRAME (util.surfaceVel
+    // — the same expression surface friction and the docking stillness gate
+    // read, for the same reason). The dome rides a world that ORBITS, at up to
+    // ~700 u/s, so an absolute-frame reading calls a rock merely drifting
+    // alongside a 700 u/s impact — and, worse, satisfies the separation floor
+    // below without the rock ever separating from a dome that is travelling
+    // just as fast, so the same contact is re-solved every substep at 120 Hz.
+    // Harmless while the field only pushed; the moment a repel started COSTING
+    // CHARGE it emptied a 2400-point pool in about a second off one drifting
+    // rock. Reported as "the dock shield went almost completely away on one
+    // small asteroid hit".
+    const sv = surfaceVel(b0, o.x, o.y);
+    const vn = (o.vx - sv.vx) * nx + (o.vy - sv.vy) * ny;
+    // THROWING SOMETHING OFF COSTS CHARGE (CFG.DOCK_REPEL_COST). Damage is the
+    // dome's main drain, but the most VISIBLE thing the field does is bounce a
+    // hurled rock, and a bounce that cost nothing would read as the shield
+    // still being invulnerable in exactly the moment the player is watching.
+    // INBOUND CLOSING speed only, on the same saturating mass knee as collision
+    // damage, and under a per-bite CEILING: a shoal leaning on the rim pays ~0
+    // (it must never bleed the pool by drift), a rock hurled hard pays a few
+    // points, and nothing can ever take a big bite out of the pool in one
+    // frame — the pool is meant to be spent over an assault, not lost to an
+    // event.
+    if (vn < 0) {
+      const m = o.mass || 200;
+      spendDome(game, d, Math.min(CFG.DOCK_REPEL_MAX,
+        CFG.DOCK_REPEL_COST * (m / (m + 1500)) * -vn));
+      o.vx -= 2 * vn * nx; o.vy -= 2 * vn * ny;                 // reflect off the field
+    }
     // …and make sure it actually LEAVES. A pure reflection lets a slow drifter
     // sit on the boundary being re-solved every substep; the floor turns the
-    // dome from a wall into something that throws.
-    const out = o.vx * nx + o.vy * ny;
+    // dome from a wall into something that throws. Relative, like everything
+    // above it: separation is separation FROM THE DOME, not speed through space.
+    const out = (o.vx - sv.vx) * nx + (o.vy - sv.vy) * ny;
     if (out < CFG.DOCK_REPEL_MIN) {
       o.vx += (CFG.DOCK_REPEL_MIN - out) * nx;
       o.vy += (CFG.DOCK_REPEL_MIN - out) * ny;

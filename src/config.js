@@ -414,6 +414,41 @@ export const CFG = {
                            //   design law note in docs/design-laws.md — this is
                            //   the second sanctioned exception to "the hull
                            //   never heals")
+  // ---- The dome's CHARGE (user call, 2026-08: "the dock shield shouldn't be
+  // invulnerable — it should have a fixed amount but really high, it shouldn't
+  // recharge, and when it breaks the dock breaks").
+  //
+  // A berth used to be TOTAL immunity, which made a finished dock the one place
+  // in the game nothing could ever reach you — a safe room rather than a
+  // fortification. It is a POOL now: big, fixed, and spent forever. That turns
+  // a home port from a place you hide into a place you can lose, and it prices
+  // hiding at a dock while a nest works on you.
+  //
+  // REALLY HIGH is the brief, and 2400 is ~7.5 top-tier hulls or ~35 full CME
+  // passes: nothing in ordinary play scratches it, and it takes a sustained
+  // assault to break. It NEVER refills — not at a berth, not over time, not on
+  // a tier-up. The station carries it (`d.hp`), so each station has its own and
+  // a second port is a second pool.
+  DOCK_SHIELD: 2400,
+  // What the dome pays for THROWING something off (updateDomeShield). Damage is
+  // the main drain; this closes the hole where the most VISIBLE thing the field
+  // does — bouncing a hurled rock — cost it nothing, which reads as the shield
+  // still being invulnerable in exactly the moment the player is watching it.
+  // Priced on the same saturating mass knee as ship collision damage and on
+  // INBOUND speed only, so ambient drift against the rim costs ~0 (a shoal
+  // leaning on the dome must not bleed it) while a rock hurled at 400 u/s costs
+  // a few points.
+  DOCK_REPEL_COST: 0.02,
+  // …and a CEILING on any single bite. The pool is meant to be spent over a
+  // sustained assault, never lost to one event: without this, one heavy
+  // landmark rock arriving fast could take a visible chunk out of a harbour in
+  // a single frame, which is exactly the "shield vanished off one hit" failure
+  // the frame fix above was reported for. 12 points is ~0.5% of the pool — a
+  // hard hit you can watch land, two hundred of which would still not break it.
+  DOCK_REPEL_MAX: 12,
+  // Fraction of the pool at which the station warns it is failing. One shot per
+  // crossing, so a dome sitting at 19% doesn't nag.
+  DOCK_SHIELD_WARN: 0.2,
   DOCK_UPRIGHT: 6,         // 1/s the helm eases the nose to the surface normal
                            //   while berthed — the ship stands up and stays up
   DOCK_LIFT: 1.6,          // hull radii a respawn is placed above the pad, so
@@ -2562,9 +2597,30 @@ export const DOCK_TIERS = [
 export function dockTier(st) {
   return DOCK_TIERS[Math.min(DOCK_TIERS.length - 1, st.tier || 0)];
 }
+// THE BERTH IS SIZED BY THE HULL AS DRAWN, NOT AS COLLIDED (bug, 2026-08:
+// "the docking station for the tier 1 brawler is way too small").
+//
+// `st.radius` is the COLLISION circle, and that is deliberately one number for
+// every spec — SHIP_VIS is what makes all three ladders read the same SIZE, and
+// its own note spells out the knock-on: "a spec's DRAWN reach is `r /
+// SHIP_HIT_FRAC x vis`... everything that must wrap the ART rather than the
+// hitbox multiplies by it". A pad is as art-wrapping as anything gets, and it
+// was never given that multiply — so the deck was sized for a hauler and every
+// scout and brawler simply overhung it. Measured: a tier-1 brawler's drawn hull
+// reaches 16.0 units across a deck whose half-width was 15.2, i.e. the ship was
+// visibly WIDER THAN ITS OWN BERTH at tiers 1-4 (scout 1-2, worst 0.88x).
+//
+// Multiplying the ship term by `vis` makes the pad-to-hull ratio come out
+// EXACTLY the hauler's at every tier and every spec (1.43 -> 1.92 as the tier
+// widens the deck for what stands on it), which is the same equal-apparent-size
+// principle SHIP_VIS exists to enforce. The hauler ladder is unchanged by
+// construction (its vis is 1 at every tier), so nothing that already looked
+// right moves.
+export function berthR(st) { return st.radius * (st.vis || 1); }
 export function dockPadR(st, hostR) {
-  const want = Math.max(16, st.radius * 2.2) * dockTier(st).w;
-  return Math.max(Math.max(14, st.radius * 1.9), Math.min(want, hostR * 0.42));
+  const b = berthR(st);
+  const want = Math.max(16, b * 2.2) * dockTier(st).w;
+  return Math.max(Math.max(14, b * 1.9), Math.min(want, hostR * 0.42));
 }
 // A PORT NEEDS A WORLD THAT CAN CARRY IT (user call, 2026-08). The berth is
 // sized by the SHIP — dockPadR's berth floor deliberately WINS over the host
@@ -2576,16 +2632,24 @@ export function dockPadR(st, hostR) {
 //
 // THE LINE IS 0.55 OF THE HOST RADIUS, deliberately looser than dockPadR's
 // 0.42 aesthetic cap: the cap is where a pad stops LOOKING right, the gate is
-// where it stops being PLAUSIBLE at all. Calibrated against the real sky
-// (moons 41-232 median 135, planets 293+): every moon hosts a tier-0 pad, the
-// median moon carries a port to about tier 3, and a top-class port is planet-
-// and-giant-moon infrastructure (~229+). One predicate, every reader: the
+// where it stops being PLAUSIBLE at all. It reads the SAME `berthR` the pad
+// does, so the gate and the structure can never disagree about how big a berth
+// this ship needs — and it therefore varies by SPEC as well as tier, which is
+// correct: a brawler really is a wider thing to park. Host radius needed, by
+// spec across tiers 0-5:
+//   hauler   26  26  44  76  132  230
+//   scout    26  39  75  116  197  321
+//   brawler  26  37  68  130  231  384
+// Against the real sky (moons 41-232 median 135, planets 293-1998): every moon
+// hosts a tier-0 pad, the median moon carries to about tier 3, the biggest moon
+// takes a tier-4 hull, and a top-tier port is planet infrastructure for every
+// spec. One predicate, every reader: the
 // landing gate ('small' in game.dockGate), updateDock's refit sweep (a
 // standing station DECOMMISSIONS when the ship class outgrows its world — the
 // art refits to the current tier, so the rule must too), and the approach
 // guide's wording.
 export function dockHostOk(st, hostR) {
-  return Math.max(14, st.radius * 1.9) <= hostR * 0.55;
+  return Math.max(14, berthR(st) * 1.9) <= hostR * 0.55;
 }
 // The dome, measured FROM THE SURFACE POINT under the pad (not the pad origin,
 // which sits a hull-radius above the crust — `groundY` is that lift). Sized to
