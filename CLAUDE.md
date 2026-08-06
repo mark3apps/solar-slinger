@@ -393,6 +393,21 @@ Plus the three scaling rules that make a big debris cascade affordable:
   Hue is the locale's; the edge wash's INTENSITY is still the music director's mood.
 - **No hard edges in-world** — the world boundary and the Oort cloud are stochastic weather, never a
   stroke at an exact radius. In-world transitions are organic, never geometric.
+- **THE SUN IS A PLACE, NOT A LIGHT SOURCE** (`render.drawStar`). A 4,800-unit star fills the screen
+  at every distance, so the whole draw answers one question: WHAT RESOLVES WHEN YOU GET CLOSER.
+  Detail rides three scales — **live** supergranule cells in **both signs** (the coarse scale, because
+  a tile that size reads as wallpaper), **baked** granulation tiles at three spans (the fine scales,
+  because repetition that small reads as grain), and the limb's boil cells. **Granulation must BOIL
+  and must not TILE**: three separate bakes that each octave cross-fades between on its own clock, and
+  every octave fades out under ~8px per cell or the disc becomes orange peel, which flattens a sphere
+  as hard as no texture at all. **THE LIMB SMEAR IS WIDE ON PURPOSE and is not to be tightened** — a
+  tight feather kills the seam more cheaply but makes the approach read as skimming a big warm object;
+  near a STAR the view is meant to drown in light. The fringe is **cells, not strands** (jets read as
+  hair), prominences are **filled tapered ribbons in six faint bands** (stroked segments print a chain
+  of discs; one wide band prints its own edge), and the corona is a **union of soft lobes** (wedges
+  read as searchlights, one envelope path prints its own outline). **NO SUNSPOTS** — a full anatomy was
+  built and cut, because at this size a dark object on an all-light surface reads as damage, not
+  weather.
 - **A rock is never a perturbed primitive, and never convex** — a base shape plus noise reads as the
   base shape, however hard you rough it. `util.rockOutline` is the ONE generator for gravel and
   landmarks alike: lobes, stretch, 1/f grain, half-plane facets, concave bites and gouges, composed

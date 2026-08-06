@@ -1257,3 +1257,93 @@ The shard family has its **own sheet geometry and its own tiers** (12 archetypes
 `drawImage` costs more raster than a small polygon fill. Instanced GL has no such crossover. Real
 crust debris measures a P50 drawn radius of ~19px at the game's own zoom, right past the rock cap, so
 capping shards there would have rejected the entire layer this path exists for.
+
+## The sun is a place, not a light source (added 2026-08)
+
+The star is `radius` 4,800 — it fills the screen from a lane out and keeps filling it all the way in.
+It used to be a flat cream disc wearing four soft blobs, seven wire-thin prominence arcs and four
+brown smudges, and the complaint that started this was exactly right: *"the scale of it is massive but
+none of it really reads."* Nothing on the surface had a size of its own, so there was nothing for the
+eye to measure 4,800 units against, and the disc read as a sticker at every distance.
+
+Everything below lives in `render.drawStar`.
+
+### Detail at three scales, each fading in at its own zoom
+
+| Layer | World size | Carries |
+|---|---|---|
+| supergranules | ~1,000-unit cells, live, **both signs** | the surface at any distance where a granule is sub-pixel |
+| granulation | baked tiles at three spans — cells ~129 / 43 / 14 units | what resolves as you close in |
+| chromosphere | ~50-unit boil cells on the limb | the scale itself — see below |
+
+**The coarse scale is LIVE and the fine scales are TILED, never the other way round.** A tiled texture
+1,500 units wide repeats three times across the disc and the eye reads that as wallpaper. Live cells
+never repeat and always evolve, which is what that scale needs; a 14-unit cell repeating ninety times
+reads as grain, which is what *that* scale needs.
+
+**The supergranules come in both signs.** They were additive-only at first, so the disc could only get
+*brighter* in patches — mottling needs the dark half, or the surface reads as a clean sphere with
+lamps on it. The dark set is bigger, slower and fainter than the bright set.
+
+**Granulation must BOIL.** Rigidly rotating one tile at `SUN_SPIN` (~1°/s) is a static texture — caught
+on sight. There are **three different bakes** and each octave cross-fades between them on its own
+clock (`boil`, 17 / 9 / 5s — the smaller the cell, the shorter it lives), each bake at its own bearing,
+so cells dissolve where they were and appear where they weren't.
+
+**Each octave fades in slowly with drawn cell size** (full at ~22px, gone under 8px). Granulation that
+reaches full strength at a few pixels per cell turns the whole disc into an even speckle — orange peel
+— and an even speckle flattens a sphere exactly as hard as no texture at all.
+
+### The limb is the point, and the smear is deliberate
+
+The photosphere is a **filled path**, so however softly it is shaded inside, it *ends*: a solid amber
+disc butts against the corona and the step reads as a stroke the whole way round. Nothing painted on
+the face can fix that, because the clip is what makes it.
+
+**THE SMEAR** (`sm`, `R*0.88 → R*1.10`, source-over): the disc's own limb colour pushed outward past
+where the fill stops, so photosphere colour is on both sides of the boundary and there is nothing to
+lock onto. Additive is wrong here — adding light *at* the edge brightens the seam.
+
+**It is wide on purpose, and it is not to be tightened.** A feather that hugged the outline was built
+and it dissolves the seam more cheaply, but flying the limb then reads as skimming a big warm object.
+This is a STAR: a few hundred units off the surface the whole view should be drowning in its light.
+That effect is the feature. *"It should look overwhelming, it's the sun!"*
+
+**The fringe is CELLS, not strands.** Individual spicule jets were drawn here first and every one read
+as a HAIR — a stiff, separable, faintly comic fringe that made the star look furry rather than molten.
+Soft blobs that each feather to nothing, **straddling** the surface rather than standing on a common
+standoff (a shared standoff puts every feather at one height and the fringe grows a second edge of its
+own), merge into one ragged hot boundary that churns.
+
+Two related traps already paid for, both in the same family:
+
+- **Prominences are filled tapered RIBBONS, in six faint nested bands.** Walked as N short strokes
+  under `'lighter'`, every round cap overlaps its neighbour and blends twice — up close a loop came out
+  a visible **chain of discs**. And one wide band at a readable alpha prints its own crisp boundary
+  across the screen when you are close enough to fly through the loop; stacking thin bands is how a
+  fill gets a soft shoulder. The sheath carries the read, the core is only a hint inside it: a bright
+  constant-width wire on a limb this long is an antenna, not plasma.
+- **The corona is a union of soft LOBES.** Wedge streamers (a fan filled through a radial gradient)
+  read as searchlights, and a single lumpy envelope *path* prints its own outline, because the
+  gradient still has alpha wherever the envelope dips inside its own maximum. A lobe that feathers to
+  zero on its own can do neither. Their tails need a smooth multi-stop falloff — a gradient running
+  linearly to zero has a kink at its outer stop, and where several overlap that kink draws an arc in
+  the corona.
+
+### No sunspots
+
+A full anatomy was built and cut: bipolar groups, irregular umbra, filamented penumbra, facular plage,
+tuned from near-black up to warm ember. At this size a spot is a **large dark object sitting on a
+surface that is otherwise all light and motion**, and it read as damage rather than as weather however
+the tones were graded. The star is better as a body that is uniformly, enormously alive. (The
+filaments had their own trap on the way: drawn long and sparse they reached past the penumbra fill
+meant to contain them and every spot came out a sea urchin.) Don't re-add spots without solving the
+"reads as damage" problem first.
+
+### Cost is bounded by the screen, never by the sun
+
+The pattern fills clip to the photosphere and the canvas bounds the raster. The limb passes walk only
+the bearing window the camera can see, solved as a **circle-circle intersection** (`limbWindow`) rather
+than `drawStormWave`'s `asin(viewR/d)` approximation — the camera can sit *inside* this body, where an
+asin window is meaningless. Measured: the `perf` suite reports no change against the pre-change
+baseline.
