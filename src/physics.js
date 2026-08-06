@@ -6134,6 +6134,9 @@ export function step(game, dt) {
             b.mass > CFG.ATMO_MAX_MASS || b.core || b.cache || b.pod ||
             b.carved || b.visitor || b.wreck || b.junk || b.parryFrozen) continue;
         for (const p of terrans) {
+          // Registry contract: a per-frame snapshot, so consumers check alive
+          // — a dead world's sky must not keep burning rocks.
+          if (!p.alive) continue;
           const az = p.radius * CFG.ATMO_ZONE;
           const dx = b.x - p.x, dy = b.y - p.y;
           if (dx > az || dx < -az || dy > az || dy < -az) continue;
@@ -6190,6 +6193,9 @@ export function step(game, dt) {
         }
         let inSea = false;
         for (const p of oceans) {
+          // Registry contract: a per-frame snapshot, so consumers check alive
+          // — a sea that shattered mid-frame must not keep dragging.
+          if (!p.alive) continue;
           const dx = b.x - p.x, dy = b.y - p.y;
           const pr = p.radius;
           if (dx > pr || dx < -pr || dy > pr || dy < -pr) continue;
