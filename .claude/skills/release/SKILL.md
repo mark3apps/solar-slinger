@@ -96,7 +96,8 @@ Confirm the assets landed:
 gh release view v<version> --json assets -q '.assets[].name'
 ```
 
-Expect `latest.yml` (Windows), `latest-linux.yml`, `latest-linux-arm64.yml`, the `.blockmap` files,
+Expect `latest.yml` (Windows), `latest-mac.yml` (mac check-and-notify), `latest-linux.yml`,
+`latest-linux-arm64.yml`, the `.blockmap` files,
 and the installers themselves. Then spot-check that a name inside `latest.yml` matches an asset name
 exactly.
 

@@ -7,7 +7,7 @@
 > **The hard rule: `src/` stays host-agnostic.** Never `require`/`import` Electron or Node APIs
 > from `src/`, and never assume an origin, absolute path or `file://`.
 
-The game ships as an Electron desktop app for macOS + Windows, but the game code knows nothing
+The game ships as an Electron desktop app for macOS, Windows and Linux, but the game code knows nothing
 about it — this is a hard rule.
 
 - **`src/` must stay host-agnostic.** The exact same static files run under `serve.py` (browser dev)
@@ -46,8 +46,8 @@ about it — this is a hard rule.
   AppImage is the self-updating Linux format. Four load-bearing wires, each of which silently
   reverts the auto platforms to manual updates if removed: the `build.publish` block in
   package.json (makes electron-builder embed `app-update.yml` in the app and emit the
-  `dist/latest*.yml` feeds — `latest.yml` win, `latest-linux.yml` + `latest-linux-arm64.yml`
-  per-arch), the release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
+  `dist/latest*.yml` feeds — `latest.yml` win, `latest-mac.yml` (feeds the mac check-and-notify),
+  `latest-linux.yml` + `latest-linux-arm64.yml` per-arch), the release workflow uploading `latest*.yml` + `*.blockmap` to the GitHub release
   (the update feed; blockmaps enable differential downloads), the repo staying public (the feeds
   are unauthenticated), and the SPACE-FREE `nsis.artifactName` / `appImage.artifactName` — with
   electron-builder's default "Solar Slinger …" names, latest.yml points at the dash-sanitized
@@ -60,8 +60,8 @@ about it — this is a hard rule.
   **`workflow_dispatch` only — nothing runs on a push to `main`.** You trigger it and pick a
   `bump` (patch/minor/major); `dry_run: true` builds and generates notes while publishing nothing.
   Three jobs: **prepare** (compute version + notes) → **build** (mac DMG arm64 + x64, Windows NSIS,
-  Linux `.deb` + `.rpm` x64 + arm64 each — deb for Debian/Ubuntu/Raspberry Pi OS 64-bit, rpm for
-  RHEL/Rocky/Fedora) → **publish**. Every side effect lives in `publish` and is gated on a green
+  Linux AppImage + `.deb` + `.rpm` x64 + arm64 each — AppImage is the self-updating Linux format,
+  deb for Debian/Ubuntu/Raspberry Pi OS 64-bit, rpm for RHEL/Rocky/Fedora) → **publish**. Every side effect lives in `publish` and is gated on a green
   build, so a broken build can never leave a version commit or a dangling tag on `main`.
 - **The newest `v*` git tag is the version's source of truth**, not package.json — the bump is
   applied to the tag, and `publish` then writes it into package.json and commits it. So checkouts
