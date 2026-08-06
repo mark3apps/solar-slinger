@@ -1136,7 +1136,7 @@ export function rockCacheStats() {
 // All three are a handful of bodies against a shoal's ~1900, so keeping them
 // on the old path costs nothing and removes a whole class of z-order bug.
 function rockNeedsOverlay(b) {
-  return b.cored || !!b.heldBy ||
+  return b.cored || !!b.heldBy || b.inSea ||
     (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length)));
 }
 
@@ -1191,8 +1191,11 @@ function blitRock(game, b) {
 function blitChunk(game, b) {
   if (b.cored || b.heldBy) return false;   // glint / hold rings draw ON TOP (see rockNeedsOverlay)
   // A rock going under a gas giant fades out on ctx.globalAlpha, and an
-  // instance carries no alpha of its own — it would stay solid all the way down.
-  if (b.sinkT > 0) return false;
+  // instance carries no alpha of its own — it would stay solid all the way
+  // down. A rock UNDER AN OCEAN dims on the same ambient alpha (b.inSea), and
+  // the instanced sheet also composites after the body loop, so it would draw
+  // solid ON TOP of the sea — both stay on the 2D path.
+  if (b.sinkT > 0 || b.inSea) return false;
   const bk = shardBucket(b.radius);
   if (bk < 0) return false;                // slab: unique silhouette + the R>14 layers
   // A WOUNDED CHUNK KEEPS THE VECTOR SPRITE. The GL layer composites after the
@@ -1767,15 +1770,23 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
-  // Terran worlds carry a thin sunlit atmosphere — a calm, steady blue rim
-  // (real object state → solid gradient, no motion; same idiom as lava's glow)
+  // Terran worlds wear a VISIBLE atmosphere — the BURN DECK the sim charges
+  // for (CFG.ATMO_IN..ATMO_ZONE), drawn as a band peaking mid-deck with clear
+  // air legible beneath it. The gradient reaches a little past both mechanic
+  // edges (fading from the 1.0r surface under the 1.14 floor, and out to
+  // 1.58r over the 1.5 ceiling), so anywhere that looks clear IS clear — the
+  // dust-halo rule for hazards.
+  // Calm, steady, no motion: real object state (the burn itself shows on
+  // whatever is burning — reentry streaks, the hull heat glow).
   if (b.ptype === 'terran') {
-    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.85, b.x, b.y, b.radius * 1.45);
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius, b.x, b.y, b.radius * 1.58);
     g.addColorStop(0, 'rgba(120, 190, 255, 0)');
-    g.addColorStop(0.25, 'rgba(120, 190, 255, 0.25)');
+    g.addColorStop(0.17, 'rgba(140, 200, 255, 0.08)');
+    g.addColorStop(0.52, 'rgba(165, 215, 255, 0.30)');
+    g.addColorStop(0.83, 'rgba(120, 190, 255, 0.10)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.45, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.58, 0, TAU); ctx.fill();
   }
 
   // Comets stream an icy tail behind them. Comet Vesper instead grows a
@@ -1961,7 +1972,8 @@ function drawBody(game, b) {
   }
   if (sinking) { ctx.restore(); return; }   // nothing else applies to a rock going under
 
-  if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
+  if (b.type === 'planet' && b.ptype) drawPlanetDetail(game, b);
+  if (b.type === 'planet' && b.ptype === 'ocean' && b.seaHits) drawSeaRipples(game, b);
   if (b.molten > 0) drawMoltenCrust(game, b);
   if (b.landmark === 'geysers') drawGeyserPlumes(game, b);
   if (b.ember > 0.01) drawEmberReef(game, b);
@@ -2064,6 +2076,28 @@ function drawBody(game, b) {
     ctx.restore();
   }
 
+  // OCEAN SPECULAR: the world-sea catches the sun as a soft sheen pooling on
+  // the sunward limb — water answering light, the same slot in the pass the
+  // crystal limb uses. Solid gradient, additive, clipped to the silhouette;
+  // steady state, no motion (motion is for events).
+  if (b.type === 'planet' && b.ptype === 'ocean' && st) {
+    const sunA = Math.atan2(st.y - b.y, st.x - b.x);
+    ctx.save();
+    traceSurface(b);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    const lx = b.x + Math.cos(sunA) * b.radius * 0.82;
+    const ly = b.y + Math.sin(sunA) * b.radius * 0.82;
+    const sg = ctx.createRadialGradient(lx, ly, 0, lx, ly, b.radius * 0.9);
+    sg.addColorStop(0, 'rgba(210, 240, 255, 0.3)');
+    sg.addColorStop(0.4, 'rgba(140, 200, 255, 0.12)');
+    sg.addColorStop(1, 'transparent');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(lx, ly, b.radius * 0.9, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+
   // MOONSHADOW eclipse: the world dims under its moon's shadow, with a warm
   // rim so it reads as an eclipse rather than damage
   // THE CRUMBLE: through traceSurface, never a full-radius arc. A raw arc at
@@ -2141,13 +2175,325 @@ function drawBody(game, b) {
   }
 }
 
+// ——— The planet face ————————————————————————————————————————————————————
+//
+// A lobed organic patch: two low radial harmonics over an ellipse, sampled
+// once at build time. A bare ellipse reads as the primitive it is at any size
+// (the rock law's lesson, applied to paint) — a couple of harmonics is enough
+// to read as a landform, a cloud mass or a lava plate instead.
+function mkBlob(rng, wob) {
+  const n = 16, pts = new Float32Array(n);
+  const p1 = 2 + ((rng() * 2) | 0), p2 = 4 + ((rng() * 3) | 0);
+  const f1 = rng() * TAU, f2 = rng() * TAU;
+  const a1 = wob * (0.45 + rng() * 0.35), a2 = wob * (0.15 + rng() * 0.2);
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * TAU;
+    pts[i] = Math.max(0.25, 1 + a1 * Math.sin(p1 * t + f1) + a2 * Math.sin(p2 * t + f2));
+  }
+  return pts;
+}
+// Trace a blob as a smooth closed path (quadratics through sample midpoints —
+// 16 straight segments read as a polygon on a disc most of the screen wide).
+// Module scratch, no per-frame allocation.
+const _blx = new Float32Array(16), _bly = new Float32Array(16);
+function blobPath(cx, cy, rx, ry, rot, pts) {
+  const n = pts.length, cs = Math.cos(rot), sn = Math.sin(rot);
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * TAU, k = pts[i];
+    const ex = Math.cos(t) * rx * k, ey = Math.sin(t) * ry * k;
+    _blx[i] = cx + ex * cs - ey * sn;
+    _bly[i] = cy + ex * sn + ey * cs;
+  }
+  ctx.beginPath();
+  ctx.moveTo((_blx[n - 1] + _blx[0]) / 2, (_bly[n - 1] + _bly[0]) / 2);
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    ctx.quadraticCurveTo(_blx[i], _bly[i], (_blx[i] + _blx[j]) / 2, (_bly[i] + _bly[j]) / 2);
+  }
+  ctx.closePath();
+}
+// One wavy-edged latitude band, traced in the tilted band frame. Both edges
+// carry their own low-frequency shear wave so the stripes read as weather
+// rather than as ruled fills — the hard fillRect edges were invisible at 250
+// units and unmissable at 1500. Geometry in fractions of R.
+function bandTrace(bd, R) {
+  const S = 18;
+  ctx.beginPath();
+  for (let i = 0; i <= S; i++) {
+    const x = -1.04 + (2.08 * i) / S;
+    const y = bd.y0 + Math.sin(x * bd.e0.f + bd.e0.p) * bd.e0.a;
+    if (i === 0) ctx.moveTo(x * R, y * R); else ctx.lineTo(x * R, y * R);
+  }
+  for (let i = S; i >= 0; i--) {
+    const x = -1.04 + (2.08 * i) / S;
+    ctx.lineTo(x * R, (bd.y1 + Math.sin(x * bd.e1.f + bd.e1.p) * bd.e1.a) * R);
+  }
+  ctx.closePath();
+}
+
+// The face geometry, built ONCE per body (seeded off b.id — no Math.random,
+// stable frame to frame) and drawn every frame as FRACTIONS of the live
+// radius, so a world chipped smaller keeps its face and simply wears it
+// smaller. The key catches the one legal ptype change — a stripped gas giant
+// BECOMES its core in place — and rebuilds the face for the rock it now is.
+// Feature COUNTS scale with the built radius (den): at PLANET_R_MUL 3 a world
+// is most of the screen, and the four ellipses that dressed a 250-unit disc
+// read as empty at 1500. Feature SIZES stay fractions — a continent is a
+// fraction of its world; it is DAMAGE detail that clamps to DETAIL_R
+// (drawBodyDamage), never the face.
+function planetDetail(b) {
+  // NOTE: completeGasStrip clears gasKind but leaves b.landmark, so a stripped
+  // storm-landmark giant carries a stale 'storm' tag into its rocky rebuild.
+  // Harmless today — the rocky branch only reads 'crater' — but if a landmark
+  // ever grows a cross-archetype draw, gate it on ptype too.
+  const key = b.ptype + '|' + (b.gasKind || '') + '|' + (b.landmark || '');
+  if (b._pd && b._pd.key === key) return b._pd;
+  const rng = mulberry32((b.id * 7349 + 401) >>> 0);
+  const den = clamp(b.radius / DETAIL_R, 1, 5);
+  const c = { key, den };
+  const wave = (amp) => ({ a: amp * (0.6 + rng() * 0.8), f: 2 + rng() * 3.5, p: rng() * TAU });
+  const scatter = (spread) => {
+    const a = rng() * TAU, r = Math.sqrt(rng()) * spread;
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+  };
+  if (b.ptype === 'gas') {
+    const kind = c.kind = b.gasKind || 'amber';
+    c.tilt = b.id % 2 ? 0.32 : -0.26;
+    // A GIANT'S DETAIL SHRINKS AS THE WORLD GROWS (user call: "because they
+    // are so incredibly big, the details need to be smaller"). fs divides
+    // band heights, eddy sizes and wave amplitudes, so a 2,000-unit giant
+    // wears many fine stripes and small storms instead of the same six bands
+    // a 300-unit world wears — the landmark Great Eye alone stays big (it is
+    // steered by). Counts already grow with den; fs is the size half.
+    const fs = c.fs = Math.sqrt(c.den);
+    const bands = c.bands = [], eddies = c.eddies = [];
+    if (kind === 'azure') {
+      // Ice giant: few wide soft bands under a bright polar hood — the calm,
+      // near-featureless methane haze KEEPS its wide bands (calm is its
+      // identity); only the cirrus and the storm fleck scale down.
+      const n = 3 + (b.id % 2), h = 2 / n;
+      for (let i = 0; i < n; i++) {
+        bands.push({ y0: -1 + i * h, y1: -1 + i * h + h * 0.9, e0: wave(0.015), e1: wave(0.015),
+          col: i % 2 ? 'rgba(255,255,255,0.08)' : 'rgba(0,10,40,0.13)' });
+      }
+      c.streaks = [];
+      for (let i = 0; i < Math.round(2 + 2 * fs); i++) {
+        c.streaks.push({ x: -0.55 + rng() * 0.7, y: -0.6 + rng() * 1.2, l: (0.45 + rng() * 0.5) / fs,
+          w: (0.014 + rng() * 0.016) / fs, bow: (rng() - 0.5) * 0.16 / fs });
+      }
+      for (let i = 0; i < 1 + (b.id % 2); i++) {
+        eddies.push({ x: -0.45 + rng() * 0.9, y: -0.55 + rng() * 1.1, rx: (0.09 + rng() * 0.09) / fs,
+          t: (rng() - 0.5) * 0.5, dark: true });
+      }
+    } else if (kind === 'violet') {
+      // Exotic giant: irregular thin/thick stacking with harder shear, curl
+      // hooks and eddy flecks — turbulent, alien
+      let y = -1, i = 0;
+      while (y < 1) {
+        const h = (0.13 + rng() * 0.2) / fs;
+        bands.push({ y0: y, y1: y + h * 0.82, e0: wave(0.045 / fs), e1: wave(0.055 / fs),
+          col: i % 2 ? 'rgba(255,255,255,0.14)' : 'rgba(25,0,45,0.2)' });
+        y += h; i++;
+      }
+      c.swirls = [];
+      for (let j = 0; j < Math.round(2 + c.den); j++) {
+        c.swirls.push({ x: -0.6 + rng() * 1.2, y: -0.65 + rng() * 1.3, r: (0.05 + rng() * 0.08) / fs,
+          dir: rng() < 0.5 ? 1 : -1, ph: rng() * TAU });
+      }
+      for (let j = 0; j < Math.round(2.2 * c.den); j++) {
+        eddies.push({ x: -0.75 + rng() * 1.5, y: -0.8 + rng() * 1.6, rx: (0.045 + rng() * 0.06) / fs,
+          t: (rng() - 0.5) * 0.7, dark: rng() < 0.5 });
+      }
+    } else {
+      // Amber giant: the busy classic — many sheared stripes in warm tones, a
+      // rust lane every few rows, eddy trains riding the shear boundaries
+      const n = Math.round((6 + (b.id % 3)) * fs), h = 2 / n;
+      for (let i = 0; i < n; i++) {
+        bands.push({ y0: -1 + i * h, y1: -1 + i * h + h * 0.8, e0: wave(0.025 / fs), e1: wave(0.03 / fs),
+          col: i % 4 === 2 ? 'rgba(170,75,30,0.15)' : i % 2 ? 'rgba(255,242,208,0.13)' : 'rgba(64,30,10,0.17)' });
+      }
+      for (let j = 0; j < Math.round(2.6 * c.den); j++) {
+        const bd = bands[(rng() * bands.length) | 0];
+        eddies.push({ x: -0.8 + rng() * 1.6, y: bd.y1 + (rng() - 0.5) * 0.06, rx: (0.04 + rng() * 0.06) / fs,
+          t: (rng() - 0.5) * 0.35, dark: rng() < 0.45 });
+      }
+    }
+  } else if (b.ptype === 'lava') {
+    // Cooled crust plates floating on the glow: the base colour IS the magma,
+    // so the plates are cut dark and every gap between them reads lit.
+    c.plates = [];
+    const np = Math.round(5 + 4 * Math.sqrt(c.den));
+    for (let i = 0; i < np; i++) {
+      const p = scatter(0.8);
+      c.plates.push({ x: p.x, y: p.y, rx: 0.15 + rng() * 0.2, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.32), a: 0.3 + rng() * 0.18 });
+    }
+    c.rivers = [];
+    const nr = Math.round(4 + 2.5 * c.den);
+    for (let i = 0; i < nr; i++) {
+      c.rivers.push({ a: rng() * TAU, r0: 0.1 + rng() * 0.3, drift: 0.5 + rng() * 0.7,
+        reach: 0.75 + rng() * 0.22, w: 0.016 + rng() * 0.02 });
+    }
+    c.pools = [];
+    for (let i = 0; i < 3 + (b.id % 3); i++) {
+      const p = scatter(0.75);
+      c.pools.push({ x: p.x, y: p.y, r: 0.06 + rng() * 0.09 });
+    }
+  } else if (b.ptype === 'ice') {
+    c.plains = [];
+    for (let i = 0; i < 4 + Math.round(c.den * 0.8); i++) {
+      const p = scatter(0.7);
+      c.plains.push({ x: p.x, y: p.y, rx: 0.16 + rng() * 0.16, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.35) });
+    }
+    // Linea: long fracture lanes crossing the whole face — rust where brine
+    // froze into the crack, blue-white where a ridge caught the light
+    c.linea = [];
+    for (let i = 0; i < Math.round(5 + 2.5 * c.den); i++) {
+      const a0 = rng() * TAU;
+      c.linea.push({ a0, a1: a0 + 1.2 + rng() * 2.6, bow: (rng() - 0.5) * 0.55,
+        w: 0.007 + rng() * 0.011, rust: rng() < 0.45 });
+    }
+    c.cap = mkBlob(rng, 0.14);
+    c.cap2 = mkBlob(rng, 0.14);
+  } else if (b.ptype === 'terran') {
+    c.conts = [];
+    for (let i = 0; i < 3 + Math.round(c.den * 0.6); i++) {
+      const p = scatter(0.6);
+      c.conts.push({ x: p.x, y: p.y, rx: 0.18 + rng() * 0.16, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.5),
+        hx: (rng() - 0.5) * 0.5, hy: (rng() - 0.5) * 0.5, sandy: rng() < 0.35 });
+    }
+    c.isles = [];
+    for (let i = 0; i < 2 + (b.id % 3); i++) {
+      const p = scatter(0.75);
+      c.isles.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 3 + ((rng() * 3) | 0),
+        step: 0.05 + rng() * 0.03, r: 0.016 + rng() * 0.02 });
+    }
+    c.clouds = [];
+    for (let i = 0; i < Math.round(5 + 1.6 * c.den); i++) {
+      const p = scatter(0.8);
+      c.clouds.push({ x: p.x, y: p.y, rx: 0.14 + rng() * 0.2, k: 0.25 + rng() * 0.25,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.55) });
+    }
+    const cy = scatter(0.55);
+    c.cyc = { x: cy.x, y: cy.y, r: 0.14 + rng() * 0.08, dir: rng() < 0.5 ? 1 : -1 };
+    c.cap = mkBlob(rng, 0.18);
+    c.cap2 = mkBlob(rng, 0.18);
+  } else if (b.ptype === 'ocean') {
+    c.deeps = [];
+    for (let i = 0; i < 3 + (b.id % 2); i++) {
+      const p = scatter(0.65);
+      c.deeps.push({ x: p.x, y: p.y, rx: 0.22 + rng() * 0.2, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.4) });
+    }
+    c.cur = [];
+    const ncu = Math.round(5 + 1.8 * c.den);
+    for (let i = 0; i < ncu; i++) {
+      c.cur.push({ y: -0.8 + (i + 0.5) * (1.6 / ncu) + (rng() - 0.5) * 0.08, e: wave(0.1),
+        w: 0.012 + rng() * 0.02, deep: rng() < 0.4 });
+    }
+    c.gyres = [];
+    for (let i = 0; i < 1 + (b.id % 2); i++) {
+      const p = scatter(0.55);
+      c.gyres.push({ x: p.x, y: p.y, r: 0.12 + rng() * 0.1, dir: rng() < 0.5 ? 1 : -1,
+        turns: 1.6 + rng() * 0.9, ph: rng() * TAU });
+    }
+    c.arcs = [];
+    for (let i = 0; i < 2 + (b.id % 2); i++) {
+      const p = scatter(0.7);
+      c.arcs.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 4 + ((rng() * 4) | 0),
+        step: 0.05 + rng() * 0.025, r: 0.014 + rng() * 0.016, bend: (rng() - 0.5) * 0.5 });
+    }
+  } else if (b.ptype === 'desert') {
+    c.ergs = [];
+    for (let i = 0; i < 3; i++) {
+      const p = scatter(0.7);
+      c.ergs.push({ x: p.x, y: p.y, rx: 0.26 + rng() * 0.2, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.4), light: i % 2 === 0 });
+    }
+    c.dunes = [];
+    for (let i = 0; i < Math.round(4 + 1.6 * c.den); i++) {
+      const p = scatter(0.72);
+      c.dunes.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 4 + ((rng() * 3) | 0),
+        len: 0.18 + rng() * 0.16, gap: 0.032 + rng() * 0.02, bow: 0.03 + rng() * 0.04 });
+    }
+    // A canyon: one meandering seeded walk — the desert's long scar
+    c.canyon = [];
+    let cx2 = -0.7 + rng() * 0.3, cy2 = (rng() - 0.5) * 0.8, ca2 = (rng() - 0.5) * 0.8;
+    for (let i = 0; i < 7; i++) {
+      c.canyon.push({ x: cx2, y: cy2 });
+      ca2 += (rng() - 0.5) * 0.9; cx2 += Math.cos(ca2) * 0.18; cy2 += Math.sin(ca2) * 0.18;
+    }
+    c.mesas = [];
+    for (let i = 0; i < 3; i++) {
+      const p = scatter(0.68);
+      c.mesas.push({ x: p.x, y: p.y, rx: 0.1 + rng() * 0.08, k: 0.5 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.3) });
+    }
+    c.storms = [];
+    for (let i = 0; i < 1 + (b.id % 2); i++) {
+      const p = scatter(0.5);
+      c.storms.push({ x: p.x, y: p.y, rx: 0.24 + rng() * 0.14, rot: rng() * TAU });
+    }
+  } else if (b.ptype === 'shroud') {
+    c.decks = [];
+    const nd = 6 + (b.id % 2);
+    for (let i = 0; i < nd; i++) {
+      c.decks.push({ rate: 0.45 + i * 0.24 + rng() * 0.12, ph: rng() * TAU,
+        r: 0.2 + (i / nd) * 0.68 + rng() * 0.05, w: 0.1 + rng() * 0.1, span: 3.2 + rng() * 1.8,
+        tone: i % 3 === 2 ? 'rgba(255,232,160,0.14)' : i % 2 ? 'rgba(255,250,220,0.2)' : 'rgba(120,100,40,0.18)' });
+    }
+    c.chevY = -0.18 - rng() * 0.15;
+  } else if (b.ptype === 'crystal') {
+    // The lattice itself derives LIVE from b.cjag (the same table the
+    // silhouette is traced from); only the seeded dressing is cached here
+    c.rings = [0.38 + rng() * 0.06, 0.62 + rng() * 0.06, 0.83 + rng() * 0.05];
+    c.glints = [];
+    for (let i = 0; i < 5 + Math.round(c.den); i++) {
+      c.glints.push({ a: rng() * TAU, r: 0.25 + rng() * 0.55, s: 0.02 + rng() * 0.025 });
+    }
+  } else {  // rocky
+    c.maria = [];
+    for (let i = 0; i < 4 + Math.round(c.den * 0.8); i++) {
+      const p = scatter(0.68);
+      c.maria.push({ x: p.x, y: p.y, rx: 0.16 + rng() * 0.18, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.45), light: rng() < 0.3 });
+    }
+    c.craters = [];
+    for (let i = 0; i < Math.round(4 * c.den); i++) {
+      const p = scatter(0.85);
+      c.craters.push({ x: p.x, y: p.y, r: 0.025 + rng() * 0.05 });
+    }
+    c.ridges = [];
+    for (let i = 0; i < 2 + (b.id % 2); i++) {
+      const p = scatter(0.6);
+      const n = 5 + ((rng() * 3) | 0), off = new Float32Array(n);
+      // irregular per-vertex offsets — a strict zigzag reads as a drawn glyph
+      for (let j = 0; j < n; j++) off[j] = (rng() - 0.5) * 0.07;
+      c.ridges.push({ x: p.x, y: p.y, ang: rng() * TAU, n, off,
+        step: 0.06 + rng() * 0.03 });
+    }
+  }
+  b._pd = c;
+  return c;
+}
+
 // Per-archetype surface detail, drawn clipped to the planet disc. This is
 // what makes the planet TYPES readable: bands = gas (three gasKind looks),
-// cracks+glow = lava, caps = ice, continents = rocky, seas+clouds = terran,
-// currents = ocean, dunes = desert, sheared decks = shroud, facets = crystal.
+// plates+glow = lava, caps+linea = ice, maria+craters = rocky, seas+clouds =
+// terran, currents+gyres = ocean, dunes+canyon = desert, sheared decks =
+// shroud, facet lattice = crystal.
 // All geometry is seeded off b.id (stable frame to frame — no Math.random),
 // and every ambient drift rides multiples of b.rot, never wall-clock time.
-function drawPlanetDetail(b) {
+// Built in two registers: the big features that carry the zoomed-out read
+// (bands, caps, continents, plates), and a mid-frequency layer (eddies,
+// linea, ripples, craters) gated behind `fine` — at a dozen screen pixels the
+// big reads are the whole story and the small ones are subpixel noise.
+function drawPlanetDetail(game, b) {
+  const c = planetDetail(b);
+  const R = b.radius;
+  const fine = R * game.cam.zoom > 24;
   ctx.save();
   // Clipped to the real silhouette: facet detail fills a crystal world's
   // spikes, and surface detail stops dead at the edge of a crater.
@@ -2161,246 +2507,490 @@ function drawPlanetDetail(b) {
   if (b.ptype !== 'ice' && b.ptype !== 'terran') ctx.rotate(b.rot);
 
   if (b.ptype === 'gas') {
-    ctx.rotate(b.id % 2 ? 0.32 : -0.26);
-    const kind = b.gasKind || 'amber';
+    ctx.rotate(c.tilt);
+    const kind = c.kind;
+    for (const bd of c.bands) { bandTrace(bd, R); ctx.fillStyle = bd.col; ctx.fill(); }
     if (kind === 'azure') {
-      // Ice giant: few wide soft bands under a bright polar hood — the calm,
-      // featureless read of a methane haze (vs the amber giant's busy stripes)
-      const n = 3 + (b.id % 2);
-      const bandH = (2 * b.radius) / n;
-      for (let i = 0; i < n; i++) {
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.08)' : 'rgba(0,10,40,0.13)';
-        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.85);
-      }
+      // the bright polar hood over the haze
       ctx.fillStyle = 'rgba(220, 245, 255, 0.22)';
-      ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.8, b.radius * 0.8, b.radius * 0.3, 0, 0, TAU); ctx.fill();
-    } else if (kind === 'violet') {
-      // Exotic giant: irregular thin/thick band stacking — turbulent, alien
-      let yy = -b.radius, i = 0;
-      while (yy < b.radius) {
-        const h = b.radius * (0.14 + (((b.id + i) % 4) / 4) * 0.22);
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.14)' : 'rgba(25,0,45,0.2)';
-        ctx.fillRect(-b.radius, yy, b.radius * 2, h * 0.78);
-        yy += h; i++;
+      ctx.beginPath(); ctx.ellipse(0, -R * 0.8, R * 0.8, R * 0.3, 0, 0, TAU); ctx.fill();
+      if (fine) {
+        // thin cirrus streaks riding the upper deck
+        ctx.strokeStyle = 'rgba(235, 250, 255, 0.2)';
+        ctx.lineCap = 'round';
+        for (const s of c.streaks) {
+          ctx.lineWidth = Math.max(1, s.w * R);
+          ctx.beginPath();
+          ctx.moveTo(s.x * R, s.y * R);
+          ctx.quadraticCurveTo((s.x + s.l * 0.5) * R, (s.y + s.bow) * R, (s.x + s.l) * R, s.y * R);
+          ctx.stroke();
+        }
+        ctx.lineCap = 'butt';
       }
-    } else {
-      const n = 5 + (b.id % 3);
-      const bandH = (2 * b.radius) / n;
-      for (let i = 0; i < n; i++) {
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.17)';
-        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.72);
+    }
+    if (fine) {
+      // Eddy trains: elongated oval storms with a bright sheared rim on the
+      // upwind side. The dark tone follows the giant's own palette — a violet
+      // smudge on a warm amber world reads as a bruise, not weather.
+      const darkTone = kind === 'amber' ? 'rgba(70, 32, 10, 0.26)'
+        : kind === 'azure' ? 'rgba(8, 18, 45, 0.3)' : 'rgba(30, 12, 45, 0.24)';
+      for (const e of c.eddies) {
+        ctx.fillStyle = e.dark ? darkTone : 'rgba(255, 248, 225, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(e.x * R, e.y * R, e.rx * R, e.rx * 0.45 * R, e.t, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 250, 230, 0.16)';
+        ctx.lineWidth = Math.max(1, e.rx * R * 0.16);
+        ctx.beginPath();
+        ctx.ellipse(e.x * R, e.y * R, e.rx * R * 1.15, e.rx * 0.5 * R, e.t, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
       }
+    }
+    if (c.swirls && fine) {
+      // Curl hooks: tight one-armed spirals where the violet bands roll up
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineCap = 'round';
+      for (const s of c.swirls) {
+        ctx.lineWidth = Math.max(1, s.r * R * 0.22);
+        ctx.beginPath();
+        for (let i = 0; i <= 14; i++) {
+          const t = i / 14, a = s.ph + s.dir * t * 4.6, rr = s.r * R * (1 - 0.8 * t);
+          const px = s.x * R + Math.cos(a) * rr, py = s.y * R + Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
     }
     if (b.landmark === 'storm') {
       // THE GREAT EYE — the system's landmark storm, big enough to steer by
       ctx.fillStyle = 'rgba(200, 60, 40, 0.5)';
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.28, b.radius * 0.2, b.radius * 0.44, b.radius * 0.21, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.28, R * 0.2, R * 0.44, R * 0.21, 0.25, 0, TAU);
       ctx.fill();
       ctx.strokeStyle = 'rgba(255, 235, 215, 0.45)';
-      ctx.lineWidth = Math.max(1.5, b.radius * 0.025);
+      ctx.lineWidth = Math.max(1.5, R * 0.025);
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.28, b.radius * 0.2, b.radius * 0.5, b.radius * 0.26, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.28, R * 0.2, R * 0.5, R * 0.26, 0.25, 0, TAU);
       ctx.stroke();
       ctx.fillStyle = 'rgba(255, 190, 160, 0.5)';
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.24, b.radius * 0.18, b.radius * 0.17, b.radius * 0.08, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.24, R * 0.18, R * 0.17, R * 0.08, 0.25, 0, TAU);
       ctx.fill();
     } else {
       // A great storm spot — dark on the hazy azure giant, bright elsewhere
+      // (scaled down with the rest of the detail; only the landmark Eye is big)
       ctx.fillStyle = kind === 'azure' ? 'rgba(10, 25, 60, 0.4)' : 'rgba(255,255,255,0.22)';
       ctx.beginPath();
-      ctx.ellipse(b.radius * 0.34, b.radius * 0.3, b.radius * 0.2, b.radius * 0.1, 0.3, 0, TAU);
+      ctx.ellipse(R * 0.34, R * 0.3, R * 0.2 / c.fs, R * 0.1 / c.fs, 0.3, 0, TAU);
       ctx.fill();
     }
   } else if (b.ptype === 'lava') {
-    ctx.strokeStyle = 'rgba(255, 150, 50, 0.75)';
-    ctx.lineWidth = Math.max(1.5, b.radius * 0.05);
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 2.3 + i * 1.7;
+    // Cooled crust plates over the magma-coloured base — the glow BETWEEN the
+    // plates is the body colour itself, so every gap reads as a lit channel
+    for (const p of c.plates) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = `rgba(26, 10, 6, ${p.a})`;
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    if (fine) {
+      // thin magma seams tracing every plate edge
+      ctx.strokeStyle = 'rgba(255, 140, 50, 0.22)';
+      ctx.lineWidth = Math.max(1, R * 0.008);
+      for (const p of c.plates) {
+        blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+        ctx.stroke();
+      }
+    }
+    // magma rivers arcing out toward the rim — the old signature, more of them
+    ctx.strokeStyle = 'rgba(255, 165, 60, 0.72)';
+    ctx.lineCap = 'round';
+    for (const rv of c.rivers) {
+      ctx.lineWidth = Math.max(1.5, rv.w * R);
       ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * b.radius * 0.15, Math.sin(a) * b.radius * 0.15);
+      ctx.moveTo(Math.cos(rv.a) * R * rv.r0, Math.sin(rv.a) * R * rv.r0);
       ctx.quadraticCurveTo(
-        Math.cos(a + 0.8) * b.radius * 0.55, Math.sin(a + 0.8) * b.radius * 0.55,
-        Math.cos(a + 0.5) * b.radius * 0.95, Math.sin(a + 0.5) * b.radius * 0.95);
+        Math.cos(rv.a + rv.drift) * R * (rv.r0 + rv.reach) * 0.55,
+        Math.sin(rv.a + rv.drift) * R * (rv.r0 + rv.reach) * 0.55,
+        Math.cos(rv.a + rv.drift * 0.6) * R * rv.reach,
+        Math.sin(rv.a + rv.drift * 0.6) * R * rv.reach);
       ctx.stroke();
     }
+    ctx.lineCap = 'butt';
+    if (fine) {
+      // caldera pools — steady glow, no boil (the world's own face is ambient
+      // state; heat that MOVES is the molten-core cooldown's job)
+      for (const p of c.pools) {
+        const g = ctx.createRadialGradient(p.x * R, p.y * R, 0, p.x * R, p.y * R, p.r * R);
+        g.addColorStop(0, 'rgba(255, 196, 108, 0.5)');
+        g.addColorStop(0.55, 'rgba(255, 110, 40, 0.25)');
+        g.addColorStop(1, 'transparent');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(p.x * R, p.y * R, p.r * R, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
   } else if (b.ptype === 'ice') {
     // Scattered blue-white plains ride the spin (so the world visibly turns)…
     ctx.save();
     ctx.rotate(b.rot);
-    ctx.fillStyle = 'rgba(180, 215, 240, 0.35)';
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 1.7 + i * 1.9;
-      const rr = b.radius * (0.22 + ((b.id + i) % 3) * 0.09);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.7, a, 0, TAU);
+    ctx.fillStyle = 'rgba(190, 220, 242, 0.32)';
+    for (const p of c.plains) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
       ctx.fill();
     }
+    // …crossed by LINEA — long fracture lanes spanning the whole face, rust
+    // where brine froze into the crack, blue-white where a ridge caught light
+    // (the Europa read: what says "ice sheet" instead of "pale rock")
+    if (fine) {
+      ctx.lineCap = 'round';
+      for (const l of c.linea) {
+        const x0 = Math.cos(l.a0) * 0.96, y0 = Math.sin(l.a0) * 0.96;
+        const x1 = Math.cos(l.a1) * 0.96, y1 = Math.sin(l.a1) * 0.96;
+        const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        ctx.strokeStyle = l.rust ? 'rgba(196, 122, 104, 0.34)' : 'rgba(160, 200, 235, 0.42)';
+        ctx.lineWidth = Math.max(1, l.w * R);
+        ctx.beginPath();
+        ctx.moveTo(x0 * R, y0 * R);
+        ctx.quadraticCurveTo((mx - (y1 - y0) * l.bow) * R, (my + (x1 - x0) * l.bow) * R, x1 * R, y1 * R);
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+    }
     ctx.restore();
-    // …but the polar caps stay pinned to the poles (spin axis is vertical)
+    // …but the polar caps stay pinned to the poles (spin axis is vertical),
+    // their edges ragged where the sheet breaks up
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
+    blobPath(0, -R * 0.84, R * 0.76, R * 0.3, 0, c.cap); ctx.fill();
+    blobPath(0, R * 0.84, R * 0.76, R * 0.3, 0, c.cap2); ctx.fill();
   } else if (b.ptype === 'terran') {
-    // Living world: green continents ride the spin…
+    // Living world: lobed continents ride the spin, each rising off its own
+    // shallow shelf so the coast reads as water getting deep…
     ctx.save();
     ctx.rotate(b.rot);
-    ctx.fillStyle = 'rgba(140, 195, 110, 0.6)';
-    const n = 4 + (b.id % 3);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 2.1 + i * 2.4;
-      const rr = b.radius * (0.2 + ((b.id + i) % 4) * 0.08);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.5, Math.sin(a) * b.radius * 0.5, rr, rr * 0.62, a, 0, TAU);
+    for (const p of c.conts) {
+      blobPath(p.x * R, p.y * R, p.rx * 1.3 * R, p.rx * p.k * 1.3 * R, p.rot, p.pts);
+      ctx.fillStyle = 'rgba(24, 58, 118, 0.45)';
       ctx.fill();
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = 'rgba(140, 195, 110, 0.62)';
+      ctx.fill();
+      if (fine) {
+        // interior relief: a highland (or a dust-dry heart) per continent
+        ctx.fillStyle = p.sandy ? 'rgba(206, 182, 116, 0.4)' : 'rgba(84, 130, 62, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse((p.x + p.hx * p.rx) * R, (p.y + p.hy * p.rx * p.k) * R,
+          p.rx * R * 0.42, p.rx * p.k * R * 0.3, p.rot, 0, TAU);
+        ctx.fill();
+      }
+    }
+    if (fine) {
+      // island chains trailing off into the sea
+      ctx.fillStyle = 'rgba(140, 195, 110, 0.55)';
+      for (const ch of c.isles) {
+        for (let i = 0; i < ch.n; i++) {
+          const px = (ch.x + Math.cos(ch.ang) * ch.step * i) * R;
+          const py = (ch.y + Math.sin(ch.ang) * ch.step * i) * R;
+          ctx.beginPath();
+          ctx.arc(px, py, ch.r * R * (1 - (i / (ch.n + 1)) * 0.5), 0, TAU);
+          ctx.fill();
+        }
+      }
     }
     ctx.restore();
-    // …under cloud decks that drift a touch FASTER than the surface (weather
+    // …under cloud masses that drift a touch FASTER than the surface (weather
     // shears past the ground — the multiple of b.rot is the drift, no clock)
     ctx.save();
     ctx.rotate(b.rot * 1.18);
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    for (let i = 0; i < 5; i++) {
-      const a = b.id * 1.3 + i * 2.7;
-      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.12);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.3, a + 0.5, 0, TAU);
+    for (const p of c.clouds) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
       ctx.fill();
+    }
+    if (fine) {
+      // one cyclone — a swirl with a clear eye, the weather's landmark
+      ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1.2, c.cyc.r * R * 0.2);
+      ctx.beginPath();
+      for (let i = 0; i <= 16; i++) {
+        const t = i / 16, a = c.cyc.dir * t * 5.2, rr = c.cyc.r * R * (0.25 + 0.75 * t);
+        const px = c.cyc.x * R + Math.cos(a) * rr, py = c.cyc.y * R + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.lineCap = 'butt';
     }
     ctx.restore();
-    // …with small polar caps pinned to the poles, like the ice worlds'
+    // …with small ragged polar caps pinned to the poles, like the ice worlds'
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
+    blobPath(0, -R * 0.87, R * 0.5, R * 0.18, 0, c.cap); ctx.fill();
+    blobPath(0, R * 0.87, R * 0.5, R * 0.18, 0, c.cap2); ctx.fill();
   } else if (b.ptype === 'ocean') {
-    // World-sea: bright current bands sweep the globe…
-    ctx.strokeStyle = 'rgba(180, 220, 255, 0.28)';
-    ctx.lineWidth = Math.max(1.2, b.radius * 0.05);
-    for (let i = 0; i < 4; i++) {
-      const yy = -b.radius * 0.66 + i * b.radius * 0.44;
+    // World-sea: deep basins shade the water first…
+    ctx.fillStyle = 'rgba(8, 24, 66, 0.3)';
+    for (const p of c.deeps) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fill();
+    }
+    // …bright current systems sweep the globe…
+    ctx.lineCap = 'round';
+    for (const cu of c.cur) {
+      ctx.strokeStyle = cu.deep ? 'rgba(96, 156, 220, 0.34)' : 'rgba(180, 222, 255, 0.33)';
+      ctx.lineWidth = Math.max(1.2, cu.w * R);
       ctx.beginPath();
-      ctx.moveTo(-b.radius, yy);
-      ctx.quadraticCurveTo(0, yy + b.radius * 0.18 * (i % 2 ? 1 : -1), b.radius, yy);
+      for (let i = 0; i <= 16; i++) {
+        const x = -1.02 + (2.04 * i) / 16;
+        const y = cu.y + Math.sin(x * cu.e.f + cu.e.p) * cu.e.a;
+        if (i === 0) ctx.moveTo(x * R, y * R); else ctx.lineTo(x * R, y * R);
+      }
       ctx.stroke();
     }
-    // …around a scatter of low archipelago flecks — land is the exception here
-    ctx.fillStyle = 'rgba(120, 160, 110, 0.6)';
-    const n = 5 + (b.id % 4);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 1.7 + i * 2.4;
-      const rr = b.radius * (0.05 + ((b.id + i) % 3) * 0.03);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55, rr, rr * 0.7, a, 0, TAU);
-      ctx.fill();
+    // …spinning up into gyres where they meet…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(190, 228, 255, 0.3)';
+      for (const gy of c.gyres) {
+        ctx.lineWidth = Math.max(1.2, gy.r * R * 0.14);
+        ctx.beginPath();
+        for (let i = 0; i <= 16; i++) {
+          const t = i / 16, a = gy.ph + gy.dir * t * gy.turns * TAU * 0.8;
+          const rr = gy.r * R * (1 - 0.75 * t);
+          const px = gy.x * R + Math.cos(a) * rr, py = gy.y * R + Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.lineCap = 'butt';
+    // …around low archipelago chains — land is the exception here
+    if (fine) {
+      ctx.fillStyle = 'rgba(122, 160, 108, 0.6)';
+      for (const ch of c.arcs) {
+        for (let i = 0; i < ch.n; i++) {
+          const a2 = ch.ang + (i / Math.max(1, ch.n - 1) - 0.5) * ch.bend * 2;
+          const px = (ch.x + Math.cos(a2) * ch.step * i) * R;
+          const py = (ch.y + Math.sin(a2) * ch.step * i) * R;
+          ctx.beginPath(); ctx.arc(px, py, ch.r * R, 0, TAU); ctx.fill();
+        }
+      }
     }
   } else if (b.ptype === 'desert') {
-    // Dune seas: long wind-carved bands…
-    ctx.strokeStyle = 'rgba(90, 55, 25, 0.22)';
-    ctx.lineWidth = Math.max(1.5, b.radius * 0.07);
-    for (let i = 0; i < 5; i++) {
-      const yy = -b.radius * 0.7 + i * b.radius * 0.35;
-      ctx.beginPath();
-      ctx.moveTo(-b.radius, yy);
-      ctx.quadraticCurveTo(0, yy + b.radius * 0.14 * (i % 2 ? 1 : -1), b.radius, yy + b.radius * 0.06);
-      ctx.stroke();
-    }
-    // …dark rimrock mesas…
-    ctx.fillStyle = 'rgba(0,0,0,0.14)';
-    for (let i = 0; i < 3; i++) {
-      const a = b.id * 2.3 + i * 2.1;
-      const rr = b.radius * (0.14 + ((b.id + i) % 3) * 0.06);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.6, Math.sin(a) * b.radius * 0.6, rr, rr * 0.55, a, 0, TAU);
+    // Dune seas in broad tonal sweeps…
+    for (const p of c.ergs) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = p.light ? 'rgba(255, 235, 190, 0.12)' : 'rgba(80, 45, 20, 0.1)';
       ctx.fill();
     }
-    // …and one pale standing dust storm
-    ctx.fillStyle = 'rgba(255, 235, 200, 0.3)';
-    const sa = b.id * 1.3;
-    ctx.beginPath();
-    ctx.ellipse(Math.cos(sa) * b.radius * 0.35, Math.sin(sa) * b.radius * 0.35, b.radius * 0.34, b.radius * 0.16, sa, 0, TAU);
-    ctx.fill();
+    // …combed with ripple trains, each dune field blown its own way…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(90, 55, 25, 0.25)';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1, R * 0.008);
+      for (const d of c.dunes) {
+        const ca = Math.cos(d.ang), sa = Math.sin(d.ang);
+        for (let i = 0; i < d.n; i++) {
+          const off = (i - (d.n - 1) / 2) * d.gap;
+          const cx2 = (d.x - sa * off) * R, cy2 = (d.y + ca * off) * R;
+          ctx.beginPath();
+          ctx.moveTo(cx2 - ca * d.len * R, cy2 - sa * d.len * R);
+          ctx.quadraticCurveTo(cx2 - sa * d.bow * 2 * R, cy2 + ca * d.bow * 2 * R,
+            cx2 + ca * d.len * R, cy2 + sa * d.len * R);
+          ctx.stroke();
+        }
+      }
+      ctx.lineCap = 'butt';
+    }
+    // …a canyon winding through the rimrock…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(60, 32, 14, 0.4)';
+      ctx.lineWidth = Math.max(1.2, R * 0.012);
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < c.canyon.length; i++) {
+        const p = c.canyon[i];
+        if (i === 0) ctx.moveTo(p.x * R, p.y * R); else ctx.lineTo(p.x * R, p.y * R);
+      }
+      ctx.stroke();
+      ctx.lineJoin = 'miter';
+    }
+    // …dark rimrock mesas…
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    for (const p of c.mesas) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fill();
+    }
+    // …and pale standing dust storms
+    ctx.fillStyle = 'rgba(255, 235, 200, 0.28)';
+    for (const s of c.storms) {
+      ctx.beginPath();
+      ctx.ellipse(s.x * R, s.y * R, s.rx * R, s.rx * 0.45 * R, s.rot, 0, TAU);
+      ctx.fill();
+    }
   } else if (b.ptype === 'shroud') {
     // Venusian shroud: total cloud cover, no surface ever visible. Each deck
     // turns at its own rate (multiples of b.rot on top of the base spin), so
     // the cover visibly shears without any wall-clock animation.
-    for (let i = 0; i < 4; i++) {
+    for (const d of c.decks) {
       ctx.save();
-      ctx.rotate(b.rot * (0.55 + i * 0.3) + b.id * 1.7 + i * 2.1);
-      ctx.strokeStyle = i % 2 ? 'rgba(255, 250, 220, 0.2)' : 'rgba(120, 100, 40, 0.18)';
-      ctx.lineWidth = b.radius * (0.16 + (i % 3) * 0.05);
+      ctx.rotate(b.rot * d.rate + d.ph);
+      ctx.strokeStyle = d.tone;
+      ctx.lineWidth = d.w * R;
       ctx.beginPath();
-      ctx.arc(0, 0, b.radius * (0.28 + i * 0.2), b.id + i, b.id + i + 4.2);
+      ctx.arc(0, 0, d.r * R, d.ph, d.ph + d.span);
       ctx.stroke();
       ctx.restore();
     }
-    // a pale chevron where the decks collide
+    // pale and dark chevrons where the decks collide — the Y-cloud read
     ctx.fillStyle = 'rgba(255, 252, 230, 0.16)';
     ctx.beginPath();
-    ctx.ellipse(b.radius * 0.1, -b.radius * 0.2, b.radius * 0.5, b.radius * 0.18, -0.4, 0, TAU);
+    ctx.ellipse(R * 0.1, c.chevY * R, R * 0.5, R * 0.17, -0.4, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(105, 88, 34, 0.14)';
+    ctx.beginPath();
+    ctx.ellipse(-R * 0.12, -c.chevY * R, R * 0.44, R * 0.15, 0.35, 0, TAU);
     ctx.fill();
   } else if (b.ptype === 'crystal') {
-    // Faceted lattice: alternating light/dark shard wedges from the core…
-    // (reach 1.4r — past the tallest ~1.32r shard tips, so the clip decides
-    // the edge)
-    for (let i = 0; i < 6; i++) {
-      const a = b.id * 1.9 + i * (TAU / 6) + ((b.id + i) % 3) * 0.3;
-      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(30, 10, 60, 0.18)';
+    // Faceted lattice, keyed to the REAL silhouette: traceSurface already
+    // built b.cjag for the fill this detail is clipped to, so a wedge fills
+    // each actual shard instead of inventing six of its own…
+    const pts = (b.cjag ||= crystalShards(b.id)).pts;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.1)' : 'rgba(30, 10, 60, 0.16)';
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * b.radius * 1.4, Math.sin(a) * b.radius * 1.4);
-      ctx.lineTo(Math.cos(a + 0.7) * b.radius * 1.4, Math.sin(a + 0.7) * b.radius * 1.4);
+      ctx.lineTo(Math.cos(p.a0) * R * p.ri, Math.sin(p.a0) * R * p.ri);
+      ctx.lineTo(Math.cos(p.tip) * R * p.ro, Math.sin(p.tip) * R * p.ro);
+      ctx.lineTo(Math.cos(q.a0) * R * q.ri, Math.sin(q.a0) * R * q.ri);
       ctx.closePath();
       ctx.fill();
     }
-    // …with bright facet seams (solid strokes — machined work, like the
-    // carved stone, never dashed)…
-    ctx.strokeStyle = 'rgba(230, 210, 255, 0.5)';
-    ctx.lineWidth = Math.max(1, b.radius * 0.035);
+    // …with faint inner echoes of the outline — depth, looking INTO the mass…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(230, 215, 255, 0.16)';
+      ctx.lineWidth = Math.max(1, R * 0.012);
+      for (const s of c.rings) {
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const vx = Math.cos(p.a0) * R * p.ri * s, vy = Math.sin(p.a0) * R * p.ri * s;
+          if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+          ctx.lineTo(Math.cos(p.tip) * R * p.ro * s, Math.sin(p.tip) * R * p.ro * s);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    // …bright facet seams running core to every tip (solid strokes — machined
+    // work, like the carved stone, never dashed)…
+    ctx.strokeStyle = 'rgba(230, 210, 255, 0.45)';
+    ctx.lineWidth = Math.max(1, R * 0.018);
     ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const a = b.id * 2.3 + i * 1.26;
-      ctx.moveTo(Math.cos(a) * b.radius * 0.2, Math.sin(a) * b.radius * 0.2);
-      ctx.lineTo(Math.cos(a + 0.4) * b.radius * 1.3, Math.sin(a + 0.4) * b.radius * 1.3);
+    for (const p of pts) {
+      ctx.moveTo(Math.cos(p.tip) * R * 0.14, Math.sin(p.tip) * R * 0.14);
+      ctx.lineTo(Math.cos(p.tip) * R * p.ro * 0.97, Math.sin(p.tip) * R * p.ro * 0.97);
     }
     ctx.stroke();
-    // …and a few bright glint points where facets catch the light (seeded,
-    // static — the cored-rock glint twinkles because it marks salvage; a
-    // world's sparkle is ambient state, so it holds still)
-    ctx.fillStyle = 'rgba(240, 225, 255, 0.55)';
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 1.3 + i * 1.9;
-      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.22);
-      ctx.beginPath();
-      ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, Math.max(1, b.radius * 0.035), 0, TAU);
-      ctx.fill();
+    // …and bright glint points where facets catch the light (seeded, static —
+    // the cored-rock glint twinkles because it marks salvage; a world's
+    // sparkle is ambient state, so it holds still)
+    if (fine) {
+      ctx.fillStyle = 'rgba(240, 225, 255, 0.55)';
+      for (const g of c.glints) {
+        ctx.beginPath();
+        ctx.arc(Math.cos(g.a) * R * g.r, Math.sin(g.a) * R * g.r, Math.max(1, g.s * R), 0, TAU);
+        ctx.fill();
+      }
     }
   } else {  // rocky: mottled continents
-    ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    const n = 4 + (b.id % 3);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 1.9 + i * 2.4;
-      const rr = b.radius * (0.25 + ((b.id + i) % 4) * 0.09);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55,
-        rr, rr * 0.65, a, 0, TAU);
+    // dark maria and pale mineral highlands…
+    for (const p of c.maria) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = p.light ? 'rgba(255, 240, 215, 0.1)' : 'rgba(0,0,0,0.16)';
       ctx.fill();
+    }
+    // …pocked with rimmed craters — the world's old face, not damage (wounds
+    // belong to the crumble and drawBodyDamage)…
+    if (fine) {
+      for (const cr of c.craters) {
+        const crr = cr.r * R;
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.beginPath(); ctx.arc(cr.x * R, cr.y * R, crr, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        ctx.beginPath(); ctx.arc(cr.x * R - crr * 0.28, cr.y * R - crr * 0.28, crr * 0.62, 0, TAU); ctx.fill();
+      }
+    }
+    // …and mountain chains: dark zigzag ranges crossing the highlands
+    if (fine) {
+      ctx.strokeStyle = 'rgba(30, 18, 8, 0.25)';
+      ctx.lineWidth = Math.max(1, R * 0.012);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const rg of c.ridges) {
+        const ca = Math.cos(rg.ang), sa = Math.sin(rg.ang);
+        ctx.beginPath();
+        for (let i = 0; i < rg.n; i++) {
+          const wob = rg.off[i];
+          const px = (rg.x + ca * rg.step * i - sa * wob) * R;
+          const py = (rg.y + sa * rg.step * i + ca * wob) * R;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'miter';
     }
     if (b.landmark === 'crater') {
       // THE SCAR — a giant impact basin with bright ejecta rays
-      const cx = b.radius * 0.28, cy = -b.radius * 0.24;
+      const cx = R * 0.28, cy = -R * 0.24;
       ctx.fillStyle = 'rgba(235, 240, 250, 0.26)';
-      ctx.beginPath(); ctx.arc(cx, cy, b.radius * 0.3, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, R * 0.3, 0, TAU); ctx.fill();
       ctx.strokeStyle = 'rgba(235, 240, 250, 0.3)';
-      ctx.lineWidth = Math.max(1.2, b.radius * 0.025);
+      ctx.lineWidth = Math.max(1.2, R * 0.025);
       ctx.beginPath();
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * TAU + 0.3;
-        ctx.moveTo(cx + Math.cos(a) * b.radius * 0.32, cy + Math.sin(a) * b.radius * 0.32);
-        ctx.lineTo(cx + Math.cos(a) * b.radius * (0.6 + (i % 3) * 0.18),
-          cy + Math.sin(a) * b.radius * (0.6 + (i % 3) * 0.18));
+        ctx.moveTo(cx + Math.cos(a) * R * 0.32, cy + Math.sin(a) * R * 0.32);
+        ctx.lineTo(cx + Math.cos(a) * R * (0.6 + (i % 3) * 0.18),
+          cy + Math.sin(a) * R * (0.6 + (i % 3) * 0.18));
       }
       ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// SPLASH WAVES — an ocean world answers a hit with rings running across the
+// face (physics stamps b.seaHits on splashdowns, seabed strikes and ship
+// dives; an ocean never craters, so this is its whole damage read). Event-
+// driven motion on game.time — the aurora/eclipse convention. Solid strokes,
+// clipped to the silhouette, and surface-local (h.a + b.rot) so a wave rides
+// the spin like every other feature.
+function drawSeaRipples(game, b) {
+  const T = CFG.OCEAN_RIPPLE_T;
+  const R = b.radius;
+  let live = false;
+  for (const h of b.seaHits) if (game.time - h.t < T) { live = true; break; }
+  if (!live) return;
+  ctx.save();
+  traceSurface(b);
+  ctx.clip();
+  for (const h of b.seaHits) {
+    const age = game.time - h.t;
+    if (age < 0 || age >= T) continue;
+    const u = age / T;
+    const cx = b.x + Math.cos(h.a + b.rot) * R;
+    const cy = b.y + Math.sin(h.a + b.rot) * R;
+    const reach = R * (0.22 + 1.35 * u) * (0.55 + 0.45 * h.s);
+    const fade = (1 - u) * (1 - u) * h.s;
+    ctx.lineWidth = Math.max(1.5, R * 0.018 * (1 - u * 0.5));
+    // three fronts trailing the leading wave, each fainter
+    for (let i = 0; i < 3; i++) {
+      const rr = reach - i * R * 0.09;
+      if (rr <= 0) continue;
+      ctx.strokeStyle = `rgba(210, 238, 255, ${(0.48 - i * 0.13) * fade})`;
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, TAU); ctx.stroke();
     }
   }
   ctx.restore();
@@ -9195,7 +9785,18 @@ export function render(game) {
   // so walking 15,000 bodies to `continue` past the dormant ones was work the
   // LOD had already done. The dormant guard stays for the null-list fallback.
   for (const b of (game.bodies._awake || game.bodies)) {
-    if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
+    if (b.alive && !b.dormant && bodyOnScreen(b)) {
+      // SUBMERGED bodies dim: a rock inside an ocean's water column (physics
+      // stamps b.inSea) draws at half strength, so it reads as under the sea
+      // instead of floating on a blue disc. The alpha is restored either way.
+      if (b.inSea) {
+        ctx.globalAlpha = 0.5;
+        drawBody(game, b);
+        ctx.globalAlpha = 1;
+      } else {
+        drawBody(game, b);
+      }
+    }
   }
   // GRAVEL draws into the SAME instanced batch as the rocks, right before the
   // flush. It is the whole reason the tier is affordable to LOOK at: thousands

@@ -1238,7 +1238,17 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // OR hp fraction) exists because mass dominance throttles planet hits to a
   // few points — see the CHUNK_* rationale in config.js. Corona heat's
   // per-call drip (~0.1% of maxHp) can never clear even the half gates.
-  const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas';
+  // An OCEAN world wears nothing: the sea closes over every wound, so hits
+  // show as WAVES (p.seaHits -> render.drawSeaRipples) instead of craters —
+  // the gas-giant convention (damage reads as weather) applied to water.
+  const isOcean = body.type === 'planet' && body.ptype === 'ocean';
+  if (isOcean && hx !== undefined && dmg > 1) {
+    const hits = (body.seaHits ||= []);
+    hits.push({ a: Math.atan2(hy - body.y, hx - body.x) - body.rot, t: game.time,
+      s: Math.min(1, 0.3 + dmg / 90) });
+    if (hits.length > 8) hits.shift();
+  }
+  const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas' && !isOcean;
   const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS;
   const isWorldBody = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
   // Small rocks scar too — wear is universal, only the SPRAY needs the mass
@@ -1786,6 +1796,17 @@ function surfRadius(body, ang) {
     const sh = (body.cjag ||= crystalShards(body.id));
     return body.radius * crystalRadiusAt(sh, ang - body.rot);
   }
+  // AN OCEAN WORLD'S COLLIDER IS ITS SEABED (CFG.OCEAN_CORE x radius): water
+  // is not a surface, so contact resolves against the bedrock under it and the
+  // water column above is the drag volume step() runs (user design call —
+  // "you sink a bit but then you hit the hard planet"). The drawn radius stays
+  // the sea; the felt radius is the core, everywhere at once — ship, rock,
+  // alien and both predictPaths mirrors — or the sink depth would depend on
+  // who was falling in. Ocean worlds never scar (canWear), so this branch and
+  // the scars branch below cannot both claim one body.
+  if (body.ptype === 'ocean' && body.type === 'planet') {
+    return body.radius * CFG.OCEAN_CORE;
+  }
   // BIG ROCK collides as the slab / wedge / shard / cleft / lump it is DRAWN as
   // (rockshape.rockShapeOf — render.traceAsteroid reads the identical shape), WITH its
   // impact craters taken out of it exactly like a moon or a planet. Landmark
@@ -1846,8 +1867,13 @@ function surfRadius(body, ang) {
 // reach past its nominal radius, so dropping to the disc off-view would make
 // the collider SMALLER than the body and rock would visibly interpenetrate the
 // moment it woke.
+// Ocean worlds are NOT gated on nearShip, for the crystal reason inverted:
+// their felt surface (the seabed) is SMALLER than the drawn disc, so dropping
+// to the disc off-view would grow the collider around anything resting on the
+// bedrock and eject it through the sea surface the moment the ship left.
 function shaped(body) {
   return body.ptype === 'crystal' || body.bigShape === true
+    || (body.type === 'planet' && body.ptype === 'ocean')
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
 // A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
@@ -1869,6 +1895,7 @@ function shaped(body) {
 // radii of daylight on a 300-unit landmark.
 function roundParty(body) {
   return body.ptype !== 'crystal' && body.bigShape !== true
+    && !(body.type === 'planet' && body.ptype === 'ocean')
     && !(body.type !== 'asteroid' && body.scars && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
@@ -2269,10 +2296,23 @@ function collideBodies(game, a, b) {
   // That is the exact outcome the rationale above exists to prevent, by the one
   // route it did not cover. A THROWN moon is derailed, so "a thrown moon goes
   // in" is untouched, and above DMG_THRESH a real crunch still swallows.
+  // INSTALLATIONS RIDE THE SAME PASS-THROUGH. The installation-lane sweep in
+  // world.js separates a station from its OWN parent's moons, but a station's
+  // reach from its host and a NEIGHBOUR lane's moon family deliberately
+  // overlap by tens of thousands of units (the same measured overlap the moon
+  // families themselves run on), and no radial nudge can separate two
+  // different parents' bands. Measured on seed 987654321 after the moon-floor
+  // change re-laid the slots: the relay station met a foreign 146-radius moon
+  // at ~48 u/s closing — far under DMG_THRESH — and the contact knocked the
+  // moon off its rail into its own planet, a world lost to scenery crossing
+  // scenery. Consequence must trace to a player choice: a railed installation
+  // and a railed celestial glide through each other exactly as two railed
+  // moons do; a THROWN body still hits (thrownTimer), and a real crunch above
+  // DMG_THRESH still lands.
   if (a.onRails && b.onRails && closing < CFG.DMG_THRESH &&
       a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
-      (a.type === 'planet' || a.type === 'moon') &&
-      (b.type === 'planet' || b.type === 'moon')) return;
+      (a.type === 'planet' || a.type === 'moon' || a.type === 'station' || a.type === 'nest') &&
+      (b.type === 'planet' || b.type === 'moon' || b.type === 'station' || b.type === 'nest')) return;
 
   // A GAS GIANT SWALLOWS (CFG.GAS_* — "it swallows"). There is no surface to
   // bounce off, so loose rock reaching the cloud tops sinks and is gone. This
@@ -3101,25 +3141,36 @@ function collideShipBody(game, s, b, dt) {
     const f = 1 - Math.exp(-CFG.SURF_FRICTION * dt);
     s.vx += (sv.vx - s.vx) * f;
     s.vy += (sv.vy - s.vy) * f;
-    // …and the three docking gates, read in the one place that knows the hull
-    // is actually touching something. `landing` accumulates across the
-    // substeps and updateDock (end of step) resolves it — the reset has to
-    // live there, because a per-body collider cannot see "no contact at all".
-    landing.touch = b;
-    // ROCKETS DOWN: the nose within DOCK_ARC of straight UP off the surface.
-    // `dx/dy` runs ship -> body, so the outward bearing is its reverse. On a
-    // shaped world this is deliberately the RADIAL up and not surfNormal's
-    // face normal: the player is lining the ship up against a horizon they can
-    // see, not against a crater wall's local slope.
-    const up = Math.atan2(-dy, -dx);
-    const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
-    const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
-    if (level && still) landing.settle = b;
-    // WHICH GATE IS REFUSING, for the approach guidance. Attitude first: it is
-    // the one a player will not work out on their own, and it is also the one
-    // they can fix instantly. A landing that silently declines to latch is the
-    // single worst failure mode this feature has.
-    else landing.gate = !level ? 'level' : 'fast';
+    // NO BERTH ON OPEN SEA (user design call): an ocean world's contact is the
+    // SEABED (surfRadius), and a hull resting on bedrock under a mile of water
+    // is not a landing. Friction still applies — the seabed is ground — and
+    // the bounce below still fires; only the docking gates never open, so no
+    // guide, no latch, no dock. The predicate is the SAME compound every other
+    // ocean test uses (surfRadius/shaped/roundParty/the drag passes): a skip
+    // that fired on ptype alone would make a hypothetical ocean MOON — which
+    // gets no seabed physics — silently undockable, the exact failure the
+    // dock guide exists to prevent.
+    if (!(b.type === 'planet' && b.ptype === 'ocean')) {
+      // …and the three docking gates, read in the one place that knows the hull
+      // is actually touching something. `landing` accumulates across the
+      // substeps and updateDock (end of step) resolves it — the reset has to
+      // live there, because a per-body collider cannot see "no contact at all".
+      landing.touch = b;
+      // ROCKETS DOWN: the nose within DOCK_ARC of straight UP off the surface.
+      // `dx/dy` runs ship -> body, so the outward bearing is its reverse. On a
+      // shaped world this is deliberately the RADIAL up and not surfNormal's
+      // face normal: the player is lining the ship up against a horizon they can
+      // see, not against a crater wall's local slope.
+      const up = Math.atan2(-dy, -dx);
+      const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
+      const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
+      if (level && still) landing.settle = b;
+      // WHICH GATE IS REFUSING, for the approach guidance. Attitude first: it is
+      // the one a player will not work out on their own, and it is also the one
+      // they can fix instantly. A landing that silently declines to latch is the
+      // single worst failure mode this feature has.
+      else landing.gate = !level ? 'level' : 'fast';
+    }
   }
 
   if (closing > 0) {
@@ -4025,7 +4076,7 @@ let nanWarned = false;   // the NaN tripwire below warns once per session
 // ---------------------------------------------------------------------------
 function newReg() {
   return {
-    stars: [], planets: [], terrans: [], ironMoons: [], stations: [], locals: [],
+    stars: [], planets: [], terrans: [], oceans: [], ironMoons: [], stations: [], locals: [],
     forts: [],
     // EVERY body that is not shoal rock (~380 of ~15,600 at doubled scale).
     // The renderer's landmark passes — approach plates, the planet colour
@@ -4062,6 +4113,7 @@ function regPush(reg, b) {
     case 'planet':
       reg.planets.push(b);
       if (b.ptype === 'terran') reg.terrans.push(b);
+      else if (b.ptype === 'ocean') reg.oceans.push(b);
       else if (b.ptype === 'shroud') reg.cloakers.push(b);
       break;
     case 'moon':
@@ -4250,6 +4302,7 @@ export function updateFieldLOD(game, dt) {
   awake.length = 0;
   const reg = game.reg || (game.reg = newReg());
   reg.stars.length = 0; reg.planets.length = 0; reg.terrans.length = 0;
+  reg.oceans.length = 0;
   reg.ironMoons.length = 0; reg.stations.length = 0; reg.locals.length = 0;
   reg.decay.length = 0; reg.forts.length = 0; reg.cloakers.length = 0;
   reg.nonField.length = 0; reg.crust.length = 0;
@@ -5366,17 +5419,63 @@ export function step(game, dt) {
           }
         }
       }
+      const wasInSea = game.shipInSea;
+      let inSeaNow = false;
       for (const b of attractors) {
-        if (b.ptype !== 'lava') continue;
-        const lz = b.radius * CFG.LAVA_HEAT_ZONE;
-        const dl = Math.hypot(s.x - b.x, s.y - b.y);
-        if (dl < lz) {
-          const t = Math.min(1, (lz - dl) / (lz - b.radius));
-          if (t * 0.6 > game.heatT) game.heatT = t * 0.6;   // less prominent glow
-          if (s.invuln <= 0) damageShip(game, t * t * CFG.LAVA_HEAT_DPS * dt, `Melted over ${b.name || 'a lava world'}.`);
-          if (!game.tut.heat) game.heatWarn = true;
+        if (b.ptype === 'lava') {
+          const lz = b.radius * CFG.LAVA_HEAT_ZONE;
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < lz) {
+            const t = Math.min(1, (lz - dl) / (lz - b.radius));
+            if (t * 0.6 > game.heatT) game.heatT = t * 0.6;   // less prominent glow
+            if (s.invuln <= 0) damageShip(game, t * t * CFG.LAVA_HEAT_DPS * dt, `Melted over ${b.name || 'a lava world'}.`);
+            if (!game.tut.heat) game.heatWarn = true;
+          }
+        } else if (b.ptype === 'terran' && b.type === 'planet') {
+          // THE BURN DECK BITES THE SHIP TOO (user design call) — flat dps x
+          // the same band profile the rock burn runs, so the hull chars in the
+          // deck and flies clean above AND beneath it. Environmental
+          // convention: flat, never hull-scaled, under the gas tops' 9 dps.
+          const az = b.radius * CFG.ATMO_ZONE, lo = b.radius * CFG.ATMO_IN;
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < az && dl > lo) {
+            const u = (dl - lo) / (az - lo);
+            const q = 4 * u * (1 - u);
+            if (q * 0.55 > game.heatT) game.heatT = q * 0.55;
+            if (s.invuln <= 0) damageShip(game, q * CFG.ATMO_SHIP_DPS * dt, `Burned up over ${b.name || 'a living world'}.`);
+            if (!game.tut.atmoShip && q > 0.3) game.atmoShipWarn = true;
+          }
+        } else if (b.ptype === 'ocean' && b.type === 'planet') {
+          // OPEN SEA: inside the drawn radius the hull is IN THE WATER —
+          // damped toward the water's own frame (depth-ramped, so the
+          // waterline is not a hard edge; divided by ship mass so a heavy
+          // hull ploughs). The seabed at OCEAN_CORE is the collider; docking
+          // is refused at the landing gates, so the sea takes your speed and
+          // gives you nothing to berth on.
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < b.radius) {
+            inSeaNow = true;
+            const sv = surfaceVel(b, s.x, s.y);
+            if (!wasInSea) {
+              const rel = Math.hypot(s.vx - sv.vx, s.vy - sv.vy);
+              if (rel > 60) {
+                const hits = (b.seaHits ||= []);
+                hits.push({ a: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
+                  t: game.time, s: Math.min(1, 0.3 + rel / 700) });
+                if (hits.length > 8) hits.shift();
+                addParticles(game, s.x, s.y, sv.vx, sv.vy, 10, '#cfe8ff', 130, 0.7, 2.5);
+              }
+              if (!game.tut.sea) game.seaWarn = true;
+            }
+            const core = b.radius * CFG.OCEAN_CORE;
+            const depth = Math.min(1, (b.radius - dl) / (b.radius - core));
+            const k = 1 - Math.exp(-CFG.OCEAN_DRAG * depth * dt / (1 + s.mass / CFG.OCEAN_DRAG_MASS));
+            s.vx += (sv.vx - s.vx) * k;
+            s.vy += (sv.vy - s.vy) * k;
+          }
         }
       }
+      game.shipInSea = inSeaNow;
     }
   }
 
@@ -5944,11 +6043,18 @@ export function step(game, dt) {
           if (dx > az || dx < -az || dy > az || dy < -az) continue;
           const d = Math.hypot(dx, dy);
           if (d >= az) continue;
-          const t = Math.min(1, (az - d) / (az - p.radius));
+          // THE BURN DECK: the band between ATMO_IN and ATMO_ZONE. Beneath it
+          // the air is calm — a rock that punches through stops burning (user
+          // design call), so what reaches the deck's floor lands whole.
+          const lo = p.radius * CFG.ATMO_IN;
+          if (d <= lo) continue;
+          // 4u(1-u): zero at BOTH edges, peak mid-deck — the burn fades in at
+          // 1.5r and back out at the deck floor (no hard edges in-world).
+          const u = (d - lo) / (az - lo);
+          const t = 4 * u * (1 - u);
           // The fire trails opposite the motion THROUGH the air (planet-
           // relative) — render draws the streak while reentryT holds, scaled
-          // by DEPTH (reentryK) so the burn fades in across the shell instead
-          // of switching on at the exact 1.5r boundary (no hard edges in-world).
+          // by the band profile (reentryK).
           b.reentryT = 0.22;
           b.reentryK = t;
           b.reentryAng = Math.atan2(b.vy - p.vy, b.vx - p.vx);
@@ -5965,6 +6071,58 @@ export function step(game, dt) {
           }
           break;
         }
+      }
+    }
+  }
+
+  // OCEAN WATER: the drag volume over the seabed collider (see CFG.OCEAN_*).
+  // Same walk shape as the terran burn above — the ocean list comes from the
+  // registry, candidates from the awake list (a dormant rock is off-view, and
+  // a splashdown is a thing you watch happen). Exemptions mirror the gas
+  // swallow's: railed bodies (an ocean's own junk satellites never touch the
+  // sea), held rocks (the beam dives on purpose), parry-frozen, and anything
+  // already sinking into a giant. NO damage here — the water only takes speed;
+  // the hard hit is the seabed, through the ordinary contact pass.
+  {
+    const oceans = reg.oceans.length ? reg.oceans : null;
+    if (oceans) {
+      for (const b of live) {
+        if (!b.alive || b === s || b.onRails || b.heldBy || b.parryFrozen ||
+            b.sinkT > 0 || b.type === 'planet' || b.type === 'star') {
+          if (b.inSea) b.inSea = false;   // grabbed out of the water: undim
+          continue;
+        }
+        let inSea = false;
+        for (const p of oceans) {
+          const dx = b.x - p.x, dy = b.y - p.y;
+          const pr = p.radius;
+          if (dx > pr || dx < -pr || dy > pr || dy < -pr) continue;
+          const d = Math.hypot(dx, dy);
+          if (d >= pr) continue;
+          inSea = true;
+          const sv = surfaceVel(p, b.x, b.y);
+          if (!b.inSea) {
+            // SPLASHDOWN — stamp a wave on the world (render runs it across
+            // the face) and throw spray. Only a real arrival ripples; a rock
+            // drifting over the waterline at walking pace does not.
+            const rel = Math.hypot(b.vx - sv.vx, b.vy - sv.vy);
+            if (rel > 60) {
+              const hits = (p.seaHits ||= []);
+              hits.push({ a: Math.atan2(dy, dx) - p.rot, t: game.time,
+                s: Math.min(1, 0.22 + b.mass / 6000 + rel / 900) });
+              if (hits.length > 8) hits.shift();
+              addParticles(game, b.x, b.y, sv.vx, sv.vy,
+                Math.min(14, 4 + Math.round(b.mass / 400)), '#cfe8ff', 140, 0.8, 2.5);
+            }
+          }
+          const core = pr * CFG.OCEAN_CORE;
+          const depth = Math.min(1, (pr - d) / (pr - core));
+          const k = 1 - Math.exp(-CFG.OCEAN_DRAG * depth * dt / (1 + b.mass / CFG.OCEAN_DRAG_MASS));
+          b.vx += (sv.vx - b.vx) * k;
+          b.vy += (sv.vy - b.vy) * k;
+          break;
+        }
+        b.inSea = inSea;
       }
     }
   }
@@ -6043,6 +6201,10 @@ export function predictPaths(game) {
         // gravity but the capture assist doesn't apply near a comet)
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
+        // Ocean ghosts hit at the SEABED, exactly as the collider does — a
+        // forecast ending at the drawn sea would call a landing where the sim
+        // sinks you another 0.14r (the ✕ and the hull must agree on the floor).
+        ocean: b.type === 'planet' && b.ptype === 'ocean',
         // crystal ghosts hit-test against the shard polygon at the CURRENT
         // rot (spin drift over the horizon is smaller than the marker dot)
         crystal: b.ptype === 'crystal', rot: b.rot,
@@ -6335,7 +6497,7 @@ export function predictPaths(game) {
       if (!shipEnd) for (const b of hitAtr) {
         // Gas giants have no ship surface — the meaningful "hit" is the core.
         // Crystal worlds hit at the shard polygon (bounding test first).
-        let hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
+        let hr = (b.gas ? b.radius * CFG.GAS_CORE : b.ocean ? b.radius * CFG.OCEAN_CORE : b.radius) + ship.r;
         const hd2 = (b.x - ship.x) ** 2 + (b.y - ship.y) ** 2;
         if (b.crystal) {
           const bnd = b.radius * CRYSTAL_REACH + ship.r;
@@ -6370,7 +6532,7 @@ export function predictPaths(game) {
       held.x += held.vx * dt; held.y += held.vy * dt;
       if (i % 2 === 0) heldPts.push({ x: held.x, y: held.y });
       for (const b of atr) {
-        let hr = b.radius + held.r;
+        let hr = (b.ocean ? b.radius * CFG.OCEAN_CORE : b.radius) + held.r;
         const hd2 = (b.x - held.x) ** 2 + (b.y - held.y) ** 2;
         if (b.crystal) {   // thrown-rock ✕ lands on the shard polygon
           const bnd = b.radius * CRYSTAL_REACH + held.r;

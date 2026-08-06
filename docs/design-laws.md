@@ -423,6 +423,33 @@ code "works."
   A crack does not get wider or longer because the planet is bigger. Bodies at or under the
   reference are bit-identical; everything above shares one absolute look. Anchoring stays real-R
   (cracks start at the true rim, craters sit on the true limb) — only the detail's scale is clamped.
+- **THE PLANET FACE scales the other way: feature COUNT grows with the world, feature SIZE stays a
+  fraction of it** (`render.planetDetail` / `drawPlanetDetail`). A continent, a band or a lava plate
+  IS a fraction of its world — clamping those to `DETAIL_R` would shrink a giant's weather to a
+  postage stamp — but the same four ellipses that dressed a 250-unit disc read as bare at 1500, so
+  the mid-frequency layer (eddies, linea, dune trains, craters, gyres) grows in number with the
+  built radius (`den`, capped at 5). Three rules hold it together: the face is built ONCE per body
+  into `b._pd` as fractions of the radius (seeded off `b.id` — stable, no `Math.random`) and drawn
+  against the LIVE radius, so a world chipped smaller wears its face smaller with no pops; the cache
+  key is `ptype|gasKind|landmark`, which is what rebuilds the face when a stripped gas giant BECOMES
+  its rocky core in place; and the mid-frequency layer sits behind a `fine` gate
+  (`R * zoom > 24px`) because at a dozen screen pixels the archetype's big read — bands, caps,
+  continents, plates — is the whole story. Organic patches come from `mkBlob`/`blobPath` (two low
+  radial harmonics over an ellipse — the rock law's lesson applied to paint: a bare ellipse reads as
+  the primitive it is), and every ambient drift still rides multiples of `b.rot`, never wall-clock
+  time. **GAS GIANTS RUN THE OPPOSITE WAY ON SIZE TOO** (user call: "because they are so
+  incredibly big, the details need to be smaller"): `fs = sqrt(den)` DIVIDES band heights, eddy
+  sizes and wave amplitudes as the world grows, so a 2,000-unit giant wears many fine stripes and
+  small storm flecks instead of six huge bands — only the landmark Great Eye stays big (it is
+  steered by), and the azure giant keeps its few wide bands (calm IS its identity; only its cirrus
+  and storm fleck scale down). The archetype signatures are: sheared wavy bands + eddy trains = gas
+  (amber busy/warm, azure calm + polar hood + cirrus, violet turbulent + curl hooks), dark crust
+  plates over lit magma
+  seams + rivers = lava, ragged caps + Europa linea = ice, shelf-sea continents + cloud masses + a
+  cyclone = terran, deep basins + currents + gyres + archipelagos + a sunward specular = ocean, ergs
+  + dune ripple trains + a canyon = desert, sheared cloud decks + colliding chevrons = shroud, a
+  facet lattice keyed to the REAL `b.cjag` silhouette = crystal, maria + rimmed craters + crooked
+  ridges = rocky.
 - **Every planet wears a belt of its own rubble** (`world.seedDebrisBelts`, appended after
   `seedDenseFields` per the expedition-layer rng rule). Counts scale with the world's radius, the
   material comes from `config.worldDebris` — the same table `calveCrust` reads, so what already

@@ -721,14 +721,55 @@ from breaking the invariants above:
     bitmask plus an incrementally-maintained count so the predicates stay plain compares (no loop,
     no allocation in the sweep). All count from zero, so none can be a frame-one freebie —
     re-checked against `freshRun` for all three specs.
-  - **TERRAN — atmosphere burn-up** (`CFG.ATMO_*`, physics.step, the corona-heat shape): loose
-    free-flying asteroids under `ATMO_MAX_MASS` burn inside 1.5x radius — railed bodies (the world's
-    own junk satellites live in the shell; damage would derail them), held rocks, and
-    premium/quest objects (core/cache/pod/carved/visitor/wreck) are exempt, the SHIP never burns,
-    and heavyweights punch through BY DESIGN: bombarding a terran world takes a real rock.
-    Render streak rides `b.reentryT/reentryAng` (stamped in physics, decays in the integrate loop).
+  - **TERRAN — the BURN DECK** (`CFG.ATMO_*`, physics.step): the atmosphere is a BAND, not a well —
+    the layer between `ATMO_IN` (1.14r) and `ATMO_ZONE` (1.5r) burns what flies through it, and
+    beneath it the air is CALM (user call, 2026-08: *"once through the damage stops"*). The profile
+    is `4u(1-u)` — zero at both edges, peak mid-deck — so the burn fades in and out with no hard
+    edge at either boundary. Loose free-flying asteroids under `ATMO_MAX_MASS` burn at
+    profile² × `ATMO_DPS_FRAC` × maxHp (raised 0.9 → 1.4 when the band replaced the well: the deck
+    is thinner and releases what punches under it, so the rate compensates to keep "small rocks
+    flash to nothing" true). Railed bodies (the world's own junk satellites live in the shell;
+    damage would derail them), held rocks, and premium/quest objects
+    (core/cache/pod/carved/visitor/wreck) are exempt, and heavyweights punch through BY DESIGN:
+    bombarding a terran world takes a real rock.
+    **THE SHIP BURNS TOO** (user call, 2026-08 — this reversed "the SHIP never burns"): flat
+    `ATMO_SHIP_DPS` (7) × profile, the environmental-hazard convention (flat, never hull-scaled,
+    under the gas cloud tops' 9), riding the `game.heatT` glow and its own one-shot
+    `atmoShipWarn` message that teaches the counterplay (punch through — the deck floor clears the
+    tallest dock pad, so a berthed ship always sits in calm air).
+    Render: the atmosphere is VISIBLE as a band-peaked gradient reaching slightly past both
+    mechanic edges (1.02r–1.58r vs 1.14–1.5) so anywhere that looks clear IS clear — the hazard
+    reading of the dust-halo rule. The rock streak rides `b.reentryT/reentryAng` (stamped in
+    physics, decays in the integrate loop), scaled by the band profile (`reentryK`).
   - **OCEAN — waterspouts** (world.js hazard loop): the cryo-geyser branch with a sea-green cast —
     railed `iceOf` pellets, same caps, so it can never flood the belt.
+    **AND THE SEA ITSELF** (`CFG.OCEAN_*`, user call, 2026-08: *"you sink a bit but then you hit
+    the hard planet … waves ripple across the planet on hits … you shouldn't be able to land"*):
+    - **The collider is the SEABED** at `OCEAN_CORE` (0.86) × radius, wired through
+      `surfRadius`/`shaped`/`roundParty` and both `predictPaths` mirrors, so ship, rock, alien and
+      the forecast ✕ all agree on where the floor is. Deliberately NOT gated on `nearShip`
+      (crystal's reasoning inverted): the felt surface is SMALLER than the drawn disc, so dropping
+      to the disc off-view would grow the collider around anything resting on the bedrock and
+      eject it through the sea the moment the ship left.
+    - **The water is a DRAG VOLUME**: anything loose inside the drawn radius is damped toward the
+      water's own frame (`util.surfaceVel`), depth-ramped so the waterline is not a hard edge, and
+      divided by `(1 + mass/OCEAN_DRAG_MASS)` so a pebble stops in the shallows while a thrown moon
+      ploughs to the bedrock — kinematic drag would stop both alike, and "heavyweights punch
+      through" is the atmosphere rule read across. The water does NO damage; the hard hit is the
+      seabed, through the ordinary contact pass. Exemptions mirror the gas swallow's (railed, held,
+      parry-frozen, already-sinking). The ship rides the same drag (divided by its per-tier mass)
+      in the environmental loop, with a one-shot `seaWarn` teaching the rule. Submerged bodies
+      carry `b.inSea` and render dims them to half strength.
+    - **Hits read as WAVES, never as craters.** Splashdowns, seabed strikes (`damageBody` with an
+      impact point) and ship dives stamp `p.seaHits`; `render.drawSeaRipples` runs expanding
+      fronts across the face — event-driven motion, the aurora convention. `canWear` excludes
+      ocean exactly like gas, and the ambient-wear loop skips it: the sea closes over every wound,
+      so an ocean world never scars, never pits, and its silhouette stays whole. (Its death is
+      still the ordinary planet shatter — killing it remains a player feat, invariant 8.)
+    - **NO BERTH ON OPEN SEA**: the landing gates in `collideShipBody` skip ocean worlds outright —
+      no guide, no latch, no dock, ever. Surface friction and the bounce still apply (the seabed is
+      ground; you can rest on it), and the world's MOONS dock normally. This is the one archetype
+      exception to "a world is somewhere you can stop", and it is deliberate.
   - **DESERT — dune skimming** pays `PROG.XP_SKIM_DUNE` (2x); hull cost UNCHANGED — the banded-moon
     law (bonus XP never discounts the grind).
   - **SHROUD — cloud cloak**: feeds the SAME `game.dustCloak` flag as dust moons (ai.js), halo

@@ -183,8 +183,12 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
 - **Determinism:** world *generation* uses a seeded `mulberry32`, but the seed is **random per run**
   — pin one with `?seed=` for a repeatable world. The layout itself is **SEEDED PER RUN** now
   (world.js `buildLayout`): which archetype sits at which lane, per-world size/mass jitter, moon
-  counts (base ×1–1.5), names (a seeded shuffle) and an optional co-orbital pairing of the two
-  outer-band worlds all come off the world rng. The planet COUNT stays the template's 15 (17 in
+  counts (base ×1–1.5) and an optional co-orbital pairing of the two
+  outer-band worlds all come off the world rng. **NAMES ride a PRIVATE stream** (world.js
+  `PLANET_NAME_POOLS` — one themed pool per archetype, each shuffled off its own avalanche-mixed
+  fork of the run seed), so different seeds wear genuinely different names; the old shared-pool
+  shuffle is still burned on the world rng and discarded, which is what keeps every seed's layout
+  bit-identical across that change. The planet COUNT stays the template's 15 (17 in
   census, with the binary companion and the Wanderer's Star) — variety comes from arrangement,
   never population — while the MOON census varies (~70–80), so soaks/benches judge against the
   run's own start-of-run counts. The GUARDRAILS are structural (see buildLayout's header): all nine
@@ -326,7 +330,11 @@ Plus the three scaling rules that make a big debris cascade affordable:
   stop is a body reference, not a coordinate; arrival pops the HEAD ONLY, at world.js's own chart-scan
   zone (so a stop ticks over exactly as the place names itself); a destroyed body leaves a flagged
   "lost contact" at its last position rather than silently vanishing from the list.
-- **A WORLD IS SOMEWHERE YOU CAN STOP.** Set the ship down on a planet or moon ROCKETS-DOWN and hold
+- **A WORLD IS SOMEWHERE YOU CAN STOP — except an OCEAN world.** Open sea has no anchorage: the
+  landing gates skip ptype `'ocean'` outright (its collider is the SEABED at `CFG.OCEAN_CORE`, the
+  water above is a drag volume, and hits ripple instead of cratering — see
+  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. Everywhere else:
+  set the ship down on a planet or moon ROCKETS-DOWN and hold
   still and it BERTHS (`physics.updateDock`): three gates — contact, the nose within `DOCK_ARC` of
   straight up, and surface-relative speed under `DOCK_SPEED` — all true for `DOCK_TIME`. The gates
   are deliberately GENEROUS; the interesting part is what a dock IS, not how tight the approach
