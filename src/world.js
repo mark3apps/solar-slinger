@@ -3809,6 +3809,13 @@ export function replenishWorld(game, dt) {
     game.wearT = step;
     for (const p of (game.reg ? game.reg.planets : [])) {
       if (!p.alive || p.nearShip || p.fort) continue;   // present player, or a shielded siege
+      // A gas giant doesn't pit — damageBody's canWear already excludes gas
+      // (its damage reads as WEATHER, never craters), and a scar minted here
+      // would notch the cloud tops in BOTH render.worldSil and physics.surfRadius.
+      // The hp drip is skipped too: the wear floor (0.5) sits past drawGasWound's
+      // 0.4 glow gate, so ambient wear alone would eventually open a glowing
+      // hole in every giant's cloud deck with nothing having hit it.
+      if (p.ptype === 'gas') continue;
       const floor = p.maxHp * CFG.PLANET_WEAR_FLOOR;
       if (p.hp <= floor) continue;
       // Rate hashed off the id, never drawn from the world rng — a draw here
