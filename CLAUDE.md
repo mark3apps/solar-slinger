@@ -286,8 +286,9 @@ Plus the three scaling rules that make a big debris cascade affordable:
   resolves as a rope (take separating velocity, split by mass). It **rubber-bands** into that limit
   (`TETHER_STRETCH`), and the rope's length is **state** (`b.ropeL`, reeled in at `TETHER_REEL`) —
   engaging at the constant instead snaps a lagging load across the gap in one frame.
-  **Ship mass is per-tier** (`SHIP_MASS` 10 → 4,200): that ratio is the whole fight, so it can't
-  stay constant.
+  **Ship mass is per-tier** (`SHIP_MASS` 10 → 11,200): that ratio is the whole fight, so it can't
+  stay constant. It is DERIVED — `10 × (SHIP_RADIUS[t]/SHIP_RADIUS[0])^2.5` — so it must be re-baked
+  whenever the size ladder moves, and the exponent compounds that move.
 - **Your own shot is the lowest-precedence grab target**: not a target *at all* for
   `CFG.THROW_LOCKOUT` (2s) after a beam launch, then merely demoted, and a loaded stow ring outranks
   it either way. Ladder: loose rock → orbit ring → your own shot.
@@ -398,6 +399,31 @@ Plus the three scaling rules that make a big debris cascade affordable:
   and `beginGasStrip` must zero `ventT` or the throes run their first half silent. And **gas ejecta
   are terminal** — they puff, they never split, or the pebble cloud comes straight back one shot
   later.
+- **SHIP SCALE: the top tier is half again as big, and the boost tapers LINEARLY down the ladder**
+  (`SHIP_RADIUS`, ×1.0 at tier 0 → ×1.5 at tier 5). Two derived constants move WITH it or the change
+  is wrong: `SHIP_MASS` (power 2.5 on the footprint) and `SHIP_ZOOM`, re-derived to hold
+  `footprint × zoom` fixed so the ship looks unchanged in the viewport and the +50% is spent on the
+  ship **against the worlds**. `CFG.STORM_SHADOW_PAD` is sized in Titan-widths and moves too (45 →
+  68). Cost to know: tier 5 sits further back, so its `viewR` covers ~1.9× the area.
+- **EVERY SPEC IS SIZE-MATCHED AGAINST THE HAULER** (`config.SHIP_VIS`, applied after the per-tier
+  reach normalization; scout and brawler target **1.25×** the hauler). Equal REACH is not equal SIZE —
+  a ladder whose reach comes from one outlier (the scout's nose, the brawler's deflector brow) gets
+  its whole body shrunk to pay for it. The metric is the ink's RADIUS OF GYRATION, measured by
+  `render.measureShipArt(game)`, not felt; bounding box (inflates the brawler) and ink area (inflates
+  the scout) were both tried and rejected. Bake `hauler.raw / spec.raw × 1.25`, and **bake twice** —
+  it converges. A spec's drawn reach is now past its collision circle by `vis`, so anything wrapping
+  the ART (`shipVisualR`, `ramPlate`) multiplies by it while the collision circle stays one number
+  for every spec.
+- **ONE HULL STROKE WEIGHT, AND IT IS THE HAULER'S** (`render.outlineW(tier, r)`). Never derive it
+  per spec: the old `k × u` form looked shared but `u` is an ART-SPACE unit that differs per ladder,
+  so equal coefficients drew unequal lines — and `SHIP_VIS` made it worse by scaling two ladders up.
+  **Re-bake `SHIP_VIS` after any stroke change**, since outline width feeds the ink it measures.
+- **SHIP MASS IS PER-SPEC TOO** (`config.SPEC_MASS`: brawler 1.39, hauler 1, scout 0.78, flat).
+  Tier = how big the hull is, spec = how dense. Measured off ink fill at matched size (0.75 / 0.54 /
+  0.42), not picked. Size is shared across specs; weight is not.
+- **THE SCOUT'S WINGS ARE BARE** — no gun pods, barrels or hardpoints. The class escalates GUIDANCE,
+  not armament, so the ladder still reads off the gimbal/dishes/arrays/booms/sail and the evolving
+  wing planform. (Loose end: the intake maw and hopper now feed nothing.)
 - **World scale:** `PLANET_R_MUL`/`MOON_R_MUL` grow radii only — masses are untouched, and the
   multiplier is a *ceiling* capped by neighbouring lane clearance.
 - **System scale:** `CFG.SYS_R_MUL` spreads the sky. **Every sun-anchored radius in world.js goes

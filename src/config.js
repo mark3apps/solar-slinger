@@ -2136,11 +2136,18 @@ export const CFG = {
   STORM_SHADOW: 1.15,      // shadow cylinder radius, x the sheltering body's radius
   // …plus a FLAT pad, because forgiveness has to be measured in ship-widths and
   // a pure multiple is not: 1.15x a 26-radius moon is a 30-unit half-width — a
-  // slot a TITAN (SHIP_RADIUS 44.2) does not fit through, let alone thread under
+  // slot a TITAN (SHIP_RADIUS 66.3) does not fit through, let alone thread under
   // fire with the sensors out. The pad is sized off the largest hull in the game
-  // for exactly that reason: at 45 the smallest moon in the sky shelters even
-  // the biggest ship, while a 500-radius planet barely notices the +8%.
-  STORM_SHADOW_PAD: 45,
+  // for exactly that reason: at 68 the smallest moon in the sky shelters even
+  // the biggest ship, while a 500-radius planet barely notices the +14%.
+  // MOVES WITH THE TITAN, and only ever with the Titan: it was 45 against a
+  // 44.2 hull, and the 2026-08 +50% top tier (SHIP_RADIUS) took the hull to
+  // 66.3, so the pad went x1.5 with it. Left at 45 the lee would have been
+  // 48.7 against a 66.3 hull — the biggest ship in the game no longer fits
+  // behind the smallest moon, which is the exact regression mechTest T21
+  // catches and the reason that assertion is written against SHIP_RADIUS[5]
+  // rather than a multiple of the moon's own radius.
+  STORM_SHADOW_PAD: 68,
   STORM_SHADOW_LEN: 30,    // how far that lee reaches behind it, x radius
   STORM_SHADOW_MIN_R: 24,  // smallest body that casts one — see MOONS SHELTER above
 
@@ -2474,7 +2481,15 @@ export function ramPlate(st, ram) {
   if (!(ram > 0) || !(st.ramCap > 0)) return null;
   const fill = Math.min(1, ram / st.ramCap);
   const g = Math.pow(fill, CFG.RAM_R_POW);
-  const r = st.radius;
+  // THE WHOLE PLATE RIDES THE DRAWN SHIP, NOT THE COLLISION CIRCLE, so every
+  // proportion below is taken against the size-matched radius. The brawler's art
+  // is scaled up ~1.4x by SHIP_VIS; leaving the slab on the bare collision radius
+  // would have left it NARROWER than the hull prow it mounts on, and the class's
+  // one hard rule is that the ram overhangs the ship on both sides at every size.
+  // Scaling it whole keeps back/gap/depth/halfW in exactly the proportions they
+  // were tuned in, and keeps ramFace/ramArc — the edge physics hits and the arc
+  // it protects — glued to the edge you can see.
+  const r = st.radius * (st.vis || 1);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
@@ -2484,6 +2499,9 @@ export function ramPlate(st, ram) {
   // result so render's build and physics' tier-drop detection read one number.
   const t = ramTierOf(fill, st.orbitLvl || 1);
   return {
+    // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
+    // is scaled up by its size-match factor — read against the bare footprint
+    // the slab would sit buried inside the prow it is supposed to lead.
     back: (r / SHIP_HIT_FRAC) * 1.04,
     // The field gap is the compression spring's FREE LENGTH, and it is
     // deliberately generous: the slab rides well clear of the nose at rest so
@@ -2669,7 +2687,7 @@ export function canStow(st, b) {
 
 // Per-tier collision radius. DERIVED, not hand-picked: the ship's full drawn
 // FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the SAME RATIO
-// each tier (x1.62, from 6.0 to 67 world units — equal RATIOS, not equal
+// each tier (x1.75, from 6.1 to 100 world units — equal RATIOS, not equal
 // increments: the eye judges size change multiplicatively), and the collision
 // circle is a UNIFORM fraction of that footprint on every tier:
 //   SHIP_RADIUS[t] = SHIP_HIT_FRAC × footprint[t]
@@ -2680,8 +2698,18 @@ export function canStow(st, b) {
 // hull mass everywhere while leaving nose tips and thin ring arcs forgiving.
 // render.js normalizes the art to the footprint (r / SHIP_HIT_FRAC), so
 // changing the fraction moves ONLY the hitbox, never the drawn size.
+//
+// 2026-08 user call: THE TOP TIER IS HALF AGAIN AS BIG, AND THE BOOST TAPERS
+// LINEARLY DOWN THE LADDER. The old ladder was [4.0, 6.4, 10.4, 16.8, 27.3,
+// 44.2]; each tier is multiplied by 1 + 0.1 x tier, so the SCOUT is untouched
+// and the TITAN is x1.5. That deliberately steepens the ladder — the per-tier
+// growth ratio goes from a flat x1.62 to a flat-ish x1.75 — because the point
+// was to widen the gap between where you start and where you end up, not to
+// inflate the whole fleet. The ratios stay near-uniform tier to tier, which is
+// the property that mattered (the eye judges size change multiplicatively);
+// what changed is how big each step is.
 export const SHIP_HIT_FRAC = 0.66;
-export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
+export const SHIP_RADIUS = [4.0, 7.0, 12.5, 21.8, 38.2, 66.3];
 
 // PER-TIER SHIP MASS. It was a flat 10 forever — which was harmless while
 // nothing read it, and stopped being harmless the moment the tether went taut
@@ -2689,18 +2717,23 @@ export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
 // meant a Titan wrestled a moon exactly as badly as a Scout did, and every
 // load in the game won every fight outright.
 //
-// DERIVED from the drawn footprint, not hand-felt: SHIP_RADIUS grows by a
-// uniform x1.62 per tier, and mass rides that at the power 2.5 (1.62^2.5 =
-// x3.34 a tier) — between area and volume, because a ship is hull and framing
-// rather than a solid lump. Over the run that is ~420x, so what you can wrestle
-// changes completely from end to end: a Scout is a gnat on anything it can
-// lift, a Titan can genuinely muscle the smaller worlds and still gets swung
-// around by a gas giant's core.
+// DERIVED from the drawn footprint, not hand-felt: mass rides the footprint at
+// the power 2.5 — between area and volume, because a ship is hull and framing
+// rather than a solid lump. One expression, anchored on the Scout:
+//   SHIP_MASS[t] = 10 x (SHIP_RADIUS[t] / SHIP_RADIUS[0]) ^ 2.5
+// so what you can wrestle changes completely from end to end: a Scout is a gnat
+// on anything it can lift, a Titan can genuinely muscle the smaller worlds and
+// still gets swung around by a gas giant's core.
+// RE-DERIVED 2026-08 with the +50% top tier (see SHIP_RADIUS). The steeper size
+// ladder compounds hard at this exponent: the run-long spread went from ~420x
+// to ~1120x, and the Titan alone gained x2.66 (4200 -> 11200). That is a real
+// balance move, not a cosmetic one — every mass-ratio contest the ship enters
+// (today the taut tether, tractor.springHeld) tilts toward the big hulls.
 // If SHIP_RADIUS is ever re-derived, re-derive this with it.
-export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
+export const SHIP_MASS = [10, 41, 173, 694, 2820, 11200];
 
 // Per-tier camera zoom TARGET (the value cam zoom eases toward): a
-// geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
+// geometric ramp from 2.46 to 0.40 — each step recedes by the same ~30%
 // RATIO. The start value is DERIVED, not aesthetic: it makes the ship's
 // APPARENT on-screen size arc identical to the approved one (~15px-eq
 // scout -> ~40px-eq titan) while the ship's WORLD size shrank — small
@@ -2709,15 +2742,125 @@ export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
 // THAT and you must re-derive this — retuning SHIP_HIT_FRAC alone moves only
 // the hitbox and needs no zoom change. Zoom is driven by beam tier
 // alone — other progression tracks don't pull the camera back.
+//
+// RE-DERIVED 2026-08 for the +50% top tier, holding APPARENT SIZE FIXED. The
+// invariant is that `footprint x zoom` is unchanged on every tier, so
+//   SHIP_ZOOM[t] = old_zoom[t] x old_radius[t] / SHIP_RADIUS[t]
+// which is why tier 0 (unchanged radius) keeps its 2.46 exactly. The ship
+// therefore looks the SAME as it always did in the viewport, and the whole of
+// the +50% is spent where it was asked for: the ship against the worlds. The
+// side effect to know about is that the late tiers now sit ~1.5x further back,
+// so the view covers ~1.5x more world at tier 5 — more bodies inside game.viewR
+// on the biggest hull, which is the tier that already carries the most.
 // NOTE: this tight tier-0 zoom is why the SKY SPEED is tuned low (the sun's
 // mass, world.js) — the world scrolls past ~2x faster per zoom unit, so a
 // fast sky at this zoom reads as flying wildly fast. Flight feel = sky speed
 // x zoom; they tune together. Raise this zoom and the sun mass must drop.
-export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
+export const SHIP_ZOOM = [2.46, 1.70, 1.16, 0.82, 0.57, 0.40];
 
 // Per-tier ship CLASS name (matches the hull designs drawn in render.js
 // SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
 export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
+
+// SIZE-MATCH: EVERY SPEC READS THE SAME SIZE AS THE HAULER (2026-08 user call).
+//
+// The three hull ladders were normalized to their own MAX REACH — the art is
+// scaled so the furthest point of every spec lands at the same r / SHIP_HIT_FRAC.
+// That makes the collision fraction uniform, but it is NOT the same thing as
+// looking the same size, and the difference is large: a spec whose reach comes
+// from ONE outlier (the scout's needle nose, the brawler's standoff deflector
+// brow) gets its whole body shrunk to pay for that outlier. Measured, the hauler
+// read up to 1.49x bigger than the brawler and 1.33x bigger than the scout.
+//
+// So the art now carries a second factor: the reach normalization FIRST, then
+// this. The metric is the ink's RADIUS OF GYRATION — the RMS distance of drawn
+// material from the hull's own centroid, i.e. how far the ship's substance
+// actually spreads. Two simpler metrics were measured and REJECTED by eye
+// against a side-by-side sheet of all three ladders, and the reasons are worth
+// keeping because both look right on paper:
+//   BOUNDING BOX (sqrt of w x h) made the BRAWLER the biggest ship in the sky.
+//     The hauler's box is mostly the AIR inside its ring arms and the brawler's
+//     is solid slab, so equal boxes are nowhere near equal presence.
+//   INK AREA (sqrt of painted pixels) made the SCOUT enormous — a needle carries
+//     a third of the hauler's pixels, so matching pixel counts stretched it to
+//     half again the hauler's length at T3.
+// Gyration splits them, and the check that it is the right split is that it
+// AGREES with ink area on the solid brawler (1.27 vs 1.26 at T5) while still
+// refusing to inflate the thin scout.
+//
+// MEASURED, NOT FELT, and re-derivable: render.measureShipArt(game) draws all
+// three ladders off-screen and returns the numbers. Each entry below is
+// hauler.raw[tier] / spec.raw[tier] from that tool TIMES THE TRIM below, so the
+// hauler is 1 by construction and its shipped art is untouched on every tier.
+// Re-run it and re-bake this whenever a tier table changes — the numbers are
+// stable to ~1.5% (the spinning ring arms and the slewing gimbal move the ink a
+// little).
+//
+// THE 1.25 TRIM (2026-08 user call: "the scout needs to be larger and so does
+// the brawler than they are now at each tier"). Matching the hauler EXACTLY was
+// the right correction and still read a touch small on those two once it was in
+// front of a player — a needle and a slab need more room than a compact ring to
+// carry the same weight on screen. So the target is not `hauler` but
+// `1.25 x hauler`, and the hauler is now the smallest of the three rather than
+// the biggest. It stays THE REFERENCE either way: one spec has to be the anchor
+// or there is nothing to measure against, and the hauler's art is the one that
+// has never needed to move.
+//
+// RE-BAKE AFTER TOUCHING OUTLINE WIDTH. render.outlineW feeds the ink these
+// numbers are measured from, so changing the stroke weight moves the
+// measurement — putting the scout and brawler onto the hauler's single shared
+// stroke shifted every entry here by ~1.5%.
+//
+// RE-BAKE TWICE. The measurement is very slightly non-linear in the factor it is
+// measuring: the hull OUTLINE is one weight per tier for every spec —
+// `max(1.1, 0.07 x u_hauler)`, see render.outlineW — so it does NOT scale with
+// the factor being applied here, and a hull drawn 1.25x bigger does not lay down
+// 1.25x the ink. One pass lands within ~1.5-3.6%; feeding that pass's ratios
+// back in converges to ~0.2%. The table below is a second-pass bake — don't be
+// surprised that it does not equal a single measurement.
+//
+// The knock-on to know: a spec's DRAWN reach is now `r / SHIP_HIT_FRAC x vis`,
+// so the scout and brawler extend past their collision circle by that factor.
+// That is the deliberate trade — SHIP_HIT_FRAC stops being a per-spec constant
+// so that apparent size can be one. Everything that must wrap the ART rather
+// than the hitbox (render.shipVisualR's shield bubble, ramPlate's standoff)
+// multiplies by it; the sim's collision circle does not move.
+const SHIP_VIS = {
+  hauler:  [1, 1, 1, 1, 1, 1],
+  scout:   [1.325, 1.591, 1.723, 1.539, 1.488, 1.398],
+  brawler: [1.342, 1.507, 1.572, 1.714, 1.750, 1.675],
+};
+
+// The one read. Defaults to the hauler ladder for a spec that isn't set yet —
+// the first frames of a run are drawn before the spec modal is answered, which
+// is the same reason render.shipTierTable can't assume one exists.
+export function shipVis(spec, tier) {
+  return (SHIP_VIS[spec] || SHIP_VIS.hauler)[tier] || 1;
+}
+
+// PER-SPEC HULL DENSITY (2026-08 user call: "the mass of the ship should be
+// different for each ship, brawler should be the largest mass and the scout the
+// smallest"). SHIP_MASS above is the TIER ladder and stays spec-agnostic; this
+// is what a hull of that size is built OUT OF.
+//
+// Once SHIP_VIS matched all three to the same apparent size, the art answered
+// this by itself — measured ink as a fraction of the bounding box:
+//   BRAWLER 0.75   armour slab and ram; nearly solid
+//   HAULER  0.54   framing and ring arms; half of its box is the air inside them
+//   SCOUT   0.42   airframe, wings and sensor masts; mostly not there
+// Those fills, normalized on the hauler, ARE the numbers below. So the ordering
+// the user asked for is not a dial someone picked — it is what the three
+// silhouettes have been saying all along, and a brawler outweighs a scout 1.78:1
+// at equal size for the visible reason that there is far more of it.
+//
+// FLAT PER SPEC, not per tier. The measured fill ratio does drift tier to tier,
+// but almost entirely because the HAULER's own fill climbs (0.44 -> 0.63 as the
+// ring arms fill in) rather than because the other two change — so a per-tier
+// table would narrow and widen the spread for a reason no player can see, and
+// "a brawler is always 1.39x a hauler" is the version you can reason about.
+const SPEC_MASS = { hauler: 1, scout: 0.78, brawler: 1.39 };
+
+export function specMass(spec) { return SPEC_MASS[spec] || 1; }
 
 // What each planet ARCHETYPE (b.ptype — one mechanic each, see world.js) calls
 // itself to the player. A catalog, so it lives here in the leaf rather than in
@@ -3767,10 +3910,20 @@ export function shipStats(prog) {
       + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
+    // ...but the DRAWN size is tier AND spec: the size-match factor that makes
+    // all three hulls read the same size (SHIP_VIS). The only thing that scales
+    // the ART and the standoff geometry hung off it — never the collision
+    // radius above, which stays one number for every spec.
+    vis: shipVis(prog.spec, tier),
     // What the ship WEIGHS, for anything that resolves by mass ratio — today
     // the taut tether (tractor.springHeld). main.js copies it onto game.ship
     // beside the radius, so `s.mass` stays the single authoritative read.
-    shipMass: SHIP_MASS[tier],
+    // TWO FACTORS: the tier ladder sets how big the hull is, SPEC_MASS sets how
+    // dense it is. Size is shared across specs (SHIP_RADIUS, and SHIP_VIS makes
+    // all three LOOK the same size); weight is not.
+    // Rounded to 2dp only to keep binary dust (13.899999999999999) out of the
+    // HUD and the bench diff — nothing reads this to more precision than that.
+    shipMass: Math.round(SHIP_MASS[tier] * specMass(prog.spec) * 100) / 100,
     zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };

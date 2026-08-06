@@ -74,13 +74,22 @@ code "works."
     against that LIVE length — never against the constant, or it is the instant snap again.
     Measured after the fix: worst single-substep jump **2.5 units**, reeling in at exactly 300 u/s
     from 3,000 down to the 921 limit.
-  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 4,200 across the ladder), because a rope
+  - **SHIP MASS IS PER-SPEC AS WELL AS PER-TIER** (`config.SPEC_MASS`) — brawler ×1.39, hauler ×1,
+    scout ×0.78, flat across the ladder. The tier sets how BIG the hull is; this sets how DENSE it
+    is, and the numbers are measured rather than picked: once `SHIP_VIS` matched all three to one
+    apparent size, ink as a fraction of bounding box came out **brawler 0.75 / hauler 0.54 / scout
+    0.42** — armour slab, framing-and-ring-arms, airframe. Normalized on the hauler those fills *are*
+    the multipliers, so a brawler outweighs a scout **1.78:1** at equal size for the visible reason
+    that there is far more of it. Flat, not per tier: the measured ratio drifts, but almost entirely
+    because the HAULER's own fill climbs (0.44 → 0.63 as its ring arms fill in), so a per-tier table
+    would narrow and widen the spread for a reason no player can see.
+  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 11,200 across the ladder), because a rope
     resolves by mass RATIO and a constant-10 ship meant a Titan wrestled a moon exactly as badly as
-    a Scout did. Derived from the drawn footprint — `SHIP_RADIUS` grows ×1.62 a tier and mass rides
-    it at the power 2.5 (between area and volume; a ship is hull and framing, not a solid lump).
-    Measured load:ship ratios — t0 scout vs a 1,200 rock **120:1**, t2 vs a 5,000 boulder **45:1**,
-    t4 vs a 9,000 moon **7:1**, t5 titan vs a 220,000 world **52:1**. Re-derive it if `SHIP_RADIUS`
-    ever moves.
+    a Scout did. Derived from the drawn footprint — mass rides `SHIP_RADIUS` at the power 2.5
+    (between area and volume; a ship is hull and framing, not a solid lump), as the single
+    expression `10 × (SHIP_RADIUS[t] / SHIP_RADIUS[0]) ^ 2.5`. Re-derive it if `SHIP_RADIUS`
+    ever moves — and note the exponent COMPOUNDS a size change: the 2026-08 +50% top tier
+    (below) moved the run-long mass spread from ~420× to ~1,120× and the Titan alone by ×2.66.
   - **FULL POWER MUST ALWAYS LAND AFTER THE LATCH** (`CFG.WINDUP_AFTER_LATCH`, 1.2s). The winch
     seconds carry into `holdT` so the player is not billed twice — but carried in FULL they covered
     the entire wind-up ramp on the heavy rungs, so a moon or a world hit full power at the exact
@@ -329,6 +338,11 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+  **Gas giants are skipped entirely**: gas cannot crater (`damageBody`'s `canWear` — its damage
+  reads as weather), so a scar minted here would cut crater bites into the cloud tops in both
+  `render.worldSil` and `physics.surfRadius`; and the hp drip alone would cross `drawGasWound`'s
+  40%-damage glow gate on the way to the 50% floor — a glowing hole in the cloud deck with nothing
+  having hit it.
 - **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
   *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
   been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
@@ -975,14 +989,14 @@ before any HUD does, and the three silhouettes are kept deliberately disjoint �
 at a glance is the whole point of splitting them:
 
 - **HAULER** (`HAULER_TIERS`) — the original ladder, geometry untouched. Ring arms with orb pods:
-  the arms ARE the orbit rock rack. It alone keeps the old `Math.max(1.1, 0.07 * u)` outline
-  expression, so its shipped art is bit-identical.
-- **SCOUT** (`SCOUT_TIERS`) — a winged gun platform that arms itself by swallowing rock: intake
-  maw → hopper → wing-root conduits → hardpoints. **FOUR GUNS TOTAL is the ceiling** (two per
-  wing, from tier 2 on): everything after that buys GUIDANCE, because its kit is Nav Plotter /
-  Lead Computer / Impact Warning / Reflex Jink and a ladder that grew barrels was claiming to be
-  a gunship. It grows LONGER, NOT WIDER (length 2.2 → 4.4 against span 1.6 → 2.5), and the wing
-  PLANFORM evolves — crank, root extension, rake — so the silhouette changes tier to tier.
+  the arms ARE the orbit rock rack. Its `Math.max(1.1, 0.07 * u)` outline expression is now the
+  stroke weight for ALL THREE specs (see "One stroke weight" below), so its art is bit-identical.
+- **SCOUT** (`SCOUT_TIERS`) — a winged SENSOR platform on a needle fuselage, wings **BARE**
+  (the gun hardpoints were dropped 2026-08). **The ladder buys GUIDANCE, never armament**, because
+  its kit is Nav Plotter / Lead Computer / Impact Warning / Reflex Jink and a ladder that grew
+  barrels was claiming to be a gunship. It grows LONGER, NOT WIDER (length 2.2 → 4.4 against span
+  1.6 → 2.5), and the wing PLANFORM evolves — crank, root extension, rake — so the silhouette
+  changes tier to tier.
   Its gimmick is the GIMBAL: a sensor head that slews to `game.aim` independent of hull heading.
   **From tier 3 the hull SPLITS** — see below.
 - **BRAWLER** (`BRAWLER_TIERS`) — a ram, and the ram is the class. `prowW >= 1.20` on every tier,
@@ -1010,15 +1024,17 @@ frays, jitters and arcs harder as `strain` rises. `scoutSplit` caches on `game.t
 `drawShip`'s flame anchors and `shipVisualR` read the same number in different passes, and two
 evaluations of a thrust-dependent value drift apart inside one frame.
 
-**Outline width** is `outlineW`: `max(1.0 / cam.zoom, 0.085 * u)`. The floor MUST be in screen
-pixels. It was 1.1 WORLD units, and since `u` shrinks with the tier that floor won on every small
-hull — a tier-0 ship is ~12 world units long, so the outline was most of what you could see of it.
+**Outline width** is `outlineW(tier, r)`: `max(1.1, 0.07 * u_hauler)` — ONE weight per tier, shared
+by all three specs and derived from the HAULER's art unit. It is never derived per spec; see "One
+stroke weight, and it is the hauler's" below for why that was the whole bug. The `1.1` is a WORLD-unit
+floor and it binds on the first three tiers — a known wart, kept because it is what the hauler has
+always drawn.
 
 Damage scars are seeded per
 (tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. WHERE they land
 is per-spec (`drawShipScars` takes an ellipse): sampled on the hauler's body disc they fall in the
-empty air beside a scout's thin fuselage. The shield bubble wraps `shipVisualR(tier, r)` (the drawn
-art's reach = `r / SHIP_HIT_FRAC`) PLUS the split stand-off on a split hull — without it the drive
+empty air beside a scout's thin fuselage. The shield bubble wraps `shipVisualR(game, tier, r)` (the
+drawn art's reach) PLUS the split stand-off on a split hull — without it the drive
 section trails outside its own shield — not the collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
 footprint on every tier: `shipStats` reads it from `SHIP_RADIUS[tier]` (config.js), derived as
 `SHIP_HIT_FRAC × footprint`, where the FOOTPRINT grows by an equal RATIO each tier (perceptual
@@ -1027,6 +1043,100 @@ so tuning the fraction moves only the hitbox, never the drawn size. (History: th
 to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
 match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with the hull tables' proportions;
 the derivation rules live in the config.js comments.
+
+### The top tier is half again as big (2026-08)
+
+`SHIP_RADIUS` is now `[4.0, 7.0, 12.5, 21.8, 38.2, 66.3]` — the old ladder with a multiplier that
+ramps **linearly** from ×1.0 at tier 0 to ×1.5 at tier 5, so the Scout is untouched and the Titan is
+half again as big. The per-tier growth ratio stays near-uniform (×1.62 → ×1.75), which is the
+property that mattered; the ladder is simply steeper end to end.
+
+Two things had to move with it, and both are documented derivations rather than taste:
+
+- **`SHIP_ZOOM` holds APPARENT SIZE FIXED** — `zoom[t] = old_zoom[t] × old_radius[t] / new_radius[t]`,
+  giving `[2.46, 1.70, 1.16, 0.82, 0.57, 0.40]`. `footprint × zoom` is unchanged on every tier, so
+  the ship looks exactly as it always did in the viewport and the whole +50% is spent where it was
+  asked for: **the ship against the worlds**. Known cost — tier 5 sits ~1.5× further back, so
+  `game.viewR` goes 1987 → 2754 and the top tier's view covers ~1.9× the area.
+- **`CFG.STORM_SHADOW_PAD` 45 → 68** — the pad is measured in ship-widths so the biggest hull fits
+  behind the smallest moon, so it moves with the Titan and only with the Titan. Left at 45 the lee
+  would have been 48.7 against a 66.3 hull; mechTest T21 asserts exactly this and would have failed.
+
+### Every spec reads the same size as the hauler (2026-08)
+
+The three hull ladders were each normalized to their own **max reach**, which makes the collision
+fraction uniform but is NOT the same as looking the same size: a ladder whose reach comes from one
+outlier — the scout's needle nose, the brawler's standoff deflector brow — gets its whole body shrunk
+to pay for that outlier. Measured, the hauler read up to **1.49× bigger than the brawler** and
+**1.33× bigger than the scout**.
+
+`config.SHIP_VIS` is a second factor applied after the reach normalization, per spec and per tier, so
+all three match. The hauler is 1 by construction — its shipped art is untouched.
+
+**The metric is the ink's RADIUS OF GYRATION** (RMS distance of drawn material from the hull's own
+centroid). Two simpler metrics were measured and rejected against a side-by-side sheet, and both look
+right on paper, so the reasons are worth keeping:
+
+| Metric | Why it failed |
+|---|---|
+| Bounding box (`sqrt(w×h)`) | Made the BRAWLER the biggest ship in the sky — the hauler's box is mostly the air inside its ring arms, the brawler's is solid slab. |
+| Ink area (`sqrt(pixels)`) | Made the SCOUT enormous — a needle carries a third of the hauler's pixels, so matching counts stretched it half again the hauler's length at T3. |
+
+Gyration splits them, and the check that it is the right split is that it **agrees with ink area on
+the solid brawler** (1.27 vs 1.26 at T5) while still refusing to inflate the thin scout.
+
+MEASURED, NOT FELT: `render.measureShipArt(game)` draws all three ladders off-screen and returns the
+numbers; bake `hauler.raw / spec.raw × 1.25`. **Re-bake twice** — outline width is one shared weight
+per tier (`max(1.1, 0.07 × u_hauler)`) that does NOT scale with the factor being applied, so a hull
+drawn 1.25× bigger doesn't lay down 1.25× the ink; one pass lands within ~1.5–3.6%, a second
+converges to **~0.2%**. Re-run it whenever a tier table *or the stroke weight* changes.
+
+The knock-on to know: a spec's drawn reach is now `r / SHIP_HIT_FRAC × vis`, so scout and brawler
+extend past their collision circle by that factor. That is the deliberate trade — `SHIP_HIT_FRAC`
+stops being a per-spec constant so that apparent size can be one. Everything wrapping the ART rather
+than the hitbox multiplies by it (`shipVisualR`'s shield bubble, `ramPlate`'s whole standoff — the
+brawler's slab would otherwise end up NARROWER than the hull prow it mounts on, breaking "the ram
+overhangs the ship on both sides at every size"). The sim's collision circle does not move.
+
+**The target is `1.25 × hauler`, not `hauler`.** An exact match was the right correction and still
+read a touch small on those two in play — a needle and a slab need more room than a compact ring to
+carry the same weight on screen. The hauler is now the *smallest* of the three; it remains THE
+REFERENCE because one spec has to anchor the measurement, and its art is the one that never moves.
+
+### One stroke weight, and it is the hauler's
+
+**The hull outline is computed once per tier off the HAULER's art unit and handed to whichever hull
+is drawing** (`render.outlineW(tier, r)`). Do not derive it per spec.
+
+The trap this closes is subtle and bit twice. Every spec's stroke used to be `k × u`, and `u` is an
+*art-space* unit — `r × vis / (SHIP_HIT_FRAC × reach)` — so it means something different on each
+ladder: the tier-5 reaches are 1.85 (hauler), 2.75 (scout), 2.56 (brawler), and `SHIP_VIS` scales two
+of them up on top of that. **Equal coefficients over unequal units are unequal strokes.** The scout
+and brawler ran `0.085` against the hauler's `0.07`, which was survivable while all three normalized
+to the same reach and stopped being survivable the moment `SHIP_VIS` scaled them up — at tier 5 they
+drew ~27% and ~36% heavier. Dropping them to `0.07` narrowed it and *could not close it*: the brawler
+still drew 1.20–1.29× the hauler's line at tiers 3–5.
+
+Since `SHIP_VIS` matches all three to one apparent size, one line weight is the correct line weight
+for all of them. The hauler's expression is reproduced exactly, `Math.max(1.1, 0.07 × u_hauler)`,
+floor included — that 1.1 is a WORLD-unit floor that binds on the first three tiers, a known wart
+kept deliberately because it is what the hauler has always drawn and what the user calls correct.
+
+**Re-bake `SHIP_VIS` after any stroke change** — outline width feeds the ink the size match is
+measured from.
+
+### The scout's wings are bare (2026-08)
+
+The pod-and-barrel wing hardpoints are gone, and with them the `hard`, `coils` and `longBarrel`
+fields. The class loses nothing structural: it was already documented as escalating **guidance**
+rather than armament (its kit is Nav Plotter, Lead Computer, Impact Warning, Reflex Jink, and the gun
+count was frozen at four from tier 2 on), so the hardware that actually carries the ladder — gimbal,
+dishes, fire-control arrays, sensor booms, the crescent sail — is untouched, as is the evolving wing
+planform that carries the silhouette.
+
+One piece of fiction is now dangling and is worth a decision if the class is revisited: the **intake
+maw and hopper still feed a weapon system that no longer exists**. The feed conduits were retargeted
+to read as structural plumbing, but "it arms itself by swallowing rock" is no longer drawn anywhere.
 
 ## The crumble layer draws instanced (added 2026-08)
 
