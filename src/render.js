@@ -5606,6 +5606,11 @@ function drawDockGuide(game) {
   // its instruction is to MOVE.
   const label = gate === 'small' ? 'NO ANCHORAGE — WORLD TOO SMALL FOR THIS CLASS'
     : gate === 'crater' ? 'CRATERED GROUND — FIND CLEAR SURFACE'
+    // 'rubble': the station that stood here collapsed under the ship and the
+    // hull never left the ground (physics.removeDock's eviction). No flying
+    // fixes it either — the instruction is to LIFT, which is also the whole
+    // condition for clearing it.
+    : gate === 'rubble' ? 'STATION LOST — LIFT CLEAR TO REBUILD'
     : gate === 'level' ? 'LEVEL OFF — ROCKETS DOWN'
     : gate === 'fast' ? 'TOO FAST — SETTLE'
     : auto ? 'AUTOLAND — PAD HAS THE HELM'

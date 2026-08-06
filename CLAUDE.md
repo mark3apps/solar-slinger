@@ -362,7 +362,14 @@ Plus the three scaling rules that make a big debris cascade affordable:
   up, and lets the ordinary gates latch. Any thrust cancels it (cooldown `AUTOLAND_CD`, also set by
   a launch so the pad can't reel you straight back in, and by a dash or warp, which never touch the
   throttle); the first landing on bare ground is still
-  flown by hand. Not mirrored in `predictPaths` — see the doc for why.
+  flown by hand. **A SHIP CARRYING A LOAD IS WORKING, NOT COMING HOME** — a held rock, a winch,
+  anything in the ring, or a held-button ram/stow sweep refuses the capture, hands back an approach
+  in progress, and **stands the pad down for `AUTOLAND_CD` like a launch does** (refreshed every
+  substep, or the pad darts into the fractions of a second between a release and the next grab and
+  tugs without ever finishing). Every one of those verbs is mouse-driven, so mining your own pad's
+  world otherwise looks exactly like a hands-off return — and the berth's `standDown` would dump the
+  lot for nothing.
+  Not mirrored in `predictPaths` — see the doc for why.
 - **A HOME RESPAWN ARRIVES BERTHED** (`physics.berthAt`, called from main.js's respawn): docked in
   the clamps, shield and repair live, one thrust from a launch — never hovering over its own pad to
   re-earn a berth it already owns.
@@ -374,7 +381,12 @@ Plus the three scaling rules that make a big debris cascade affordable:
   it, never copies — the build clock ticks on the station.
 - **A FINISHED DOCK IS A SHIELDED HARBOUR, AND THE SHIELD IS FINITE**: a dome over the berth backed
   by a fixed pool (`CFG.DOCK_SHIELD` 2400, on the station as `d.hp`) that **never recharges** — and
-  when it runs out the STATION breaks with it (`breakDock`). Damage drains it and the overflow of the
+  when it runs out the STATION breaks with it (`breakDock`) — and **the site is EVICTED**: losing a
+  station under you clears the landing latch AND locks that world's spot until the hull is genuinely
+  off the ground (`landing.lock`, refused as the `'rubble'` gate), or the ship rebuilds a full pool
+  on the same spot on the very next substep without ever leaving. "Genuinely" is the BERTH'S OWN
+  grace, `DOCK_TIME / DOCK_DRAIN` — a dome dies under fire, so one frame of lost contact is a bounce,
+  not a departure. Damage drains it and the overflow of the
   killing blow still reaches the hull on that same call (no free frame, the ram's rule). Plus
   `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull never self-heals". The dome also
   **REPELS** loose rock and aliens (`updateDomeShield`, which costs charge) — absorption alone is

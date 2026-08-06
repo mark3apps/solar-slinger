@@ -1198,6 +1198,148 @@ export function runMechTest(game, hooks, opts = {}) {
       return `pool ${CFG.DOCK_SHIELD}, no recharge, collapse passed 50 of 60 straight through`;
     });
 
+    // T18f — A COLLAPSED DOME IS A LOSS, NOT AN INTERRUPTION. The landing latch
+    // is module scratch that outlives the station it filled, so a dome breaking
+    // under a berthed ship used to lay a FRESH site on the same spot on the
+    // very next substep — a brand-new CFG.DOCK_SHIELD pool for a player who
+    // never left the ground, which is the opposite of "a place you can lose".
+    // Clearing the latch alone would only have delayed that by DOCK_TIME
+    // (0.5s), so the site is EVICTED until the hull actually leaves. Both
+    // halves are asserted: no rebuild in the rubble, AND the honest rebuild
+    // after leaving and coming back still works — that one is sanctioned, and
+    // it still costs the full DOCK_BUILD exposed.
+    t('dock: a collapsed station cannot rebuild under the ship', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      const dk = game.dock;
+      dk.t = CFG.DOCK_BUILD;                 // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      s.shield = 0; s.invuln = 0; game.godMode = false;
+      s.hull = game.st.hullMax;
+      dk.hp = 5;                             // one blow from the dome's death
+      damageShip(game, 20, 'test');
+      expect(!game.docks.includes(dk), 'setup: the dome survived a killing blow');
+      expect(!game.dock, 'setup: still berthed after the collapse');
+      // STILL ON THE GROUND, every gate held, for three times DOCK_TIME. The
+      // ship never lifts — so nothing may be built here.
+      holdDown(w, 0, CFG.DOCK_TIME + 1.0);
+      expect(game.docks.length === 0,
+        `${game.docks.length} station(s) rebuilt in their own rubble without the ship ever leaving`);
+      expect(!game.dock, 'berthed at a station rebuilt in its own rubble');
+      // …and it SAYS SO. A latch that fills and then silently declines to lay a
+      // station is this feature's worst failure mode (drawDockGuide's rule).
+      expect(game.dockGate === 'rubble', `refusing gate was "${game.dockGate}", wanted "rubble"`);
+      // A BOUNCE IS NOT A DEPARTURE — and this is the case that matters, not
+      // the quiet hold above. A dome only ever dies while the ground and the
+      // hull are being hit, so contact breaking for a frame or two (debris off
+      // the collapse, the next shot landing, a scar opening under the pad) is
+      // the COMMON case there. holdDown re-seats the hull every substep, so it
+      // can only ever exercise perfect contact; this lifts the ship clear for
+      // one frame at a time — well inside the DOCK_TIME/DOCK_DRAIN grace a
+      // BERTH itself survives — and the eviction has to survive it too, or the
+      // rebuild comes back for 16ms of air.
+      const hop = () => {
+        const a = Math.atan2(s.y - w.y, s.x - w.x);
+        const off = w.radius + s.radius + 30;          // clear of contact, barely
+        s.x = w.x + Math.cos(a) * off; s.y = w.y + Math.sin(a) * off;
+        const sv = surfaceVel(w, s.x, s.y);
+        s.vx = sv.vx; s.vy = sv.vy; s.spin = 0;
+        game.cam.x = s.x; game.cam.y = s.y;
+        hooks.stepSim(1 / 60);
+      };
+      for (let i = 0; i < 3; i++) { hop(); holdDown(w, 0, CFG.DOCK_TIME + 0.4); }
+      expect(game.docks.length === 0,
+        `${game.docks.length} station(s) rebuilt after a momentary bounce — a frame off the surface is not a departure`);
+      expect(!game.dock, 'a bounce off the rubble handed the berth back');
+      // THE LEGITIMATE REBUILD: leave, come back, build again — a NEW station
+      // with a full pool and a build clock that starts at zero.
+      liftClear(w);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'a rebuild after genuinely lifting clear was refused too — the eviction never lifts');
+      expect(game.dock.hp === CFG.DOCK_SHIELD,
+        `the rebuilt station carries hp ${game.dock.hp}, wanted a fresh ${CFG.DOCK_SHIELD}`);
+      expect(game.dock.t < CFG.DOCK_BUILD, 'the rebuilt station arrived already finished');
+      return 'no rebuild in the rubble, bounces included; rebuild after lifting clear still pays DOCK_BUILD';
+    });
+
+    // T18g — THE AUTOLAND MUST NOT CAPTURE A SHIP THAT IS WORKING. `handsOn`
+    // only sees the THROTTLE, but the beam, the winch and the ring are all
+    // mouse-driven — so mining the world your own pad is on, from inside
+    // AUTOLAND_R, reads as a hands-off return. The berth then calls standDown
+    // and the whole load is dropped for nothing. Both directions, because a
+    // gate that merely never engages would pass the first half.
+    t('dock: autoland refuses a ship with a load in the beam', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      game.dock.t = CFG.DOCK_BUILD;          // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      const dk = game.docks[0];
+      liftClear(w);
+      game.autolandCd = 0;
+      // The SAME park T18c is captured from — hands off, slow, well inside the
+      // capture radius — so the only difference between the two halves below is
+      // what the ship is carrying.
+      const park = () => {
+        const a = dk.ang + dk.b.rot;
+        const pr = dk.b.radius * dk.rf;
+        s.x = dk.b.x + Math.cos(a) * (pr + 300); s.y = dk.b.y + Math.sin(a) * (pr + 300);
+        s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a + 1.0;
+        game.cam.x = s.x; game.cam.y = s.y;
+      };
+      park();
+      const r = spawnAsteroid(game.bodies, s.x + 60, s.y, s.vx, s.vy, 100);
+      game.aim.x = r.x; game.aim.y = r.y;
+      expect(tryGrab(game) === 'held', 'setup: the staged rock was not taken by the beam');
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad took the helm off a ship with a rock in the beam');
+      expect(!game.dock, 'a working ship was berthed by the autoland');
+      expect(game.held === r, 'the load was dropped without a berth ever forming');
+      // DROP IT (never a throw — this is not what T3 is about). THE BRAWLER'S
+      // WHOLE WORK LOOP is the line after: right mouse held, sweeping rock into
+      // the ram. It populates neither the beam, the winch nor the ring (this
+      // spec's maxOrbiters is 0), so it is invisible to every other term in the
+      // gate — and a berth would disarm the button the player is still holding.
+      releaseHeld(game, false);
+      r.alive = false;
+      park();
+      // ZEROED FIRST, or this probes nothing: the phase above stood the pad
+      // down, and a leftover cooldown refuses the capture on its own — the
+      // sweep would then read as protected whether or not the gate has ever
+      // heard of it. (Measured: without this the case passes with the ram term
+      // deleted outright.)
+      game.autolandCd = 0;
+      game.ramEating = true;                 // exactly what main.js sets on RMB-down
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad took the helm off a brawler mid ram-sweep');
+      game.ramEating = false;
+      // …AND WORKING STANDS THE PAD DOWN FOR AUTOLAND_CD — the launch's own
+      // price, and for the same reason. Mining is a cycle whose gaps are
+      // fractions of a second, so a bare refusal would let the pad dart in
+      // between every release and the next grab: nose dragged round, guide
+      // blinking, never finishing.
+      expect(game.autolandCd > 0, 'working never stood the pad down — it would tug in every mining gap');
+      park();
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad engaged inside its own stand-down');
+      // …and once that runs out the IDENTICAL park is taken, so none of the
+      // above can be passing merely because the autoland never engages at all.
+      for (let i = 0; i < 15 && !game.autoland; i++) { park(); hooks.stepSim(0.3); }
+      expect(game.autoland === dk, 'a genuinely hands-off, empty-handed return was never taken');
+      return `refused a load and a ram sweep, stood down ${CFG.AUTOLAND_CD}s, then took the identical park`;
+    });
+
     // T19b — "Limped In" must mean what it says. The arm is set at a berth
     // under 15% hull and only pays on a repair to FULL *there*; healing to full
     // anywhere else (a glow pocket) has to cancel it, or berthing later for any
