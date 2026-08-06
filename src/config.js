@@ -741,7 +741,11 @@ export const CFG = {
   //
   // Knock-on, and it is deliberate: ramFace/ramArc read this same plate per the
   // mirror-drift rule, so a low-tier ram's contact edge and protected arc grow
-  // with what you can see (tier 0 rank 1: ~27deg -> ~52deg). The edge you can
+  // with what you can see — tier 0 rank 1 goes 27deg -> 31deg and its contact
+  // edge 15 -> 29 units, and the top of the ladder 36deg -> 38deg. (The floor
+  // alone put that first number at ~52deg; deriving halfW from the pack instead
+  // of ramping it independently is what brought it back down, so measure the arc
+  // after BOTH, never after this constant on its own.) The edge you can
   // see IS the edge that hits; the alternative — physics reading an unfloored
   // slab — is exactly the drift that rule exists to forbid.
   RAM_MIN_R: 26,
