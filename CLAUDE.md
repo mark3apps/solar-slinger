@@ -16,6 +16,7 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 |---|---|
 | `physics.js`, rails, gravity, collisions, `CFG` hazard tuning | [docs/physics-invariants.md](docs/physics-invariants.md) |
 | `config.js` progression, `ABILITIES`, `shipStats`, `achievements.js` | [docs/progression.md](docs/progression.md) |
+| `config.js` `MODES`, `world.applyModeRules`, the title screen's mode flow | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
 | `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `rockshape.js`, `rockdata.js`, `tools/bake-rocks.mjs`, shaped-rock collision | [docs/rock-fracture.md](docs/rock-fracture.md) |
@@ -531,6 +532,15 @@ Plus the three scaling rules that make a big debris cascade affordable:
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
 - **Enemy density is deliberately sparse**; nests and shoal-lurker broods are the only alien sources.
+- **A GAME MODE IS A ROW, AND THE WORLD IS THE SAME WORLD IN EVERY MODE.** `config.MODES` (classic /
+  peaceful / exploration) carries the ruleset — `hostiles` and `dmgMul` — and every consumer reads a
+  FIELD off `game.rules`, never the mode id. The hostile layer is REMOVED after `generateWorld` has
+  built the sky (`world.applyModeRules`), never skipped while building it: generation is seeded, a
+  saved system is nothing but a seed, and swallowing `addNest`'s rng draws would give the same seed a
+  different sky per mode. `dmgMul` rides the one funnel in `physics.damageShip` — and never `fxDmg`,
+  which counts real blows. The mode is a persisted SETTING chosen on the title screen only, and
+  `window.freshRun` pins CLASSIC so no suite ever soaks a sky the code didn't change. Full rules:
+  [docs/shell-and-menus.md](docs/shell-and-menus.md).
 - **The shield is an ability, not base, and it is SCOUT-ONLY** (Phase Screen's full wrap). HAULER
   answers a hit with the orbit rock wall — and that wall is TWO abilities, deliberately: Orbital
   Sling is the rack that carries the rock, Guard Sling is what makes it step in front of anything

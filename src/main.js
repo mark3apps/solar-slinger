@@ -1,5 +1,5 @@
 import {
-  CFG, PROG, SPECS, newProgress, shipStats, maxLives,
+  CFG, PROG, SPECS, MODES, modeRules, newProgress, shipStats, maxLives,
   addXp, owesPick, pickIsMilestone, tierChoices,
   consumePickCost, applyAbility, applySpec, applyTierUp, shelterR, stormClass,
   stormStrength,
@@ -46,6 +46,21 @@ const game = {
   achievementsOpen: false, // the run's achievement log — same shell rules
   systemsOpen: false,      // the saved-solar-systems library — same shell rules
   mapOpen: false,          // the sun-centred system chart — same shell rules (starmap.js)
+  // GAME MODE (config.MODES). Chosen on the title screen and persisted, so the
+  // way you like to fly survives a restart. `rules` is the catalog ROW for that
+  // id, resolved once by setMode and read straight by the sim (physics.damageShip,
+  // ai.js, world.applyModeRules) — nothing downstream looks the id up or branches
+  // on it. NOT run state: resetRun leaves both alone, the way it leaves the
+  // saved-systems library, because a game-over restart must stay in the mode you
+  // were flying.
+  mode: 'classic',
+  rules: modeRules('classic'),
+  // Which step of the title screen is showing: 'mode' (the three cards) or
+  // 'source' (new sky vs the library). Pure shell state — main.js flips it,
+  // hud.syncMenus derives the DOM from it, and it is deliberately NOT reset by
+  // closing a shell modal: backing out of the SAVED SYSTEMS panel has to land
+  // you back on the step you opened it from, not at the top of the flow.
+  splashStep: 'mode',
   systems: [],             // the saved SOLAR SYSTEMS library: { name, seed } rows,
                            //   persisted to localStorage['ss_systems']. A seed
                            //   rebuilds its layout bit-identically, so a row IS
@@ -221,6 +236,12 @@ function loadSettings() {
     if (typeof s.renderScale === 'number' && RENDER_STEPS.includes(s.renderScale)) game.renderScale = s.renderScale;
     if (typeof s.autoScale === 'boolean') game.autoScale = s.autoScale;
     if (typeof s.seedText === 'string') setSeedText(s.seedText);
+    // Resolved through the catalog, never trusted as an id: a mode dropped from
+    // MODES (or a hand-edited store) falls back to CLASSIC instead of leaving
+    // `rules` pointing at nothing. Like the pinned seed, this has to land BEFORE
+    // the boot regenWorld — applyModeRules runs inside generateWorld, so a mode
+    // loaded afterwards would leave the first world of the session full of nests.
+    if (typeof s.mode === 'string') { game.mode = modeRules(s.mode).id; game.rules = modeRules(game.mode); }
   } catch (e) { /* fall back to defaults */ }
 }
 function saveSettings() {
@@ -229,6 +250,7 @@ function saveSettings() {
       musicVol: game.musicVol, sfxVol: game.sfxVol, predict: game.predict,
       showFps: game.showFps, showPerf: game.showPerf, seedText: game.seedText,
       renderScale: game.renderScale, autoScale: game.autoScale,
+      mode: game.mode,
     }));
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
 }
@@ -743,6 +765,48 @@ function startGame() {
 function pauseGame() {
   if (game.started && !game.paused) { game.paused = true; bump(game, 'pauses'); sfx.sfxMenuOpen(); }
 }
+
+// GAME MODE, picked from the title screen's mode cards. TITLE SCREEN ONLY —
+// the cards only exist on the splash, and the guard below is the belt to that
+// braces: the rules a run is scored under must not move while it is being
+// played, and dropping the hostiles mid-flight would delete the nest you were
+// mid-siege on.
+//
+// It REBUILDS THE SAME SEED rather than editing the live sky. The splash
+// backdrop is a live sim and the design law behind it is that what drifts
+// behind the menu IS the system START drops you into — so a mode that changed
+// the rules without changing the backdrop would be showing you nests you were
+// never going to meet. applyModeRules only ever SUBTRACTS, so peaceful → classic
+// could not put the nests back by editing in place anyway; regenerating on the
+// pinned worldSeed gives the identical layout under the new rules.
+function setMode(id) {
+  const rules = modeRules(id);
+  if (game.started) return;
+  if (rules.id !== game.mode) {   // re-picking the live mode rebuilds nothing
+    game.mode = rules.id;
+    game.rules = rules;
+    saveSettings();
+    regenWorld(game.worldSeed);   // same seed, new rules — the backdrop stays honest
+  }
+  // AN EMPTY LIBRARY SKIPS STEP 2 AND FLIES. The second step exists to ask
+  // "which sky?", and with nothing saved there is only one answer — a screen
+  // whose whole job is a choice you don't have is a click charged for nothing.
+  // (refreshSplashStep still handles the empty case: you can reach step 2 with a
+  // full library and then delete every row out of the panel.)
+  if (!game.systems.length) { startGame(); return; }
+  game.splashStep = 'source';   // the pick IS the step — the card advances the flow
+  // The establishing shot restarts with the world it is establishing, exactly as
+  // on the way in from a run (toMainMenu): regenWorld has just moved the ship
+  // and the camera, and leaving the next driftSplash to notice would render one
+  // frame from the OLD framing first. Below the start above, since a run that is
+  // already under way has no title backdrop left to reframe.
+  game.splashT = 0;
+  splashAcc = 0;
+  frameSplash(0);
+}
+// Back to the mode cards. Only ever reachable FROM step 'source', so it needs no
+// guard of its own — the button lives inside that step.
+function splashBack() { game.splashStep = 'mode'; }
 function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
 // The shell modals are mutually exclusive — each fully REPLACES the panel
 // it was opened over, so opening one clears the others rather than stacking.
@@ -800,6 +864,7 @@ function toMainMenu() {
   game.paused = false;
   closeShell();
   game.started = false;
+  game.splashStep = 'mode';   // a run that ended re-enters the flow at the top
   resetRun(undefined, false);
   // The dead run's last words go with it: the message slot's lifetime is
   // wall-clock, and the deferred grab tip is a pending setTimeout that would
@@ -971,6 +1036,11 @@ hud.initMenus({
   onOpenAchievements: ui(openAchievements),
   onOpenSystems: ui(openSystems),
   onOpenMap: ui(openMap),
+  // The title screen's mode cards. Carries the row's id, so it does its own
+  // click sound (the ui() wrapper takes no arguments — same shape as
+  // onRenderScale, the other segmented choice in the shell).
+  onPickMode: (id) => { sfx.initAudio(); sfx.sfxUiClick(); setMode(id); },
+  onModeBack: ui(splashBack),
   // The saved-systems rows carry an index, so these do their own click sound
   // (the ui() wrapper takes no arguments — same shape as onRenderScale).
   // Saving answers with the discovery chime rather than the generic tick:
@@ -2571,6 +2641,13 @@ window.storm = (where = 'charge', cls) => {
 // bit-identical for a given seed; runtime spawns still use Math.random unless
 // window.mechTest's seeded-RNG swap is active.
 window.freshRun = (specIdx = 0, seed) => {
+  // PINNED TO CLASSIC. The mode is a persisted setting, so a dev who left the
+  // title screen on PEACEFUL would otherwise have every suite, soak and bench
+  // baseline silently run against a sky with no nests, no Bastions and no
+  // broods — and the numbers would look like a balance change nobody made.
+  // Every harness (mechTest, soak, the bench driver) enters through here.
+  game.mode = 'classic';
+  game.rules = modeRules('classic');
   resetRun(seed);
   applyPick(specIdx);   // resetRun ends on the spec card; this picks it
   game.started = true;

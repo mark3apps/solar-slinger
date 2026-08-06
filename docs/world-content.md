@@ -611,6 +611,10 @@ from breaking the invariants above:
     to cover the lane's long axis overshot the short axis 2x and lurkers visibly hunted empty space;
     now they engage while the ship is inside ~1.15 of the footprint, turn back at 1.3, and ambushes
     only spring with the ship actually IN the rocks (frac < ~1).
+    A **no-hostiles GAME MODE fields no brood at all**: `world.applyModeRules` zeroes every
+    `f.brood` and PRESETS `f.cleared`, because leaving `updateFields` to notice a spent brood bumps
+    the `fieldClear` achievement and raises a message — every shoal in the system would announce
+    itself as cleared on frame one. See [docs/shell-and-menus.md](shell-and-menus.md).
   - **Glow pockets** (`game.glowPockets`, glow.js): sparse WIDE FIELDS of small bioluminescent motes that
     ride the belt's prograde orbit (a circular rail, `w` matched to the flow at their radius), scattered
     thin across the mid system — a field (`GLOW_SPREAD`) is wide enough that you SWEEP the ship through it,

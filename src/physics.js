@@ -1576,6 +1576,27 @@ export function damageShip(game, dmg, cause, hitAng, fxDmg = dmg) {
   // through here, so this one early-out is the whole feature.
   //
   if (!s.alive || s.invuln > 0 || game.godMode) return;
+  // GAME MODE damage scale (config.MODES `dmgMul`; 1 in classic and peaceful,
+  // 1/8 in exploration). It rides HERE, on the one funnel every damage path in
+  // the game already goes through, so nothing else has to know modes exist —
+  // heat, gas crush, rock, turret bolts and alien contact all scale together.
+  //
+  // AHEAD of the dome and the ship shield, deliberately: it is the incoming BLOW
+  // that the mode makes smaller, so every absorber downstream sees the same
+  // reduced number and a soft sky drains a dome at the same rate it drains a
+  // hull. Scaling after the dome would leave the two shields on different rules
+  // — the ship's soaking eight times its rating while the station's still burnt
+  // through at full price in a mode whose whole promise is that nothing bites.
+  //
+  // `fxDmg` is deliberately NOT scaled: it is the caller's own statement of how
+  // big a BLOW this was, and it gates the hit sfx and the achievement ledger at
+  // >= 1. Scaling it would silence and stop counting every hit under 8 damage,
+  // which is most of them — a soft mode must still feel and count like being
+  // hit. (It leaves the dome's `fxDmg -= eaten` below subtracting a scaled
+  // figure from an unscaled one, which cannot matter: a dome that covers the
+  // whole blow returns before the fx gate is ever reached, and a partial absorb
+  // is a hit that genuinely landed.)
+  dmg *= game.rules ? game.rules.dmgMul : 1;
   // A FINISHED DOCK IS A SHIELDED HARBOUR — AND THE SHIELD IS FINITE.
   //
   // This used to be a fourth term in the early-out above: berthed at a ready

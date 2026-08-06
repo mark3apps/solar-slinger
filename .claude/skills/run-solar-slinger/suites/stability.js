@@ -24,6 +24,13 @@ const chunk = A.chunk ?? 60;
 const strip = A.strip !== false;
 
 const g = window.game;
+// GAME MODE is a PERSISTED setting and this suite soaks the BOOT world rather
+// than calling window.freshRun (which pins the mode itself). A dev who left the
+// title screen on PEACEFUL would otherwise soak a sky with no nests and no
+// Bastions — a body-count and census shift with no code change behind it, which
+// is exactly the false positive the diff exists to avoid. Rebuild on the same
+// seed under classic when it isn't already.
+if (g.mode !== 'classic') window.freshRun(0, g.worldSeed);
 g.ship.alive = false;          // idle sky = the cleanest stability signal, and
 g.ship.invuln = 1e9;           // costs no life (deathCause stays empty)
 g.deathLog = [];
