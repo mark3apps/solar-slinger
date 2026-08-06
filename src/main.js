@@ -1583,8 +1583,16 @@ function update(dtReal) {
     if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe
-    const zoomTarget = 1.15 / game.st.zoomOut;
-    game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
+    let zoomTarget = 1.15 / game.st.zoomOut;
+    // THE BERTH VISTA (CFG.DOCK_VISTA): a FINISHED station widens the view so
+    // a berth surveys its neighbourhood. dockReady — the same gate as the
+    // shield and the repair — keeps the exposed build at flight zoom, and
+    // !game.launch hands the dive back to the normal rate the frame the spool
+    // starts, so the zoom-in overlaps the clamps releasing.
+    const vista = dockReady(game.dock) && !game.launch;
+    if (vista) zoomTarget /= CFG.DOCK_VISTA;
+    game.zoomCur = lerp(game.zoomCur, zoomTarget,
+      1 - Math.exp(-(vista ? CFG.DOCK_VISTA_K : 0.5) * dtReal));
     applyZoom();
 
     // Roguelite pick: XP crossing a threshold OFFERS a choice on the pilot card

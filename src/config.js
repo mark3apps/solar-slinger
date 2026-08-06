@@ -399,6 +399,19 @@ export const CFG = {
   LAUNCH_KICK: 300,        // u/s straight up as the clamps release — the shove
                            //   off the pad, so a launch clears the structure
                            //   without needing the player to fight gravity
+  // ---- The berth vista (main.js cinematic zoom) ---------------------------
+  // A FINISHED station pulls the camera out so a berth is a moment to survey
+  // the neighbourhood — the world you built on, its moons, whatever is inbound.
+  // It is a reward of the finished harbour (gated on dockReady, like the
+  // shield and the repair), never of the exposed build. Starting thrust — the
+  // launch spool — begins easing it back at the normal cinematic rate, so the
+  // dive to flight zoom overlaps the clamps releasing instead of following it.
+  // viewR rides the zoom, so sensors and the wake bubble genuinely widen with
+  // the vista; safe, because a berth is the one place nothing can touch you.
+  DOCK_VISTA: 1.8,         // × wider view while berthed at a finished station
+  DOCK_VISTA_K: 0.35,      // 1/s ease OUT to the vista — slower than the tier
+                           //   zoom's 0.5, so the pull-back reads as a slow
+                           //   establishing shot rather than a level-up zoom
   // The dome does not just absorb, it PUSHES: anything crossing it is thrown
   // back out at no less than this, so a berth can never be crowded or shoved.
   DOCK_REPEL_MIN: 210,

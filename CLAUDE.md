@@ -353,6 +353,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **LEAVING IS A SEQUENCE** (`CFG.LAUNCH_*`): thrust from a berth doesn't drive the ship, it calls a
   release — clamps swing open, then the engine lights against them, then the pad lets go with
   `LAUNCH_KICK`. Pinned to the pad's velocity throughout, and it commits once started.
+- **A FINISHED BERTH IS A VISTA** (`CFG.DOCK_VISTA`): once the station is built the camera slowly
+  eases out to a wider view of the neighbourhood — gated on `dockReady` like the shield and repair,
+  never during the exposed build — and the launch spool starting hands the zoom back to the normal
+  cinematic rate, so the dive in overlaps the clamps releasing.
 - **A DOCK IS WHERE YOU STOP WORKING.** Beam, orbit ring, tether, shotgun and mobility abilities are
   all inert while berthed (`main.dockBlocking` refuses input AND update() skips their substep work —
   a half-live system re-welds a ring the dock just emptied). Anything in hand is dropped AT THE BERTH
