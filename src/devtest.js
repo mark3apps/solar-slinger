@@ -8,7 +8,7 @@ import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.j
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel, TAU } from './util.js';
+import { mulberry32, surfaceVel, scarSurfaceAt, TAU } from './util.js';
 import { ROCK_SHAPES } from './rockdata.js';
 import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
@@ -882,7 +882,10 @@ export function runMechTest(game, hooks, opts = {}) {
       put();                          // gravity pulls it back over that second
       hooks.stepSim(1 / 60);
     };
-    const aWorld = () => game.bodies.find((b) => b.type === 'moon' && b.alive);
+    // radius >= 40: comfortably above config.dockHostOk's tier-0 line (~33) —
+    // a moonlet offers no anchorage at all now, so the dock tests must stage
+    // on a moon that can actually host one.
+    const aWorld = () => game.bodies.find((b) => b.type === 'moon' && b.alive && b.radius >= 40);
 
     // T15 — the three gates, and that a berth actually forms
     t('dock: three gates latch a berth', () => {
@@ -1032,6 +1035,86 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(station.t >= 10, 'the finished station lost its build progress');
       hooks.stepSim(0.5);
       return `launched; ${game.docks.length} station still standing at t=${Math.round(station.t)}s`;
+    });
+
+    // T18c — THE DOCK GROUND RULES (2026-08): a standing station AUTOLANDS a
+    // hands-off return; blasting the ground under a station COLLAPSES it; the
+    // same wound refuses a fresh berth ('crater'); and a world too small for
+    // the ship class offers no anchorage at all ('small'). Each is exactly the
+    // kind of rule main.dockBlocking can't see and only this suite guards.
+    t('dock: autoland, ground collapse, crater + host-size gates', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      // A moon big enough to host tier 0 but NOT tier 5, so both host-size
+      // verdicts in this test are structural rather than luck of the seed.
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth on clean ground');
+      game.dock.t = CFG.DOCK_BUILD;          // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      // AUTOLAND: lift clear, then park hands-off inside the capture radius
+      // with the nose deliberately off-axis. The pad must take the helm, fly
+      // the approach and berth through the ordinary three gates — no input.
+      liftClear(w);
+      expect(!game.dock, 'setup: still berthed after lifting clear');
+      const dk = game.docks[0];
+      game.autolandCd = 0;
+      const a = dk.ang + dk.b.rot;
+      const pr = dk.b.radius * dk.rf;
+      s.x = dk.b.x + Math.cos(a) * (pr + 300); s.y = dk.b.y + Math.sin(a) * (pr + 300);
+      s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a + 1.0;
+      game.cam.x = s.x; game.cam.y = s.y;
+      hooks.stepSim(0.2);
+      expect(game.autoland === dk, 'a hands-off return inside the capture radius was not taken');
+      hooks.stepSim(8);
+      expect(game.dock === dk, 'the autoland never berthed the ship');
+      // COLLAPSE: blast the ground under the standing station. The station
+      // must break — before this rule it floated on its build-time standoff
+      // over the hole (the pad knows only the NOMINAL radius).
+      w.scars.push({ a: dk.ang, s: 2.5, t: game.time });
+      hooks.stepSim(2 / 60);
+      expect(!game.docks.includes(dk), 'a station survived losing its ground');
+      expect(!game.dock, 'the berth survived the collapse');
+      // CRATER GATE: a fresh landing ON THE WOUND ITSELF refuses, and names
+      // itself. Seated against the CRATERED floor (scarSurfaceAt — the same
+      // profile the collider reads), not the nominal radius: the wound is
+      // deeper than setDown's seat, so a nominal seat would hover over the
+      // hole with no contact and the test would pass for the wrong reason
+      // (no gate at all instead of 'crater').
+      {
+        const scarA = w.scars[0].a;                    // ride the spin with it
+        for (let t = 0; t < CFG.DOCK_TIME + 0.6; t += 1 / 60) {
+          if (!game.dock) {
+            const ang = scarA + w.rot;
+            const surf = w.radius * scarSurfaceAt(w.scars, w.radius, scarA);
+            const d = surf + s.radius - Math.max(1.5, s.radius * 0.35);
+            s.x = w.x + Math.cos(ang) * d; s.y = w.y + Math.sin(ang) * d;
+            const sv = surfaceVel(w, s.x, s.y);
+            s.vx = sv.vx; s.vy = sv.vy; s.spin = 0;
+            s.angle = ang;                             // rockets down on the radial
+            game.cam.x = s.x; game.cam.y = s.y;
+          }
+          hooks.stepSim(1 / 60);
+        }
+      }
+      expect(!game.dock, 'berthed inside a crater');
+      expect(game.dockGate === 'crater', `refusing gate was "${game.dockGate}", wanted "crater"`);
+      w.scars.length = 0;
+      // HOST SIZE: the same clean moon refuses a tier-5 hull outright —
+      // config.dockHostOk, the line the refit sweep also decommissions across.
+      // Restored spec-and-tier together below; T19b then does its own freshRun.
+      const wasTier = game.prog.tier;
+      game.prog.tier = 5;
+      game.st = shipStats(game.prog);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(!game.dock, 'a titan berthed on a world too small for its class');
+      expect(game.dockGate === 'small', `refusing gate was "${game.dockGate}", wanted "small"`);
+      game.prog.tier = wasTier;
+      game.st = shipStats(game.prog);
+      return `autoland berthed at ${Math.round(pr + 300)}u out; collapse, crater and host-size gates all hold`;
     });
 
     // T19b — "Limped In" must mean what it says. The arm is set at a berth

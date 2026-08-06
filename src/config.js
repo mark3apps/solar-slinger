@@ -418,6 +418,39 @@ export const CFG = {
                            //   while berthed — the ship stands up and stays up
   DOCK_LIFT: 1.6,          // hull radii a respawn is placed above the pad, so
                            //   the ship never materializes inside the crust
+  // NO DOCK IN A WOUND. The deepest crater (fraction of the body's radius,
+  // measured off util.scarSurfaceAt — the same profile the collider and the
+  // silhouette read) the ground may carry and still take a berth. Two readers,
+  // one meaning: the LANDING gate refuses cratered ground ('crater' in
+  // game.dockGate), and a STANDING station whose footing is blasted past this
+  // same line COLLAPSES (updateDock) — before this, the pad floated over the
+  // hole on its build-time standoff, visibly detached from a surface that no
+  // longer existed. 0.05 of a 300-radius world is a 15-unit bite: a real
+  // crater, not cosmetic pitting (SCAR_MAX_CUT caps the profile at 0.38).
+  DOCK_CRATER_MAX: 0.05,
+  // ---- AUTOLAND (physics.updateAutoland) ----------------------------------
+  // A STANDING STATION LANDS YOU ITSELF. Come in close and slow with the
+  // throttle released and the pad takes the ship — eases it onto the berth,
+  // nose up, riding the surface — so RETURNING to a dock you already built is
+  // never a piloting test twice. The FIRST landing on bare ground is still
+  // flown by hand: the approach challenge is part of what a station costs,
+  // and the autoland is part of what it pays back.
+  //
+  // HANDS-OFF IS THE CONTRACT, in both directions: it never engages while the
+  // throttle is up (a pad that snatches a ship flying past its world would be
+  // the game fighting the pilot), and any thrust while it flies the approach
+  // hands the ship straight back and stands the autoland down for AUTOLAND_CD.
+  // The same cooldown is set by a LAUNCH, so the pad that just threw you off
+  // cannot reel you back in while you clear it.
+  AUTOLAND_R: 420,         // world units from the pad at which it can take over
+  AUTOLAND_VMAX: 260,      // surface-relative u/s above that it won't engage —
+                           //   a flyby is a flyby, however close it clips the pad
+  AUTOLAND_SPEED: 170,     // approach speed ceiling once it has the ship
+  AUTOLAND_TOUCH: 36,      // final descent u/s — under DOCK_SPEED (60), so the
+                           //   stillness gate is satisfied at contact by design
+  AUTOLAND_K: 3.5,         // 1/s velocity ease toward the approach vector
+  AUTOLAND_TURN: 5,        // 1/s attitude ease to rockets-down
+  AUTOLAND_CD: 2.5,        // s stood down after a manual override or a launch
   // ---- LAUNCH (physics.updateLaunch) --------------------------------------
   // LEAVING A DOCK IS A SEQUENCE, NOT A KEYPRESS. Thrust from a berth and the
   // station runs a release: the clamps swing back, the engine spools against
@@ -2532,6 +2565,27 @@ export function dockTier(st) {
 export function dockPadR(st, hostR) {
   const want = Math.max(16, st.radius * 2.2) * dockTier(st).w;
   return Math.max(Math.max(14, st.radius * 1.9), Math.min(want, hostR * 0.42));
+}
+// A PORT NEEDS A WORLD THAT CAN CARRY IT (user call, 2026-08). The berth is
+// sized by the SHIP — dockPadR's berth floor deliberately WINS over the host
+// cap — so on a small moon a high-tier port claimed most of the horizon: a
+// megastructure the moon wore rather than a building standing on it. The
+// honest fix is a GATE, not a smaller pad (a pad the ship does not fit on is
+// not a pad): a body whose horizon cannot give the berth floor a reasonable
+// share simply offers NO ANCHORAGE at that ship class.
+//
+// THE LINE IS 0.55 OF THE HOST RADIUS, deliberately looser than dockPadR's
+// 0.42 aesthetic cap: the cap is where a pad stops LOOKING right, the gate is
+// where it stops being PLAUSIBLE at all. Calibrated against the real sky
+// (moons 41-232 median 135, planets 293+): every moon hosts a tier-0 pad, the
+// median moon carries a port to about tier 3, and a top-class port is planet-
+// and-giant-moon infrastructure (~229+). One predicate, every reader: the
+// landing gate ('small' in game.dockGate), updateDock's refit sweep (a
+// standing station DECOMMISSIONS when the ship class outgrows its world — the
+// art refits to the current tier, so the rule must too), and the approach
+// guide's wording.
+export function dockHostOk(st, hostR) {
+  return Math.max(14, st.radius * 1.9) <= hostR * 0.55;
 }
 // The dome, measured FROM THE SURFACE POINT under the pad (not the pad origin,
 // which sits a hull-radius above the crust — `groundY` is that lift). Sized to

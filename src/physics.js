@@ -1,5 +1,5 @@
 import {
-  CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
+  CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR, dockHostOk,
   burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
 } from './config.js';
 import {
@@ -3276,12 +3276,28 @@ function collideShipBody(game, s, b, dt) {
       const up = Math.atan2(-dy, -dx);
       const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
       const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
-      if (level && still) landing.settle = b;
-      // WHICH GATE IS REFUSING, for the approach guidance. Attitude first: it is
-      // the one a player will not work out on their own, and it is also the one
-      // they can fix instantly. A landing that silently declines to latch is the
-      // single worst failure mode this feature has.
-      else landing.gate = !level ? 'level' : 'fast';
+      // NO DOCK IN A WOUND (CFG.DOCK_CRATER_MAX). Cratered ground refuses the
+      // berth outright: a pad is pinned at a fraction of the body's NOMINAL
+      // radius (util.padPos), so a station laid down inside a crater stands on
+      // the phantom surface — floating across the mouth of the hole the player
+      // can see. Same profile the collider and silhouette read
+      // (util.scarSurfaceAt, surface-local so the bearing loses b.rot), and the
+      // same line updateDock collapses a standing station at, so a berth can
+      // never form on ground a station couldn't survive.
+      const wound = b.scars.length > 0 &&
+        1 - scarSurfaceAt(b.scars, b.radius, up - b.rot) > CFG.DOCK_CRATER_MAX;
+      // A PORT NEEDS A WORLD THAT CAN CARRY IT (config.dockHostOk): a body too
+      // small for the current ship class offers no anchorage at all.
+      const small = !dockHostOk(game.st, b.radius);
+      if (!wound && !small && level && still) landing.settle = b;
+      // WHICH GATE IS REFUSING, for the approach guidance. The unfixable ones
+      // first — 'small' and 'crater' are refusals no amount of levelling off
+      // or settling can clear; their instruction is "go elsewhere", not "fly
+      // better". Then attitude: it is the one a player will not work out on
+      // their own, and it is also the one they can fix instantly. A landing
+      // that silently declines to latch is the single worst failure mode this
+      // feature has.
+      else landing.gate = small ? 'small' : wound ? 'crater' : !level ? 'level' : 'fast';
     }
   }
 
@@ -3496,6 +3512,7 @@ export function dockReady(d) { return !!d && d.t >= CFG.DOCK_BUILD; }
 // are about to be thrown away, exactly like a chart route's stops.
 export function clearDocks(game) {
   game.dock = null; game.home = null; game.launch = null;
+  game.autoland = null; game.autolandCd = 0;
   if (game.docks) game.docks.length = 0; else game.docks = [];
   landing.touch = null; landing.settle = null; landing.b = null;
   landing.gate = ''; landing.t = 0;
@@ -3505,15 +3522,59 @@ export function clearDocks(game) {
 function updateDock(game, dt) {
   const s = game.ship;
   const docks = game.docks;
-  // A STATION DIES WITH ITS WORLD. Swept every substep — it is a walk of at
-  // most CFG.DOCK_MAX entries, and the world in question is usually the one
-  // being shot at when it matters.
+  // A STATION DIES WITH ITS WORLD — AND WITH ITS GROUND. Swept every substep —
+  // it is a walk of at most CFG.DOCK_MAX entries, and the world in question is
+  // usually the one being shot at when it matters. Two ways to die:
+  //   - the body itself is gone (alive false), or
+  //   - the crust under the pad is cratered past CFG.DOCK_CRATER_MAX — the
+  //     same line the landing gate refuses to berth across. Before this, a
+  //     station whose footing was blasted away FLOATED on its build-time
+  //     standoff over a hole the player could fly into: the pad is pinned at a
+  //     fraction of the NOMINAL radius (util.padPos) and knows nothing about
+  //     scars. A structure should not survive its foundations; it breaks.
+  // The scar walk only runs for a wounded body (scars.length gates it), so the
+  // steady-state cost is the alive check it always was.
   for (let i = docks.length - 1; i >= 0; i--) {
-    if (docks[i].b.alive) continue;
+    const q = docks[i];
+    const undermined = q.b.alive && q.b.scars.length > 0 &&
+      1 - scarSurfaceAt(q.b.scars, q.b.radius, q.ang) > CFG.DOCK_CRATER_MAX;
+    // A PORT THE SHIP OUTGREW DECOMMISSIONS. The station's art and berth refit
+    // to the CURRENT tier (dockTier reads game.st), so a tier-up can leave a
+    // standing station on a world that can no longer carry its class — the
+    // same dockHostOk line the landing gate refuses new berths across. Retired
+    // quietly with a message, never a bang: nothing destroyed it, the ship
+    // simply grew past what the world can hold.
+    const outgrown = q.b.alive && !undermined && !dockHostOk(game.st, q.b.radius);
+    if (q.b.alive && !undermined && !outgrown) continue;
     const dead = docks.splice(i, 1)[0];
-    if (game.dock === dead) game.dock = null;
+    if (game.dock === dead) {
+      game.dock = null;
+      game.launch = null;    // a release sequence cannot outlive its pad
+    }
+    if (outgrown) {
+      if (game.home === dead) {
+        game.homeOutgrownName = placeName(dead.b, 'your home world');
+        game.home = null;
+      } else {
+        game.dockOutgrownName = placeName(dead.b, 'a distant world');
+      }
+      continue;
+    }
+    if (undermined) {
+      // THE COLLAPSE IS AN EVENT: debris off the pad point and a named message,
+      // never a station silently missing from the dial. Home port gets its own
+      // wording — losing the respawn point is the news; the structure is the
+      // detail. (A dead BODY stays quiet here on purpose: the world's own
+      // destruction is the event, and homeLostName below already carries it.)
+      const pp = padPos(dead, _padScratch);
+      addParticles(game, pp.x, pp.y, dead.b.vx, dead.b.vy, 16, '#cfe4ff', 150, 0.8, 3);
+      addShake(game, 3);
+      if (game.home === dead) game.homeDockLostName = placeName(dead.b, 'your home world');
+      else game.dockLostName = placeName(dead.b, 'a distant world');
+      sfx.sfxBoom(0.6, 0.7);
+    }
     if (game.home === dead) {
-      game.homeLostName = placeName(dead.b, 'your home world');
+      if (!undermined) game.homeLostName = placeName(dead.b, 'your home world');
       game.home = null;
     }
   }
@@ -3649,6 +3710,122 @@ function updateDock(game, dt) {
   landing.touch = null; landing.settle = null; landing.gate = '';
 }
 
+// RESPAWN ARRIVES BERTHED. A death with a live home port hands the ship back
+// IN the clamps — launch-ready, shield and repair already running — rather
+// than hovering over its own pad to re-earn a berth it already owns.
+// Exported for main.js's respawn path; it lives HERE because the landing
+// latch is module scratch in this file, and a dock set without seeding it is
+// cleared by updateDock on the very next substep (landing.t <= 0 reads as
+// "flew off").
+export function berthAt(game, d) {
+  const s = game.ship;
+  const b = d.b;
+  const upA = d.ang + b.rot;
+  // RE-SEAT THE PAD TO THIS HULL — the same rule every re-berth runs (the ship
+  // grows across the tiers, and the clamps pin it to exactly this height).
+  // Seated a sliver INTO contact, not at the boundary: gravity and the
+  // resolver then keep the touch gate fed every substep, where an exact-
+  // boundary seat makes contact a floating-point coin flip and the latch
+  // drains (the seating lesson devtest.js's setDown documents).
+  d.rf = (surfRadius(b, upA) + s.radius * 0.92) / Math.max(1, b.radius);
+  const pp = padPos(d, _padScratch);
+  s.x = pp.x; s.y = pp.y;
+  // Riding the ground under it, exactly like a home respawn always has — a
+  // world orbiting at 700 u/s must not receive a ship standing still.
+  const sv = surfaceVel(b, s.x, s.y);
+  s.vx = sv.vx; s.vy = sv.vy;
+  s.angle = upA;               // rockets down, exactly as it was parked
+  game.dock = d;
+  landing.b = b; landing.t = CFG.DOCK_TIME;
+  game.dockT = 1; game.dockCand = b; game.dockGate = '';
+  game.launch = null; game.autoland = null;
+}
+
+// AUTOLAND — A STANDING STATION LANDS YOU ITSELF (CFG.AUTOLAND_*). Close and
+// slow with the throttle released, and the nearest pad takes the ship: eases
+// it down the approach, stands the nose up, matches the ground, and lets the
+// ordinary three-gate latch do the rest. Returning to a dock you already
+// built is never a piloting test twice; the FIRST landing on bare ground is
+// still flown by hand, because there is no station there to fly it for you.
+//
+// HANDS-OFF IS THE CONTRACT, both ways. It never engages with the throttle up
+// or against a ship that is plainly leaving (receding faster than a drift),
+// and any thrust mid-approach cancels it and stands it down for AUTOLAND_CD —
+// the same cooldown a LAUNCH sets, so the pad that just threw you off cannot
+// reel you straight back in.
+//
+// DELIBERATELY NOT MIRRORED IN predictPaths, unlike the rubber band and the
+// long arms: those are always-on forces a forecast must integrate or it draws
+// the wrong curve everywhere. This is an autopilot that only exists hands-off
+// inside one pad's approach cone and terminates at the berth — the moments it
+// is steering are the moments nobody is aiming a throw off the forecast.
+function updateAutoland(game, dt) {
+  if (game.autolandCd > 0) game.autolandCd -= dt;
+  const s = game.ship;
+  const c = game.controls;
+  const handsOn = (c.f || 0) > 0 || (c.b || 0) > 0 || game.burnerOn;
+  const A = game.autoland;
+  if (A) {
+    // Done (the latch took it), dead, or the station itself is gone.
+    if (!s.alive || game.dock || !A.b.alive || !game.docks.includes(A)) {
+      game.autoland = null;
+      return;
+    }
+    // MANUAL OVERRIDE: any throttle hands the ship straight back.
+    if (handsOn) {
+      game.autoland = null;
+      game.autolandCd = CFG.AUTOLAND_CD;
+      return;
+    }
+    const b = A.b;
+    const p = padPos(A, _padScratch);
+    const dx = p.x - s.x, dy = p.y - s.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (dist > CFG.AUTOLAND_R * 1.5) { game.autoland = null; return; }   // drifted clear
+    // The approach vector: toward the pad at a speed that falls with distance,
+    // floored at the touch speed — under DOCK_SPEED by design, so the
+    // stillness gate is already satisfied when contact arrives. Velocity is
+    // EASED, never set: gravity and the contact resolver keep their say, and
+    // the hand-back on override is seamless because the ship always owns its
+    // own velocity.
+    const sv = surfaceVel(b, s.x, s.y);
+    const speed = clamp(dist * 1.2, CFG.AUTOLAND_TOUCH, CFG.AUTOLAND_SPEED);
+    const k = 1 - Math.exp(-CFG.AUTOLAND_K * dt);
+    s.vx += (sv.vx + (dx / dist) * speed - s.vx) * k;
+    s.vy += (sv.vy + (dy / dist) * speed - s.vy) * k;
+    // Rockets down: the radial up, the same bearing the landing gate reads.
+    const up = Math.atan2(s.y - b.y, s.x - b.x);
+    s.angle += angDiff(s.angle, up) * (1 - Math.exp(-CFG.AUTOLAND_TURN * dt));
+    return;
+  }
+  // ---- Engage scan: the nearest standing pad inside the capture radius ----
+  // DELIBERATELY NOT gated on dockReady: a half-built site autolands too. The
+  // finished harbour's PAYBACKS (shield, repair, vista, the respawn berth)
+  // all gate on dockReady, but the autoland is a convenience of re-landing at
+  // a pad you already own — and coming back to RESUME A BUILD is exactly the
+  // repeat approach it exists to remove.
+  if (!s.alive || game.dock || game.launch || game.autolandCd > 0 || handsOn) return;
+  let pick = null, best = CFG.AUTOLAND_R * CFG.AUTOLAND_R;
+  for (const d of game.docks) {
+    if (!d.b.alive) continue;
+    const p = padPos(d, _padScratch);
+    const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
+    if (d2 < best) { best = d2; pick = d; }
+  }
+  if (!pick) return;
+  const b = pick.b;
+  const sv = surfaceVel(b, s.x, s.y);
+  const rvx = s.vx - sv.vx, rvy = s.vy - sv.vy;
+  if (Math.hypot(rvx, rvy) >= CFG.AUTOLAND_VMAX) return;   // a flyby is a flyby
+  const p = padPos(pick, _padScratch);
+  const dx = p.x - s.x, dy = p.y - s.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  // Not plainly LEAVING: a ship receding faster than a drift keeps the helm.
+  if ((rvx * dx + rvy * dy) / dist < -40) return;
+  game.autoland = pick;
+  game.autolandName = placeName(b);
+}
+
 // THE DOME PUSHES BACK. Damage immunity alone is only half a shield: without
 // this, rock and aliens still pile into the berth, and while the clamps mean
 // they can no longer shove the ship anywhere, a hull sitting inside a heap of
@@ -3749,6 +3926,9 @@ function updateLaunch(game, dt) {
   s.vy += Math.sin(up) * CFG.LAUNCH_KICK;
   game.launch = null;
   game.dock = null;
+  // The pad that just threw you off must not reel you straight back in — the
+  // autoland stands down while the launch clears the capture radius.
+  game.autolandCd = CFG.AUTOLAND_CD;
   // The berth has to be re-earned from zero, or the drain's grace window would
   // hand it straight back while the ship is still inside the pad's contact.
   landing.t = 0; landing.b = null;
@@ -5250,7 +5430,11 @@ export function step(game, dt) {
       const d = game.dock;
       const up = Math.atan2(s.y - d.b.y, s.x - d.b.x);
       s.angle += angDiff(s.angle, up) * (1 - Math.exp(-CFG.DOCK_UPRIGHT * dt));
-    } else {
+    } else if (!game.autoland) {
+      // AUTOLAND OWNS THE NOSE while it flies the approach (updateAutoland
+      // eases it to rockets-down) — mouse steering re-asserting here every
+      // substep would win the fight and the pad could never stand the ship
+      // up. Aiming is unaffected, exactly as at a berth.
       const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
       s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
     }
@@ -6003,6 +6187,7 @@ export function step(game, dt) {
   // and never inside it: this is the only point in the substep where "the hull
   // touched nothing" is a knowable fact. The launch sequence follows it, so a
   // release always acts on a berth this substep has already confirmed.
+  updateAutoland(game, dt);
   updateDock(game, dt);
   updateDomeShield(game, live);
   updateLaunch(game, dt);

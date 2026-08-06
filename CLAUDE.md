@@ -346,7 +346,22 @@ Plus the three scaling rules that make a big debris cascade affordable:
   window is. **Attitude and stillness are ENTRY gates; only CONTACT holds a berth**, and the latch
   drains `DOCK_DRAIN`× faster than it fills, which is the whole of the hysteresis. A landing that
   silently declines to latch is this feature's worst failure mode, so the approach SHOWS ITS STATE —
-  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing.
+  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing. Two refusals
+  no flying can clear (their wording says "go elsewhere"): **no berth in a wound** (ground cratered
+  past `CFG.DOCK_CRATER_MAX` of the radius, off `util.scarSurfaceAt` — a pad pins to the NOMINAL
+  radius and would float over the hole), and **no anchorage on a world too small for the ship class**
+  (`config.dockHostOk`, berth floor vs 0.55 of the host radius — a tier-5 port wrapped a median
+  moon). Both lines run again on STANDING stations in `updateDock`'s sweep: ground blasted past the
+  crater line COLLAPSES the station (debris + message; alarm-grade when it was home), and a tier-up
+  that outgrows a station's world DECOMMISSIONS it quietly.
+- **A STANDING STATION LANDS YOU ITSELF** (`physics.updateAutoland`, `CFG.AUTOLAND_*`): close, slow
+  and hands-off near a pad you built, and it takes the helm — eases the approach, stands the nose
+  up, and lets the ordinary gates latch. Any thrust cancels it (cooldown `AUTOLAND_CD`, also set by
+  a launch so the pad can't reel you straight back in); the first landing on bare ground is still
+  flown by hand. Not mirrored in `predictPaths` — see the doc for why.
+- **A HOME RESPAWN ARRIVES BERTHED** (`physics.berthAt`, called from main.js's respawn): docked in
+  the clamps, shield and repair live, one thrust from a launch — never hovering over its own pad to
+  re-earn a berth it already owns.
 - **A DOCK IS A STRUCTURE, NOT A STATE.** Berth on bare ground and you BUILD one: `DOCK_BUILD` (10s)
   of staying put, during which you get **nothing** — the shield and the repair both gate on
   `physics.dockReady`, so those ten exposed seconds are the price. Once built the station STANDS on
@@ -546,7 +561,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; every check must pass (31 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (32 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 
