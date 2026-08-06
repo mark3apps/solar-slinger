@@ -1109,8 +1109,19 @@ export const CFG = {
   ALIEN_RADIUS: 13,
   ALIEN_ACCEL: 250,
   ALIEN_SPEED: 330,
+  // GRABBERS FLY AT HALF SPEED (user call, 2026-08: "about half the speed they
+  // do now"). ALIEN_SPEED stays the sheet-wide reference — the integrate-loop
+  // overspeed damp (x1.6) and the lurker's LURKER_SPEED multiplier both key
+  // off it — so the slowdown is a grabber-scoped multiplier, never a change to
+  // the base number those tunings were balanced against.
+  GRABBER_SPEED: 0.5,
   ALIEN_CAPACITY: 2600,    // heaviest rock an alien can grab
   ALIEN_THROW: 430,
+  // A grabber must CLOSE before it throws (user call, 2026-08). It used to
+  // launch from 950u — most of a screen out, so rocks arrived before the alien
+  // ever felt like a threat you could see. Range only: throw SPEED is
+  // untouched, and the seek/harass engage distances stay where they were.
+  ALIEN_THROW_R: 450,
   ALIEN_CONTACT_DMG: 24,
   ALIEN_FIRST_WAVE: 55,    // seconds of peace at the start
   // (No ALIEN_WAVE_EVERY. Timed waves are gone — nests and shoal-lurker broods
@@ -1119,6 +1130,11 @@ export const CFG = {
   ALIEN_SCRAP: 28,
   ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
   ALIEN_BURST: 4,          // a nest can scramble up to this many at once
+  // Seconds between nest eruptions. 12 -> 60 (user call, 2026-08: "the spawn
+  // time after one dies should be MUCH greater"): a 12s lull meant killing a
+  // patrol bought nothing — the yard read as an endless respawner instead of a
+  // garrison you can thin out.
+  ALIEN_REGROUP: 60,
 
   // DENSE ASTEROID FIELDS (world.js seedDenseFields): packed rock shoals
   // riding the sun's rails at fixed radii, each home to a finite brood of

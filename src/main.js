@@ -1271,7 +1271,7 @@ function resetRun(seed, openCard = true) {
   game.visitor = null; game.visitorDone = false;
   game.vesperRespawnT = null; game.shepherdRespawnT = null; game.shepherdPlayerKilled = false;
   game.moonTimer = undefined;
-  game.flareTimer = undefined; game.cometTimer = undefined; game.wrightTimer = undefined;
+  game.flareTimer = undefined; game.cometTimer = undefined;
   game.alienTimer = 0; game.asteroidTimer = 10;
   game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
   game.predictRef = null; game.lock = null; game.lockTarget = null; game.tooHeavy = null;

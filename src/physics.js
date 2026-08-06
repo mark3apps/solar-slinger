@@ -1536,7 +1536,11 @@ function vaporize(game, body) {
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
 }
 
-export function killAlien(game, alien) {
+// `earned` = the player caused this death. Ambient ends — flying into a moon,
+// a star, or the corona — pay NO scrap (user call, 2026-08): the beads are a
+// bounty on a kill, and an alien that pancaked itself into a world it failed
+// to steer around was handing out free salvage for nothing.
+export function killAlien(game, alien, earned = true) {
   if (!alien.alive) return;
   alien.alive = false;
   if (alien.target && alien.target.heldBy === alien) {
@@ -1544,8 +1548,10 @@ export function killAlien(game, alien) {
     alien.target.extAx = 0; alien.target.extAy = 0;
   }
   // Wrights refund everything they've eaten; golems are MADE of scrap
-  dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3,
-    CFG.ALIEN_SCRAP + (alien.hoard || 0));
+  if (earned) {
+    dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3,
+      CFG.ALIEN_SCRAP + (alien.hoard || 0));
+  }
   addParticles(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3, 30, '#8aff6a', 200, 1.2, 4);
   addShake(game, 6);
   sfx.sfxBoom(2, sfx.distVol(game, alien.x, alien.y));
@@ -4000,7 +4006,7 @@ function collideAlienBody(game, al, b, dt) {
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
 
-  if (b.type === 'star') { killAlien(game, al); return; }
+  if (b.type === 'star') { killAlien(game, al, false); return; }   // flew into a sun — no bounty
 
   // SHOAL LURKER BODY-CHECK. The lurker is the dense field's native predator
   // and fights like a brawler ramming: ambient rock contact does it NO harm
@@ -4097,7 +4103,13 @@ function collideAlienBody(game, al, b, dt) {
       al.hp -= dmg;
       addParticles(game, al.x, al.y, 0, 0, 6, '#8aff6a', 100, 0.5);
       if (al.hp <= 0) {
-        killAlien(game, al);
+        // Scrap only when the PLAYER's rock ended it — an alien that crashed
+        // itself into a moon or got clipped by ambient rock pays nothing.
+        // "The player's rock" includes one currently HELD or riding the orbit
+        // ring / Guard Sling wall (heldBy === 'player', no thrownTimer): the
+        // rock wall is the hauler's sanctioned defence, and an alien dying
+        // against it is a kill the wall earned.
+        killAlien(game, al, playerRock || b.heldBy === 'player');
         if (playerRock) {   // alien kills count as smashes too
           addXp(game, PROG.XP_SMASH);
           game.prog.smashes++;
@@ -6138,7 +6150,7 @@ export function step(game, dt) {
         if (d >= hz) continue;
         const t = Math.min(1, (hz - d) / (hz - sun2.radius));
         al.hp -= t * t * 25 * dt;
-        if (al.hp <= 0) killAlien(game, al);
+        if (al.hp <= 0) killAlien(game, al, false);   // cooked by the corona — no bounty
       }
     }
   }
