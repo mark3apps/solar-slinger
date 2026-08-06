@@ -1632,6 +1632,517 @@ function drawRing(game, b, near) {
   ctx.globalAlpha = 1;
 }
 
+// ===========================================================================
+// THE SUN — a place you fly to, not a light source painted on the backdrop
+// ===========================================================================
+// The star is 4,800 units across. It fills the screen from a lane away and
+// keeps filling it all the way in, so the ONE question every pass here answers
+// is: WHAT RESOLVES WHEN YOU GET CLOSER? A cream disc with four soft blobs on
+// it reads as a flat sticker at every distance — the size never lands, because
+// nothing on the surface has a size of its own for the eye to measure against.
+//
+// So the surface carries detail at THREE scales, each fading in at its own zoom:
+//
+//   SUPERGRANULES  live radial-gradient cells ~1,000 units across, in both
+//                  signs — the churn you can see from outside the corona. These
+//                  carry the COARSE scale on purpose: they are non-repeating and
+//                  they evolve, and a tiled texture at that size reads as
+//                  wallpaper.
+//   GRANULATION    baked convection tiles drawn as PATTERNS at three world
+//                  scales (cells ~129 / 43 / 14 units). Two fills per octave, no
+//                  per-cell cost, and each octave fades out below ~8 screen
+//                  pixels so a distant sun never dissolves into aliased hiss.
+//   CHROMOSPHERE   the boiling fringe on the limb, ~50 units deep — about ten
+//                  hull widths. This is the pass that actually SELLS the scale,
+//                  because it is the only feature small enough to compare
+//                  yourself to, which is exactly why it is worth its cost.
+//
+// NO SUNSPOTS. A full anatomy was built here — bipolar groups, irregular umbra,
+// filamented penumbra, facular plage — and cut on sight: at this size a spot is
+// a large dark object sitting ON a surface that is otherwise all light and
+// motion, and it read as damage rather than as weather no matter how the tones
+// were graded. The star is better off as a body that is uniformly, enormously
+// alive. Don't re-add them without solving that read first.
+//
+// GRANULATION MUST BOIL, AND IT MUST NOT TILE. A pattern gets both wrong for
+// free, and both were caught on sight: rigidly rotating one tile at ~1°/s is a
+// STATIC texture, and a tile 1,500 units wide repeats three times across the
+// disc, which the eye reads as wallpaper rather than as surface. So the tiles
+// are (a) SMALL enough that repetition reads as grain instead of as pattern,
+// and (b) THREE different bakes that each octave CROSS-FADES between on its own
+// clock — cells dissolve where they were and appear where they weren't, which
+// is what convection actually looks like. The octaves also shear over each
+// other at different rates, so no two frames line up twice.
+//
+// COST IS BOUNDED BY THE SCREEN, NEVER BY THE SUN. The pattern fills clip to
+// the photosphere and the canvas does the rest; the limb passes walk only the
+// bearing window the camera can actually see, solved as a circle-circle
+// intersection (`limbWindow`) rather than the storm wave's approximation —
+// the camera can sit INSIDE this body, where an asin window is meaningless.
+//
+// THE SURFACE TURNS, and slowly: SUN_SPIN is a ~6-minute rotation, which puts
+// the limb moving at ~85 units/s — a fraction of cruising speed, so you overtake
+// it and it reads as a huge thing turning rather than a spinning top. Every
+// surface feature is placed in that ROTATING FRAME, or the granulation would
+// stream past stationary spots and the whole illusion would come apart.
+const SUN_SPIN = 0.0175;         // rad/s — a full turn in ~6 minutes
+const GRAN_PX = 256;             // baked tile resolution
+const GRAN_CELLS = 7;            // cells per tile side
+// Octave world spans. `span` is how wide one tile lands in world units, so a
+// cell is span/GRAN_CELLS across; the rot offsets and the differing spin rates
+// are what stop three copies of one tile from reading as three copies of one
+// tile — they shear over each other, which also makes the surface look like it
+// is boiling without a single per-frame cell.
+// `boil` is seconds per cross-fade step — the smaller the cell, the shorter it
+// lives, same as the real thing.
+const GRAN_OCT = [
+  { span: 900, alpha: 0.40, spin: 1.00, rot: 0.0, boil: 17, ph: 0.0 },
+  { span: 300, alpha: 0.32, spin: 1.35, rot: 0.9, boil: 9, ph: 0.37 },
+  { span: 100, alpha: 0.24, spin: 1.80, rot: 2.1, boil: 5, ph: 0.71 },
+];
+const GRAN_BAKES = 3;
+const granTiles = [];
+const granPats = [];
+let granDead = false;
+// Prominence ribbon bands: [width multiplier, colour]. Widest and coolest
+// first — see the fill loop for why there are six of them and not one.
+const PROM_BANDS = [
+  [1.55, 'rgba(255, 104, 30, 0.032)'],
+  [1.24, 'rgba(255, 120, 38, 0.036)'],
+  [0.96, 'rgba(255, 142, 52, 0.040)'],
+  [0.70, 'rgba(255, 166, 72, 0.044)'],
+  [0.46, 'rgba(255, 194, 104, 0.048)'],
+  [0.24, 'rgba(255, 226, 152, 0.055)'],
+];
+
+// Bake the convection tile once: a dark intergranular bed, cells ERASED out of
+// it (so the lanes are what is left, the way granulation actually reads), then
+// a faint bright kiss in each cell centre. Seamless — every cell is stamped at
+// all nine wrap offsets, so the tile repeats without a seam.
+function bakeGranTiles() {
+  if (granTiles.length || granDead) return granTiles;
+  try {
+    for (let n = 0; n < GRAN_BAKES; n++) granTiles.push(bakeOneGranTile(9137 + n * 4271));
+  } catch (e) {
+    // Tiles we cannot bake cost the sun its granulation, nothing else — the
+    // disc, the supergranules, the prominences and the limb all draw without it
+    // (capability rule).
+    granDead = true;
+    granTiles.length = 0;
+  }
+  return granTiles;
+}
+
+function bakeOneGranTile(seed) {
+  {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = GRAN_PX;
+    const c = cv.getContext('2d');
+    if (!c) throw new Error('no 2d context');
+    const rng = mulberry32(seed);
+    const N = GRAN_CELLS, sp = GRAN_PX / N;
+    const cells = [];
+    for (let iy = 0; iy < N; iy++) for (let ix = 0; ix < N; ix++) {
+      cells.push({
+        x: (ix + 0.5 + (rng() - 0.5) * 0.78) * sp,
+        y: (iy + 0.5 + (rng() - 0.5) * 0.78) * sp,
+        r: sp * (0.40 + rng() * 0.48),
+        k: 0.45 + rng() * 0.55,
+      });
+    }
+    const stamp = (fn) => {
+      for (const cl of cells) for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const x = cl.x + ox * GRAN_PX, y = cl.y + oy * GRAN_PX;
+        if (x + cl.r < 0 || x - cl.r > GRAN_PX || y + cl.r < 0 || y - cl.r > GRAN_PX) continue;
+        fn(x, y, cl);
+      }
+    };
+    // The lane bed is AMBER, not brown. Real intergranular lanes are only a
+    // fraction darker than the granules; taken too dark and too saturated the
+    // whole star stops reading as white-hot and comes out looking like coral.
+    c.fillStyle = 'rgba(158, 74, 16, 0.46)';
+    c.fillRect(0, 0, GRAN_PX, GRAN_PX);
+    c.globalCompositeOperation = 'destination-out';
+    stamp((x, y, cl) => {
+      const g = c.createRadialGradient(x, y, 0, x, y, cl.r);
+      g.addColorStop(0, 'rgba(0,0,0,1)');
+      g.addColorStop(0.58, 'rgba(0,0,0,0.95)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, cl.r, 0, TAU); c.fill();
+    });
+    c.globalCompositeOperation = 'source-over';
+    stamp((x, y, cl) => {
+      const g = c.createRadialGradient(x, y, 0, x, y, cl.r * 0.86);
+      g.addColorStop(0, `rgba(255, 248, 220, ${0.20 * cl.k})`);
+      g.addColorStop(0.55, `rgba(255, 226, 160, ${0.09 * cl.k})`);
+      g.addColorStop(1, 'rgba(255, 226, 160, 0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, cl.r * 0.86, 0, TAU); c.fill();
+    });
+    return cv;
+  }
+}
+
+// The bearing window of a body's LIMB that the view can see, as a half-angle
+// about the bearing from the body to the camera. Returns 0 when no part of the
+// limb is on screen — which includes the camera being deep INSIDE the star, the
+// case an asin(viewR/d) window gets wrong.
+function limbWindow(bx, by, R) {
+  const dx = view.cx - bx, dy = view.cy - by;
+  const d = Math.hypot(dx, dy);
+  const vr = view.r;
+  if (d + vr < R || d - vr > R) return 0;     // view wholly inside, or wholly beyond
+  if (d < 1e-6) return Math.PI;
+  const c = (d * d + R * R - vr * vr) / (2 * d * R);
+  if (c <= -1) return Math.PI;
+  if (c >= 1) return 0;
+  return Math.min(Math.PI, Math.acos(c) + 0.05);
+}
+
+// Deterministic 0..1 hash — spicules and streamers must be stable frame to
+// frame or the limb strobes.
+function sunHash(n) {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function drawStar(game, b) {
+  const R = b.radius, t = game.time, px = game.cam.zoom;
+  const rot = t * SUN_SPIN;
+  const limbPx = R * px;
+
+  // ---- CORONA. Many stops, not four: the old four-stop ramp printed visible
+  // concentric BANDS across a body this large, which is a hard edge in world by
+  // any other name. The falloff below is roughly exponential and reads smooth.
+  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * 3.6);
+  cg.addColorStop(0, b.color);
+  cg.addColorStop(0.14, b.color + 'ee');
+  cg.addColorStop(0.24, b.color + 'b0');
+  cg.addColorStop(0.33, b.color + '76');
+  cg.addColorStop(0.43, b.color + '4c');
+  cg.addColorStop(0.55, b.color + '30');
+  cg.addColorStop(0.68, b.color + '1c');
+  cg.addColorStop(0.82, b.color + '0e');
+  cg.addColorStop(1, 'transparent');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * 3.6, 0, TAU); ctx.fill();
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // ---- CORONAL STRUCTURE. The corona is not a fog, it is a SHAPE — it reaches
+  // further where the field is open and hugs the limb where it is closed. Built
+  // as a union of SOFT LOBES seated around the limb at varying reach, so the
+  // halo comes out ragged and directional with nothing anywhere that is a
+  // straight edge. Two shapes were tried before this and both broke that rule:
+  // wedge streamers (a fan filled through a radial gradient) read as
+  // searchlights, and a single lumpy ENVELOPE PATH printed its own outline —
+  // the gradient still has alpha wherever the envelope dips inside its own
+  // maximum, so the path boundary shows. A lobe that feathers to zero on its
+  // own can't do either. They drift far slower than the surface, because the
+  // field is anchored deep and the outer atmosphere visibly lagging the body it
+  // belongs to is itself a scale cue.
+  for (let i = 0; i < 15; i++) {
+    const h = sunHash(i * 3.9 + b.id), h2 = sunHash(i * 8.1 + 3);
+    const a = (i / 15) * TAU + h * 0.42 + rot * (0.18 + h2 * 0.12);
+    const d = R * (0.95 + 0.55 * h2 + 0.12 * Math.sin(t * 0.06 + i));
+    const br = R * (0.55 + 0.85 * h);
+    const cx = b.x + Math.cos(a) * d, cy = b.y + Math.sin(a) * d;
+    // The tail has to fall off SMOOTHLY or the lobe prints its own circle: a
+    // gradient that runs linearly to zero has a kink at its outer stop, and
+    // where several overlap that kink reads as an arc drawn in the corona.
+    const a0 = 0.040 + 0.040 * h;
+    const eg = ctx.createRadialGradient(cx, cy, 0, cx, cy, br);
+    eg.addColorStop(0, `rgba(255, 224, 162, ${a0})`);
+    eg.addColorStop(0.30, `rgba(255, 214, 146, ${a0 * 0.55})`);
+    eg.addColorStop(0.55, `rgba(255, 202, 122, ${a0 * 0.25})`);
+    eg.addColorStop(0.76, `rgba(255, 190, 104, ${a0 * 0.09})`);
+    eg.addColorStop(0.90, `rgba(255, 182, 94, ${a0 * 0.025})`);
+    eg.addColorStop(1, 'rgba(255, 178, 88, 0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath(); ctx.arc(cx, cy, br, 0, TAU); ctx.fill();
+  }
+
+  // ---- PROMINENCE LOOPS: plasma arcs that rise off the surface and dive BACK
+  // IN — closed magnetic loops, the way real suns wear their fire. Each loop is
+  // a TAPERED RIBBON, fat through the crown and pinched into the surface at both
+  // footpoints, because a constant-width bright wire read as an antenna glued to
+  // the limb — that is what made the old sun look like a cartoon rather than a
+  // body. They are rooted in the ROTATING FRAME, so a loop belongs to a patch of
+  // surface and travels with it.
+  //
+  // FILLED, never stroked segment by segment. A tapered stroke has to be walked
+  // as N short strokes, and under 'lighter' every round cap overlaps its
+  // neighbour and blends twice — at close range a loop came out as a visible
+  // CHAIN OF DISCS. One closed polygon per band has no seams to print.
+  const SEG = 14, NPROM = 11;
+  for (let i = 0; i < NPROM; i++) {
+    const hp = sunHash(i * 2.7 + b.id);
+    const a0 = (i / NPROM) * TAU + b.id + rot + hp * 0.4 + Math.sin(t * 0.03 + i * 2.1) * 0.1;
+    const span = 0.10 + 0.13 * hp + 0.06 * (0.5 + 0.5 * Math.sin(i * 1.9 + t * 0.045));
+    const a1 = a0 + span;
+    // Reach is deliberately SHORT and varied. Uniform tall loops read as a set
+    // of handles glued to the limb; a ragged low fringe with the odd tall arch
+    // reads as fire standing off a surface.
+    const h = R * (0.03 + 0.15 * hp) * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * (0.06 + (i % 3) * 0.025) + i * 2.6)));
+    const R0 = R * 0.93;
+    const x0 = b.x + Math.cos(a0) * R0, y0 = b.y + Math.sin(a0) * R0;
+    const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
+    const am = a0 + span / 2;
+    const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
+    const at = (k) => {   // point on the quadratic at parameter k
+      const m = 1 - k;
+      return [m * m * x0 + 2 * m * k * cxp + k * k * x1, m * m * y0 + 2 * m * k * cyp + k * k * y1];
+    };
+    // SIX nested bands, not three, and each one faint. A filled ribbon has a
+    // crisp boundary, and one wide band at a readable alpha prints that boundary
+    // straight across the screen when you are close enough to fly through the
+    // loop — the in-world hard edge again. Stacking thin bands additively is how
+    // a fill gets a soft shoulder: the sum ramps up toward the core instead of
+    // stepping there. The SHEATH still carries the read and the core is only the
+    // hint inside it; the old draw inverted that, and a bright constant-width
+    // wire on a limb this long is an antenna, not plasma.
+    for (const [wMul, col] of PROM_BANDS) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      // out along one side of the ribbon, back along the other
+      for (let s = 0; s <= SEG * 2 + 1; s++) {
+        const back = s > SEG;
+        const si = back ? SEG * 2 + 1 - s : s;
+        const k = si / SEG, p = at(k);
+        const d = at(Math.min(1, k + 0.02)), e = at(Math.max(0, k - 0.02));
+        let nx = -(d[1] - e[1]), ny = d[0] - e[0];
+        const m = Math.hypot(nx, ny) || 1; nx /= m; ny /= m;
+        // sqrt taper: fat through the crown, pinched at both footpoints
+        const w = (R * 0.05 * wMul * Math.sqrt(Math.sin(Math.PI * k)) + R * 0.002) * (back ? -1 : 1);
+        const x = p[0] + nx * w, y = p[1] + ny * w;
+        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- PHOTOSPHERE. NOT a perfect circle — a slow magma swell, three faint
+  // radial harmonics breathing at different rates (subtle: <2% of radius)
+  const surf = (th) => R * 0.94 * (1
+    + 0.016 * Math.sin(th * 5 + t * 0.18)
+    + 0.011 * Math.sin(th * 9 - t * 0.28)
+    + 0.007 * Math.sin(th * 13 + t * 0.42));
+  const tracePhotosphere = () => {
+    ctx.beginPath();
+    const N = 96;
+    for (let i2 = 0; i2 <= N; i2++) {
+      const th = (i2 / N) * TAU;
+      const rr2 = surf(th);
+      const px2 = b.x + Math.cos(th) * rr2, py2 = b.y + Math.sin(th) * rr2;
+      if (i2 === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    }
+    ctx.closePath();
+  };
+  // The disc's own body is LIMB-DARKENED from the start — hot white at the
+  // centre falling to a deep amber at the edge. This is the single cheapest
+  // thing that makes a flat disc read as an enormous ball, and everything
+  // painted on top of it inherits the shading for free.
+  const bg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, R * 0.94);
+  bg.addColorStop(0, '#fffdf4');
+  bg.addColorStop(0.42, '#fff6da');
+  bg.addColorStop(0.70, '#ffe9ae');
+  bg.addColorStop(0.88, '#ffcf74');
+  bg.addColorStop(1, '#f6ab3c');
+  ctx.fillStyle = bg;
+  tracePhotosphere(); ctx.fill();
+
+  ctx.save();
+  tracePhotosphere(); ctx.clip();
+
+  // ---- GRANULATION. One baked tile, three world scales. Each octave fades out
+  // below ~6 screen pixels per cell: past that it is not detail any more, it is
+  // aliasing, and a distant star should be a clean disc.
+  const tiles = bakeGranTiles();
+  if (tiles.length) {
+    if (!granPats.length) for (const tl of tiles) granPats.push(ctx.createPattern(tl, 'repeat'));
+    for (let i = 0; i < GRAN_OCT.length; i++) {
+      const o = GRAN_OCT[i];
+      // Fade in SLOWLY with drawn cell size. Granulation that reaches full
+      // strength at a few pixels per cell turns the whole disc into an even
+      // speckle — orange peel — and an even speckle flattens a sphere just as
+      // hard as no texture at all. Under ~8px the live supergranules carry the
+      // surface on their own, which is the read that belongs at that distance.
+      const cellPx = (o.span / GRAN_CELLS) * px;
+      const k = clamp((cellPx - 8) / 14, 0, 1);
+      if (k <= 0.02) continue;
+      const s = o.span / GRAN_PX;
+      const q = R / s + GRAN_PX;
+      // THE BOIL: walk the bakes on this octave's own clock and cross-fade the
+      // pair either side of the walk. `f` is smoothstepped so a cell dissolves
+      // instead of switching, and the two alphas sum to one so the octave's
+      // overall weight never pulses.
+      const phase = t / o.boil + o.ph;
+      const idx = Math.floor(phase);
+      const fr = phase - idx;
+      const f = fr * fr * (3 - 2 * fr);
+      for (let n = 0; n < 2; n++) {
+        const pat = granPats[(idx + n) % granPats.length];
+        if (!pat) continue;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        // Each bake also gets its own bearing, so a cross-fade is never two
+        // layouts sitting on the same spot fading into one another.
+        ctx.rotate(rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09);
+        ctx.scale(s, s);
+        ctx.globalAlpha = o.alpha * k * (n ? f : 1 - f);
+        ctx.fillStyle = pat;
+        ctx.fillRect(-q, -q, q * 2, q * 2);
+        ctx.restore();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- SUPERGRANULES: the coarsest churn, and the pass that carries the whole
+  // surface at any distance where a granule is under a few pixels. Live, so it
+  // never repeats and never stops moving.
+  //
+  // BOTH SIGNS. They were additive-only at first, which meant the disc could
+  // only ever get brighter in patches — mottling needs the dark half or the
+  // surface reads as a clean sphere with lamps on it. The dark set is bigger,
+  // slower and fainter than the bright set, the way a convective floor sits
+  // under the cells rather than beside them.
+  const cellCount = 13;
+  for (let pass = 0; pass < 2; pass++) {
+    const dark = pass === 0;
+    ctx.globalCompositeOperation = dark ? 'source-over' : 'lighter';
+    for (let i = 0; i < cellCount; i++) {
+      const h = sunHash(i * 3.1 + b.id + (dark ? 41 : 0));
+      const h2 = sunHash(i * 6.7 + (dark ? 17 : 5));
+      const a = rot * (dark ? 0.82 : 1.0) + i * 2.39 + b.id + h * 1.7;
+      const rr = R * (0.10 + 0.76 * h);
+      // Each cell wanders on its own slow epicycle — the churn is the point
+      const wob = Math.sin(t * (0.018 + h2 * 0.02) + i) * (dark ? 0.10 : 0.07);
+      const bx = b.x + Math.cos(a + wob) * rr, by = b.y + Math.sin(a + wob) * rr;
+      const swell = 0.5 + 0.5 * Math.sin(t * (0.03 + h2 * 0.03) + i * 2.1);
+      const br = R * (dark ? 0.22 + 0.20 * h2 : 0.14 + 0.13 * h2) * (0.75 + 0.35 * swell);
+      const al = (dark ? 0.13 : 0.26) * (0.45 + 0.55 * swell);
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      g.addColorStop(0, dark ? `rgba(196, 96, 22, ${al})` : `rgba(255, 250, 226, ${al})`);
+      g.addColorStop(0.5, dark ? `rgba(204, 108, 30, ${al * 0.5})` : `rgba(255, 208, 128, ${al * 0.5})`);
+      g.addColorStop(0.78, dark ? `rgba(210, 118, 38, ${al * 0.16})` : `rgba(255, 196, 110, ${al * 0.16})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU); ctx.fill();
+    }
+  }
+  // Back to source-over EXPLICITLY, and this line is load-bearing: the pass
+  // below is the only one on the face that has to SUBTRACT light. Left on the
+  // 'lighter' the supergranule loop ends in, it silently inverts into a warm
+  // bloom over the outer disc — which still looks plausible, and is exactly why
+  // that bug survived a playtest. Never let this be inherited from whatever
+  // pass happened to run last.
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- The limb-darkening pass proper, over everything painted on the face.
+  // The base gradient shades the disc; this one shades the DETAIL, so a granule
+  // near the edge dims with the surface it sits on instead of floating on it.
+  const ld = ctx.createRadialGradient(b.x, b.y, R * 0.40, b.x, b.y, R * 0.95);
+  ld.addColorStop(0, 'rgba(180, 70, 12, 0)');
+  ld.addColorStop(0.55, 'rgba(184, 76, 14, 0.07)');
+  ld.addColorStop(0.82, 'rgba(168, 62, 10, 0.17)');
+  ld.addColorStop(1, 'rgba(140, 46, 6, 0.30)');
+  ctx.fillStyle = ld;
+  ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, view.y1 - view.y0);
+  ctx.restore();
+
+  // ---- THE LIMB. Everything past here is the edge of the star, and it only
+  // walks the arc the camera can actually see — from a thousand units out that
+  // is a few degrees of a body this size, so the fringe costs the same whether
+  // you are outside the corona or skimming the surface.
+  const halfA = limbWindow(b.x, b.y, R * 0.94);
+  if (halfA > 0) {
+    const midA = Math.atan2(view.cy - b.y, view.cx - b.x);
+    // THE SMEAR — the pass that stops the biggest curve in the game from being a
+    // drawn line, and the pass that makes the near-limb approach feel like the
+    // sun instead of like a lit ball. The photosphere is a FILLED PATH, so
+    // however softly it is shaded inside, it ENDS: a solid amber disc butts
+    // straight against the corona behind it and the step between them reads as a
+    // stroke the whole way round. Nothing painted on the face can fix that,
+    // because the clip is exactly what makes it.
+    //
+    // So the disc's own limb colour is smeared OUTWARD past where the fill stops,
+    // source-over and fading over ~0.14R, which puts photosphere colour on both
+    // sides of the boundary and leaves nothing for the eye to lock onto.
+    //
+    // IT IS DELIBERATELY WIDE. A tight feather that hugged the outline was tried
+    // and it does dissolve the seam more cheaply — but flying the limb then reads
+    // as skimming a big warm object, and this is a STAR: at a few hundred units
+    // off the surface the whole view should be drowning in its light. That is the
+    // effect, not a side effect, so the width stays. Additive is still wrong
+    // here: adding light AT the edge brightens the seam, which is the opposite
+    // of dissolving it.
+    const sm = ctx.createRadialGradient(b.x, b.y, R * 0.88, b.x, b.y, R * 1.10);
+    sm.addColorStop(0, 'rgba(246, 171, 60, 0)');
+    sm.addColorStop(0.28, 'rgba(246, 171, 60, 0.55)');
+    sm.addColorStop(0.52, 'rgba(240, 148, 48, 0.34)');
+    sm.addColorStop(0.76, 'rgba(226, 122, 40, 0.14)');
+    sm.addColorStop(1, 'rgba(214, 104, 34, 0)');
+    ctx.fillStyle = sm;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.10, 0, TAU); ctx.fill();
+
+    ctx.globalCompositeOperation = 'lighter';
+    // …then the hot chromospheric line the star actually ends on, kept faint and
+    // wide, riding on top of the smear rather than replacing it.
+    const ch = ctx.createRadialGradient(b.x, b.y, R * 0.84, b.x, b.y, R * 1.08);
+    ch.addColorStop(0, 'rgba(255, 110, 40, 0)');
+    ch.addColorStop(0.45, 'rgba(255, 128, 46, 0.07)');
+    ch.addColorStop(0.70, 'rgba(255, 152, 60, 0.10)');
+    ch.addColorStop(0.88, 'rgba(255, 180, 88, 0.05)');
+    ch.addColorStop(1, 'rgba(255, 150, 60, 0)');
+    ctx.fillStyle = ch;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.08, 0, TAU); ctx.fill();
+
+    // THE BOIL ON THE EDGE. Up close the limb has to be doing something, or the
+    // largest curve in the game is a smooth arc with a glow behind it. What it
+    // must NOT be is strands: individual jets were drawn here first and every
+    // one of them read as a HAIR — a stiff, separable, slightly comic fringe
+    // that made the star look furry rather than molten.
+    //
+    // So the fringe is CELLS, not strands: soft blobs seated on the surface,
+    // each feathering to nothing on its own, each swelling and subsiding on its
+    // own clock. Overlapping at this density they merge into one ragged hot edge
+    // that churns — no strand to pick out, and no boundary anywhere, which is
+    // also what keeps the biggest edge in the game off the hard-edge list.
+    if (limbPx > 90) {
+      const arc = halfA * 2;
+      // Density comes off the DRAWN arc, not the bearing window: how many cells
+      // fit along an edge is a screen fact.
+      const n = Math.min(220, Math.max(18, Math.round(arc * limbPx / 15)));
+      for (let i = 0; i < n; i++) {
+        const h = sunHash(i * 1.7 + b.id * 5);
+        const h2 = sunHash(i * 4.3 + 11);
+        const a = midA - halfA + (i + h * 0.9) / n * arc;
+        const life = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * (0.45 + h2 * 0.7) + i * 2.7));
+        const cr = R * (0.010 + 0.022 * h2) * (0.55 + 0.45 * life);
+        if (cr * px < 2) continue;
+        // STRADDLING the surface, never sitting above it. Cells set on a common
+        // standoff put every feather at the same height and the fringe grows a
+        // second edge of its own; scattered across the boundary they leave the
+        // limb ragged instead, so there is no depth anyone could read off it.
+        const rr = surf(a) + cr * (h - 0.62) * 0.9;
+        const cx = b.x + Math.cos(a) * rr, cy = b.y + Math.sin(a) * rr;
+        const al = (0.09 + 0.15 * life) * (0.6 + 0.4 * h);
+        const cg2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+        cg2.addColorStop(0, `rgba(255, ${(178 + 46 * h) | 0}, ${(96 + 46 * h2) | 0}, ${al})`);
+        cg2.addColorStop(0.45, `rgba(255, ${(140 + 40 * h) | 0}, 58, ${al * 0.5})`);
+        cg2.addColorStop(1, 'rgba(255, 120, 44, 0)');
+        ctx.fillStyle = cg2;
+        ctx.beginPath(); ctx.arc(cx, cy, cr, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
 function drawBody(game, b) {
   let pitsDone = false;   // set by drawRock — see the pit pass further down
   // Moons announce themselves: a whisper-faint orbit circle around their
@@ -1665,99 +2176,7 @@ function drawBody(game, b) {
     ctx.stroke();
   }
 
-  if (b.type === 'star') {
-    // Intense layered corona — the glow itself warns of the heat zone
-    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.2, b.x, b.y, b.radius * 3.6);
-    g.addColorStop(0, b.color);
-    g.addColorStop(0.24, b.color + 'dd');
-    g.addColorStop(0.4, b.color + '44');
-    g.addColorStop(1, 'transparent');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 3.6, 0, TAU); ctx.fill();
-    // PROMINENCE LOOPS: plasma arcs that rise off the surface and dive
-    // BACK IN — closed magnetic loops, the way real suns wear their fire.
-    // Each loop breathes slowly on its own rhythm (see "way slower" note).
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.lineCap = 'round';
-    for (let i = 0; i < 7; i++) {
-      const a0 = (i / 7) * TAU + b.id + Math.sin(game.time * 0.03 + i * 2.1) * 0.1;
-      const span = 0.12 + 0.1 * (0.5 + 0.5 * Math.sin(i * 1.9 + game.time * 0.045));
-      const a1 = a0 + span;
-      const h = b.radius * (0.08 + 0.24 * (0.5 + 0.5 * Math.sin(game.time * (0.06 + (i % 3) * 0.025) + i * 2.6)));
-      const R0 = b.radius * 0.93;
-      const x0 = b.x + Math.cos(a0) * R0, y0 = b.y + Math.sin(a0) * R0;
-      const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
-      const am = a0 + span / 2;
-      const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
-      // soft wide halo of the arc, then the bright filament inside it
-      ctx.strokeStyle = 'rgba(255, 150, 60, 0.2)';
-      ctx.lineWidth = b.radius * 0.045;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cxp, cyp, x1, y1); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 220, 140, 0.38)';
-      ctx.lineWidth = b.radius * 0.016;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cxp, cyp, x1, y1); ctx.stroke();
-    }
-    ctx.lineCap = 'butt';
-    ctx.globalCompositeOperation = 'source-over';
-
-    // Photosphere: NOT a perfect circle — a slow magma swell, three faint
-    // radial harmonics breathing at different rates (subtle: <2% of radius)
-    const surf = (th) => b.radius * 0.94 * (1
-      + 0.016 * Math.sin(th * 5 + game.time * 0.18)
-      + 0.011 * Math.sin(th * 9 - game.time * 0.28)
-      + 0.007 * Math.sin(th * 13 + game.time * 0.42));
-    const tracePhotosphere = () => {
-      ctx.beginPath();
-      const N = 64;
-      for (let i2 = 0; i2 <= N; i2++) {
-        const th = (i2 / N) * TAU;
-        const rr2 = surf(th);
-        const px2 = b.x + Math.cos(th) * rr2, py2 = b.y + Math.sin(th) * rr2;
-        if (i2 === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
-      }
-      ctx.closePath();
-    };
-    // Feathered rim: a screen-space shadow glow softens the surface edge
-    // into the corona instead of a hard vector cut (reset immediately)
-    ctx.shadowColor = '#fff3d0';
-    ctx.shadowBlur = 16;
-    ctx.fillStyle = '#fff3d0';
-    tracePhotosphere(); ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.save();
-    tracePhotosphere(); ctx.clip();
-    // LAVA-LAMP convection: bright cells churning slowly across the face —
-    // each drifts on its own slow epicycle, swelling and shrinking
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < 7; i++) {
-      const a = game.time * (0.016 + (i % 3) * 0.008) + i * 2.39 + b.id;
-      const rr = b.radius * (0.18 + 0.5 * (0.5 + 0.5 * Math.sin(game.time * 0.022 + i * 1.7)));
-      const bx = b.x + Math.cos(a) * rr, by = b.y + Math.sin(a * 0.83 + i) * rr;
-      const br = b.radius * (0.24 + 0.1 * Math.sin(game.time * 0.035 + i * 2.1));
-      const cg = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-      cg.addColorStop(0, 'rgba(255, 246, 214, 0.5)');
-      cg.addColorStop(0.6, 'rgba(255, 196, 110, 0.26)');
-      cg.addColorStop(1, 'transparent');
-      ctx.fillStyle = cg;
-      ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU); ctx.fill();
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    // Sunspots: dark blemishes wandering the photosphere
-    for (let j = 0; j < 4; j++) {
-      const a = game.time * (0.01 + j * 0.0035) + j * 1.83 + b.id * 3;
-      const rr = b.radius * (0.25 + 0.45 * (0.5 + 0.5 * Math.sin(j * 2.7 + game.time * 0.016)));
-      const px = b.x + Math.cos(a) * rr, py = b.y + Math.sin(a * 1.13 + j * 0.9) * rr;
-      const sr = b.radius * (0.1 + 0.09 * (j % 3));
-      const sg = ctx.createRadialGradient(px, py, 0, px, py, sr);
-      sg.addColorStop(0, 'rgba(120, 55, 20, 0.5)');
-      sg.addColorStop(0.55, 'rgba(160, 80, 30, 0.28)');
-      sg.addColorStop(1, 'transparent');
-      ctx.fillStyle = sg;
-      ctx.beginPath(); ctx.arc(px, py, sr, 0, TAU); ctx.fill();
-    }
-    ctx.restore();
-    return;
-  }
+  if (b.type === 'star') { drawStar(game, b); return; }
 
   if (b.ring) drawRing(game, b, false);   // FAR half — the near half goes on
                                           // after the disc, see below
