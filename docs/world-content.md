@@ -98,8 +98,10 @@ from breaking the invariants above:
     radii only widens the margin), the ring shepherd moonlet still doesn't (a moonlet near ship
     scale shelters nobody). `config.shelterR` adds a **flat
     `STORM_SHADOW_PAD`** on top of the radius multiple, because forgiveness has to be measured in
-    ship-widths: `1.15 ×` a 26-radius moon is a 30-unit half-width, which a TITAN (`SHIP_RADIUS` 44.2)
-    does not fit through. `shelterR` is the ONE definition — `shelterBody` decides with it and
+    ship-widths: `1.15 ×` a 26-radius moon is a 30-unit half-width, which a TITAN (`SHIP_RADIUS` 66.3)
+    does not fit through. **The pad moves with the Titan and only with the Titan** — it went 45 → 68
+    (×1.5) with the 2026-08 +50% top tier, because a pad sized off the largest hull stops doing its
+    job the moment that hull grows past it. `shelterR` is the ONE definition — `shelterBody` decides with it and
     `drawStormWave` punches the plasma out with it, and the two drifting apart is a pilot sitting in
     visible shadow taking damage. The lee-edge stroke widths ride it too, or on a small moon the soft
     edge falls inside the shadow and the clip shows as a hard line.

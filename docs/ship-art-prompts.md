@@ -52,18 +52,28 @@ Drawn from what the code already enforces, so the art doesn't fight the sim:
 
 - **Symmetry is mandatory.** Every feature in the hull tables is mirrored at draw time
   (`for (const m of [1, -1])`); an asymmetric reference costs a redesign to port.
-- **Scout is a winged gun platform.** It arms itself by swallowing rock: intake maw at the bow →
-  hopper amidships → feed conduits running outboard along the wings → weapons on wing hardpoints.
-  The escalation axis is **hardpoint count and wingspan**, and the sensor gear climbs alongside as
-  fire control. Its full-wrap shield reads as emitter *posts* around the rim — hardware, not a ring,
-  because the shield glow is drawn in code.
+- **Scout is a winged SENSOR platform, and its wings are BARE.** Intake maw at the bow → hopper
+  amidships → feed conduits along the wing roots → clean, unloaded wings. The escalation axis is
+  **length and sensor gear** (gimbal, dishes, fire-control arrays, booms, the crescent sail), never
+  hardpoint count. Its full-wrap shield reads as emitter *posts* around the rim — hardware, not a
+  ring, because the shield glow is drawn in code.
+
+  > ⚠️ **The six SCOUT prompts below are STALE and will generate the wrong ship.** The wing guns
+  > were dropped 2026-08 (user call) and the code no longer draws pods, rail barrels, coil rings,
+  > muzzles or wingtip launchers. Every numbered prompt in the scout sheet still asks for them.
+  > Before regenerating scout art, strip the armament clauses and let the sensor gear and the wing
+  > PLANFORM (crank → root extension → rake) carry the tier progression. Left unresolved: the
+  > intake and hopper are still drawn but now feed nothing, so decide what the swallowed rock is
+  > for before committing new art to it.
 - **Brawler is front-heavy with a bare tail**, because the spec carries no shield and its one layer —
   the War Rack ram — is welded to the bow. The weakness is visible.
 - **Neither gets ring-arms or spinning assemblies.** That is the hauler's silhouette signature and
   the thing that keeps the three specs readable at a glance.
-- **Do not draw the ships to true relative scale.** The real footprint ladder spans about 11× from
-  tier 0 to tier 5 (`SHIP_RADIUS` 4.0 → 44.2), which would render tier 0 as an unreadable speck. The
+- **Do not draw the ships to true relative scale.** The real footprint ladder spans about 17× from
+  tier 0 to tier 5 (`SHIP_RADIUS` 4.0 → 66.3), which would render tier 0 as an unreadable speck. The
   prompts ask for a modest visual progression instead; the true ratios come from config.js.
+- **Draw all three specs at the same apparent size.** They match in-game (`config.SHIP_VIS`), so a
+  sheet that shrinks the scout or bulks the brawler is describing art the game does not draw.
 
 ---
 
