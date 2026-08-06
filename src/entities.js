@@ -23,7 +23,9 @@ export function massToHp(mass) { return Math.max(4, mass * 0.012); }
 export function scrapValue(body) {
   switch (body.type) {
     case 'asteroid': return (6 + body.mass * 0.006) * (body.core ? 3.5 : body.cache ? 2 : body.junk ? 3 : body.comet ? 4 : 1);
-    case 'moon':     return 30 + body.mass * 0.004;
+    // A husk moon is plated in salvage — richer than bare rock (the junk-rock
+    // precedent, milder: the moon's base value is already large).
+    case 'moon':     return (30 + body.mass * 0.004) * (body.moonType === 'husk' ? 1.8 : 1);
     case 'planet':   return 90 + body.mass * 0.0012;
     case 'rogue':    return 400;
     case 'station':  return 350;   // derelict salvage jackpot

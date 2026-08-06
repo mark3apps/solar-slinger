@@ -32,8 +32,8 @@ Full rationale: [docs/progression.md](../../../docs/progression.md). This skill 
 | `xpMul` | optional ladder scale. Late-floored rows discount: **0.5 at `minTier` 3, 0.7 at 2** — they're learned with only a fraction of the run's XP left |
 | `needs` | optional HARD prerequisite naming a **channel**, not an id |
 
-**`needs` is only for rows that are literally INERT alone.** Scattergun / Rockwall / Aegis Reflector /
-Recovery Tether all act on ORBIT rocks, and with no orbit ability `shipStats` gives `orbitCap` 0, so
+**`needs` is only for rows that are literally INERT alone.** Scattergun / Rockwall / Guard Sling /
+Sling Winch / Recovery Tether all act on ORBIT rocks, and with no orbit ability `shipStats` gives `orbitCap` 0, so
 there is never a rock to act on. Each was a dead card: it spent the pick, its bar climbed, nothing
 happened. Two constraints: every channel a `needs` points at must have an **un-gated tier-0 provider
 in that spec's pool** (or the gate deadlocks), and **do not add it to the second-track duplicates**
@@ -41,7 +41,9 @@ in that spec's pool** (or the gate deadlocks), and **do not add it to the second
 extensions but work fine standing alone.
 
 **Naming law:** two abilities that DO the same thing share one name/icon/desc even across specs
-(Heavy Winch is the catch starter in BRAWLER and HAULER; Reinforced Hull is both hull tracks). Same-spec
+(Reinforced Hull is both hull tracks). It cuts BOTH ways: HAULER's winch shared BRAWLER's Heavy Winch
+name only while both fed `catch`, and became **Sling Winch** the moment it was rebuilt to size the
+ring alone. Same-spec
 second tracks are the exception — they must stay separately named to coexist as cards, and their descs
 read as "more of the same".
 
@@ -65,7 +67,7 @@ the hook and the catalog row must stay in sync:
 | Spec | Hook sites |
 |---|---|
 | BRAWLER | `physics.collideShipBody` (ram), `physics.brawlerThrowKill` (cluster/shockwave/demolition), `physics.wallSplat`, `physics.updateParry` (Deflector), `tractor.updateOrbit` (War Rack aft slots), `tractor.flingSpeedFor` (Berserker) |
-| HAULER | `tractor.updateTethers`, the orbit-intercept block in `physics.collideBodies` (Aegis), `game.held2` through `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` (Twin Grip), `physics.damageBody` + `tractor.updateOrbit` (Rockwall), `tryGrab`/`flingSpeedFor`/`releaseHeld` (Dead Stop) |
+| HAULER | `tractor.updateTethers`, the interception scan in `tractor.updateOrbit` (Guard Sling — gated on `st.guardCount`, sets `b.guardBeam` for render's tether beam), `game.held2` through `tryGrab`/`springHeld`/`releaseHeld`/`addToOrbit` **plus `tractor.tryAutoSecond` for the cursor-sweep trigger** (Twin Grip), `physics.damageBody` (Rockwall — toughness only), `tryGrab`/`flingSpeedFor`/`releaseHeld` (Dead Stop) |
 | SCOUT | `main.js` owns `game.burnerFuel`/`game.burnerOn` (Afterburner — physics reads **`game.burnerOn`, never raw Shift**), `main.onDash`, the closest-approach scan in `physics.step` (Reflex Jink), `main.onWarp` (Slipstream), `world.js` survey radius (Recon Drone) |
 
 If the ability adds a **control**, it goes in `input.js` gated behind `menuBlocking()` like every other

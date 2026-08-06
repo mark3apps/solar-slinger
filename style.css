@@ -1212,16 +1212,31 @@ body.preGame #hud::after { opacity: 0; }
   background: repeating-linear-gradient(90deg,
     transparent 0 calc(16.666% - 1px), rgba(9, 4, 20, .9) calc(16.666% - 1px) 16.666%);
 }
-/* STOW slots: the 7-slot ring as pips — lit slots are yours, dark sockets
-   the ranks to come (the lives-pip idea, in the chrome's own colour; pips
-   because slots are a COUNT, and a bar over a count reads as a fraction). */
-.sppips { display: flex; gap: 6px; padding: 2px 0 1px 2px; }
+/* STOW slots: one socket per slot you own, LIT for each slot currently holding
+   a rock (the lives-pip idea, in the chrome's own colour; pips because slots
+   are a COUNT, and a bar over a count reads as a fraction).
+
+   ZIG-ZAG, NOT A ROW (user call, 2026-08). At 6px gaps a full 14-slot ring ran
+   178px of pips and pushed the row past the panel edge — the readout literally
+   left the screen at the ranks that need it most. Alternating pips up and down
+   lets the horizontal pitch drop to 3px WITHOUT the diamonds touching, because
+   neighbours no longer share a horizontal band: the same 14 slots now measure
+   ~140px and read as one interlocked chain rather than a line of dashes. The
+   offset is `top`, deliberately NOT a transform — `.pp` already spends its
+   transform on the 45deg diamond, and stacking a translate there would fight
+   the rotation's coordinate space (the shift would come out diagonal). */
+.sppips {
+  display: flex; gap: 2px; padding: 2px 0 1px 2px;
+  align-items: center; height: 16px;
+}
 .sppips .pp {
   width: 7px; height: 7px;
+  position: relative; top: -3px;
   transform: rotate(45deg) scale(.82);
   border: 1px solid rgba(var(--zone-rgb), .4);
   background: rgba(24, 12, 44, .6);
 }
+.sppips .pp:nth-child(even) { top: 3px; }
 .sppips .pp.on {
   background: radial-gradient(circle at 35% 35%, #f4ecff, rgb(var(--zone-rgb)) 75%);
   border-color: rgba(var(--zone-soft-rgb), .9);

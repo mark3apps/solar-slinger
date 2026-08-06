@@ -429,6 +429,38 @@ export function tryGrab(game) {
   return 'held';
 }
 
+// TWIN GRIP'S SECOND GRAB, and it is the ONLY way to trigger the ability.
+// There is exactly one grab button and `onFling` fires on its release, so
+// "hold rock 1, click rock 2" cannot be expressed — the whole held2 machinery
+// (springHeld slot 1, releaseHeld's promotion, the second beam in render) was
+// unreachable for as long as the ability has existed. The second rock is taken
+// by SWEEPING THE CURSOR over it while the first is in the beam: no new binding,
+// and nothing to conflict with the hauler's right-click shotgun charge.
+//
+// SILENT ON FAILURE, which is the whole reason this does not just call tryGrab.
+// This runs every substep while the button is down, so tryGrab's refusal path —
+// the denial sound, the red too-heavy ring, the class warning — would fire
+// dozens of times a second at every rock the cursor crossed. A sweep that finds
+// nothing must be indistinguishable from not sweeping.
+//
+// Three things it deliberately will NOT take:
+//   - anything needing a WINCH (latchTime > 0). A moon is a held commitment you
+//     start on purpose; hoovering one up by brushing past it is not a grab the
+//     player asked for.
+//   - your own shot in flight (`ownThrow`) — the lowest-precedence target in the
+//     game stays lowest here too, or a sweep re-catches the rock you just threw.
+//   - anything the beam could not lift anyway (canLift).
+export function tryAutoSecond(game) {
+  const st = game.st;
+  if (!st.twinGrip || !game.held || game.held2 || !game.ship.alive || game.latch) return false;
+  const { best, ownThrow } = pickTarget(game);
+  if (!best || ownThrow) return false;
+  if (!canLift(st, best)) return false;
+  if (latchTime(best) > 0) return false;
+  grabBody(game, best, 0);
+  return true;
+}
+
 // Commit the grab. `carry` seeds the wind-up timer (see updateLatch). Its
 // return value is unused — tryGrab and updateLatch report for it.
 function grabBody(game, best, carry = 0) {
@@ -527,7 +559,19 @@ export function releaseHeld(game, fling) {
     b.thrownTimer = 4;
     b.throwLock = CFG.THROW_LOCKOUT;   // not a grab target at all until this runs out
     b.chainN = 0;   // YOUR throw is always link 0 (physics.chainOk) — even for a rock that ended a chain
-    if (game.st.tether > 0) { b.tether = game.st.tether; b.tetherT = 0; }   // Recovery Tether: it comes home
+    // RECOVERY TETHER arms on the throw, but only when its RELOAD has run out —
+    // ranks buy that reload and nothing else. `tetherAge` is the rock's own
+    // clock (for the give-up expiry); `game.tetherT` is the SHIP's reload
+    // countdown, drained in main's update. `tetherHit` starts false: the rock
+    // has to actually connect with something before it is allowed home.
+    if (game.st.tether > 0 && !(game.tetherT > 0)) {
+      b.tether = game.st.tether;
+      b.tetherAge = 0;
+      b.tetherQuiet = 0;
+      b.tetherHit = false;
+      b.tetherHoming = false;
+      game.tetherT = game.st.tetherCool;
+    }
     game.flingDelayT = 2;   // hold any owed upgrade pick back ~2s so it can't freeze the throw
     if (game.tetherMul > 1.15) game.tetherShow = game.tetherMul;   // main.js announces
     sfx.sfxFling();
@@ -711,21 +755,102 @@ function dropSlot(game, slot) {
   if (b) { b.heldBy = null; clearHoldState(game, b); }
 }
 
-// ---------- orbit shield ----------
+// ---------- orbit ring ----------
+
+// GUARD SLING SCAN BUFFERS, module-scope and never re-sized. updateOrbit runs
+// every physics substep, so allocating the threat list and the per-orbiter
+// assignment arrays per pass generates garbage hundreds of times a second — and
+// does it precisely when the frame is most loaded, mid-combat with a full ring.
+// Bounds are tiny and fixed: at most `st.guardCount` threats (4) and
+// `st.maxOrbiters` orbiters (14). Live length travels in `threatN` / `n`, never
+// in `.length`, and body references are nulled out once read so a dead threat
+// parked in a slot can't keep a body alive.
+const gThreatBody = [];   // the guardN soonest threats, nearest-arrival first
+const gThreatTti = [];    // ...and their times-to-impact (parallel, so no {} per threat)
+const gGuardOf = [];      // orbiter index -> the threat body it is blocking, or null
+const gTaken = [];        // orbiter index -> already assigned this pass
 
 // Ring assignment for the whole formation: orbiters are sorted by size and
 // packed outward — smallest hugging the ship, largest patrolling the far
-// edge. Each ring clears the previous rock's bulk, so a full orbit of mixed
-// sizes stacks out to roughly 3x the old single-ring distance.
+// edge. Each ring clears the previous rock's bulk.
+// HOW TIGHT THE RING SITS (user call, 2026-08: "condensed closer to the ship by
+// about ½ except for moons"). Applied to BOTH the standoff pad and the per-rock
+// step, because for the innermost rock the pad IS most of the distance —
+// halving only the steps would leave the first rock exactly where it was and
+// only pull the outer shells in. Halving both takes a full 14-rock ring from
+// ~391 units of reach to ~197, which is the ½ that was asked for.
+const RING_CONDENSE = 0.5;
+
 function orbiterRings(game) {
   const rings = new Map();
-  const base = game.ship.radius + 40 + 12 * game.st.orbitLvl;
+  const s = game.ship;
+  const base = s.radius + (40 + 12 * game.st.orbitLvl) * RING_CONDENSE;
   let R = base;
+  // THE SOFT CAP STAYS FLAT AT 400 EVEN THOUGH THE RING NOW HOLDS 14 (2026-08).
+  // The obvious move when Orbital Sling's ladder doubled was to scale this with
+  // the slot count, on the theory that the extra rocks would pile onto one
+  // radius and interpenetrate. They do pile onto one radius — and it does not
+  // matter, because they do NOT share an ANGLE: `orbitAng` is seeded per rock
+  // from wherever it was captured, and rocks at equal Ri get an equal `w` (the
+  // spin is `min(1, 80 / Ri)`), so an outer shell holds its angular spacing
+  // forever instead of converging. The arc has room to spare — the outer shell
+  // is ~516 units around, ~3,240 of circumference, against ~840 of rock for a
+  // full 14. Scaling the cap was measured at 800 units and simply made the ring
+  // enormous: the far edge sat well outside the beam's own reach at every tier,
+  // which reads as a debris cloud you are dragging, not a wall you are wearing.
+  // NO TWO ORBITERS MAY SHARE SPACE, and this function is the ONLY thing
+  // enforcing it: physics.collideBodies early-outs on an orbit/orbit pair
+  // (`a.heldBy === 'orbit' && b.heldBy === 'orbit'`), so nothing downstream ever
+  // pushes two ring members apart. Separation is purely a property of the radii
+  // handed out here. Two circles at radii r and R from a shared centre are at
+  // least |R - r| apart whatever their bearings, so a radial gap wider than the
+  // two bodies' radii makes overlap impossible at ANY angle — which is why this
+  // ring needs no angular slot assignment and the loose, organic bearings can
+  // stay loose.
+  let prevRing = -Infinity, prevRadius = 0;
   const sorted = [...game.orbit].sort((a, b) => a.radius - b.radius);
   for (const b of sorted) {
-    R += b.radius * 1.6 + 14;
-    rings.set(b, Math.min(R, base + 400));   // soft cap keeps the far edge sane
-    R += b.radius;
+    // MOONS KEEP THEIR FULL STANDOFF, and the exception is geometric, not
+    // taste. A moon is stowable from Sling Winch 4 (liftClass floors a moon at
+    // rung 3 however light it rolled), and its DRAWN radius is a different order
+    // of magnitude from belt rock — `MOON_R_MUL` alone puts it in the hundreds.
+    // Condensing that pulls a body wider than the ship's whole standoff pad into
+    // the hull: the ring would be a moon sitting ON the cockpit, and every rock
+    // sharing its shell would be inside it. Belt rock is what the ½ is for.
+    const k = b.type === 'moon' ? 1 : RING_CONDENSE;
+    // THE CONDENSE SCALES THE PADDING, NEVER THE BULK. The step was
+    // `r * 1.6 + 14`, which is the body's own radius plus `0.6r + 14` of pad;
+    // scaling the WHOLE step by ½ shrank the bulk term too, and a step of
+    // `0.5*r1 + 0.8*r2 + 7` falls under the `r1 + r2` two bodies need the moment
+    // either radius passes ~10. Belt rock is small enough that it took a MOON to
+    // make it visible, but the ring was interpenetrating for any real rock.
+    // Bulk at full scale, pad condensed: the gap is `(0.6r + 14) * k`, always
+    // positive, so separation survives any condense factor.
+    R += b.radius + (b.radius * 0.6 + 14) * k;
+    // A body's INNER EDGE may never reach the hull.
+    R = Math.max(R, s.radius + b.radius + 12);
+    let ring = Math.min(R, base + 400);   // soft cap keeps the far edge sane
+    // ...and the cap is SOFT for exactly this reason: clamping is what put two
+    // moons on one shell. Once the cap bites, every body past it lands on the
+    // same radius, and at equal radii the "any bearing is safe" argument above
+    // evaporates. Separation outranks the cap.
+    // THE MARGIN SCALES WITH THE BODIES, never a constant. A slot is a TARGET,
+    // not a rail — every orbiter hunts around it, and a heavy one hunts wide
+    // (a moon oscillates ~80 units about its slot, because its spring authority
+    // floors at 260 u/s² while the approach cap lets it arrive at 380). A flat
+    // +3 gap is inside that error, so two moons whose ASSIGNED radii were
+    // correctly separated still visibly interpenetrated. 0.6x the pair's radii
+    // covers the hunt for bodies big enough to have one, and stays negligible
+    // for belt rock, where the error is a couple of units.
+    if (prevRing > -Infinity) {
+      const margin = Math.max(3, (prevRadius + b.radius) * 0.6);
+      ring = Math.max(ring, prevRing + prevRadius + b.radius + margin);
+    }
+    rings.set(b, ring);
+    prevRing = ring; prevRadius = b.radius;
+    // The accumulator has to follow a body the floor pushed outward, or the next
+    // rock nests inside the one that was just moved.
+    R = Math.max(R, ring) + b.radius;
   }
   return rings;
 }
@@ -739,6 +864,43 @@ export function addToOrbit(game) {
   if (!canStow(st, b) || game.orbit.length >= st.maxOrbiters) return false;
   game.held = game.held2 || null;   // Twin Grip: promote the second rock
   game.held2 = null;
+  seatInRing(game, b);
+  return true;
+}
+
+// RIGHT-CLICK STOW (main.onRmbDown / its held-button sweep): take the rock under
+// the CURSOR straight into the ring, without it ever passing through the beam.
+// This is the hauler's mirror of the brawler's `absorbIntoRam` and it is a
+// deliberate short-circuit: routing it through a grab would spend the beam, run
+// the wind-up, and fight a rock already in hand.
+//
+// It reuses `pickTarget`, so the stow obeys every rule the beam does about WHAT
+// is under the cursor — nests and forts excluded, your own shot demoted, the
+// throw lockout respected. What it does NOT reuse is the beam's mass gate: the
+// ring's gate is `canStow` (one class lower), which is the whole point of it.
+// Silent on failure — this runs on a held-button sweep, so a rock the ring
+// cannot take must simply not be taken, without a denial sound per frame.
+export function stowFromCursor(game) {
+  const st = game.st;
+  if (!game.ship.alive || st.frontRam) return false;
+  if (game.orbit.length >= st.maxOrbiters) return false;
+  const { best } = pickTarget(game);
+  if (!best || !best.alive || best.type === 'nest') return false;
+  if (best.heldBy === 'orbit' || best === game.held || best === game.held2) return false;
+  if (!canStow(st, best)) return false;
+  derail(best);
+  unglue(game, best);
+  best.crust = null;
+  seatInRing(game, best);
+  return true;
+}
+
+// The shared tail of both stow paths — everything that makes a body a RING
+// MEMBER. Split out when right-click stow landed so the two entry points cannot
+// drift: a rock seated by the sweep and a rock seated from the beam have to be
+// the same kind of object, or one of them quietly misses the spin, the XP, or
+// the `primed` clear and behaves differently in the ring forever after.
+function seatInRing(game, b) {
   b.heldBy = 'orbit';
   b.thrownBy = null; b.thrownTimer = 0;
   b.primed = false;   // stowing wastes the Dead Stop prime — the ring can't bank it
@@ -747,11 +909,10 @@ export function addToOrbit(game) {
   // (ambient spin is a sleepy ±0.3 rad/s)
   b.spin = (Math.random() < 0.5 ? -1 : 1) * (1.2 + Math.random() * 1.4);
   game.orbit.push(b);
-  addXp(game, fieldXp(game, b, PROG.XP_ORBIT));   // stowing a rock into the shield pays XP (damped in a shoal)
+  addXp(game, fieldXp(game, b, PROG.XP_ORBIT));   // stowing a rock into the ring pays XP (damped in a shoal)
   bump(game, 'stows');
   sfx.setBeam(false);
   sfx.sfxOrbitCapture();
-  return true;
 }
 
 // BRAWLER: CRUSH A ROCK INTO THE RAM (main.onRmbDown). The rock is DESTROYED —
@@ -834,9 +995,43 @@ export function updateTethers(game, dt) {
   if (!st.tether) return;   // no tethered rocks exist unless you have the ability
   for (const b of game.bodies) {
     if (!b.tether) continue;
+    // DEAD IS GONE. A rock that shattered on what it hit is not recovered — the
+    // tether is a reward for a shot that landed and survived, not insurance.
     if (!b.alive || b.heldBy) { b.tether = 0; continue; }   // dead / re-grabbed / already orbited
-    b.tetherT = (b.tetherT || 0) + dt;
-    if (b.tetherT < 0.7) continue;                          // let it fly out first
+    b.tetherAge = (b.tetherAge || 0) + dt;
+    b.tetherQuiet = (b.tetherQuiet || 0) + dt;
+    // GIVE UP. While the rock is still out doing its job this bounds how long a
+    // shot that never connected stays owed; once the recall actually ENGAGES the
+    // clock is reset (below), so the return leg gets its own full window rather
+    // than inheriting whatever the outbound flight spent.
+    if (b.tetherAge > 30) { b.tether = 0; continue; }
+    // THE RETURN WAITS FOR THE ROCK TO BE SPENT, and that is the whole rewrite.
+    // It must first have HIT something (`tetherHit`, set in
+    // physics.collideBodies on a real impact) — no hit, no recall, ever. Then
+    // EITHER of two ways of being finished:
+    //   - CATCHABLE: coasting under DMG_THRESH_THROWN relative to the ship, the
+    //     line below which a thrown body deals no damage. Ship-relative because
+    //     that is the frame the recall itself works in — a rock drifting near
+    //     you is one you can actually get back.
+    //   - QUIET: it has not connected with anything for TETHER_QUIET seconds.
+    //     This is the gate that matters, because SPACE HAS NO DRAG. A heavy
+    //     rock that punches through its target keeps every bit of its speed —
+    //     measured, a 2,600-mass shot went through a pebble and was still doing
+    //     375 u/s nine thousand units out. On the speed test alone the recall
+    //     would essentially never fire for the exact case it exists for
+    //     (throwing something enormous), and the rock would just expire.
+    // Together they mean what was actually asked for: a flung moon ploughs
+    // through a whole family — every contact resets the quiet clock, so it stays
+    // out — and comes home once it has stopped being able to hit anything, not
+    // on the first tiny contact and not 0.7s after release.
+    if (!b.tetherHit) continue;
+    const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
+    const catchable = Math.hypot(rvx, rvy) <= CFG.DMG_THRESH_THROWN;
+    if (!catchable && b.tetherQuiet < CFG.TETHER_QUIET) continue;
+    // The recall has engaged: give the return leg a fresh window. A rock that
+    // spent its whole outbound flight rampaging is exactly the one that ends up
+    // furthest away, and it would otherwise expire on the way home.
+    if (!b.tetherHoming) { b.tetherHoming = true; b.tetherAge = 0; }
     const dx = s.x - b.x, dy = s.y - b.y;
     const d = Math.hypot(dx, dy) || 1;
     if (d < s.radius + 90) {                                // home — capture into orbit if there's room
@@ -853,11 +1048,18 @@ export function updateTethers(game, dt) {
     // Steer toward the ship at a BOUNDED return speed (spring-damper toward a
     // desired velocity, like the tractor hold) — it converges like a boomerang
     // and never accumulates speed, so a tether that never lands can't sandblast
-    // the belt. Faster return with rank.
-    const returnSpd = 300 + 60 * b.tether;
+    // the belt.
+    // FLAT, NOT RANK-SCALED. The return speed used to be `300 + 60 * rank`,
+    // which made every rank recall harder and faster — the opposite of what this
+    // ability needed. Ranks buy RELOAD now (st.tetherCool), and this stays put
+    // at a speed that reads as a haul rather than a snap.
+    // NOTE it is still above CFG.DMG_THRESH (240), so a rock on its way home can
+    // knock things about — that has always been true (the old ladder reached
+    // 660) and it is strictly gentler now. It is bounded and converging, which
+    // is what stops a tether that never lands from sandblasting the belt.
+    const returnSpd = 300;
     const desVx = (dx / d) * returnSpd + s.vx, desVy = (dy / d) * returnSpd + s.vy;
     b.vx += (desVx - b.vx) * 3 * dt; b.vy += (desVy - b.vy) * 3 * dt;
-    if (b.tetherT > 6) b.tether = 0;                        // give up eventually
   }
 }
 
@@ -990,6 +1192,7 @@ export function updateOrbit(game, dt) {
       if (b.alive && b.heldBy === 'orbit' && s.alive) return true;
       if (b.heldBy === 'orbit') { b.heldBy = null; b.extAx = 0; b.extAy = 0; }
       b.orbitAng = undefined;
+      b.guardBeam = 0;   // a rock leaving the ring must not keep a guard beam painted on it
       return false;
     });
   }
@@ -1008,48 +1211,98 @@ export function updateOrbit(game, dt) {
 
   const rings = orbiterRings(game);
 
-  // Active interception: ANY loose rock closing on the ship gets met by the
-  // nearest shield rock, which breaks formation and lunges. Alien throws are
-  // engaged the moment they're closing; neutral rocks only when they're
-  // coming in fast enough to matter (belt drift is harmless).
-  let threat = null, bestTti = Infinity;
-  for (const b of game.bodies) {
-    if (!b.alive || b.heldBy) continue;
-    if (b.type === 'star' || b.type === 'planet' || b.type === 'rogue' || b.mass > 9000) continue;
-    if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;   // our own shots
-    const dx = b.x - s.x, dy = b.y - s.y;
-    // Tight defense perimeter — the scan reruns every substep, so a threat
-    // drifting back out of this radius releases its interceptor immediately.
-    // (Cheap axis reject first: this loop runs over every body at 120Hz.)
-    if (dx > 520 || dx < -520 || dy > 520 || dy < -520) continue;
-    const d = Math.sqrt(dx * dx + dy * dy);
-    if (d > 520) continue;
-    const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
-    const closing = -(rvx * dx + rvy * dy) / (d || 1);
-    const alienShot = b.thrownBy === 'alien' && b.thrownTimer > 0;
-    if (closing < (alienShot ? 40 : 140)) continue;
-    // Neutral rocks must actually be on a collision course, not just fast —
-    // otherwise the shield spends all day chasing belt traffic that would miss
-    const miss = Math.abs(dx * rvy - dy * rvx) / (Math.hypot(rvx, rvy) || 1);
-    if (!alienShot && miss > 130) continue;
-    const tti = d / closing;   // engage whatever hits soonest
-    if (tti < bestTti) { threat = b; bestTti = tti; }
-  }
-  let interceptorIdx = -1;
-  if (threat) {
-    // Best blocker = the orbiter already nearest the threat's incoming LINE
-    // (not nearest the rock itself) — with only a small allowed shift, a
-    // defender on the wrong side of the formation can never reach the path.
-    let bd = Infinity;
-    const tvm = Math.hypot(threat.vx - s.vx, threat.vy - s.vy) || 1;
-    const ux = (threat.vx - s.vx) / tvm, uy = (threat.vy - s.vy) / tvm;
-    for (let i = 0; i < n; i++) {
-      const px = game.orbit[i].x - threat.x, py = game.orbit[i].y - threat.y;
-      const ahead = px * ux + py * uy > 0;
-      const d = ahead ? Math.abs(px * uy - py * ux) : Math.hypot(px, py);
-      if (d < bd) { bd = d; interceptorIdx = i; }
+  // GUARD SLING owns interception now — the ring alone is an inert carry rack.
+  // guardCount is 0 without the ability, and that single test skips the whole
+  // scan below: this is an every-substep loop over every body, so an unowned
+  // ability must cost nothing at all, not merely do nothing.
+  const st = game.st;
+  const guardN = st.guardCount || 0;
+  // Clear last substep's beams before the early-out, or a ring that stops
+  // intercepting (threat gone, ability lost on death/respawn) leaves a beam
+  // painted on a rock that is no longer lunging.
+  for (let i = 0; i < n; i++) game.orbit[i].guardBeam = 0;
+  let threatN = 0;
+  if (guardN > 0) {
+    // Active interception: loose rock closing on the ship gets met by the ring
+    // rocks best placed to block, which break formation and lunge. Alien throws
+    // are engaged the moment they're closing; neutral rocks only when they're
+    // coming in fast enough to matter (belt drift is harmless).
+    // MULTI-THREAT: ranks buy simultaneous interceptors, so this collects the
+    // guardN soonest-arriving threats instead of only the single best. Kept as
+    // an insertion into a tiny array — guardN maxes at 4, so a sort would cost
+    // more than it saves.
+    // ALLOCATION-FREE, and it has to be: this whole function runs every physics
+    // substep (120Hz), so a per-threat `{body, tti}` object and a fresh
+    // `new Array(n)` per pass is garbage generated hundreds of times a second
+    // exactly when the frame is busiest — mid-combat, with the ring working.
+    // The buffers are module-scope and their live length is carried in
+    // threatN / n rather than in `.length`, so nothing is ever re-sized.
+    const R = st.guardRange;
+    for (const b of game.bodies) {
+      if (!b.alive || b.heldBy) continue;
+      if (b.type === 'star' || b.type === 'planet' || b.type === 'rogue' || b.mass > 9000) continue;
+      if (b.thrownBy === 'player' && b.thrownTimer > 0) continue;   // our own shots
+      const dx = b.x - s.x, dy = b.y - s.y;
+      // Tight defense perimeter — the scan reruns every substep, so a threat
+      // drifting back out of this radius releases its interceptor immediately.
+      // (Cheap axis reject first: this loop runs over every body at 120Hz.)
+      if (dx > R || dx < -R || dy > R || dy < -R) continue;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > R) continue;
+      const rvx = b.vx - s.vx, rvy = b.vy - s.vy;
+      const closing = -(rvx * dx + rvy * dy) / (d || 1);
+      const alienShot = b.thrownBy === 'alien' && b.thrownTimer > 0;
+      if (closing < (alienShot ? 40 : 140)) continue;
+      // Neutral rocks must actually be on a collision course, not just fast —
+      // otherwise the shield spends all day chasing belt traffic that would miss
+      const miss = Math.abs(dx * rvy - dy * rvx) / (Math.hypot(rvx, rvy) || 1);
+      if (!alienShot && miss > 130) continue;
+      const tti = d / closing;   // engage whatever hits soonest
+      let at = threatN;
+      while (at > 0 && gThreatTti[at - 1] > tti) at--;
+      if (at < guardN) {
+        // Shift right by hand into the parallel buffers (splice would allocate).
+        for (let k = Math.min(threatN, guardN - 1); k > at; k--) {
+          gThreatBody[k] = gThreatBody[k - 1];
+          gThreatTti[k] = gThreatTti[k - 1];
+        }
+        gThreatBody[at] = b; gThreatTti[at] = tti;
+        if (threatN < guardN) threatN++;
+      }
     }
   }
+  // Assign one defender per threat, nearest-line first, and never twice. A
+  // defender is chosen by its distance to the threat's incoming LINE rather
+  // than to the rock itself: with only a bounded shift allowed, an orbiter on
+  // the wrong side of the formation can never reach the path however close the
+  // rock passes it. `gGuardOf[i]` is the threat orbiter i is blocking, or null.
+  // Cleared over the buffer's FULL length, not just 0..n: a shrinking ring
+  // would otherwise leave a dead body referenced in the tail and keep it alive.
+  for (let i = 0; i < gGuardOf.length; i++) gGuardOf[i] = null;
+  if (threatN) {
+    for (let i = 0; i < n; i++) { gGuardOf[i] = null; gTaken[i] = false; }
+    for (let t = 0; t < threatN; t++) {
+      const th = gThreatBody[t];
+      const tvm = Math.hypot(th.vx - s.vx, th.vy - s.vy) || 1;
+      const ux = (th.vx - s.vx) / tvm, uy = (th.vy - s.vy) / tvm;
+      let bd = Infinity, pick = -1;
+      for (let i = 0; i < n; i++) {
+        if (gTaken[i]) continue;
+        const px = game.orbit[i].x - th.x, py = game.orbit[i].y - th.y;
+        const ahead = px * ux + py * uy > 0;
+        const d = ahead ? Math.abs(px * uy - py * ux) : Math.hypot(px, py);
+        if (d < bd) { bd = d; pick = i; }
+      }
+      if (pick < 0) break;          // ring exhausted — fewer rocks than threats
+      gTaken[pick] = true;
+      gGuardOf[pick] = th;
+    }
+  }
+
+  // Drop the scan's body references now the assignment is read out of them —
+  // the buffers outlive the call, and a dead threat held here is a body the
+  // world cannot collect.
+  for (let t = 0; t < threatN; t++) gThreatBody[t] = null;
 
   for (let i = 0; i < n; i++) {
     const b = game.orbit[i];
@@ -1059,29 +1312,48 @@ export function updateOrbit(game, dt) {
     const Ri = rings.get(b) * (1 + 0.13 * Math.sin(game.time * 0.7 + phase));
     // Each ring spins at its own rate so the SLOT's linear speed stays
     // constant — a shared angular speed makes outer slots move faster than
-    // the approach cap and big rocks can never catch them. ROCKWALL (hauler)
-    // spins the whole wall faster, so more of the sky is covered per second.
-    const w = CFG.ORBIT_OMEGA * (1 + 0.11 * (game.st.rockwall || 0)) * Math.min(1, 80 / Ri);
+    // the approach cap and big rocks can never catch them.
+    // NO ROCKWALL TERM HERE ANY MORE: it used to multiply this by
+    // `1 + 0.11 * rockwall` on the reasoning that a faster wall covers more sky
+    // per second. That is a SCREENING effect and screening belongs to Guard
+    // Sling now (user design rule, 2026-08) — Rockwall is toughness, full stop.
+    const w = CFG.ORBIT_OMEGA * Math.min(1, 80 / Ri);
     b.orbitAng = (b.orbitAng ?? Math.atan2(b.y - s.y, b.x - s.x)) + w * dt;
     const ang = b.orbitAng + 0.25 * Math.sin(game.time * 0.5 + phase * 2.1);
     let tx = s.x + Math.cos(ang) * Ri;
     let ty = s.y + Math.sin(ang) * Ri;
-    if (i === interceptorIdx) {
+    const threat = gGuardOf[i] || null;
+    if (threat) {
       // BLOCK, don't chase: the defender only shifts a bounded distance
       // from its own slot toward the threat's incoming line — a shield
       // wall bracing, not a hunter leaving formation.
       const lx = threat.x + threat.vx * 0.12 - tx;
       const ly = threat.y + threat.vy * 0.12 - ty;
       const lm = Math.hypot(lx, ly) || 1;
-      const lim = Math.min(lm, 80 + 25 * game.st.orbitLvl);
+      const lim = Math.min(lm, game.st.guardShift);
       tx += (lx / lm) * lim;
       ty += (ly / lm) * lim;
+      // THE SHIP IS DOING THIS, AND IT HAS TO LOOK LIKE IT (user design rule):
+      // render paints a tether beam onto any orbiter carrying guardBeam, so the
+      // rock reads as being SLUNG into the path rather than swimming there. Set
+      // per substep and cleared above, so the beam lives exactly as long as the
+      // lunge does.
+      b.guardBeam = 1;
     }
     // Cap the approach speed — an uncapped spring slings new orbiters through
     // the belt at 1000+ u/s and they shatter on bystanders before settling.
     // Interceptors are allowed to move much faster.
-    const intercepting = i === interceptorIdx;
-    const maxApproach = intercepting ? 600 : 380;
+    const intercepting = !!threat;
+    // A BIG BODY MUST ARRIVE AT A SPEED IT CAN STOP AT. The approach cap was a
+    // flat 380, but the acceleration available to hold a slot bottoms out at
+    // 260 u/s² (see the `cap` floor below) however heavy the body is — so a moon
+    // sprinted at its slot, blew through it, and oscillated ~80 units either
+    // side forever. That is what put two correctly-separated moons on top of
+    // each other. Easing the arrival speed down with radius lets mass settle
+    // instead of hunting; belt rock is unaffected (at radius 60 and under this
+    // is the old 380 exactly).
+    const heavyEase = Math.min(1, 60 / Math.max(1, b.radius));
+    const maxApproach = intercepting ? 600 : 380 * Math.max(0.4, heavyEase);
     let dvx = (tx - b.x) * 4.5, dvy = (ty - b.y) * 4.5;
     const dm = Math.hypot(dvx, dvy);
     if (dm > maxApproach) { dvx *= maxApproach / dm; dvy *= maxApproach / dm; }

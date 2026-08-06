@@ -339,10 +339,10 @@ export const ACHIEVEMENTS = [
     (g, s) => s.snipe >= 2500),
   A('snipe4000', 'combat', PTS.hard, 'Marksman', 'Throw-kill something 4,000 units from where you let go.',
     (g, s) => s.snipe >= 4000),
-  A('aegis', 'combat', PTS.normal, 'Reflected Glory', 'Hurl an intercepted shot straight back.',
-    (g, s) => s.aegisBack >= 1),
-  A('aegis30', 'combat', PTS.tricky, 'Mirror Finish', 'Reflect thirty incoming shots.',
-    (g, s) => s.aegisBack >= 30),
+  // 'aegis' / 'aegis30' were deleted with Aegis Reflector (2026-08). Nothing
+  // bumps `aegisBack` any more, so both rows were unachievable — a permanently
+  // dead achievement is worse than a missing one, because the score it is
+  // counted out of still includes it.
   A('blocks25', 'combat', PTS.tricky, 'Rock Wall', 'Block 25 alien throws with your orbit.',
     (g, s) => s.blocks >= 25),
   A('blocks100', 'combat', PTS.hard, 'Impenetrable', 'Block 100 alien throws.',
@@ -742,8 +742,13 @@ export const ACHIEVEMENTS = [
     (g) => g.st.berserk > 0),
   A('unlockDemo', 'build', PTS.tricky, 'Demolition Online', 'Unlock detonating throw-kills.',
     (g) => g.st.demolition > 0),
-  A('unlockAegis', 'build', PTS.tricky, 'Aegis Online', 'Unlock the reflecting orbit shield.',
-    (g) => g.st.aegis > 0),
+  // 'unlockAegis' deleted with the ability. Guard Sling takes the slot: it is
+  // the hauler's screening card now, and like every other unlock row it asks a
+  // RANK, never a derived number — guardCount is 0 without the ability, so this
+  // cannot be true on frame one for any spec (Guard Sling is pool-only; the
+  // hauler kit is Orbital Sling + Long-Arm Tractor).
+  A('unlockGuard', 'build', PTS.tricky, 'Guard Sling Online', 'Unlock the active orbit screen.',
+    (g) => g.st.guard > 0),
   A('unlockRockwall', 'build', PTS.normal, 'Rockwall Online', 'Unlock hardened orbit rocks.',
     (g) => g.st.rockwall > 0),
   A('unlockDeep', 'build', PTS.tricky, 'Deep Array Online', 'Unlock the long-range sensors.',

@@ -130,10 +130,13 @@ from breaking the invariants above:
     READ them — the same owner-split as the afterburner tank and `game.burnerOn`. `driftSplash` clears
     them (a wave left standing when you back out to the menu would cook the parked ship forever), and
     `resetRun` clears the geometry, the class and the two `*Max` scales with them.
-  - **The lee message must survive an UNNAMED shelter.** Most moons carry no name, and
-    `game.stormLeeName = ''` is falsy — the EVENT_MSGS table would drop the one message that teaches
-    the counterplay, which now that every moon casts a lee is the common case. `updateStorm` falls
-    back to `a moon of <parent>` / `this world`, the same shape `starmap.contactLabel` uses.
+  - **The lee message must survive an UNNAMED shelter — and must not LEAK an unearned one.** Every
+    moon carries a name now (`world.MOON_NAMES`), but names are chart-ladder knowledge: main.js only
+    prints a moon's own name once it is CHARTED, and an uncharted moon shelters you as
+    `a moon of <parent>` / `this moon` — the same fallback shape `starmap.contactLabel` uses. The
+    original hazard is still real for any future body minted outside `spawnMoon`'s naming path:
+    `game.stormLeeName = ''` is falsy and the EVENT_MSGS table would drop the one message that
+    teaches the counterplay.
   - **Render sizes STRUCTURE in wave units and TEXTURE off `view.r`.** A gameplay view is ~900u wide
     against a 9200u sheath, so anything sized in wave units is bigger than the screen and collapses to
     a flat wash — the first cut's 220u filaments drew as screen-filling columns. Streaks/motes scale
@@ -213,6 +216,49 @@ from breaking the invariants above:
     `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
     battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
     never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
+  - **The 2026-08 six** (same contract — one mechanic each, riding an existing system):
+    **lodestar** = gravity as terrain (mMul 4.5 / rMul 0.5 — pure config; the attractor shortlist,
+    the trajectory forecast and the mass-banded winch do all the work; rMul 0.5 keeps the worst
+    roll ≥ ~28, above `STORM_SHADOW_MIN_R`, so "every moon shelters" holds); **geode** = a PLAYER
+    kill frees a dense `core` body in `physics.shatter` (the cored-rock economy one size up:
+    `earnsScrap` gate, mass clamp 2500–9000, plugs into the existing core want/scrap paths);
+    **verdant** = hosts an anchored glow pocket in low orbit (`glow.seedMoonGlow`, off a rng FORKED
+    from the world seed; regrows one mote per `PROG.GLOW_REGROW` 24s in place — the no-camping law
+    by a different route; not counted against `GLOW_POCKETS`; dies with its moon); **comet** =
+    spawnMoon forces the widest ellipse the slot allows (e drawn then overridden — the branch draw
+    is KEPT) and the hazard loop vents ice-geyser pellets only near periapsis (`rail.a·(1−e)·1.35`).
+    **The fast burst cadence is paid for by the window and only exists above `e ≥ 0.15`** — below
+    that (tight slot, or the circular rail the off-view re-rail scan hands a disturbed moon) the
+    "window" is always open, and the burst would out-earn the ice moon it is modeled on (~1.5x,
+    uncapped by fieldXp — measured, progression audit 2026-08); those vent on the plain ice-moon
+    cadence instead, so a grab can't delete the mechanic OR buff it; **husk** = a hard player smash (`earnsScrap`, >8 dmg, not the killing blow, 60s
+    `huskCd` ticked in the pre-pass) sets `game.huskWake` and ai.js sends ONE wreckwright down on
+    the moon under the ambient descent's exact caps; the moon itself is scrapValue ×1.8; never
+    fortified; **pumice** = featherweight froth (mMul 0.45 / rMul 1.28): restitution vs a pumice
+    moon is a flat 0.06 (throws bury, never bounce — near-zero, not zero, or contacts re-resolve
+    forever) and a ×2 `soft` factor widens the wear gates and deepens `sev` (double crumble; hp
+    loss untouched, so invariant 9's durability class stands), plus a `bigEnough` carve-out —
+    pumice is world-class by SIZE, and most rolls sit under `CHUNK_MIN_MASS`.
+    **molten** (2026-08, user call) = a cooled black crust over live magma: dark body, breathing
+    ember crack-web (render, the drawMoltenCrust pulse precedent), and SEARING to skid on.
+  - **HOSTILE SURFACES** (physics.js skim block): sulfur crust POISONS a skidding hull (×2.5 grind)
+    and molten crust SEARS it (×3.5). **Skim XP stays on the UNmultiplied grind** — XP is priced
+    per hull point ground on an ordinary surface, and paying the multiplier out as XP would make
+    the poison moon the best skate park in the sky. **The fx/ledger gate rides the unmultiplied
+    tick too** (`damageShip`'s `fxDmg` param): sear ×3.5 pushes one fast substep past the `>= 1`
+    anti-spam gate (~vT 290 on a `DT_COARSE` machine), which would fire hit sfx/shake at substep
+    rate and count grinding ticks as achievement "blows". Both teach with a one-shot warn-low
+    message on first contact (`sulfurSkidWarn` / `moltenSkidWarn`), and both death causes name the
+    surface.
+    **Promoted landmarks keep their rolled `moonType`** (the Forge Moon / shepherd override name
+    and job, not type), so the coma, the verdant garden, and the chart's per-type readout line all
+    explicitly skip `b.volcanic || b.shepherd` — check those guards when adding a type mechanic.
+  - **Every moon carries a NAME now** (`world.MOON_NAMES` — one pool per type, seeded shuffle off a
+    stream FORKED from the world seed so spawnMoon assigns names without touching the main rng;
+    pools wrap with a roman numeral). Names are readout/lee/journey knowledge, EARNED by charting —
+    the chart still draws moons as icons, never labels (`render.labelsItself` keys off type), and
+    `starmap.contactClass` carries a per-type `MOON_KIND` line every new `MOON_TYPES` row must add
+    to, or its moons chart blank.
     **`updateAliens` OWNS `game.dustCloak` and is the only writer; every GATE asks
     `util.senseBlind(game)` instead**, because a live solar wave hides the ship too
     (`game.stormBlind`). render.js's hunting-eye mirror uses the same leaf helper — the two must
@@ -530,7 +576,7 @@ from breaking the invariants above:
     once); it picks a rock roughly between itself and the ship,
     swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
     launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
-    counter (orbit shield blocks it for XP, Deflector parries it, Dead Stop primes on the catch). Three
+    counter (a ring rock blocks it for XP — passively, or actively once Guard Sling is owned; Deflector parries it, Dead Stop primes on the catch). Three
     rules are load-bearing and each fixed a real failure:
     - **Ambient rock contact does it NO harm.** A predator that died to its own habitat suicided on the
       nearest rock within seconds of spawning. A PLAYER-thrown rock still hurts it — that's the counterplay.

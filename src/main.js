@@ -1,13 +1,13 @@
 import {
   CFG, PROG, SPECS, newProgress, shipStats, maxLives,
   addXp, owesPick, pickIsMilestone, tierChoices,
-  consumePickCost, applyAbility, applySpec, applyTierUp, canStow, shelterR, stormClass,
+  consumePickCost, applyAbility, applySpec, applyTierUp, shelterR, stormClass,
   stormStrength,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
 import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
-import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
+import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, tryAutoSecond, releaseHeld, addToOrbit, stowFromCursor, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
@@ -94,6 +94,9 @@ const game = {
                            // threshold crossed mid-throw doesn't pop cards up mid-aim
   orbit: [],               // bodies circling the ship as a shield
   ramFx: [],               // brawler: rocks mid-crush into the ram (render only)
+  tetherT: 0,              // Recovery Tether reload — seconds until a throw may arm the tether again
+  stowEating: false,       // RMB held (hauler): the ring keeps stowing what the cursor crosses
+  stowEatCd: 0,            // seconds until the stow sweep may seat another rock
   ramEating: false,        // RMB held: the ram keeps eating what the cursor crosses
   ramTierDropT: 0,         // >0 just after the barrier lost a density tier (render shudder)
   ramEatCd: 0,             // seconds until the held-button sweep may crush again
@@ -421,21 +424,13 @@ initInput(canvas, {
     // must not also reach in and pull a rock back out of your own shield ring.
     const did = tryGrab(game);
     if (did === 'held') {
-      // Anything that fits your orbit is captured into it automatically — but a
-      // Twin Grip SECOND grab (held2 filled) is a big rock held alongside, kept in hand.
-      const b = game.held;
-      // The brawler is deliberately excluded from auto-stow: its stow is the
-      // RAM, and the ram is built on a deliberate right-click, never as a side
-      // effect of picking something up. A left-click grab is still just a grab —
-      // you can throw it instead, which is the choice the spec is built on.
-      if (!game.st.frontRam && !game.held2 && canStow(game.st, b)
-          && game.orbit.length < game.st.maxOrbiters) {
-        addToOrbit(game);
-        if (!game.tut.orbited) {
-          game.tut.orbited = true;
-          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
-        }
-      } else if (!game.tut.grabbed) {
+      // LEFT-CLICK IS THE BEAM, FULL STOP (user call, 2026-08). It used to
+      // AUTO-STOW anything that fit the ring, which made one button mean two
+      // things depending on the rock's mass — throw this pebble, silently pocket
+      // that one — and left no way to THROW a stowable rock at all. The stow is
+      // right-click now (onRmbDown), the same button and the same verb the
+      // brawler uses to feed its ram.
+      if (!game.tut.grabbed) {
         game.tut.grabbed = true;
         hud.message('Got it! RELEASE to FLING it toward the cursor. Good moves earn XP — level up to pick upgrades.', 5);
       }
@@ -503,11 +498,37 @@ initInput(canvas, {
       if (!addToOrbit(game)) releaseHeld(game, false);
       return;
     }
+    // HAULER: RIGHT-CLICK IS THE STOW (user call, 2026-08), exactly as it is the
+    // ram for the brawler — one button, one meaning: "put that in my rack". It
+    // used to happen as a SIDE EFFECT of a left-click grab (onGrab auto-stowed
+    // anything that fit), which made the left button mean two different things
+    // depending on the rock's mass: throw this pebble, but silently pocket that
+    // one. You could not choose to THROW a stowable rock at all.
+    // Pointing at a rock claims the press for the stow; pointing at nothing
+    // leaves it to the shotgun below. The choice is COMMITTED for the whole
+    // press (stowEating), so a sweep that starts on a rock and crosses empty
+    // space keeps stowing instead of arming a volley mid-drag.
+    if (!game.st.frontRam && game.st.maxOrbiters > 0 && stowFromCursor(game)) {
+      game.stowEating = true;
+      game.stowEatCd = 0.12;
+      if (!game.tut.orbited) {
+        game.tut.orbited = true;
+        // DON'T PROMISE THE SHOTGUN. `hasVolley` is false for every reachable
+        // build — Scattergun was deleted with the brawler's trailing rack and
+        // nothing feeds the volley channel — so the old copy here ("hold RIGHT
+        // MOUSE to charge a shotgun") described a move the player could never
+        // make. LEFT-click on empty space is the real way rock comes back out
+        // (main.onGrab -> retrieveFromOrbit), so that is what this says.
+        hud.message('Stowed into your orbit ring! HOLD RIGHT MOUSE and sweep over rocks to keep filling it. LEFT-CLICK empty space to pull one back out and throw it.', 6);
+      }
+      return;
+    }
     // The shotgun is an upgrade — no charge until the array is unlocked
     if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => {
     game.ramEating = false;
+    game.stowEating = false;
     if (menuBlocking()) { game.volleyCharging = false; return; }
     // Release fires whatever the hold has armed (a tap = 1 rock). The brawler
     // never charges — its right-click is the ram absorb, and the ram cannot be
@@ -1188,6 +1209,7 @@ function resetRun(seed, openCard = true) {
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0; game.parryReadyT = 0;   // a parry must never survive into a fresh world
+  game.tetherT = 0;   // ...nor a Recovery Tether reload
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   // ...and so does the journey: every stop pins to a body in the world that is
@@ -1395,6 +1417,19 @@ const EVENT_MSGS = [
     first: ['DUST SHROUD — inside this halo, alien senses cannot find you. Pursuers lose their lock.', 5.5] },
   { flag: 'bandedWarn', tut: 'banded', snd: sfx.sfxChime,
     first: ["BANDED SKIMMING — grinding this moon's bands pays triple XP. Risky flying, rewarded.", 5.5] },
+  { flag: 'cometVentWarn', tut: 'cometVent', snd: sfx.sfxChime,
+    first: ['COMET MOON — at the low point of its swing it vents catchable ice. The chart knows its timetable.', 5.5] },
+  { flag: 'pumiceWarn', tut: 'pumice', snd: sfx.sfxChime,
+    first: ['PUMICE — featherweight froth rock. Throws bury instead of bouncing, and the crust crumbles fast.', 5.5] },
+  // Hostile contact, not opportunity — the one moon job that bites back.
+  { flag: 'huskWarn', tut: 'husk', snd: sfx.sfxWarnLow,
+    first: ['HUSK MOON — the wreck-plating rang out. A wreckwright is descending on this moon.', 5.5],
+    repeat: ['The husk moon is calling its wright down.', 3] },
+  // Hostile SURFACES (physics skim venom) — bad news in progress, warn low.
+  { flag: 'sulfurSkidWarn', tut: 'sulfurSkid', snd: sfx.sfxWarnLow,
+    first: ['BRIMSTONE CRUST — this surface is poisonous. Skidding here eats the hull far faster.', 5.5] },
+  { flag: 'moltenSkidWarn', tut: 'moltenSkid', snd: sfx.sfxWarnLow,
+    first: ['MOLTEN CRUST — the rock under you is barely cooled magma. Skidding here sears the hull.', 5.5] },
   // ---- planet-archetype mechanics (terran/ocean/desert/shroud/crystal) ----
   { flag: 'atmoWarn', tut: 'atmo', snd: sfx.sfxChime,
     first: ['ATMOSPHERIC BURN-UP — small rocks flash to nothing in this sky. Only a heavyweight reaches the surface.', 5.5] },
@@ -1590,8 +1625,16 @@ function update(dtReal) {
     if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe
-    const zoomTarget = 1.15 / game.st.zoomOut;
-    game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
+    let zoomTarget = 1.15 / game.st.zoomOut;
+    // THE BERTH VISTA (CFG.DOCK_VISTA): a FINISHED station widens the view so
+    // a berth surveys its neighbourhood. dockReady — the same gate as the
+    // shield and the repair — keeps the exposed build at flight zoom, and
+    // !game.launch hands the dive back to the normal rate the frame the spool
+    // starts, so the zoom-in overlaps the clamps releasing.
+    const vista = dockReady(game.dock) && !game.launch;
+    if (vista) zoomTarget /= CFG.DOCK_VISTA;
+    game.zoomCur = lerp(game.zoomCur, zoomTarget,
+      1 - Math.exp(-(vista ? CFG.DOCK_VISTA_K : 0.5) * dtReal));
     applyZoom();
 
     // Roguelite pick: XP crossing a threshold OFFERS a choice on the pilot card
@@ -1673,6 +1716,13 @@ function update(dtReal) {
       // the beam down; this is what keeps it down.
       if (!game.dock) {
         updateLatch(game, dt, input.mouseDown);
+        // TWIN GRIP (hauler): with a rock in the beam and the button still down,
+        // sweeping the cursor over another one picks it up as the second. This
+        // is the ability's ONLY trigger — see tractor.tryAutoSecond for why it
+        // is a sweep and not a second click. Gated on the button because the
+        // sweep is part of one continuous press: releasing throws, so a grab
+        // with nothing held down would have nothing to be the second OF.
+        if (input.mouseDown) tryAutoSecond(game);
         updateTractor(game, dt);
         updateOrbit(game, dt);
         updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
@@ -1805,6 +1855,21 @@ function update(dtReal) {
     if (game.ramEating && dockBlocking()) game.ramEating = false;
     if (game.ramEating && game.st.frontRam && s.alive) {
       if (game.ramEatCd <= 0 && absorbIntoRam(game)) game.ramEatCd = 0.12;
+    }
+    // HAULER's stow sweep — the exact mirror of the ram sweep above, on the same
+    // cadence and with the same dock disarm. Hold right mouse and drag the
+    // cursor across a debris field and the ring fills itself; filling 14 slots
+    // by 14 separate clicks is the kind of tedium that makes a doubled ladder
+    // read as a chore instead of a reward. stowFromCursor re-checks every gate
+    // per call, so the sweep can never seat anything a single click couldn't.
+    // RECOVERY TETHER's reload. Rides dtReal like the other ability cooldowns
+    // (warpT etc): it gates whether a THROW arms the tether, never anything
+    // inside the fixed step, so it has no quantized target to miss.
+    if (game.tetherT > 0) game.tetherT -= dtReal;
+    if (game.stowEatCd > 0) game.stowEatCd -= dtReal;
+    if (game.stowEating && dockBlocking()) game.stowEating = false;
+    if (game.stowEating && !game.st.frontRam && s.alive) {
+      if (game.stowEatCd <= 0 && stowFromCursor(game)) game.stowEatCd = 0.12;
     }
     // The absorb-crush effects (render.drawShip). Cosmetic easing with no
     // quantized target, so dtReal is the right clock — and they are advanced
@@ -2093,7 +2158,16 @@ function updateStorm(dtReal) {
         const b = game.stormShelter;
         const kin = b.type === 'moon' && b.parent && b.parent.name
           ? `a moon of ${placeName(b.parent)}` : null;
-        game.stormLeeName = placeName(b, kin);
+        // EVERY moon carries a name now (MOON_NAMES in world.js) — but names
+        // are EARNED (the chart ladder): an uncharted moon shelters you as
+        // kin of its host, not by a name you haven't read off it yet. Worlds
+        // keep the behavior they always had. The no-chartKey arm mirrors
+        // starmap.contactLevel's contract exactly: a runtime-spawned moon
+        // (replenishWorld mints no chartKey) earns its name by being SEEN,
+        // not by existing — `!b.chartKey` alone named it unconditionally.
+        const earned = b.type !== 'moon' ||
+          (b.chartKey ? (game.charted && game.charted[b.chartKey]) : b.seen);
+        game.stormLeeName = earned ? placeName(b, kin) : (kin || 'this moon');
       }
     }
   }
