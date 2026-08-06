@@ -9,6 +9,33 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.8.0] — 2026-08-06
+
+### Changes
+
+- **The sun is a place, not a light source** ([#172](https://github.com/mark3apps/solar-slinger/pull/172)) — @mark3apps
+  The star is radius 4,800 — it fills the screen from a lane out and keeps filling it all the way in. It was a flat cream disc wearing four soft blobs, seven wire-thin prominence…
+- **Three game modes, and a title screen that asks one thing at a time** ([#171](https://github.com/mark3apps/solar-slinger/pull/171)) — @mark3apps
+  Adds CLASSIC / PEACEFUL / EXPLORATION and restructures the main menu around them.
+- **The brawler's ram is made of rock, and rock has its own scale** ([#170](https://github.com/mark3apps/solar-slinger/pull/170)) — @mark3apps
+  Every proportion of the brawler's ram was a fraction of the hull — right at the top of the ladder, absurd at the bottom. A tier-0 brawler is 5.4 drawn units, so a full rank-1 ram…
+- **Docking overhaul: ground rules, autoland, respawn-berthed, constructed pad art** ([#168](https://github.com/mark3apps/solar-slinger/pull/168)) — @mark3apps
+  Fixes the reported docking-station bugs and reworks the station's look and build:
+- **Shift achievement distribution later; toast descriptions up front; fix frame-one survey freebie** ([#169](https://github.com/mark3apps/solar-slinger/pull/169)) — @mark3apps
+  Achievement distribution shifted later: removed 7 of the trivial/easy-tier achievements (~15% of that pool — passive discovery flags and menu-open freebies like…
+- **Alien overhaul: nest-only spawns, half-speed grabbers, close throws, slow regroup, world avoidance, no crash bounty** ([#167](https://github.com/mark3apps/solar-slinger/pull/167)) — @mark3apps
+  User-requested alien behavior overhaul — six asks, all in ai.js / config.js / physics.js (+ a dead-state cleanup in main.js, doc refresh in docs/world-content.md):
+- **Saved solar systems: name a world and fly it again** ([#166](https://github.com/mark3apps/solar-slinger/pull/166)) — @mark3apps
+  A run's world is now keepable and replayable:
+- **Give each ship spec its own per-tier name ladder** ([#164](https://github.com/mark3apps/solar-slinger/pull/164)) — @mark3apps
+  shipStats.shipName used one generic tier-name list for every spec — ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'] — which was literally the hauler's own…
+- **Slow planet and moon rotation speed by ~1/2** ([#165](https://github.com/mark3apps/solar-slinger/pull/165)) — @mark3apps
+  Planets already had one flat rotation slowdown (CFG.PLANETSPINSLOW); this halves it again — 0.5 → 0.25 — stacking on top of the existing size-based day-length falloff.
+- **Fix three stale spots in the packaging docs (post-v0.7.0 docs-keeper audit)** ([#163](https://github.com/mark3apps/solar-slinger/pull/163)) — @mark3apps
+  A docs-keeper audit after the v0.7.0 release found three pre-existing stale spots in the packaging docs (not caused by the release):
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.7.0...v0.8.0
+
 ## [0.7.0] — 2026-08-06
 
 ### Changes
