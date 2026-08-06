@@ -3253,6 +3253,51 @@ export const PROG = {
   GLOW_REGROW: 24,
 };
 
+// GAME MODES. Chosen on the TITLE SCREEN (never mid-run — the rules a run is
+// judged by must not move under it), and the row IS the ruleset: every consumer
+// reads a FIELD off `game.rules`, never the mode id, so adding a fourth mode is
+// a row here plus whatever field it needs. Two knobs today:
+//   hostiles — false strips the whole alien layer (world.applyModeRules)
+//   dmgMul   — every point of damage the ship takes, scaled (physics.damageShip)
+// THE WORLD IS THE SAME WORLD IN EVERY MODE. Generation is seeded and the modes
+// pay the identical rng draws; the hostile layer is REMOVED after the sky is
+// built, never skipped while building it. A saved system's seed therefore
+// rebuilds the same layout, names and all, whichever mode you fly it in — which
+// is the whole promise the SAVED SYSTEMS library is built on.
+// The order here is the order the title screen shows, and CLASSIC is first
+// because it is the default: a player who never touches the cards gets the
+// game as it has always been.
+// `tag` is what the CARD shows and it is deliberately a SPEC LINE, not a
+// pitch: the three read down the row in the same grammar (hostiles, then
+// damage) so the differences are the only thing that moves. A title screen is
+// not the place for a paragraph per mode — `desc` still exists, and the card
+// hangs it off the button's tooltip / accessible name, so the longer sentence
+// is there for anyone who wants it without being on screen for everyone.
+export const MODES = [
+  { id: 'classic', name: 'CLASSIC', icon: '✷',
+    tag: 'Hostiles · full damage',
+    desc: 'The whole sky: nests scramble, Bastions open fire, and every shoal hides a brood.',
+    hostiles: true, dmgMul: 1 },
+  { id: 'peaceful', name: 'PEACEFUL', icon: '◎',
+    tag: 'No hostiles',
+    desc: 'Nothing out there wants you dead. Gravity, heat and rock still do.',
+    hostiles: false, dmgMul: 1 },
+  // The card says MINIMAL DAMAGE, not "1/8 damage": the exact multiplier is
+  // tuning and belongs in this file, not on a title screen. What the player
+  // needs off the card is the SHAPE of the rule — the sky can still hurt you,
+  // but barely.
+  { id: 'exploration', name: 'EXPLORATION', icon: '✧',
+    tag: 'No hostiles · minimal damage',
+    desc: 'The sky barely bites. Fly anywhere, land anything, take your time.',
+    hostiles: false, dmgMul: 1 / 8 },
+];
+// The one lookup. Falls back to CLASSIC rather than throwing, so a corrupt
+// persisted setting (or a mode removed from the catalog) lands on the full game
+// instead of on a world with no rules at all.
+export function modeRules(id) {
+  return MODES.find((m) => m.id === id) || MODES[0];
+}
+
 // SPECIALIZATIONS. You pick ONE at the start of a run (main.startGame -> the 'spec'
 // modal). It sets your starting kit and gates which named ABILITIES you can be
 // offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats

@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass,
-  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent,
+  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent, modeRules,
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW, resetBodyIds } from './entities.js';
 import { seedGlowPockets, seedMoonGlow } from './glow.js';
@@ -1487,7 +1487,43 @@ export function generateWorld(game, seed = 20260721) {
   fieldRs.push({ name: 'The Farshoal', r: SR(44300) });
   seedDenseFields(game, sun, rng, fieldRs);
   seedDebrisBelts(bodies, planets, rng);
+  // GAME MODE, applied LAST and by SUBTRACTION (see applyModeRules). Everything
+  // above has already drawn its rng, so a peaceful sky is the classic sky minus
+  // its hostiles — same seed, same layout, same names.
+  applyModeRules(game);
   respawnShip(game);
+}
+
+// Strip the hostile layer for the no-enemy modes (config.MODES: `hostiles`).
+//
+// THIS RUNS AFTER GENERATION, NOT INSTEAD OF IT, and that is the whole design:
+// world generation is seeded, and skipping addNest / fortify would swallow
+// their rng draws and hand the same seed a completely different sky per mode.
+// The SAVED SYSTEMS library stores nothing but a seed, so a system saved in
+// classic has to be recognisably the same system in peaceful. Paying every draw
+// and then deleting what the mode doesn't want is what buys that.
+//
+// Three sources, matching the three the design laws name (nests and shoal
+// broods are the only alien spawners; a Bastion is a fortified world):
+//   - NESTS leave the sky entirely. They are a body, and a live nest is the
+//     grabber wave's whole supply (ai.js) — an inert green blob you could still
+//     shoot would be a POI that lies about what it does.
+//   - A BASTION is DISARMED, not deleted: the fort is an emplacement bolted to
+//     a real world, so nulling it leaves the planet exactly where the seed put
+//     it, minus its shield and turrets.
+//   - The shoal BROODS are spent before the run starts. `cleared` is preset
+//     rather than left for updateFields to notice on frame one: noticing bumps
+//     the fieldClear achievement and raises a message, so every shoal in the
+//     system would announce itself as cleared the instant the run began.
+export function applyModeRules(game) {
+  if (modeRules(game.mode).hostiles) return;
+  const bodies = game.bodies;
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const b = bodies[i];
+    if (b.type === 'nest') { bodies.splice(i, 1); continue; }
+    if (b.fort) b.fort = null;
+  }
+  for (const f of (game.fields || [])) { f.brood = 0; f.cleared = true; }
 }
 
 // PLANETARY DEBRIS BELTS — every world wears a shell of its own rubble.

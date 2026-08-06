@@ -576,7 +576,10 @@ from breaking the invariants above:
   - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
     BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
     one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at
-    once); it picks a rock roughly between itself and the ship,
+    once — and **zero in a no-hostiles GAME MODE**: `world.applyModeRules` spends every brood and
+    presets `cleared`, since leaving `updateFields` to notice would announce every shoal as cleared
+    on frame one and bump the achievement with it. See
+    [docs/shell-and-menus.md](shell-and-menus.md)); it picks a rock roughly between itself and the ship,
     swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
     launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
     counter (a ring rock blocks it for XP — passively, or actively once Guard Sling is owned; Deflector parries it, Dead Stop primes on the catch). Three

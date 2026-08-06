@@ -1584,6 +1584,14 @@ export function damageShip(game, dmg, cause, hitAng, fxDmg = dmg) {
   // confused with it, and so every damage path in the game is covered by the
   // one test.
   if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return;
+  // GAME MODE damage scale (config.MODES `dmgMul`; 1 in classic and peaceful,
+  // 1/8 in exploration). It rides HERE, on the one funnel every damage path in
+  // the game already goes through, so nothing else has to know modes exist —
+  // heat, gas crush, rock, turret bolts and alien contact all scale together.
+  // `fxDmg` is deliberately NOT scaled: it is the caller's own statement of how
+  // big a BLOW this was, and it gates the hit sfx and the achievement ledger.
+  // Scaling it would make a soft mode quietly stop counting hits as hits.
+  dmg *= game.rules ? game.rules.dmgMul : 1;
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull. Coverage
   // is `st.shieldArc` (config.shipStats), the half-angle around the nose: a

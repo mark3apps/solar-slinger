@@ -664,7 +664,13 @@ export function updateAliens(game, dt) {
     game.huskWake = null;
     const busy = game.aliens.some((a) => a.alive && a.kind === 'wright') ||
       game.aliens.reduce((n, a) => n + (a.alive && a.kind === 'golem' ? 1 : 0), 0) >= 2;
-    if (hm.alive && game.ship.alive && !busy) {
+    // GAME MODE: the husk summon is the last spawner that isn't a nest or a
+    // brood, so it needs the `hostiles` gate by hand — the other two are
+    // already empty by construction in a no-enemy world (world.applyModeRules
+    // deletes the nests and spends the broods). The flag is still consumed
+    // above whatever the mode, or a smash landed in peaceful would sit pending
+    // and summon a wright the moment anything else set it.
+    if (game.rules.hostiles && hm.alive && game.ship.alive && !busy) {
       const th = Math.random() * TAU;
       const w = new Alien(hm.x + Math.cos(th) * 3400, hm.y + Math.sin(th) * 3400, 'wright');
       w.anchor = { x: hm.x, y: hm.y };

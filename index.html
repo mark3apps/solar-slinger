@@ -201,18 +201,57 @@
     <div class="gametitle" data-text="SOLAR SLINGER">SOLAR <span>SLINGER</span></div>
     <div class="subtitle">A LIVING GRAVITY SANDBOX</div>
   </div>
-  <div class="menucol">
-    <button class="menubtn primary" id="btnStart">NEW SYSTEM</button>
-    <button class="menubtn" id="btnSplashSystems">SAVED SYSTEMS</button>
-    <button class="menubtn" id="btnSplashControls">CONTROLS</button>
-    <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
-    <button class="menubtn" id="btnSplashCredits">CREDITS</button>
-    <button class="menubtn" id="btnSplashExit">EXIT</button>
+  <!-- GAME MODE. Three cards, built ONCE from config.MODES by hud.buildModes —
+       the catalog is the single source of truth for the rules, so it may as
+       well be the source of the labels too. Only the .selected class moves
+       after that; nothing here is rebuilt per frame. -->
+  <!-- THE TITLE SCREEN IS TWO STEPS: pick a mode, then pick a sky to fly it in.
+       main.js owns `game.splashStep` and hud.syncMenus derives which of these is
+       showing — the same owner-split every other panel here uses. -->
+  <!-- STEP 1: the modes, and nothing else. Nothing is preselected — the click
+       IS the choice, and it advances. -->
+  <div class="splashstep" id="stepMode">
+    <div class="steplabel">CHOOSE A MODE</div>
+    <!-- `group`, not `radiogroup`: nothing here holds a checked state — each card
+         is a button that commits and advances (see hud.buildModes). -->
+    <div class="modecols" id="modeList" role="group" aria-label="Game mode"></div>
+  </div>
+  <!-- STEP 2: which sky. A brand-new system or one out of your library — two
+       equal buttons, because they are the same size of decision. Saved systems
+       used to be a tray pill next to CREDITS, which made half the choice look
+       like an afterthought. -->
+  <div class="splashstep hidden" id="stepSource">
+    <div class="steplabel steprow">
+      <button class="stepback" id="btnModeBack">‹ MODE</button>
+      <span class="modechip" id="splashMode"></span>
+    </div>
+    <div class="menugo">
+      <button class="menubtn primary bigbtn" id="btnStart"><i class="gobtnglyph">✦</i>NEW SYSTEM</button>
+      <button class="menubtn bigbtn" id="btnSplashSystems"><i class="gobtnglyph">◈</i>SAVED SYSTEM</button>
+    </div>
+    <p class="small stephint" id="sourceHint"></p>
+  </div>
+  <!-- The tray: the three panels that only READ, plus the way out. Deliberately
+       a tier quieter than everything above — ghost text, no pill — so nothing
+       down here competes with the mode row or the launch pair. EXIT is set off
+       past a hairline and tinted ember: it is the only one that doesn't come
+       back, and it should never be a same-looking neighbour of CREDITS. -->
+  <div class="menutray">
+    <button class="traybtn" id="btnSplashControls">CONTROLS</button>
+    <button class="traybtn" id="btnSplashSettings">SETTINGS</button>
+    <button class="traybtn" id="btnSplashCredits">CREDITS</button>
+    <i class="traysep"></i>
+    <button class="traybtn quit" id="btnSplashExit">EXIT</button>
   </div>
 </div>
 
 <div id="pauseScreen" class="panel menu hidden">
   <h1 class="menuhdr">PAUSED</h1>
+  <!-- Which ruleset this run is being flown under. The mode is chosen on the
+       title screen and can't be changed from here (setMode refuses once a run
+       has started), so this is a READOUT, not a control — but a run whose rules
+       are invisible from the pause menu is a run you can forget you're in. -->
+  <div class="modechip" id="pauseMode"></div>
   <div class="menucol">
     <button class="menubtn primary" id="btnResume">RESUME</button>
     <button class="menubtn" id="btnPauseSystems">SAVE SYSTEM</button>

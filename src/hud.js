@@ -1,5 +1,6 @@
 import {
   CFG, PROG, TIERS, burnCap, burnThrust, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS,
+  MODES, modeRules,
 } from './config.js';
 import { ACHIEVEMENTS, CATEGORIES, ACH_TOTAL, ACH_MAX_POINTS, isSecret } from './achievements.js';
 import {
@@ -99,6 +100,8 @@ export function initHud(game) {
     'mapBtn', 'mapScreen', 'starmap', 'mapCharted', 'mapContacts', 'mapZoom',
     'mapRoutePanel', 'mapRouteN', 'mapRouteList', 'mapOut', 'mapMeta',
     'btnMapClear', 'btnMapCentre', 'btnMapBack',
+    // Game modes: the title screen's two steps, their chrome, and the pause readout
+    'modeList', 'pauseMode', 'stepMode', 'stepSource', 'splashMode', 'sourceHint', 'btnModeBack',
     'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
     'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnPauseAch', 'btnMainMenu', 'btnPauseExit',
     'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack', 'btnAchBack', 'btnGameOverAch']) {
@@ -123,7 +126,67 @@ export function initHud(game) {
     const box = e.target.closest('.up');
     if (box) box.classList.remove('up');
   });
+  buildModes(game);
   initAchPanel(game);
+}
+
+// ---- Game modes -------------------------------------------------------------
+// The title screen's mode cards, built ONCE at init straight off config.MODES.
+// Built rather than authored in index.html because the catalog already IS the
+// rules — a mode whose card had to be hand-copied into the markup could ship
+// with a blurb that quietly disagrees with what the sim does. Built once and
+// never again (it is innerHTML, and the offer/journey/library rule applies:
+// rebuilding it under the cursor would throw away the card between the
+// mousedown and the click trying to pick it); only refreshModes moves after
+// this, and it touches classes and aria only.
+function buildModes(game) {
+  if (!el.modeList) return;
+  // The card shows the NAME and the one-line rule and nothing else — the full
+  // sentence rides `title` (hover) and `aria-label` (screen readers), so it is
+  // available without putting a paragraph per mode on the title screen.
+  // NOTHING IS PRESELECTED and no card carries a persistent chosen state: the
+  // click IS the choice and it advances to step 2, so a lit "current" card
+  // would be claiming the flow had already moved when it hadn't.
+  el.modeList.innerHTML = MODES.map((m) => `
+    <button class="moderow md-${m.id}" data-mode="${m.id}"
+            title="${m.desc}" aria-label="${m.name} — ${m.desc}">
+      <span class="modeicon">${m.icon}</span>
+      <span class="modename">${m.name}</span>
+      <span class="modetag">${m.tag}</span>
+      <i class="modemark"></i>
+    </button>`).join('');
+  refreshModes(game);
+}
+
+// Write the live mode into its two READOUTS — step 2's chip and the pause
+// menu's. Guarded on the id, so the usual case is a Map lookup and nothing else.
+function refreshModes(game) {
+  const cur = modeRules(game.mode);
+  for (const node of [el.splashMode, el.pauseMode]) {
+    if (!node || lastText.get(node) === cur.id) continue;
+    lastText.set(node, cur.id);
+    node.className = `modechip md-${cur.id}`;
+    node.innerHTML = `<span class="modechipicon">${cur.icon}</span><span>${cur.name}</span>`;
+  }
+}
+
+// Which step of the title screen is showing (main.js owns game.splashStep).
+// Also the one place that knows SAVED SYSTEM has nothing to offer yet: the
+// button is disabled AND says why, because a dead button with no explanation
+// reads as a bug rather than as an empty library.
+function refreshSplashStep(game) {
+  const source = game.splashStep === 'source';
+  if (el.stepMode) el.stepMode.classList.toggle('hidden', source);
+  if (el.stepSource) el.stepSource.classList.toggle('hidden', !source);
+  if (!source) return;
+  refreshModes(game);
+  const n = game.systems.length;
+  if (el.btnSplashSystems) el.btnSplashSystems.disabled = n === 0;
+  if (el.sourceHint) {
+    setText(el.sourceHint, n === 0
+      ? 'No saved systems yet — keep one from the pause menu while you fly.'
+      : `${n} saved system${n === 1 ? '' : 's'} in your library.`);
+  }
 }
 
 export function message(text, dur = 3.5) {
@@ -179,6 +242,16 @@ export function initMenus(handlers) {
       if (row) handlers.onUpgradePick(+row.dataset.i);
     });
   }
+  // The mode cards. DELEGATED like the journey rail and the pick offer — the
+  // row is built by buildModes, so binding per card would tie the listener to
+  // markup this file generates rather than to the container that owns it.
+  if (el.modeList) {
+    el.modeList.addEventListener('click', (e) => {
+      const row = e.target.closest('.moderow');
+      if (row) handlers.onPickMode(row.dataset.mode);
+    });
+  }
+  bind('btnModeBack', handlers.onModeBack);
   bind('btnMainMenu', handlers.onMainMenu);
   bind('btnSplashExit', handlers.onExit);
   bind('btnPauseExit', handlers.onExit);
@@ -343,12 +416,23 @@ function scrambleTitle() {
 
 // Replay the power-on. The class is stripped and re-added (with a reflow between)
 // so the CSS animations retrigger on every return to the splash, not just load.
+let bootTimer = null;
+const BOOT_MS = 1400;   // the cascade's last delay (1.09s) plus its own 0.4s
 function playBoot() {
   if (!el.splashScreen) return;
   el.splashScreen.classList.remove('boot');
   void el.splashScreen.offsetWidth;
   el.splashScreen.classList.add('boot');
   scrambleTitle();
+  // .boot MEANS "booting right now", and it is lifted when the sequence ends.
+  // It used to simply stay on until the next replay, which was harmless while
+  // the panel's contents were one static column — but the splash is two STEPS
+  // now, and a step is hidden with display:none. Re-showing an element restarts
+  // every CSS animation on it, so a stale .boot made backing out of step 2
+  // replay the whole staggered power-on for a console that never powered off,
+  // with the mode cards invisible for the first two thirds of a second.
+  clearTimeout(bootTimer);
+  bootTimer = setTimeout(() => el.splashScreen.classList.remove('boot'), BOOT_MS);
 }
 
 // ---- The control schematic's readout ---------------------------------------
@@ -773,7 +857,12 @@ function syncMenus(game) {
   // pick card or a shell modal.
   hudLive = menuBtn;
   if (!hudLive) abilHide();
-  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+systems}${+mapOpen}${+menuBtn}${+game.started}`;
+  // The splash's own step joins the signature: it changes what the panel shows
+  // without changing WHICH panel shows, so the guard would never notice it.
+  // game.systems.length is in there for the same reason — the SAVED SYSTEM
+  // button's disabled state and its hint are derived from it, and saving the
+  // first system of a run has to un-dead that button by the time you get back.
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+systems}${+mapOpen}${+menuBtn}${+game.started}|${game.splashStep}|${game.systems.length}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
@@ -804,6 +893,11 @@ function syncMenus(game) {
     // main.js's own save/delete handlers — never per frame (it is innerHTML).
     // Open is also when the save field takes its preset-name prefill.
     if (systems) refreshSystems(game, true);
+    // The splash's step (and with it the mode chip), and the pause menu's own
+    // mode readout. Both derived here rather than written by the click handler,
+    // exactly like every other panel on this screen.
+    if (splash) refreshSplashStep(game);
+    if (pause) refreshModes(game);
     // A shell modal fully REPLACES the panel it opened over (the same law that
     // makes the three shell panels mutually exclusive) — and that includes the
     // DEATH and GAME OVER panels, which are centered .panels too: without this
