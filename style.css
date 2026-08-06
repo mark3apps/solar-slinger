@@ -2103,13 +2103,15 @@ body.preGame #radar { opacity: 0; }
   color: color-mix(in srgb, var(--acc) 60%, white);
   text-shadow: 0 0 12px var(--acc);
 }
-/* The description, revealed on hover. Animating grid-template-rows 0fr -> 1fr
-   expands to the text's OWN height with no magic max-height to keep in sync
-   with the copy — the child just needs overflow:hidden and min-height:0. */
+/* The description shows up front — no hover needed to find out what a toast
+   is for — so it sits at its full 1fr/opacity 1 from the moment the node
+   mounts; the transition property is kept only so a reduced-motion toggle or
+   a future state change doesn't snap. The toast's own arrival motion (toastIn,
+   below) is what sells "just landed", not this row growing in separately. */
 .atwrap {
   grid-column: 1 / -1;
-  display: grid; grid-template-rows: 0fr;
-  opacity: 0;
+  display: grid; grid-template-rows: 1fr;
+  opacity: 1;
   transition: grid-template-rows .26s cubic-bezier(.3, .9, .3, 1), opacity .18s ease;
 }
 .atdesc {
@@ -2121,7 +2123,6 @@ body.preGame #radar { opacity: 0; }
   filter: drop-shadow(0 0 18px color-mix(in srgb, var(--acc) 70%, transparent));
   transform: translateX(-3px);
 }
-.actoast.hover .atwrap { grid-template-rows: 1fr; opacity: 1; }
 
 /* Enter: slides in from the right with a small overshoot, so it reads as
    arriving rather than appearing. Leave: fades and drifts back out, THEN

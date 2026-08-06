@@ -45,7 +45,7 @@ const PTYPE_BIT = {
 // tenth archetype lands. Computed once at module init — the sweep never sees it.
 export const PTYPE_COUNT = Object.keys(PTYPE_BIT).length;
 
-export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 200 };
+export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 220 };
 
 // Category order = panel order. `label` heads its block, `blurb` sits under it.
 export const CATEGORIES = [
@@ -74,16 +74,12 @@ const A = (id, cat, pts, name, desc, test) => ({ id, cat, pts, name, desc, test 
 // is the shared context filled in by updateAchievements below.
 export const ACHIEVEMENTS = [
   // ---- FIRST STEPS: one row per verb the opening minutes teach ----------
-  A('firstSpec', 'first', PTS.trivial, 'Specialist', 'Choose a specialization and begin a run.',
-    (g) => !!g.prog.spec),
   A('firstMinute', 'first', PTS.trivial, 'Wheels Up', 'Stay alive for one minute.',
     (g) => g.time >= 60),
   A('firstCatch', 'first', PTS.trivial, 'Finders Keepers', 'Catch your first rock in the tractor beam.',
     (g) => g.prog.catches >= 1),
   A('firstFling', 'first', PTS.trivial, 'Yeet', 'Fling a rock at something.',
     (g, s) => s.flings >= 1),
-  A('firstDrop', 'first', PTS.trivial, 'Set It Down', 'Put a rock down gently instead of throwing it.',
-    (g, s) => s.drops >= 1),
   A('firstSmash', 'first', PTS.easy, 'Demolition Debut', 'Destroy something with a thrown rock.',
     (g) => g.prog.smashes >= 1),
   A('firstOrbit', 'first', PTS.easy, 'Ring Bearer', 'Stow a rock into your orbit.',
@@ -94,8 +90,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.motes >= 1),
   A('firstScrap', 'first', PTS.trivial, 'Bin Diver', 'Collect a debris chunk.',
     (g, s) => s.scrap >= 1),
-  A('firstHit', 'first', PTS.trivial, 'First Dent', 'Take your first hit and keep flying.',
-    (g, s) => s.hits >= 1),
   A('firstAbility', 'first', PTS.easy, 'Trained', 'Learn an ability from a card.',
     (g) => g.prog.level >= 1),
   A('firstRank', 'first', PTS.easy, 'Practice Makes', 'Earn an ability rank without spending anything.',
@@ -553,8 +547,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.rescues >= 3),
   A('rescue6', 'explore', PTS.insane, 'Coast Guard', 'Save six stranded pilots.',
     (g, s) => s.rescues >= 6),
-  A('maydaySeen', 'explore', PTS.easy, 'Distress Call', 'Pick up a mayday.',
-    (g, s) => s.maydays >= 1),
   A('vesper', 'explore', PTS.normal, 'Long Period', 'Sight Comet Vesper on its fall sunward.',
     (g) => !!g.tut.vesper),
   A('visitor', 'explore', PTS.tricky, 'Interstellar', 'Sight the interstellar visitor. It will not come back.',
@@ -585,8 +577,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.cometShowers >= 1),
   A('cometShower5', 'explore', PTS.tricky, 'Regular Viewer', 'Be there for five comet showers.',
     (g, s) => s.cometShowers >= 5),
-  A('flareSeen', 'explore', PTS.easy, 'Duck', 'Get a solar flare warning.',
-    (g, s) => s.flares >= 1),
   A('flareSeen10', 'explore', PTS.tricky, 'Active Sun', 'Get ten solar flare warnings.',
     (g, s) => s.flares >= 10),
   A('forge', 'explore', PTS.normal, 'Forge Moon', 'Find the volcanically live moon.',
@@ -797,12 +787,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.pauses >= 25),
   A('pause75', 'silly', PTS.normal, 'Analysis Paralysis', 'Open the menu 75 times.',
     (g, s) => s.pauses >= 75),
-  A('readManual', 'silly', PTS.trivial, 'Read the Manual', 'Open the control schematic.',
-    (g, s) => s.openCtrl >= 1),
-  A('readCredits', 'silly', PTS.trivial, 'Stayed for the Credits', 'Open the credits panel.',
-    (g, s) => s.openCred >= 1),
-  A('achHunter', 'silly', PTS.trivial, 'Achievement Hunter', 'Open this panel. That was it. That was the achievement.',
-    (g, s) => s.openAch >= 1),
   A('achAddict', 'silly', PTS.normal, 'Checking Again', 'Open this panel twenty times in one run.',
     (g, s) => s.openAch >= 20),
   A('homeHop5', 'silly', PTS.normal, 'Commitment Issues',
