@@ -39,13 +39,12 @@ function avoidStars(game, al) {
 // 2026-08: grabbers chasing the ship around a nest's own planet kept pancaking
 // into its moons). Same additive-thrust idiom as avoidStars, but a WHISKER,
 // not a wall: a hard radial push only right at the surface, plus a look-ahead
-// along the current velocity — if the path grazes a world inside the next
+// along the CLOSING velocity — if the path grazes a world inside the next
 // ~1.6s, steer perpendicular around it, weighted by how dead-on and how soon
 // the graze is. NOT applied to lurkers: their habitat is field rock (no
 // worlds in a pocket) and their containment steering is tuned separately.
 function avoidWorlds(game, al) {
   const s = game.ship;
-  const sp = Math.hypot(al.vx, al.vy);
   const nearShip = s.alive && Math.hypot(s.x - al.x, s.y - al.y) < 700;
   // Awake list: aliens hunt inside the wake bubble, and a dormant world's
   // whole pocket is off-view by definition.
@@ -60,21 +59,51 @@ function avoidWorlds(game, al) {
     // ship could never be reached again. A dive at a grounded player is an
     // attack, not bad pathfinding.
     if (nearShip && Math.hypot(b.x - s.x, b.y - s.y) < clear + s.radius + 120) continue;
-    // Cheap reject: can't touch it this beat and isn't near it now
-    const reach = sp * 1.6 + clear + 120;
-    if (dx > reach || dx < -reach || dy > reach || dy < -reach) continue;
+    // THE WHISKER IS CAST IN THE WORLD'S OWN FRAME, never the absolute one —
+    // the same law as util.surfaceVel's, and for the same reason: WORLDS ORBIT.
+    // Moons carry 33-95 u/s and planets 41-130, so over the 1.6s horizon below
+    // a world slides 50-200 units out from under a ray aimed at where it is
+    // NOW — comparable to `clear` itself for a moon (~230 at the median). Cast
+    // absolutely, the whisker therefore called dead-on approaches clean misses
+    // and, worse, could veer to the LEADING side, steering the alien into the
+    // path of the world it was dodging: exactly the moon-pancaking this
+    // function was written to stop. A co-orbiting alien loitering by its own
+    // nest world got the mirror bug — near-zero closing speed reads as a
+    // full-speed collision course, and it was shoved sideways all day.
+    const rvx = al.vx - b.vx, rvy = al.vy - b.vy;
+    // Cheap reject: can't touch it this beat and isn't near it now. PER AXIS on
+    // the relative speed (|dx| can only close by |rvx| a second), because the
+    // old shared `sp * 1.6` bound is not conservative once the ray is relative:
+    // a world closing head-on adds its own speed to rsp, up to 1.6 x 130 = 208
+    // units of extra reach against the 120 the flat pad allows.
+    //
+    // THIS BOX IS WIDER THAN THE ONE IT REPLACES, and it has to be — |rvx| runs
+    // past |al.vx| by the world's own speed, so strictly more pairs survive the
+    // reject and reach the whisker. That is the CORRECT direction (the pairs it
+    // now admits are the ones the absolute box was wrongly dropping), and the
+    // cost is bounded by the type filter above: only planets and moons ever get
+    // this far, ~90 of them in a sky of thousands. Per axis is what keeps the
+    // widening honest — it needs no hypot to REJECT; the hypot moved onto the
+    // surviving pairs as `rsp` below, beside the `d` they already paid for.
+    const rex = Math.abs(rvx) * 1.6 + clear + 120;
+    const rey = Math.abs(rvy) * 1.6 + clear + 120;
+    if (dx > rex || dx < -rex || dy > rey || dy < -rey) continue;
     const d = Math.hypot(dx, dy) || 1;
-    // Hard radial push in the last stretch before the surface
+    // Hard radial push in the last stretch before the surface. POSITION ONLY,
+    // so it is correctly frame-free — a separation and a radial bearing read
+    // the same from any frame, and there is no look-ahead in it to be wrong
+    // about. It stays on the absolute geometry deliberately.
     if (d < clear + 120) {
       const k = clamp(1 - (d - clear) / 120, 0, 1);
       al.thrustX -= (dx / d) * CFG.ALIEN_ACCEL * 1.4 * k;
       al.thrustY -= (dy / d) * CFG.ALIEN_ACCEL * 1.4 * k;
     }
-    if (sp < 40) continue;
+    const rsp = Math.hypot(rvx, rvy);
+    if (rsp < 40) continue;
     // Whisker: closest approach of the velocity ray within the horizon
-    const t = clamp((dx * al.vx + dy * al.vy) / (sp * sp), 0, 1.6);
+    const t = clamp((dx * rvx + dy * rvy) / (rsp * rsp), 0, 1.6);
     if (t <= 0) continue;
-    const cx = al.x + al.vx * t - b.x, cy = al.y + al.vy * t - b.y;
+    const cx = al.x + rvx * t - b.x, cy = al.y + rvy * t - b.y;
     const miss = Math.hypot(cx, cy);
     if (miss > clear) continue;
     // Push out along the closest-approach offset — it already points to the
@@ -82,7 +111,7 @@ function avoidWorlds(game, al) {
     // the velocity's own perpendicular.
     let px, py;
     if (miss > 1) { px = cx / miss; py = cy / miss; }
-    else { px = -al.vy / sp; py = al.vx / sp; }
+    else { px = -rvy / rsp; py = rvx / rsp; }
     const k = (1 - miss / clear) * (1 - t / 1.6);
     al.thrustX += px * CFG.ALIEN_ACCEL * 1.6 * k;
     al.thrustY += py * CFG.ALIEN_ACCEL * 1.6 * k;

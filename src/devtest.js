@@ -3,6 +3,8 @@ import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   stormStrength, stormSpent, shelterR, SHIP_RADIUS } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
+import { Alien } from './entities.js';
+import { updateAliens } from './ai.js';
 import { damageShip, parryLive } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
@@ -1430,7 +1432,116 @@ export function runMechTest(game, hooks, opts = {}) {
       }
     });
 
-    // T24 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
+    // ---- ALIEN AVOIDANCE ----------------------------------------------------
+    // T24 — ai.avoidWorlds casts its look-ahead in the WORLD'S OWN FRAME, the
+    // same law as util.surfaceVel's and for the same reason: worlds ORBIT. The
+    // moons in this sky carry 33-95 u/s and the planets 41-130, so a ray aimed
+    // at where a world is NOW arrives 50-200 units behind it over the function's
+    // 1.6s horizon — as much as its whole `clear` band for a moon.
+    //
+    // The rig makes that error a SIGN, not a magnitude, so it cannot pass by
+    // luck. A golem flies at 350 u/s straight down the normal to a moon's own
+    // track, aimed 40 units to the LEADING side of its centre. Read absolutely
+    // that is a near dead-on hit passing AHEAD of the moon, so the old whisker
+    // veered forward, +u, INTO the path of the thing it was dodging — precisely
+    // the moon-pancaking the function exists to stop. Read in the moon's frame
+    // the alien passes behind it (the moon has moved on by then), so the only
+    // correct veer is aft, -u. Measured: +87 u/s^2 forward before the fix, -92
+    // aft after it.
+    //
+    // Everything else is arranged to contribute exactly zero along u, so the
+    // whisker is the only thing the assertion can be reading: the moon is the
+    // most isolated in the sky (asserted — no other world is within its own
+    // avoidance reach of the alien, and the star is far outside avoidStars'),
+    // the alien sits OUTSIDE the surface push's band so the radial term is zero
+    // (asserted), and the ship is parked 1200 back along -v, which puts steer()
+    // purely on v and is beyond the 700 at which the landed-ship exemption
+    // could switch avoidance off altogether.
+    t('alien avoidance: the whisker is cast in the world\'s own frame', () => {
+      hooks.freshRun(0, seed);
+      const nAliens = game.aliens.length;
+      let al = null;
+      try {
+        // The most isolated moon that is actually MOVING — a slow one would
+        // make the two frames agree and the case would prove nothing.
+        const worlds = game.bodies.filter((b) => b.alive && (b.type === 'planet' || b.type === 'moon'));
+        let m = null, iso = -1;
+        for (const c of worlds) {
+          if (c.type !== 'moon' || Math.hypot(c.vx, c.vy) < 60) continue;
+          let near = Infinity;
+          for (const b of worlds) {
+            if (b === c) continue;
+            near = Math.min(near, Math.hypot(b.x - c.x, b.y - c.y) - b.radius);
+          }
+          if (near > iso) { iso = near; m = c; }
+        }
+        expect(m, 'no moon in this sky is moving fast enough to tell the two frames apart');
+
+        const R = 350;    // the alien's closing speed, under steer()'s own clamp
+        const E = 40;     // aimed this far to the moon's LEADING side of centre
+        const K = 1200;   // ship stand-off: > 700, so the attack-run exemption is off
+        // One frame first, so physics has rebuilt the awake list avoidWorlds
+        // walks — with the ship already in the neighbourhood, or the moon is
+        // dormant and the function never looks at it at all.
+        parkShip(game, m.x, m.y - 2000);
+        hooks.stepSim(1 / 60);
+
+        const W = Math.hypot(m.vx, m.vy);
+        const ux = m.vx / W, uy = m.vy / W;          // the moon's own heading
+        const vx = -uy, vy = ux;                     // and its normal
+        al = new Alien(0, 0, 'golem');
+        const clear = m.radius + al.radius + 90;
+        const D = clear + 150;                       // outside the surface push's band
+        al.x = m.x + vx * D + ux * E;
+        al.y = m.y + vy * D + uy * E;
+        al.vx = -R * vx; al.vy = -R * vy;            // straight in at the moon
+        parkShip(game, al.x - vx * K, al.y - vy * K);
+        game.aliens.push(al);
+
+        // Setup gates: nothing but the whisker may be pushing along u.
+        const d = Math.hypot(m.x - al.x, m.y - al.y);
+        expect(d > clear + 120,
+          `the alien is inside the surface push's band (${d.toFixed(0)} < ${(clear + 120).toFixed(0)}) — that radial term would swamp the whisker`);
+        const star = game.bodies.find((b) => b.alive && b.type === 'star');
+        expect(Math.hypot(al.x - star.x, al.y - star.y) > star.radius * 1.6 + 400,
+          'the rig sits inside avoidStars\' shell — its push would land on u too');
+        for (const b of worlds) {
+          if (b === m) continue;
+          const reach = b.radius + al.radius + 90 + 120 + (R + Math.hypot(b.vx, b.vy)) * 1.6;
+          expect(Math.hypot(b.x - al.x, b.y - al.y) > reach,
+            `${b.type} ${b.name || b.id} is inside its own avoidance reach of the rig — it would contribute too`);
+        }
+        // steer() clamps thrustX and thrustY INDEPENDENTLY, in WORLD axes — so
+        // it only stays off u while its unclamped magnitude fits inside
+        // ALIEN_ACCEL. Let that margin close (a bump to ALIEN_SPEED, to the
+        // golem's 0.85, to ALIEN_ACCEL, or to R here) and the clamp rotates the
+        // steer vector toward the world diagonal and spills ~15 u/s^2 of either
+        // sign onto u — small against the -92 measured, but it would quietly
+        // stop being true that the whisker is the ONLY thing this reads.
+        expect(Math.abs(R - CFG.ALIEN_SPEED * 0.85) * 2.2 < CFG.ALIEN_ACCEL,
+          `steer() clamps at this R (${R} vs golem cruise ${(CFG.ALIEN_SPEED * 0.85).toFixed(0)}, `
+          + `accel ${CFG.ALIEN_ACCEL}) — its residual would land on u and pollute the reading`);
+        // The wake list avoidWorlds walks was built by the step above, from the
+        // ship's position THEN. It comfortably covers the moon today, but a
+        // dormant `m` would read as a zero veer — i.e. this case would fail
+        // claiming the whisker went the wrong way when the truth is it never
+        // looked. Name that failure instead of inheriting it.
+        expect((game.bodies._awake || game.bodies).includes(m),
+          'the moon is not on the awake list — avoidWorlds never sees it, and a zero veer would misreport as a wrong one');
+
+        updateAliens(game, 1 / 60);
+        const along = al.thrustX * ux + al.thrustY * uy;
+        expect(along < -20,
+          `the veer went ${along.toFixed(0)} u/s^2 along the moon's own heading — a positive value steers the alien `
+          + `into the path of a moon moving at ${W.toFixed(0)} u/s, which is the absolute-frame whisker aiming at where the moon USED to be`);
+        return `${m.name || 'moon'} at ${W.toFixed(0)} u/s, alien ${d.toFixed(0)} out (clear ${clear.toFixed(0)}): veer ${along.toFixed(0)} u/s^2 aft`;
+      } finally {
+        if (al) al.alive = false;
+        game.aliens.length = nAliens;
+      }
+    });
+
+    // T25 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
     // window it ran in (issue #104). Everything above this line integrates
     // through game.viewR — the spawn ring and both leashes in
     // world.replenishWorld, the wake bubble, the glow field — and steers
@@ -1453,7 +1564,7 @@ export function runMechTest(game, hooks, opts = {}) {
       return `${VIEW_PIN.vw}x${VIEW_PIN.vh}, zoom=${game.cam.zoom.toFixed(4)}, viewR=${game.viewR.toFixed(1)}`;
     });
 
-    // T25 — the suite's own drama must not have shredded the sky
+    // T26 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {
       const now = census(game);
       expect((now.planet || 0) === (skyBefore.planet || 0),
