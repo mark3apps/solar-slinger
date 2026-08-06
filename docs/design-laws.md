@@ -1322,6 +1322,91 @@ read a touch small on those two in play — a needle and a slab need more room t
 carry the same weight on screen. The hauler is now the *smallest* of the three; it remains THE
 REFERENCE because one spec has to anchor the measurement, and its art is the one that never moves.
 
+### The ram's slab is floored at rock scale
+
+**…the one thing `SHIP_VIS` could not fix.** It matched the slab against the
+*hull*; the remaining problem was the slab against the *world*. Every proportion of the ram is a
+fraction of the ship, which is right at the top of the ladder and absurd at the bottom: a tier-0
+brawler is 5.4 drawn units, so a full rank-1 ram came out 15 units across carrying stones of radius
+~1.2 — while the belt rock it is BUILT FROM runs radius 6–14 (median asteroid ~9). You crushed a
+boulder three times longer than your whole ship and the nose gained three specks about one pixel
+each at the gameplay zoom; the class's signature mechanic was invisible for the entire early game
+(2026-08 user call: *"the brawler's ram rocks shouldn't be scaled down with the ship — at tier 0
+they're so tiny it looks ridiculous"*).
+
+So `config.ramPlate` sizes the slab off `hypot(r, CFG.RAM_MIN_R)` — a **soft** floor, deliberately,
+for two reasons: it never stops growing with the ship (a hard `max` would draw tiers 0 and 1
+identically and then jump), and it evaporates where it isn't wanted — **+391% at tier 0, +262% at
+tier 1, +73% at tier 2, +11% at tier 4, +3% at tier 5**, so the top of the ladder is the slab that
+was already tuned. **The floor is only the slab, never the mounting**: `back` and `gap` stay on the
+true drawn hull, or a floored ram floats a ship-length out in front instead of ploughing on the nose.
+
+**SIZE IT OFF THE STONE, NOT OFF THE SLAB.** What the eye compares is one ram rocklet against one
+belt rock, and the rocklet is capped by the slab's DEPTH (`render.ramTierRocks`: `r <= 0.8 ×
+depth/2`), so the floor has to clear that whole chain rather than merely look generous. `depth = rs ×
+0.655` at a full rank-1 ram, so a stone of radius R needs `rs >= R / 0.262`. Belt rock runs radius
+6–14 (median ~9), and **26 lands the tier-0 stones at ~7** — a real rock, mid-class for the rock the
+ram is built from. `RAM_MIN_R = 10` was the first attempt and was still wrong: it tripled the slab
+and the stones came out ~3, under the smallest gravel in the sky. Check the STONE when retuning this,
+never the slab.
+
+The knock-on is deliberate and follows the mirror rule: `ramFace`/`ramArc` read the same plate, so a
+low-tier ram's contact edge and protected arc grow with what you can see (tier 0 rank 1: 27° → 31°,
+contact edge 15 → 29 units; the top of the ladder goes 36° → 38°). Physics reading an *unfloored*
+slab is exactly the drift the rule exists to forbid. Absorption is unaffected either way: it is
+priced on ram MASS (`CFG.RAM_ABSORB`), which no part of this touches.
+
+### A ram is smashed together, at the expense of width
+
+**The slab's thickness sizes the STONE, and the WIDTH is whatever that many stones occupy shoulder to
+shoulder** (2026-08 user call: *"this is a RAM, they should be smashed next to each other always at
+the expense of width"*). `halfW` used to be its own ramp on `t` and `g`, and an independent ramp is
+exactly the bug: the width grew while the stone stayed capped by the slab's depth, so the pack got
+wider without getting fuller and the stones ended up hanging apart on their beams with daylight
+between them — a fence, not a ram.
+
+The chain, all of it in `config.ramPlate` so there is one geometry:
+
+- `stone = depth × RAM_STONE` — one course is one stone thick, which is what makes `depth` the honest
+  measure of a ram's substance.
+- `halfW = stone × (0.7 + ramPack(t) × (ramPerRow(t) − 1))` — render seats the outermost centre at
+  `halfW − 0.7 × stone` and spreads the rest evenly, so this is precisely the width at which the
+  centre spacing comes out `2 × stone × pack`.
+- `ramPack` is under 1 at every band, so the stones **always** touch — 0.92 at band 1 tightening to a
+  0.79 overlap at band 12. That is the loose-rubble-to-fused-wall story now, told by how hard the
+  stones are jammed rather than by how far apart they float.
+
+`ramRows`/`ramPerRow`/`ramPack`/`RAM_STONE` are **exported** for exactly this reason: render builds
+the layout from them and config solves the width against it, and a pack geometry living in two files
+is the mirror-drift trap. The plate publishes `stone` rather than letting render re-derive it, and
+render's per-stone jitter is bounded at ±10% and paid for by `ramPack`'s margin so even the two
+smallest neighbours still touch. **Nothing in `ramTierRocks` may size a stone from the width again.**
+
+A useful side effect: with the width now following the pack instead of running ahead of it, the
+protected-arc inflation from the rock-scale floor above mostly went away.
+
+### The ram's density ladder is twelve bands, two per rank
+
+`config.RAM_TIERS` (2026-08 user call: *"instead of 6 visual ram looks, 1 per level, it should be 12,
+2 per level, to give it a bit more granularity"*). Rank is still six and still the ceiling; what
+doubled is how many builds the pack walks through as it fills. **The even bands reproduce the old
+six-band ladder exactly** (2→old 1, 4→old 2, … 12→old 6), so every rank tops out on the build it
+always did and the odd bands are pure new ground — the same course, looser packed, on a slightly
+smaller slab.
+
+**Band 1 is a PAIR** (2026-08 user call: *"the lowest visual level should be just 2 rocks"*) — the
+one count the old ladder never had a rung for, and what makes the bottom read as two boulders
+dragged onto the nose rather than a thin course of something. `perRow` is anchored at 2 and 8 over
+eleven steps, which is what puts the six even bands on exactly 3/4/5/6/7/8.
+
+`RAM_TIERS` is the one place the length lives, and **three things are keyed off it and must move with
+it**: the `t` coefficients in `ramPlate` (halved when this doubled, so the per-rank endpoints hold),
+`render.ramTierRocks`' rows/perRow/packK ramp and its beam-rig count (same endpoints, twice the
+steps — `perRow` rounds every *other* band on purpose, since a stone count ticking up twelve times
+would put 14 across the bow), and `physics.spendRam`'s per-drop spall (halved to 1–2 pebbles: a
+downward crossing now happens twice as often, and doubling a brawl's spall against one debris budget
+would break invariant 7).
+
 ### One stroke weight, and it is the hauler's
 
 **The hull outline is computed once per tier off the HAULER's art unit and handed to whichever hull

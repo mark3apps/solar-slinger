@@ -775,6 +775,48 @@ export const CFG = {
   // actual dimensions live in config.ramPlate — the ONE geometry render draws
   // and physics measures, per the CFG.dockDomeR mirror-drift rule.
   RAM_R_POW: 0.4,           // front-loaded growth (see above)
+  // A RAM IS MADE OF ROCK, AND ROCK HAS ITS OWN SCALE (2026-08 user call: "the
+  // brawler's ram rocks shouldn't be scaled down with the ship — at tier 0
+  // they're so tiny it looks ridiculous"). Every other proportion of the slab is
+  // a fraction of the hull, which is right at the top of the ladder and absurd at
+  // the bottom: a tier-0 brawler is 5.4 drawn units, so a full rank-1 ram came
+  // out 15 units across carrying stones of radius ~1.2 — while the belt rock it
+  // is BUILT FROM runs radius 6-14. You would crush a boulder three times longer
+  // than your whole ship and the nose would gain three specks, at the gameplay
+  // zoom about one pixel each. The class's signature mechanic was invisible for
+  // the entire early game.
+  //
+  // So the slab's size basis gets a FLOOR in world units — sized off belt rock,
+  // not off the hull. It is a SOFT floor, hypot(r, RAM_MIN_R), for two reasons:
+  // it never stops growing with the ship (a hard max would draw tiers 0 and 1
+  // identically and then jump), and it vanishes where it isn't wanted — +391% at
+  // tier 0, +262% at tier 1, +73% at tier 2, +11% at tier 4, +3% at tier 5, so
+  // the top of the ladder is the slab that was already tuned.
+  //
+  // SIZE IT OFF THE STONE, NOT OFF THE SLAB. What the eye actually compares is
+  // one ram rocklet against one belt rock, and the rocklet is capped by the
+  // slab's DEPTH (render.ramTierRocks: r <= 0.8 x depth/2), so the floor has to
+  // clear that chain, not merely look generous. depth = rs x 0.655 at a full
+  // rank-1 ram, so a stone of radius R needs rs >= R / 0.262: belt rock runs
+  // radius 6-14 (median ~9), and 26 lands the tier-0 stones at ~7 — a real rock,
+  // in the middle of the class the ram is BUILT from. 10 was the first attempt
+  // and it was still wrong: it tripled the slab and the stones came out ~3,
+  // which is under the smallest gravel in the sky.
+  //
+  // THE FLOOR IS ONLY THE SLAB, NOT THE MOUNTING. `back` and `gap` stay on the
+  // true drawn hull, so a floored ram is a plough sitting on the nose where it
+  // always sat rather than a slab floating a ship-length out in front.
+  //
+  // Knock-on, and it is deliberate: ramFace/ramArc read this same plate per the
+  // mirror-drift rule, so a low-tier ram's contact edge and protected arc grow
+  // with what you can see — tier 0 rank 1 goes 27deg -> 31deg and its contact
+  // edge 15 -> 29 units, and the top of the ladder 36deg -> 38deg. (The floor
+  // alone put that first number at ~52deg; deriving halfW from the pack instead
+  // of ramping it independently is what brought it back down, so measure the arc
+  // after BOTH, never after this constant on its own.) The edge you can
+  // see IS the edge that hits; the alternative — physics reading an unfloored
+  // slab — is exactly the drift that rule exists to forbid.
+  RAM_MIN_R: 26,
   // ABSORPTION. Front-arc damage is taken by the ram INSTEAD of the hull —
   // fully, not as a percentage — and spends this much ram mass per hull point
   // it eats. The hull takes nothing at all until the ram is gone, which is the
@@ -2715,14 +2757,40 @@ export function ramPlate(st, ram) {
   // were tuned in, and keeps ramFace/ramArc — the edge physics hits and the arc
   // it protects — glued to the edge you can see.
   const r = st.radius * (st.vis || 1);
+  // ...EXCEPT the slab's own size, which is floored at rock scale (CFG.RAM_MIN_R)
+  // so a small hull still carries something built out of recognisable rock. The
+  // mounting (`back`, `gap`) stays on `r` — the true drawn hull — and only the
+  // slab (`depth`, `halfW`) rides `rs`.
+  const rs = Math.hypot(r, CFG.RAM_MIN_R);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
   // as hits spend it. War Rack's rank only sets how high that ladder is
-  // allowed to climb: each rank unlocks the next tier, it does not wear it.
+  // allowed to climb: each rank unlocks the next TWO bands, it does not wear
+  // them.
   // ramTier below is the one place that mapping lives; the plate carries the
   // result so render's build and physics' tier-drop detection read one number.
   const t = ramTierOf(fill, st.orbitLvl || 1);
+  // A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH (2026-08 user design law).
+  // The slab's thickness sizes the STONE (one course is one stone thick — the
+  // same `depth x RAM_STONE` render builds its rocklets at) and the WIDTH IS
+  // WHATEVER THAT MANY STONES OCCUPY SHOULDER TO SHOULDER. It used to be an
+  // independent ramp, and an independent ramp is exactly the bug: the width grew
+  // on `t` and `g` while the stone stayed capped by depth, so the pack got wider
+  // without getting fuller and the stones ended up hanging apart on their beams
+  // with daylight between them — a fence, not a ram. Deriving it means the
+  // stones CANNOT come apart at any band, and the slab simply gets narrower
+  // where it holds less.
+  //
+  // Geometry: render seats the outermost stone centre at `halfW - 0.7 x stone`
+  // and spreads the rest evenly, so for `n` across, a centre spacing of
+  // `2 x stone x pack` needs `halfW = stone x (0.7 + pack x (n - 1))`. `pack`
+  // under 1 is overlap, and it TIGHTENS up the ladder — that is the whole of the
+  // old loose-rubble-to-fused-wall story, now told by how hard the stones are
+  // jammed rather than by how far apart they float.
+  const depth = rs * (0.26 + 0.0275 * t + 0.34 * g);
+  const stone = depth * RAM_STONE;
+  const halfW = stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1));
   return {
     // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
     // is scaled up by its size-match factor — read against the bare footprint
@@ -2734,18 +2802,48 @@ export function ramPlate(st, ram) {
     // to ~2/3 of this, and an impact slams it nearly to the hull (render's
     // spring). A tight resting gap made all three states read the same.
     gap: r * 0.55,
-    depth: r * (0.26 + 0.055 * t + 0.34 * g),
-    halfW: r * (0.72 + 0.16 * t + 0.52 * g),
+    // The `t` coefficient is HALVED against the old six-band ladder because the
+    // ladder is now twelve bands long (RAM_TIERS) — same slab at the top of
+    // every rank, twice as many steps getting there.
+    depth,
+    halfW,
+    // The base rocklet radius, PUBLISHED rather than re-derived: render lays the
+    // pack out against the same number this width was solved for, or the two
+    // disagree and the stones drift apart again.
+    stone,
     fill,
     tier: t,
   };
 }
-// fill -> tier, capped by rank. Six even density bands: a rank-6 ram walks all
-// six as it fills; a rank-2 ram tops out at tier 2 however much it holds
-// (which can't be much — the cap is rank-scaled too, so the bands and the
-// capacity climb together).
+// THE PACK LADDER. `RAM_STONE` is the rocklet radius as a fraction of the slab's
+// thickness — one course is one stone thick, which is what makes `depth` the
+// honest measure of a ram's substance. `ramPack` is the centre spacing in stone
+// diameters: under 1 at every band, so the stones ALWAYS touch, tightening from
+// a just-jammed 0.92 at band 1 to a 0.79 overlap at band 12. `ramRows` and
+// `ramPerRow` are the course/count ramp — exported because render builds the
+// actual layout from them and config solves the width against it, and a pack
+// geometry living in two files is the mirror-drift trap.
+export const RAM_STONE = 0.4;
+export function ramRows(t) { return t <= 4 ? 1 : t <= 8 ? 2 : 3; }
+export function ramPerRow(t) { return 2 + Math.round((t - 1) * (6 / 11)); }
+export function ramPack(t) { return 0.92 - 0.012 * (t - 1); }
+// fill -> tier, capped by rank. TWELVE even density bands, TWO PER RANK (2026-08
+// user call: "instead of 6 visual ram looks, 1 per level, it should be 12, 2 per
+// level, to give it a bit more granularity") — a rank-6 ram walks all twelve as
+// it fills; a rank-2 ram tops out at tier 4 however much it holds (which can't
+// be much — the cap is rank-scaled too, so the bands and the capacity climb
+// together).
+//
+// RAM_TIERS is the ONE place the ladder's length lives, and three things are
+// keyed off it and must move with it: the `t` coefficient in ramPlate's depth
+// (halved when this doubled, so each rank still TOPS OUT at the slab it always
+// did), the ramRows/ramPerRow/ramPack ramp below (same endpoints, twice the
+// steps), and physics.spendRam's per-drop spall count (halved, because a
+// downward crossing now happens twice as often and the budget is not free).
+export const RAM_TIERS = 12;
 function ramTierOf(fill, rank) {
-  return Math.max(1, Math.min(rank, Math.ceil(fill * 6)));
+  const perRank = RAM_TIERS / 6;   // ranks are fixed at six; bands per rank is the knob
+  return Math.max(1, Math.min(rank * perRank, Math.ceil(fill * RAM_TIERS)));
 }
 // The shared read: what tier is this ram AT? Physics compares it across a
 // spend to catch a downward crossing (debris comes loose); render keys the

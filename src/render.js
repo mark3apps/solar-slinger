@@ -1,7 +1,7 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
-  shipVis,
+  ramRows, ramPerRow, shipVis,
 } from './config.js';
 import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive, dockReady } from './physics.js';
 import * as gravel from './gravel.js';
@@ -7377,7 +7377,8 @@ function ramFieldColor(fill) {
   // just inside the blue family the whole way.
   return '#' + h(mix(0x3d, 0x86)) + h(mix(0x8e, 0xc2)) + 'ff';
 }
-// THE SIX BARRIER TIERS, as rocklets — and the tier is DENSITY, not rank
+// THE TWELVE BARRIER TIERS (config.RAM_TIERS — TWO PER RANK), as rocklets — and
+// the tier is DENSITY, not rank
 // (config.ramTier): feed the ram and the pack visibly climbs from loose
 // rubble toward a fused wall; let hits spend it and it comes back apart. War
 // Rack's rank only caps how high the ladder goes. Same fixed-seed discipline
@@ -7391,19 +7392,48 @@ function ramFieldColor(fill) {
 // each rocklet's own. Fresh arrays on every rebuild; the rebuild jolt below
 // seeds them ringing, which is the tier-change animation in both directions.
 let ramRocksCache = null, ramRocksKey = '';
-function ramTierRocks(tier, halfW, depth) {
+function ramTierRocks(tier, halfW, depth, stone) {
   const key = tier + ':' + ((halfW * 4) | 0) + ':' + ((depth * 4) | 0);
   if (ramRocksCache && ramRocksKey === key) return ramRocksCache;
   const rng = mulberry32(0x52414d00 + tier);
   // ROWS DEEP, NOT ROCKS BIG (user design rule). A higher tier packs MORE
-  // rocks in MORE rows — one row of rubble at tiers 1-2, a double course at
-  // 3-4, a triple wall at 5-6 — with the individual stones staying modest
-  // (the 0.8 factor below trims them ~20% from the single-row sizing). Depth
-  // already grows with tier in config.ramPlate, which is what gives the extra
-  // rows room without the pack outgrowing its physics footprint.
-  const rows = tier <= 2 ? 1 : tier <= 4 ? 2 : 3;
-  const perRow = 2 + tier;                 // 3 across at tier 1 -> 8 at tier 6
-  const packK = 0.68 + tier * 0.13;        // gaps when loose -> overlap when fused
+  // rocks in MORE rows — one row of rubble at tiers 1-4, a double course at
+  // 5-8, a triple wall at 9-12. Depth already grows with tier in
+  // config.ramPlate, which is what gives the extra rows room without the pack
+  // outgrowing its physics footprint.
+  //
+  // THE STONE IS GIVEN, NOT SOLVED FOR (user design law: *a ram is smashed
+  // together, at the expense of width*). `stone` is `depth x RAM_STONE` off the
+  // plate, and config solved `halfW` so that `perRow` of them sit shoulder to
+  // shoulder at `ramPack` spacing — so the layout here only has to place them.
+  // It used to be the other way round: the radius was `min(depth/2, a slot
+  // term)` against an independently-ramped width, so on a wide slab the depth
+  // cap won, the stones came out far smaller than their slots and the pack hung
+  // apart with daylight through it. Nothing here may re-derive the size from the
+  // width again, and the ONLY per-stone freedom is the jitter below — which is
+  // deliberately bounded at +-10% and paid for by `ramPack`'s margin, so even
+  // the two smallest neighbours still touch.
+  //
+  // TWELVE BANDS, SAME ENDPOINTS (config.RAM_TIERS). Every ramp below was
+  // rewritten to reach at tier 12 exactly what it used to reach at tier 6, so a
+  // maxed ram is the wall it always was and the extra granularity is entirely in
+  // the steps between. perRow steps every OTHER band on purpose — a stone count
+  // that ticked up twelve times would put 14 across the bow; the in-between bands
+  // are read in the packing, the courses and the slab's own growth instead.
+  // The consequence worth knowing: the EVEN bands reproduce the old six-band
+  // ladder exactly (2->old 1, 4->old 2, ... 12->old 6), so every rank still tops
+  // out on the build it always did and the odd bands are pure new ground — the
+  // same course, looser packed and on a slightly smaller slab.
+  //
+  // BAND 1 IS A PAIR (2026-08 user call: "the lowest visual level should be just
+  // 2 rocks"). It is the only count the old ladder never had a rung for — the
+  // emptiest a ram can be while still being a ram — and it is what makes the
+  // bottom of the ladder read as two boulders you dragged onto the nose rather
+  // than as a thin course of something. Everything above it lands on the old
+  // rungs: the ramp is anchored at 2 and 8 over eleven steps, which puts the six
+  // even bands on exactly 3/4/5/6/7/8.
+  const rows = ramRows(tier);
+  const perRow = ramPerRow(tier);              // 2 at band 1 -> 8 at 12
   const slot = (halfW * 2) / perRow;
   const rocks = [];
   for (let row = 0; row < rows; row++) {
@@ -7416,8 +7446,7 @@ function ramTierRocks(tier, halfW, depth) {
     const inRow = perRow - (row % 2);
     for (let i = 0; i < inRow; i++) {
       const t = inRow === 1 ? 0 : (i / (inRow - 1)) * 2 - 1;   // -1..1 across
-      const r = 0.8 * Math.min(depth * 0.5,
-        slot * 0.5 * packK * (0.55 + 0.5 * (1 - Math.abs(t) * 0.55)) * (0.85 + rng() * 0.3));
+      const r = stone * (0.9 + rng() * 0.2);
       rocks.push({
         // The SLIGHT ARC (user design call): the course bows around the bow —
         // centre stones lead, the wings sweep back — so the wall reads as a
@@ -7425,7 +7454,10 @@ function ramTierRocks(tier, halfW, depth) {
         // 1.7 exponent keeps the middle flat and folds only the outer stones.
         x: rowX + (rng() - 0.5) * depth * 0.18
           - Math.pow(Math.abs(t), 1.7) * depth * 0.55,
-        y: t * (halfW - r * 0.7) + (t === 0 ? shift * 0.4 : shift * (t > 0 ? -1 : 1) * 0.4),
+        // The inset rides the BASE stone, not this stone's jittered radius —
+        // it is the same term config solved `halfW` against, and reading the
+        // jitter here would walk the seats apart by up to a tenth of a stone.
+        y: t * (halfW - stone * 0.7) + (t === 0 ? shift * 0.4 : shift * (t > 0 ? -1 : 1) * 0.4),
         r,
         rot: rng() * TAU,
         ring: rockJagRing(rng, Math.max(6, r)),
@@ -7692,8 +7724,8 @@ function drawShip(game) {
     const plate = ramPlate(game.st, s.ram);
     if (plate) {
       const z = game.cam.zoom;
-      const { back, gap, depth, halfW, fill, tier } = plate;
-      const rocksC = ramTierRocks(tier, halfW, depth);
+      const { back, gap, depth, halfW, stone, fill, tier } = plate;
+      const rocksC = ramTierRocks(tier, halfW, depth, stone);
       // ---- spring + band + mattress, one clock ----
       if (game.time !== ramSprStamp) {
         const dt = ramSprStamp < 0 ? 0 : Math.max(0, Math.min(0.1, game.time - ramSprStamp));
@@ -7799,8 +7831,10 @@ function drawShip(game) {
         const ca = Math.cos(slabAng), sa = Math.sin(slabAng);
         // 70% of the old 4 + tier count (user design pass: at gameplay scale
         // a rig per rear stone was too busy at the top tiers) — 4 rigs low,
-        // 7 at tier 6, floored so the low tiers keep a real fan.
-        const nPick = Math.max(3, Math.round((4 + tier) * 0.7));
+        // 7 at the top of the ladder, floored so the low tiers keep a real fan.
+        // Halved per band with config.RAM_TIERS at twelve, so the endpoints are
+        // the ones that were tuned.
+        const nPick = Math.max(3, Math.round((4 + tier * 0.5) * 0.7));
         const picks = bR.map((_, i) => i)
           .sort((a, b) => (bR[a].x + bP[a]) - (bR[b].x + bP[b]))
           .slice(0, Math.min(bR.length, nPick))
@@ -7873,7 +7907,7 @@ function drawShip(game) {
         ctx.arc(Math.cos(rk.shade) * rk.r * 0.75, Math.sin(rk.shade) * rk.r * 0.75,
           rk.r * 0.95, 0, TAU);
         ctx.fill();
-        if (rk.r > depth * 0.35) {
+        if (rk.r > stone) {
           ctx.fillStyle = 'rgba(0,0,0,0.28)';
           ctx.beginPath();
           ctx.arc(rk.r * 0.3, -rk.r * 0.2, rk.r * 0.3, 0, TAU);
