@@ -1,7 +1,7 @@
 {
   "name": "solar-slinger",
   "productName": "Solar Slinger",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Top-down 2D gravity-sandbox space game",
   "author": "Mark Wright <mark@mark3wright.com>",
   "homepage": "https://github.com/mark3apps/solar-slinger",

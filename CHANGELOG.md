@@ -9,6 +9,27 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.7.0] — 2026-08-06
+
+### Changes
+
+- **Deepen ship-felt planet gravity: 2× wells plus size-graded surface weight** ([#158](https://github.com/mark3apps/solar-slinger/pull/158)) — @mark3apps
+  Two gravity-feel changes to the ship's gravity path (both ship-only — rails, moon orbits, thrown rocks, aliens and damage never read them), plus one forecast bug fix found in…
+- **Planet visual overhaul: unique archetype faces, terran burn deck, ocean worlds, moon-orbit floors, per-archetype names** ([#161](https://github.com/mark3apps/solar-slinger/pull/161)) — @mark3apps
+  Worlds now run up to 3x their authored radius, and this PR makes them look and behave like it — four user-directed features plus the fixes they surfaced.
+- **Rework the HAULER: split carry from screen, fix three broken cards** ([#159](https://github.com/mark3apps/solar-slinger/pull/159)) — @mark3apps
+  The hauler's kit and pool had accumulated three abilities that were inert, unreachable, or actively harmful. This reworks the spec around one idea: the ring is a rack you fill…
+- **Add the berth vista: a finished dock zooms the camera out, launch zooms back** ([#162](https://github.com/mark3apps/solar-slinger/pull/162)) — @mark3apps
+  After landing and the base finishing its build, the camera now slowly zooms out to a much wider view of the surroundings — and the moment the launch sequence starts spooling, it…
+- **Moon variety: seven new archetypes, per-type names, hostile-surface skids, wider size spread** ([#160](https://github.com/mark3apps/solar-slinger/pull/160)) — @mark3apps
+  The moon roster grows from six archetypes to thirteen, every moon now carries a seeded name, and the sky gets ~30% more size variety. One mechanic per type, each riding an…
+- **Skip gas giants in the ambient world-wear loop** ([#157](https://github.com/mark3apps/solar-slinger/pull/157)) — @mark3apps
+  The ambient world-wear block in src/world.js (replenishWorld) iterated game.reg.planets gated only on alive / nearShip / fort — it never skipped ptype: 'gas'. An off-view gas…
+- **Ship scale: +50% top tier, per-spec size match and per-spec mass** ([#156](https://github.com/mark3apps/solar-slinger/pull/156)) — @mark3apps
+  Four related passes over ship size, weight and hull art. Every constant here is derived or measured — the reasoning for each is in the code comments and docs/design-laws.md.
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.6.0...v0.7.0
+
 ## [0.6.0] — 2026-08-05
 
 ### Changes
