@@ -356,16 +356,28 @@
     coast/spin/no-damage streaks are integrated inside the sweep off flags that already exist, so the
     hot path never grew a line for them.
   - **Watch for freebies — this is the failure mode of the whole feature.** A predicate true on frame
-    one is a bug, and five have been caught so far (the first is history now that no ability is
+    one is a bug, and six have been caught so far (the first is history now that no ability is
     max-1, but `achievements.js` keeps the guard that shut it): counting max-1 unlocks as "maxed" handed SCOUT
     *Maxed Out* immediately (Retro Jets is in its kit); `game.lastDamage` starting at `-99` handed
     every run 99 free seconds of "untouched"; an "own four abilities" row landed instantly because
     the BRAWLER and SCOUT kits ARE four (count rows must sit above the biggest kit — 5+); an
     "unlock the Deflector" row was free for BRAWLER, which starts with it (kit abilities need a RANK
-    threshold, not an unlock one); and a "tier 2 with no picks taken" row was unreachable, since a
-    tier-up spends a pick and increments `prog.level`. **Check every new row against
-    `window.freshRun(i)` + `window.tick(1)` for all three specs** — anything other than *Specialist*
-    landing on frame one is a freebie.
+    threshold, not an unlock one); a "tier 2 with no picks taken" row was unreachable, since a
+    tier-up spends a pick and increments `prog.level`; and *You Are Here* (`firstSurvey`, chart your
+    first world) could land inside `tick(1)` on a seed that happened to put a planet's lane — or a
+    fast-orbiting moon sweeping past it — close enough to the ship's fixed north spawn point that it
+    was already inside that body's own chart zone. **Check every new row against
+    `window.freshRun(i)` + `window.tick(1)` for all three specs** — anything landing on frame one is
+    a freebie. (History: *Specialist*, 'choose a spec and begin a run', was the one sanctioned
+    exception — it always fired on frame one by design; removed 2026-08, so the rule is now
+    absolute. The `firstSurvey` case above is fixed the same year: `world.generateWorld` now walks the
+    spawn belt's OWN radius in fixed angle steps — no new rng draw, so the seeded stream and the
+    mechTest world checksum are untouched — until it finds an angle that clears every chartable
+    body's `world.chartZoneR` (shared with the live scan in `replenishWorld`, so the two can't drift
+    apart) by a `CHART_CLEAR_MARGIN` padded for a second of orbital drift. The default north point
+    (`th = -PI/2`) is checked first and clears on the large majority of seeds, so the fix is a no-op
+    there — spawn position, velocity and the nearby life pod's offset are all byte-identical to
+    before on every seed that didn't need a nudge.)
   - **`noteDeath` ends every streak the sweep is timing.** Without it "ten minutes untouched" would
     survive being blown up, and a dive that ended at a gas giant's core would score as one you climbed
     out of.
@@ -376,20 +388,23 @@
     (triumph): `sfxTierUp` for a 60+ row, `sfxUpgrade` otherwise. The cockpit gets a gold `★` score
     chip (hidden until the first point — its appearance IS the first achievement), the GAME OVER panel
     leads with the final score, and **V** opens the log. The panel is rebuilt on open, never per frame.
-  - **Toast lifetime is driven in JS, not by a CSS animation delay, because HOVERING PAUSES IT.**
-    A notification you have to read in four seconds is one you miss, so pointing at a toast holds it
-    open and expands its full description; the clock restarts (shorter) once the pointer leaves, and
-    a toast caught mid-exit is brought back rather than fading out from under the cursor. **The
-    toasts stay `pointer-events: none` and hover is HIT-TESTED against their rects from a
-    window-level mousemove** — the rail sits in the middle of the play area, and a toast with real
-    pointer-events would swallow the mousedown that starts a tractor grab (the canvas listener would
-    simply never fire, and a rock you reached for would be missed because a notification happened to
-    be in the way). The listener is bound with the first toast and unbound with the last. The
-    description reveal animates `grid-template-rows: 0fr -> 1fr`, so it expands to the text's OWN
-    height with no magic max-height to keep in sync with the copy. Enter overshoots in from the
-    right with a one-shot light sweep (the panels' energy-line idiom); leave fades and drifts out,
-    THEN collapses its own height and eats the rail's 8px gap with a negative margin, so the toasts
-    below slide up instead of snapping. Both drop to a plain fade under `prefers-reduced-motion`.
+  - **A toast shows its description UP FRONT, no hover required** (2026-08) — you should not have to
+    hunt for what you just did. `.atwrap` sits at its full `grid-template-rows: 1fr`/`opacity: 1` from
+    the moment the node mounts (it used to start collapsed at `0fr` and only expand on hover; that
+    made the description something you had to go looking for). **Toast lifetime is still driven in
+    JS, not by a CSS animation delay, because HOVERING PAUSES IT** — even with the description already
+    showing, a longer row takes longer to read, so pointing at a toast still holds it open; the clock
+    restarts (shorter) once the pointer leaves, and a toast caught mid-exit is brought back rather than
+    fading out from under the cursor. `TOAST_DWELL` was lengthened alongside this change (4.2s → 5.2s)
+    since every toast now carries a description's worth of reading, not just a name. **The toasts stay
+    `pointer-events: none` and hover is HIT-TESTED against their rects from a window-level mousemove**
+    — the rail sits in the middle of the play area, and a toast with real pointer-events would swallow
+    the mousedown that starts a tractor grab (the canvas listener would simply never fire, and a rock
+    you reached for would be missed because a notification happened to be in the way). The listener is
+    bound with the first toast and unbound with the last. Enter overshoots in from the right with a
+    one-shot light sweep (the panels' energy-line idiom); leave fades and drifts out, THEN collapses
+    its own height and eats the rail's 8px gap with a negative margin, so the toasts below slide up
+    instead of snapping. Both drop to a plain fade under `prefers-reduced-motion`.
   - **The panel is a SCHEMATIC, not a table** — the same shape as CONTROLS, and for the same reason.
     At this catalog size a two-line row per entry is a wall of prose you have to READ to scan, so rows
     are COMPACT (marker · name · points) in a two-column grid, and each carries its description in

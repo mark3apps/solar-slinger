@@ -9,10 +9,15 @@ import {
 } from './starmap.js';
 import { mulberry32, defaultSystemName } from './util.js';
 import { drawStatIcon } from './render.js';
+// The ONE "is this station finished" test — the dome's push, its draw and the
+// DOCK gauge below all read it. physics.js imports nothing from here, so this
+// closes no cycle.
+import { dockReady } from './physics.js';
 
 const el = {};
 let msgTimer = null;
 let prevHull = Infinity, prevShield = Infinity;
+let prevDockHp = Infinity;   // dock dome charge last frame — the bar flashes on a bite
 let dispHull = -1, dispShield = -1;   // eased readout values — numbers COUNT, not snap
 let prevXpFrac = 0;        // XP-bar fill fraction last frame — pulse on gain
 let prevCombo = 0;         // combo stamp retriggers its pop on every increment
@@ -77,6 +82,7 @@ export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
+    'dockBar', 'dockFill', 'dockNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     // SHIP SYSTEMS cluster (bottom right): dial, throw gauge, sprite rows
     'shipPanel', 'spVel', 'spThrN', 'velDial', 'spVelRated',
@@ -611,11 +617,12 @@ function initAchPanel(game) {
 }
 
 // ---- Achievement toasts ----------------------------------------------------
-// A landed achievement announces itself on its own rail. Lifetime is driven in
-// JS rather than by a fixed CSS animation delay for one reason: HOVERING PAUSES
-// IT. A notification you have to read in four seconds is a notification you
-// miss, so pointing at a toast holds it open and reveals its full description;
-// the clock only restarts once the pointer leaves.
+// A landed achievement announces itself on its own rail, description shown up
+// front — no hover needed to find out what you just did. Lifetime is still
+// driven in JS rather than by a fixed CSS animation delay for one reason:
+// HOVERING PAUSES IT. A notification you have to read in a few seconds is a
+// notification you miss, so pointing at a toast holds it open; the clock only
+// restarts once the pointer leaves.
 //
 // HOVER WITHOUT POINTER-EVENTS. The rail sits in the middle of the play area
 // (right of the canvas, under the radar), so the toasts stay
@@ -624,7 +631,7 @@ function initAchPanel(game) {
 // toast swallow the mousedown that starts a tractor grab — the canvas listener
 // would simply never fire, and a rock you reached for would be missed because a
 // notification happened to be in the way.
-const TOAST_DWELL = 4200;       // ms on screen when never pointed at
+const TOAST_DWELL = 5200;       // ms on screen when never pointed at — longer than before, since there's now a description to read up front
 const TOAST_LINGER = 1400;      // ms of grace once the pointer leaves
 const TOAST_OUT_MS = 460;       // must match the toastOut animation in style.css
 const TOAST_MAX = 4;            // a burst drops the oldest rather than growing off-screen
@@ -1431,6 +1438,38 @@ export function updateHud(game) {
     el.burnBar.classList.toggle('burning', !!game.burnerOn);
     // Below the engage threshold the tank can't light — dim it so the wait reads
     el.burnBar.classList.toggle('low', !game.burnerOn && fuel < 0.25);
+  }
+
+  // THE HARBOUR'S SHIELD (CFG.DOCK_SHIELD). Up only while berthed at a FINISHED
+  // station — the same gate the dome itself draws on, because that is exactly
+  // when the pool is doing anything. It is the one gauge here that measures
+  // something which is NOT the ship, so it wears the dome's own pale ice rather
+  // than the ship shield's blue: the bar and the field it reports have to be
+  // recognisably the same object.
+  //
+  // It does NOT share the hull/shield points-per-pixel scale. That scale exists
+  // to make the ship's split pool comparable at a glance, and this pool is ~7
+  // hulls deep — folding it in would either flatten the ship's gauges to
+  // slivers or run this one off the side of the screen. Fixed width, no
+  // point-cells, exactly like the fuel tank, for the same reason: it is not
+  // part of the ship's hit-point pool.
+  // `dockReady`, not an inline `t >= DOCK_BUILD` — the dome's push, its draw and
+  // this gauge must all key off ONE predicate or they drift apart.
+  const dk = game.dock;
+  const dockLive = dockReady(dk);
+  el.dockBar.classList.toggle('hidden', !dockLive);
+  if (dockLive) {
+    const hp = Math.max(0, dk.hp ?? CFG.DOCK_SHIELD);
+    const frac = Math.max(0, Math.min(1, hp / CFG.DOCK_SHIELD));
+    setWidth(el.dockFill, `${frac * 100}%`);
+    setText(el.dockNum, `${Math.ceil(hp)}/${CFG.DOCK_SHIELD}`);
+    // The SAME threshold physics warns on, so the bar going red and the message
+    // saying so are one event rather than two nearly-agreeing ones.
+    el.dockBar.classList.toggle('low', frac < CFG.DOCK_SHIELD_WARN);
+    if (game.started && hp < prevDockHp - 0.4) flash(el.dockBar);
+    prevDockHp = hp;
+  } else {
+    prevDockHp = Infinity;
   }
 
   // Combo stamp: throw-kill chains slam a multiplier onto the screen

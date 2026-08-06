@@ -6,7 +6,7 @@ import {
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
+import { step, updateFieldLOD, frameReg, clearDocks, dockReady, berthAt } from './physics.js';
 import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, tryAutoSecond, releaseHeld, addToOrbit, stowFromCursor, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
@@ -197,7 +197,11 @@ const game = {
   domeHitA: 0,             //   (world bearing of that bite)
   dockT: 0,                // approach guidance, published per substep: latch fill 0..1,
   dockCand: null,          //   the world being landed on,
-  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast')
+  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast' | 'crater' | 'small')
+  autoland: null,          // the station currently FLYING THE SHIP IN (physics.
+                           //   updateAutoland), or null. A reference into docks.
+  autolandCd: 0,           // seconds the autoland stays stood down after a
+                           //   manual override or a launch (CFG.AUTOLAND_CD)
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
@@ -625,6 +629,12 @@ initInput(canvas, {
     if (game.gameOver) { resetRun(); return; }
     // A life was already spent at the moment of death; upgrades are KEPT.
     respawnShip(game);
+    // A HOME RESPAWN ARRIVES BERTHED — in the clamps, shield and repair live,
+    // one thrust from a launch — rather than hovering over its own pad to
+    // re-earn a berth it already owns. Called from HERE and not inside
+    // respawnShip because world.js cannot import physics (the spawnAsteroid
+    // cycle), and only physics can seed the landing latch a berth rides on.
+    if (dockReady(game.home) && game.home.b.alive) berthAt(game, game.home);
     bump(game, 'respawns');
     hud.setDeathVisible(false);
   },
@@ -651,6 +661,11 @@ initInput(canvas, {
   // cursor — a positioning twitch, not a lunge.
   onDash: (dir) => {
     if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
+    // A dash is the pilot taking the helm, exactly like thrust — but it never
+    // touches controls.f/b, so physics.updateAutoland's hands-on test can't
+    // see it. Without this the autoland eased the dart straight back out:
+    // the game fighting the pilot, which the autoland contract forbids.
+    if (game.autoland) { game.autoland = null; game.autolandCd = CFG.AUTOLAND_CD; }
     const s = game.ship;
     const ang = s.angle + dir * Math.PI / 2;
     const burst = 380 + 35 * game.st.evasion;
@@ -664,6 +679,9 @@ initInput(canvas, {
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
   onWarp: () => {
     if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
+    // Same hands-on rule as the dash: a warp is the pilot leaving, and the
+    // 1.5x-radius drift bail alone would let a short warp get reeled back.
+    if (game.autoland) { game.autoland = null; game.autolandCd = CFG.AUTOLAND_CD; }
     const s = game.ship;
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     const dist = game.st.warpDist;
@@ -1634,6 +1652,37 @@ const EVENT_MSGS = [
     repeat: [(v) => `BERTHED AT ${v.toUpperCase()} — shielded and repairing.`, 2.5] },
   { flag: 'dockRetiredName', snd: sfx.sfxWarnLow,
     first: [(v) => `OLDEST DOCK ABANDONED — you can keep ${CFG.DOCK_MAX} standing, and the one on ${v.toUpperCase()} was the oldest.`, 5] },
+  // A station whose FOOTING was blasted away (physics.updateDock's undermined
+  // sweep). Bad news every time, not just the first — each one is a structure
+  // the player spent ten exposed seconds building.
+  { flag: 'dockLostName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK DESTROYED — the ground under your station on ${v.toUpperCase()} was blasted away.`, 5] },
+  // The home-port flavour of the same collapse: the respawn point is the news,
+  // the structure is the detail. sfxAlarm, not sfxWarnLow — where you go back
+  // to when you die just changed, which is danger-grade information.
+  { flag: 'homeDockLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `HOME PORT DESTROYED — the ground under your dock on ${v.toUpperCase()} was blasted away. You respawn at your starting orbit.`, 6] },
+  // THE DOME IS FINITE (CFG.DOCK_SHIELD) and it never refills. Two rows: the
+  // one-shot warning as it crosses DOCK_SHIELD_WARN, and the failure — which
+  // takes the whole station with it, because the dome IS the station's
+  // survival. Not tut-gated: every station has its own pool, so this is news
+  // about THIS harbour every single time.
+  { flag: 'dockShieldLowName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK SHIELD FAILING ON ${v.toUpperCase()} — it does not recharge. Leave, or lose the station.`, 5] },
+  { flag: 'dockShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `DOCK SHIELD COLLAPSED — the station on ${v.toUpperCase()} went with it.`, 5] },
+  { flag: 'homeShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `HOME PORT SHIELD COLLAPSED — ${v.toUpperCase()} is gone with the dock. You respawn at your starting orbit.`, 6] },
+  // A tier-up outgrowing a station's world (physics.updateDock's refit sweep).
+  // Retired, not destroyed — the wording has to carry that difference.
+  { flag: 'dockOutgrownName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK DECOMMISSIONED — your port class has outgrown ${v.toUpperCase()}; it cannot carry the berth any more.`, 5] },
+  { flag: 'homeOutgrownName', snd: sfx.sfxWarnLow,
+    first: [(v) => `HOME PORT DECOMMISSIONED — your port class has outgrown ${v.toUpperCase()}. You respawn at your starting orbit.`, 6] },
+  // AUTOLAND taking the ship. First time teaches the contract (hands off /
+  // thrust to override); after that the guide arc over the ship carries it.
+  { flag: 'autolandName', tut: 'autoland',
+    first: [(v) => `AUTOLAND — ${v.toUpperCase()} has the ship. Hands off; thrust to take back the helm.`, 5] },
   { flag: 'launchName', tut: 'launch',
     first: ['LAUNCH — clamps releasing. The dock stays; fly back to it whenever you want.', 4.5] },
   // Choosing a home port is the one act that moves where a death puts you back.

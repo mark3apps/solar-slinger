@@ -877,6 +877,19 @@ function buildLayout(rng, graveyardR) {
   return rows;
 }
 
+// CHART ZONE — the nameplate/approach radius that reading a body's name (the
+// old planets-only survey, generalized to every chartKey carrier) charts it
+// from. Shared between the live scan (replenishWorld) and the spawn-clearance
+// search below it must agree with: a spawn point cleared by one definition
+// and charted by another is the bug this split would reintroduce.
+export function chartZoneR(b, recon = 0) {
+  return (b.type === 'planet' ? b.radius * 5 + 600
+    : b.shepherd || b.volcanic || b.carved ? 900
+      : b.type === 'station' || b.majorComet ? 1400
+        : b.type === 'moon' ? b.radius * 5 + 300 : 900)
+    + recon * (b.type === 'planet' ? 1300 : 650);
+}
+
 export function generateWorld(game, seed = 20260721) {
   const rng = mulberry32(seed);
   const bodies = game.bodies;
@@ -1343,20 +1356,13 @@ export function generateWorld(game, seed = 20260721) {
   // disturber list) so the concept can return if it ever earns its keep —
   // nothing spawns one.
 
-  // Player starts in a stable orbit inside the inner asteroid belt.
-  // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
-  // from the rocks around it.
-  const sr = spawnBeltR;   // the inner belt's generated lane, wherever this seed put it
-  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
-  game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
-  game.homeStar = sun;
-  game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   // CHART EVERYTHING: every world, moon, and station is chartable (b.chartKey;
   // named landmarks set their own keys at their spawn sites so respawns keep
   // them). game.charted records KEYS, not bodies. Worldgen bodies only —
   // replenish-spawned moons get no key, so the chart total never inflates
   // mid-run. Pure flagging, no rng draws: the seeded stream and the mechTest
-  // world checksum are untouched.
+  // world checksum are untouched. Done BEFORE the spawn point below, which
+  // needs every chartKey already assigned to check itself against them.
   {
     let pi = 0, mi = 0, si = 0;
     for (const b of bodies) {
@@ -1368,11 +1374,59 @@ export function generateWorld(game, seed = 20260721) {
   }
   game.charted = {};
   game.surveyTotal = 0;   // recomputed live by the chart scan (replenishWorld)
+
+  // Player starts in a stable orbit inside the inner asteroid belt.
+  // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
+  // from the rocks around it.
+  const sr = spawnBeltR;   // the inner belt's generated lane, wherever this seed put it
+  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
+  // NEVER SPAWN PRE-CHARTED. The north point (th = -PI/2) is the traditional
+  // spot and clears on the vast majority of seeds, but a layout can put a
+  // planet's lane — or a fast-orbiting moon sweeping past it — close enough
+  // that the fixed north point already sits inside a chartable body's own
+  // nameplate zone (chartZoneR). That handed "You Are Here" for free before
+  // the player had done anything, the exact frame-one freebie the achievement
+  // sweep exists to catch (docs/progression.md, "Watch for freebies"). Walked
+  // in fixed steps around the SAME belt radius, never with a new rng draw —
+  // pulling from the seeded stream here would shift every pool downstream of
+  // it and break the mechTest world checksum. CHART_CLEAR_MARGIN pads every
+  // zone so a second of orbital drift before the player can react can't
+  // close the gap either. When the north point already clears (true for
+  // ~93% of seeds, empirically), this is a no-op: i=0 IS the north point, so
+  // the ship's spawn is byte-identical to before the fix on every seed that
+  // didn't need one.
+  const CHART_CLEAR_MARGIN = 1200;
+  const CHART_ANGLE_STEPS = 72;
+  let spawnTh = -Math.PI / 2;
+  for (let i = 0; i < CHART_ANGLE_STEPS; i++) {
+    const th = -Math.PI / 2 + i * (TAU / CHART_ANGLE_STEPS);
+    const px = sun.x + Math.cos(th) * sr, py = sun.y + Math.sin(th) * sr;
+    const clear = bodies.every((b) => {
+      if (!b.alive || !b.chartKey || b.hidden) return true;
+      return Math.hypot(b.x - px, b.y - py) >= chartZoneR(b) + CHART_CLEAR_MARGIN;
+    });
+    if (clear) { spawnTh = th; break; }
+  }
+  const spawnX = sun.x + Math.cos(spawnTh) * sr, spawnY = sun.y + Math.sin(spawnTh) * sr;
+  game.spawn = {
+    x: spawnX, y: spawnY,
+    vx: -sv * Math.sin(spawnTh), vy: sv * Math.cos(spawnTh),
+  };
+  game.homeStar = sun;
+  game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   // Roguelite life pods: one seeded near the starting belt so the +1-life
-  // mechanic is discoverable; replenishWorld/main.js trickle in more.
+  // mechanic is discoverable; replenishWorld/main.js trickle in more. The
+  // offset is rotated WITH the spawn point (not pinned to the old north-only
+  // math) so it stays a short hop from wherever the ship actually starts;
+  // at the default angle the rotation is identity and the pod lands exactly
+  // where it always did.
   game.pickups = [];
   game.lifeTimer = PROG.LIFE_RESPAWN;
-  spawnLifePod(game, sun.x + 2400, sun.y - sr - 1100);
+  {
+    const dTh = spawnTh - (-Math.PI / 2), cd = Math.cos(dTh), sd = Math.sin(dTh);
+    const ox = 2400, oy = -1100;   // the original fixed offset, at the original north angle
+    spawnLifePod(game, spawnX + (ox * cd - oy * sd), spawnY + (ox * sd + oy * cd));
+  }
   // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
   // they reset with the world). Seeded off the same world rng — see glow.js.
   seedGlowPockets(game, rng);
@@ -3787,12 +3841,9 @@ export function replenishWorld(game, dt) {
         // Chart zone = the nameplate zone (drawApproach): planets keep their
         // wide ring, named POIs their 900/1400 POI zones, plain moons a
         // tighter ring of their own — reading the nameplate IS the chart.
-        const zone = (b.type === 'planet' ? b.radius * 5 + 600
-          : b.shepherd || b.volcanic || b.carved ? 900
-            : b.type === 'station' || b.majorComet ? 1400
-              : b.type === 'moon' ? b.radius * 5 + 300 : 900)
-          + recon * (b.type === 'planet' ? 1300 : 650);
-        if (d < zone) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
+        // chartZoneR is shared with generateWorld's spawn-clearance search,
+        // which must agree with this exact definition of "in range".
+        if (d < chartZoneR(b, recon)) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
         else uncharted++;
       }
       game.surveyTotal = game.prog.surveyed + uncharted;

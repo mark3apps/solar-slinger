@@ -347,17 +347,43 @@ Plus the three scaling rules that make a big debris cascade affordable:
   window is. **Attitude and stillness are ENTRY gates; only CONTACT holds a berth**, and the latch
   drains `DOCK_DRAIN`× faster than it fills, which is the whole of the hysteresis. A landing that
   silently declines to latch is this feature's worst failure mode, so the approach SHOWS ITS STATE —
-  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing.
+  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing. Two refusals
+  no flying can clear (their wording says "go elsewhere"): **no berth in a wound** (ground cratered
+  past `CFG.DOCK_CRATER_MAX` of the radius, off `util.scarSurfaceAt` — a pad pins to the NOMINAL
+  radius and would float over the hole), and **no anchorage on a world too small for the ship class**
+  (`config.dockHostOk`, berth floor vs 0.55 of the host radius — a tier-5 port wrapped a median
+  moon). Both lines run again on STANDING stations in `updateDock`'s sweep: ground blasted past the
+  crater line COLLAPSES the station (debris + message; alarm-grade when it was home), and a tier-up
+  that outgrows a station's world DECOMMISSIONS it quietly.
+- **A STANDING STATION LANDS YOU ITSELF** (`physics.updateAutoland`, `CFG.AUTOLAND_*`): close, slow
+  and hands-off near a pad you built **with a clear straight line to it** (`padPathClear` — it flies
+  a straight approach, so a world across the way refuses; the host's own far side falls out of the
+  same test), and it takes the helm — eases the approach, stands the nose
+  up, and lets the ordinary gates latch. Any thrust cancels it (cooldown `AUTOLAND_CD`, also set by
+  a launch so the pad can't reel you straight back in, and by a dash or warp, which never touch the
+  throttle); the first landing on bare ground is still
+  flown by hand. Not mirrored in `predictPaths` — see the doc for why.
+- **A HOME RESPAWN ARRIVES BERTHED** (`physics.berthAt`, called from main.js's respawn): docked in
+  the clamps, shield and repair live, one thrust from a launch — never hovering over its own pad to
+  re-earn a berth it already owns.
 - **A DOCK IS A STRUCTURE, NOT A STATE.** Berth on bare ground and you BUILD one: `DOCK_BUILD` (10s)
   of staying put, during which you get **nothing** — the shield and the repair both gate on
   `physics.dockReady`, so those ten exposed seconds are the price. Once built the station STANDS on
   that world for the rest of the run; fly back and you berth instantly with everything live.
   `game.docks` holds them (bounded by `DOCK_MAX`), and `game.dock`/`game.home` are REFERENCES into
   it, never copies — the build clock ticks on the station.
-- **A FINISHED DOCK IS A SAFE HARBOUR**: a shield dome over the berth and total damage immunity (one
-  early-out in `damageShip`), plus `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull
-  never self-heals". The dome also **REPELS** loose rock and aliens (`updateDomeShield`) — immunity
-  alone is half a shield. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
+- **A FINISHED DOCK IS A SHIELDED HARBOUR, AND THE SHIELD IS FINITE**: a dome over the berth backed
+  by a fixed pool (`CFG.DOCK_SHIELD` 2400, on the station as `d.hp`) that **never recharges** — and
+  when it runs out the STATION breaks with it (`breakDock`). Damage drains it and the overflow of the
+  killing blow still reaches the hull on that same call (no free frame, the ram's rule). Plus
+  `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull never self-heals". The dome also
+  **REPELS** loose rock and aliens (`updateDomeShield`, which costs charge) — absorption alone is
+  half a shield. **Every velocity in that repel is measured in the dock's own frame** (`surfaceVel`):
+  the dome rides an orbiting world, and read absolutely, a drifting rock bills as a 700 u/s impact
+  and re-bills every substep.
+- **A PAD IS SIZED BY THE HULL AS DRAWN** (`config.berthR` = `st.radius × st.vis`), never by the
+  spec-agnostic collision circle — the scout and brawler art reaches past it, and sizing the deck off
+  the hitbox left them wider than their own berth. `dockHostOk` reads the same expression. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
   is why `DOCK_TIERS` lives in config.js: a field whose pushing edge and drawn edge were two
   expressions is the mirror-drift trap. The ship is **held UPRIGHT** while berthed (`DOCK_UPRIGHT`;
   the mouse stops steering, aiming is unaffected) and **pinned EXACTLY** to the pad — friction is an
@@ -381,8 +407,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
   back. One at a time, and **it dies with its world**. A station is `{ b, ang, rf, t }` — a body, a
   SURFACE-LOCAL bearing, a fraction of its radius (`util.padPos`) and its build seconds — never a
   coordinate: a world orbits AND spins, and a chipped-down world must keep its pad on the surface.
-  HOME is the lives ROSE on all three surfaces (pad, dial, chart) because rose already means "a life"
-  and one meaning must not wear three hues. **The station's ART tracks the SHIP'S TIER**
+  HOME is the lives ROSE — because rose already means "a life" and one meaning must not wear three
+  hues — but IN-WORLD it is a FLAG, NOT A PAINT JOB: the structure stays steel at every station and
+  only a lit spire and pennant go rose. The two instruments (dial, chart) still mark home in it
+  outright, which is their own grammar. **The station's ART tracks the SHIP'S TIER**
   (`config.DOCK_TIERS` via `dockTier`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
   every station you own from a landing slab to a working spaceport.
 - **Hover hint rings:** green = right-click STOWS it, amber = right-click CRUSHES it into the ram
@@ -425,6 +453,28 @@ Plus the three scaling rules that make a big debris cascade affordable:
   it converges. A spec's drawn reach is now past its collision circle by `vis`, so anything wrapping
   the ART (`shipVisualR`, `ramPlate`) multiplies by it while the collision circle stays one number
   for every spec.
+- **THE RAM IS MADE OF ROCK, AND ROCK HAS ITS OWN SCALE** — the one thing `SHIP_VIS` can't fix, since
+  it matches the slab to the HULL and the problem is the slab against the WORLD. `config.ramPlate`
+  sizes it off `hypot(r, CFG.RAM_MIN_R)`: a SOFT floor, so it never stops growing with the ship and
+  it evaporates where it isn't wanted (+391% at tier 0, +3% at tier 5). **Size it off the STONE, not
+  the slab** — the rocklet is capped by the slab's depth, so 26 is what lands tier-0 stones at radius
+  ~7, mid-class for the belt rock (6-14) the ram is built from. The floor is the SLAB only —
+  `back`/`gap` stay on the true drawn hull, or the ram floats a ship-length out in front.
+  `ramFace`/`ramArc` follow it by the mirror rule, so a low-tier ram's protected arc grows with what
+  you can see (tier 0 rank 1: 27deg -> 31deg); absorption is priced on ram MASS so it doesn't move.
+- **A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH** — the slab's thickness sizes the STONE
+  (`depth x RAM_STONE`) and `halfW` is DERIVED as whatever `ramPerRow(t)` of them occupy shoulder to
+  shoulder at `ramPack(t)` spacing (under 1 at every band, so they always touch — 0.92 jammed at band
+  1 to a 0.79 overlap at band 12). An independent width ramp is the bug this replaced: the slab grew
+  without getting fuller and the stones hung apart on their beams. `ramRows`/`ramPerRow`/`ramPack`/
+  `RAM_STONE` are exported and the plate publishes `stone`, because render builds the layout and
+  config solves the width against it — nothing in `ramTierRocks` may size a stone from the width.
+- **THE RAM'S DENSITY LADDER IS TWELVE BANDS, TWO PER RANK** (`config.RAM_TIERS`), and **band 1 is a
+  PAIR** — two boulders, the one count the old ladder had no rung for. The EVEN bands are
+  the old six-band ladder exactly, so every rank still tops out on the build it always did. Three
+  things are keyed off the length and move with it: `ramPlate`'s `t` coefficients, `ramTierRocks`'
+  rows/perRow/packK ramp and rig count, and `spendRam`'s per-drop spall (a crossing now happens twice
+  as often, and the debris budget is not free).
 - **ONE HULL STROKE WEIGHT, AND IT IS THE HAULER'S** (`render.outlineW(tier, r)`). Never derive it
   per spec: the old `k × u` form looked shared but `u` is an ART-SPACE unit that differs per ladder,
   so equal coefficients drew unequal lines — and `SHIP_VIS` made it worse by scaling two ladders up.
@@ -556,7 +606,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; every check must pass (31 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (32 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

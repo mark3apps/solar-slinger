@@ -33,6 +33,17 @@
       </span>
       <span class="stattrack"><span class="statwell"><span id="burnFill"></span></span></span>
     </div>
+    <!-- THE HARBOUR'S OWN SHIELD. Present only while berthed at a FINISHED
+         station: it is the dome over THIS berth, it never recharges, and when
+         it runs out the station goes with it. Last in the stack because it is
+         the only gauge that isn't part of the ship. -->
+    <div class="statbar hidden" id="dockBar">
+      <span class="stathead">
+        <span class="statlabel">DOCK</span>
+        <span class="statnum" id="dockNum"></span>
+      </span>
+      <span class="stattrack"><span class="statwell"><span id="dockFill"></span></span></span>
+    </div>
   </div>
   <!-- The PILOT CARD. It reads BOTTOM-UP, because that is the order the run
        happens in: the XP rail is bolted across the card's foot, the tier it
