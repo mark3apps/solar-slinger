@@ -60,16 +60,17 @@ export class Body {
     // A PLANET'S DAY GETS LONGER THE BIGGER IT IS (CFG.PLANET_SPIN_*): the flat
     // slowdown applies to every world, and the size falloff on top of it only
     // bites past PLANET_SPIN_REF, so small worlds are slowed but never sped up.
-    // ~157-419s for a 180-unit world, 9-25 MINUTES for a 1,290-unit giant.
-    // Moons keep their quicker turn (~45-126s) — it is part of reading as a
-    // small body next to a world, and they are all under the reference anyway.
+    // ~314-838s for a 180-unit world, 18-50 MINUTES for a 1,290-unit giant.
+    // Moons keep their own quicker turn (~90-252s) — it is part of reading as
+    // a small body next to a world — halved same as planets per the same
+    // user request.
     const spinDir = Math.random() < 0.5 ? -1 : 1;
     this.spin = this.type === 'planet'
       ? spinDir * (0.03 + Math.random() * 0.05) * CFG.PLANET_SPIN_SLOW
         * Math.pow(CFG.PLANET_SPIN_REF / Math.max(CFG.PLANET_SPIN_REF, o.radius), CFG.PLANET_SPIN_POW)
-      : this.type === 'moon' ? spinDir * (0.05 + Math.random() * 0.09)
+      : this.type === 'moon' ? spinDir * (0.025 + Math.random() * 0.045)
       : (Math.random() - 0.5) * 0.6;
-    this.rot = Math.random() * 6.28;
+    this.rot = Math.random() * TAU;
     this.attractor = this.type === 'star' || o.mass >= CFG.ATTRACT_MIN;
     // Stations/nests override hp: light enough to grab, tough enough to matter.
     // PLANETS are their own durability CLASS — a flat base plus a gentle mass

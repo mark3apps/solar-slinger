@@ -321,11 +321,17 @@ export const CFG = {
   // small worlds take the flat slowdown alone and are not sped up by the curve.
   //
   // Measured across the sky at these values: a 180-unit world goes from a
-  // ~78-210s day to ~157-419s, and the 1,290-unit giant from the same ~78-210s
-  // to ~9-25 MINUTES. MOONS ARE DELIBERATELY UNTOUCHED — the request named
-  // planets, moons are all well under the reference radius anyway, and their
-  // quicker turn is what makes a moon read as a small body next to a world.
-  PLANET_SPIN_SLOW: 0.5,
+  // ~78-210s day to ~314-838s, and the 1,290-unit giant from the same ~78-210s
+  // to ~18-50 MINUTES. A later user call halved rotation again for BOTH
+  // planets and moons — moons were deliberately left untouched the first
+  // time, but the second ask named both explicitly (the moon range itself is
+  // baked half-speed in entities.js, there being no prior moon knob to reuse).
+  // NOT purely cosmetic: `spin` feeds `util.surfaceVel` (surface friction's
+  // drag target, the dock speed gate, and a body's post-crumble/gravel spin),
+  // so halving it also halves the tangential ground speed a landing or a
+  // docked ship has to match — smaller worlds/moons barely move the number,
+  // but it is a real, if gentle, easing of the fastest-spinning giants' decks.
+  PLANET_SPIN_SLOW: 0.25,
   PLANET_SPIN_REF: 300,
   PLANET_SPIN_POW: 0.85,
 
