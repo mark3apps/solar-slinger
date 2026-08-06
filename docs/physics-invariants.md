@@ -265,9 +265,15 @@ off-rail planets.
 
 **Letting the families overlap is the user's design call** — moons stay far out, and a conjunction
 must not unmake a charted world. The guard is deliberately narrow: both bodies railed, both natural
-(`thrownTimer <= 0`), both planet/moon type, and below `DMG_THRESH`. Player and alien throws keep
-every bit of their impulse, damage and derail, and a genuine celestial crunch above the threshold
-resolves normally.
+(`thrownTimer <= 0`), both planet/moon/**station/nest** type, and below `DMG_THRESH`. Player and
+alien throws keep every bit of their impulse, damage and derail, and a genuine celestial crunch
+above the threshold resolves normally.
+**Installations joined the guard 2026-08**: the installation-lane sweep in world.js separates a
+station from its OWN parent's moons, but a station's reach from its host and a NEIGHBOUR lane's
+family overlap exactly as two families do, and no radial nudge can separate two different parents'
+bands. Measured on seed 987654321 after the proportional moon-floor pass re-laid the slots: the
+relay station met a foreign moon at ~48 u/s closing and the contact knocked it into its own planet
+— a charted world lost to scenery crossing scenery, with no player anywhere.
 
 **THE ALL-PROGRADE SKY IS WHAT KEEPS THAT AFFORDABLE.** The guard is gated on `closing <
 DMG_THRESH`, so how much overlap it can absorb depends entirely on how fast a conjunction closes.
@@ -369,9 +375,23 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
     ship scraping it is precisely the secular pump the rails exist to prevent. And unlike the rubber
     band and the long arms, which act at RANGE and so must be mirrored, this term exists only in
     contact and the forecast TERMINATES at contact (`shipHit`).
+  - **OCEAN WATER DRAG is a KNOWN, ACCEPTED mirror gap.** Both forecast hit tests use the seabed
+    (`CFG.OCEAN_CORE`) exactly as the collider does — the floor can never disagree — but the drag in
+    the water column above it (`CFG.OCEAN_DRAG`) is NOT mirrored, and it acts *before* contact, so
+    the SURF_FRICTION defense above does not strictly cover it. The forecast flies ballistic through
+    a 0.14r column the sim drags, so the true impact point lands a little shoreward of the ✕ for
+    slow, light rock. Accepted deliberately: the column is thin (sub-second crossing), the error is
+    a displacement along the seabed and never a wrong hit/no-hit, and mirroring a mass-divided,
+    depth-ramped damping into the ghost integrators would buy centimetres of ✕ accuracy at real
+    per-substep cost. Do not flag this as a missed mirror in future audits; if the water ever
+    thickens (a deeper `OCEAN_CORE`) or drag strengthens, revisit.
 - **Docking** (`DOCK_*`, `physics.updateDock`): the landing this makes possible. Three gates —
   contact, nose within `DOCK_ARC` of straight up off the surface, surface-relative speed under
-  `DOCK_SPEED` — held together for `DOCK_TIME`. The gates are read inside `collideShipBody` (the one
+  `DOCK_SPEED` — held together for `DOCK_TIME`. **OCEAN worlds never open the gates** (user call,
+  2026-08): their contact surface is the SEABED (`surfRadius` returns `CFG.OCEAN_CORE` × radius),
+  and a hull resting on bedrock under water is not a landing — `collideShipBody` skips the whole
+  landing block for ptype `'ocean'`, so no guide, no latch, no dock. Friction and the bounce still
+  apply there (the seabed is ground). The gates are read inside `collideShipBody` (the one
   place that knows the hull is touching something) into a module-level `landing` scratch, and
   RESOLVED once per substep in `updateDock` right after the ship/alien contact pass — because "the
   hull touched nothing" is a fact no per-body collider can observe. **Attitude and stillness are

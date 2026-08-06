@@ -106,13 +106,35 @@ const GAS_KIND_COLORS = {
   azure:  ['#5a9dc9', '#4f93c4', '#7bd9c9'],
   violet: ['#b05ac9', '#a04fc0', '#c06ad4'],
 };
-// The name pool. Must be at least as long as the MOST worlds buildLayout can
-// mint (15 anchors + 2 extras + 1 co-orbital = 18) or nameIdx wraps and the
-// sky gets two worlds with one name (the old 14-name list shipped duplicate
-// Khepri/Vantor, which made chart messages and window.goto ambiguous). 19
-// covers it. generateWorld SHUFFLES this pool with the world rng, so which
-// world wears which name is the seed's choice — the list itself is just the
-// vocabulary.
+// THE NAME POOLS — one per archetype (user call, 2026-08), so a name carries
+// its world's flavour and different seeds wear genuinely different names
+// instead of one 19-name deck re-dealt. Rules that keep this safe:
+//  - Pools are DISJOINT and each is 10 deep against a worst per-type count of
+//    ~4 (exactly three gas giants is structural; the duplicated archetypes cap
+//    around there), so no run can wrap a pool — a wrap is two worlds with one
+//    name, which makes chart messages and window.goto ambiguous (the old
+//    14-name list actually shipped that bug).
+//  - Names come off a PRIVATE stream forked from the run seed (nameRng in
+//    generateWorld), NEVER the world rng — and the old shared-pool shuffle is
+//    still burned and discarded there, so every existing seed's layout is
+//    bit-identical and only the nameplates changed ("kept and discarded",
+//    the retrograde-lane rule).
+//  - The legacy 19 names live on, each filed under the archetype it read
+//    best on, so long-running players still meet familiar worlds.
+const PLANET_NAME_POOLS = {
+  lava:    ['Vantor', 'Cindral', 'Pyrris', 'Scoria', 'Brasque', 'Ashvel', 'Kilnor', 'Fervel', 'Charwyn', 'Emberis'],
+  rocky:   ['Sable', 'Wold', 'Tantal', 'Drex', 'Cairnos', 'Gravon', 'Torvel', 'Rhud', 'Manthe', 'Ferrow'],
+  gas:     ['Ymir', 'Ferren', 'Naiad', 'Boreth', 'Vashtar', 'Ondrel', 'Maelgor', 'Threx', 'Ullur', 'Grandis'],
+  ice:     ['Brune', 'Pell', 'Ison', 'Rimhel', 'Frael', 'Vintra', 'Skade', 'Halvor', 'Nivelle', 'Tundrel'],
+  terran:  ['Corve', 'Calyx', 'Quorra', 'Verdane', 'Sylva', 'Loamis', 'Talem', 'Rilla', 'Everin', 'Arbore'],
+  ocean:   ['Halcyon', 'Maris', 'Thalos', 'Brinn', 'Undine', 'Delmar', 'Sirene', 'Fathom', 'Swale', 'Lagune'],
+  desert:  ['Khepri', 'Dunreth', 'Sirocco', 'Ochra', 'Zephris', 'Barchan', 'Mesarra', 'Harmat', 'Aridas', 'Sabkha'],
+  shroud:  ['Nerev', 'Velmar', 'Pallis', 'Obscura', 'Mistrel', 'Duskren', 'Gauzel', 'Murken', 'Shrivane', 'Cirralis'],
+  crystal: ['Ossia', 'Aster', 'Prisme', 'Lucent', 'Beryl', 'Quarzen', 'Selen', 'Kyrast', 'Virell', 'Faceze'],
+};
+// The legacy shared pool. STILL LOAD-BEARING twice over: generateWorld burns
+// its shuffle on the world rng (removing those draws would re-jitter every
+// seeded sky), and addPlanet's no-name fallback still picks from it.
 const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex', 'Ferren', 'Wold', 'Corve', 'Naiad', 'Aster'];
 
 // Moon archetypes — like planets, each kind has its own palette and a distinct
@@ -335,8 +357,21 @@ function moonZone(star, planet, orbitR) {
   // The inner clearance rides MOON_R_MUL because that is what it is FOR: 90
   // comfortably cleared a 42-radius moon, and a doubled moon parked on the old
   // floor would hang 84 units into a planet that also grew underneath it.
+  // ...AND THE FLOOR IS PROPORTIONAL NOW TOO (user call, 2026-08: moons —
+  // "especially" the gas giants' — orbited visibly inside their own world's
+  // drawn kit). The absolute term covers small worlds; the proportional term
+  // covers what each archetype DRAWS around itself: a ring's outer band
+  // reaches ~2.2r (render.drawRing at 2.14r + half its stroke), the terran
+  // burn deck 1.58r, a crystal's spikes 1.32r — so a ringed world's family
+  // starts clear of its rings and a terran's clear of its sky. The ring-gap
+  // SHEPHERD is spawned pinned to its lane by its own path (spawnShepherd)
+  // and never consults this zone; a tighter zone degrades to FEWER moons via
+  // spawnMoon's count clamp, never to a crossing pair.
+  const propFloor = planet.ring ? 2.5
+    : planet.ptype === 'terran' ? 1.75
+    : planet.ptype === 'crystal' ? 1.6 : 1.45;
   return {
-    minR: planet.radius + 90 * CFG.MOON_R_MUL,
+    minR: Math.max(planet.radius + 90 * CFG.MOON_R_MUL, planet.radius * propFloor),
     maxR: Math.min(hill * CFG.MOON_ZONE_MUL, room),
   };
 }
@@ -1001,17 +1036,35 @@ export function generateWorld(game, seed = 20260721) {
       it.radius = got[i];
     });
   }
-  // Names are a seeded SHUFFLE of the pool now — which world wears which name
-  // varies per seed, and the pool comfortably covers the layout's fixed 15
-  // named worlds (the binary companion takes "<name> B" and the Wanderer's
-  // Star names itself; a co-orbital pairing rearranges those 15, never adds).
-  const names = shuffle(rng, PLANET_NAMES.slice());
+  // Names come off the PER-ARCHETYPE pools now (PLANET_NAME_POOLS), drawn
+  // from a PRIVATE stream forked off the run seed — never the world rng. The
+  // legacy shuffle below is KEPT AND DISCARDED: it burns the exact world-rng
+  // draws it always did, so every existing seed's layout, jitter and moon
+  // census are bit-identical; only the nameplates changed. (The binary
+  // companion takes "<name> B" and the Wanderer's Star names itself.)
+  shuffle(rng, PLANET_NAMES.slice());
+  // The seed is MIXED (an avalanche step, the ghostOff idiom), and each pool
+  // shuffles off its OWN stream — a plain `seed ^ K` fed one sequential
+  // stream, and its early draws were biased enough that three unrelated seeds
+  // all dealt the lava pool the same first name (measured: 'Cindral' on
+  // 20260721, 555000111 AND 42).
+  const nameSeed = (Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) ^ (seed >>> 13)) >>> 0;
+  const namePools = {}, nameIdxByType = {};
+  let nameTi = 0;
+  for (const k in PLANET_NAME_POOLS) {
+    const tSeed = (nameSeed + Math.imul(++nameTi, 0x9E3779B9)) >>> 0;
+    namePools[k] = shuffle(mulberry32(tSeed), PLANET_NAME_POOLS[k].slice());
+  }
+  const nextName = (pt) => {
+    const pool = namePools[pt] || namePools.rocky;
+    const i = nameIdxByType[pt] = (nameIdxByType[pt] || 0) + 1;
+    return pool[(i - 1) % pool.length];   // % is belt-and-braces; 10 deep never wraps
+  };
   const planets = [];
-  let nameIdx = 0;
   for (const item of layout) {
     if (item.belt) { addBelt(bodies, rng, sun, item.r, item.spread, item.count); continue; }
     if (item.vacant) continue;   // the co-orbital pairing's freed lane — no world here
-    item.name = names[nameIdx++ % names.length];
+    item.name = nextName(item.ptype);
     const p = addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
     item.p = p;
     planets.push(p);
@@ -1054,7 +1107,7 @@ export function generateWorld(game, seed = 20260721) {
     // have carried on its own lane.
     if (item.partner) {
       const pt = item.partner;
-      pt.name = names[nameIdx++ % names.length];
+      pt.name = nextName(pt.ptype);
       pt.ang = Math.atan2(p.y - sun.y, p.x - sun.x) + pt.dth;
       const q = addPlanet(bodies, rng, sun, item.r, pt.mass, pt.radius, pt);
       pt.p = q;
@@ -3974,6 +4027,9 @@ export function replenishWorld(game, dt) {
       // 0.4 glow gate, so ambient wear alone would eventually open a glowing
       // hole in every giant's cloud deck with nothing having hit it.
       if (p.ptype === 'gas') continue;
+      // ...and neither does an OCEAN world: the sea closes over every wound —
+      // no pitting, no scars (hits read as waves; see the OCEAN_* notes).
+      if (p.ptype === 'ocean') continue;
       const floor = p.maxHp * CFG.PLANET_WEAR_FLOOR;
       if (p.hp <= floor) continue;
       // Rate hashed off the id, never drawn from the world rng — a draw here

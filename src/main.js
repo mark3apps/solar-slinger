@@ -1204,6 +1204,7 @@ function resetRun(seed, openCard = true) {
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
+  game.shipInSea = false;
   game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
@@ -1432,6 +1433,12 @@ const EVENT_MSGS = [
   // ---- planet-archetype mechanics (terran/ocean/desert/shroud/crystal) ----
   { flag: 'atmoWarn', tut: 'atmo', snd: sfx.sfxChime,
     first: ['ATMOSPHERIC BURN-UP — small rocks flash to nothing in this sky. Only a heavyweight reaches the surface.', 5.5] },
+  // The ship itself in the burn deck — an alarm, the hull is cooking NOW; the
+  // message carries the counterplay (the deck is a band, not a well).
+  { flag: 'atmoShipWarn', tut: 'atmoShip', snd: sfx.sfxAlarm,
+    first: ['ATMOSPHERIC ENTRY — the burn deck is searing the hull. Punch through: the air beneath is calm.', 5.5] },
+  { flag: 'seaWarn', tut: 'sea', snd: sfx.sfxChime,
+    first: ['OPEN SEA — the water takes your speed. Bedrock lies beneath, but there is nothing here to berth on.', 5.5] },
   { flag: 'spoutWarn', tut: 'spout', snd: sfx.sfxChime,
     first: ['WATERSPOUT — the world-sea flings brine ice into low orbit. Free shield ammo.', 5.5] },
   { flag: 'duneWarn', tut: 'dune', snd: sfx.sfxChime,

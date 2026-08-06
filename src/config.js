@@ -2209,16 +2209,50 @@ export const CFG = {
   // cloaked siege would be a free win). Render haze reaches 2.1x — wider than
   // the mechanic, same no-hard-edge law as the dust moons.
   SHROUD_HALO: 1.7,
-  // TERRAN ATMOSPHERE (physics.step): loose free-flying rocks entering the
-  // shell burn — depth² x maxHp-fraction dps, the corona-heat shape, so small
-  // rocks flash to nothing while a heavyweight (> ATMO_MAX_MASS) punches
-  // through to the surface: bombarding a terran world takes a real rock.
-  // Railed bodies are exempt (the world's own junk satellites live inside the
-  // shell, and damaging a railed body derails it — a cascade), as are held
-  // rocks and premium/quest objects. The SHIP is untouched: breathable sky.
+  // TERRAN ATMOSPHERE (physics.step): a BURN DECK, not a well — the layer
+  // between ATMO_IN and ATMO_ZONE burns what flies through it, and beneath it
+  // the air is CALM (user design call: "once through the damage stops"). The
+  // band profile is 4u(1-u) — zero at both edges, peak mid-deck — so the burn
+  // fades in and out with no hard edge at either boundary. Loose free-flying
+  // rocks burn at the maxHp-fraction rate (profile² x ATMO_DPS_FRAC, raised
+  // from 0.9 when the band replaced the full well — the deck is thinner and
+  // releases a rock that punches under it, so the rate compensates to keep
+  // "small rocks flash to nothing" true); a heavyweight (> ATMO_MAX_MASS)
+  // punches through: bombarding a terran world takes a real rock. Railed
+  // bodies are exempt (the world's own junk satellites live inside the shell,
+  // and damaging a railed body derails it — a cascade), as are held rocks and
+  // premium/quest objects.
+  // THE SHIP BURNS TOO NOW (user design call) — flat ATMO_SHIP_DPS x profile,
+  // the environmental-hazard convention (never hull-scaled), sitting under the
+  // gas cloud tops' 9: crossing the deck is a toll, camping in it is death,
+  // and the surface beneath is reachable by anyone willing to punch through.
+  // ATMO_IN clears the tallest dock pad (~44u on a ~500u world = 1.09r), so a
+  // berthed ship always sits in calm air below the deck.
   ATMO_ZONE: 1.5,
+  ATMO_IN: 1.14,
   ATMO_MAX_MASS: 1400,
-  ATMO_DPS_FRAC: 0.9,
+  ATMO_DPS_FRAC: 1.4,
+  ATMO_SHIP_DPS: 7,
+  // OCEAN WORLDS (user design call): the sea is not a surface — the COLLIDER
+  // is the seabed at OCEAN_CORE x radius (wired through surfRadius/shaped, so
+  // ship, rocks, aliens and both predictPaths mirrors all agree), and the
+  // water between seabed and the drawn radius is a DRAG VOLUME: anything loose
+  // in it is damped toward the water's own frame (util.surfaceVel — the
+  // world's motion plus its spin), depth-ramped so the waterline is not a hard
+  // edge, and divided by (1 + mass/OCEAN_DRAG_MASS) so a pebble stops in the
+  // shallows while a thrown moon ploughs to the bedrock — kinematic drag
+  // would stop both alike, and "heavyweights punch through" is the atmosphere
+  // rule read across. Splashdowns and seabed strikes stamp p.seaHits and
+  // render.drawSeaRipples runs waves across the face — an ocean world shows
+  // its hits as WATER, never as craters (canWear excludes it like gas, and
+  // ambient wear skips it: the sea closes over every wound).
+  // NO BERTH ON OPEN SEA: the landing gates in collideShipBody skip ocean
+  // worlds outright — there is bedrock to rest on beneath the water, but
+  // nothing to build a dock on.
+  OCEAN_CORE: 0.86,
+  OCEAN_DRAG: 2.6,
+  OCEAN_DRAG_MASS: 1500,
+  OCEAN_RIPPLE_T: 2.6,
 };
 
 // THE POCKET OUTLINE. A pocket sampled straight from the FIELD_LEN x
