@@ -13,6 +13,21 @@
   deviation in any direction — with the spin you reach flow+maxSpeed, against it flow−maxSpeed (so out
   in the belt, where maxSpeed exceeds the flow, you can fly retrograde; near the sun the flow outruns
   maxSpeed and sweeps you prograde). Mirrored in predictPaths — keep in sync.
+- **GRAVITY SLING CREDIT** (`SLING_MAX`/`SLING_DECAY`, added 2026-08): over the ceiling, WORLD gravity
+  (the `game.shipGx/Gy` compass stash — sun excluded) doing positive work on the flow-relative
+  deviation banks `s.slingSpd`, an extra allowance on the governor's cap, up to `SLING_MAX` (1.0) ×
+  maxSpeed. It decays exponentially at `SLING_DECAY` (0.12/s, half-life ~5.8s) while ordinary bleed
+  pins speed to the falling cap+credit — so a slingshot rides high and comes down slowly, thrust or
+  knockback overspeed (no credit) still bleeds inside a second, and the tier cap is always the floor
+  it settles back to. Accrual deliberately has NO over-cap gate: the plunge builds a slingshot's
+  speed below the ceiling (at periapsis gravity is perpendicular to the track), so an over-cap gate
+  starves the whip and the bleed clamps it at the cap — measured 294 vs 465 u/s peak on the same
+  flyby. A descent banking credit is the accepted cost: converting a dive into speed IS the
+  maneuver, the bound and the decay keep it from becoming a standing afterburner, and a climb-out
+  banks nothing (gravity work is negative). The credit ceiling means a hard cap of
+  (cap+credit)×`SPEED_HARD` — momentarily up to ~3.8× tier at full bank. `game.speedFrac` divides by
+  cap+credit so the audio speed voice doesn't pin during the ride. predictPaths mirrors the elevated
+  cap FROZEN at the current credit (it moves too slowly over a forecast horizon to bend the path).
 - **Sun-anchored orbits are slightly non-uniform:** `railBody` nudges each star-anchored body's angular
   speed by a deterministic ±~4% (hashed off `b.id`), so the sky isn't one rigid disc. Kept SUBTLE — a
   bigger spread lets same-radius rocks catch up and grind each other. Moons/installations stay exact.
@@ -327,9 +342,31 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
   down with the sky on purpose (slower cruise ⇒ gentler pull). (History: mass was once 3.2e7 to speed
   the sky up 1.4x; it was lowered to 1.42e7 — ~1.5x slower than that — to calm flight at the 2.46 zoom.)
 - **LONG ARMS** (`SHIP_WELL_START`/`SHIP_WELL_MAX`): the SHIP feels planet/moon/rogue gravity fall off
-  as 1/r (capped at 3.5x) beyond 4 body radii — longer reach, identical close-range gravity. It lives
-  in `gravityAt` behind `heavyMul !== 1` (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two
-  must stay in sync or the forecast lies. Thrown rocks, aliens, debris, celestials never feel it.
+  as 1/r (capped at `SHIP_WELL_MAX`, 6x) beyond `SHIP_WELL_START` (2.5) body radii — longer reach
+  without deepening the far field's 1/r² shape inside the knee. (This bullet once read "4 radii,
+  capped 3.5x"; the constants are the truth.) It lives in `gravityAt` behind `heavyMul !== 1`
+  (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two must stay in sync or the forecast
+  lies. Thrown rocks, aliens, debris, celestials never feel it. Inside the 2.5-radius knee,
+  close-range gravity is no longer identical to plain GM/r² — SURFACE WEIGHT (below) takes over
+  there.
+- **SURFACE WEIGHT** (`SHIP_SURF_REF`/`SHIP_SURF_MAX`/`SHIP_SURF_END`, added 2026-08): the SHIP feels
+  a world's pull ramp UP toward the surface, by a peak of `radius/SHIP_SURF_REF` (capped at 6x), fading
+  to nothing at `SHIP_SURF_END` (2.5) body radii — deliberately the same knee as `SHIP_WELL_START`, so
+  the two regimes tile with no overlap and cruise/slingshot range is untouched. User call: "it should
+  be semi difficult to launch straight up from a planet ... strong on the larger planets, not a straight
+  pull across the board." It exists because the world-scale pass grew radii without masses, leaving
+  surface gravity flat-to-BACKWARDS across the sky (the biggest giant ~24 u/s², a small desert world
+  ~47, thrust 180). At REF 390: the biggest giant reads ~111 u/s² at the surface (net climb ~69 against
+  tier-0 thrust — hard but always escapable), mid worlds ~57, worlds at/below REF and ALL moons
+  unchanged (a peak ≤ 1 never amplifies). Same discipline as LONG ARMS: ship-only behind
+  `heavyMul !== 1`, MIRRORED in `predictPaths.accelAt`, and it stacks with the gas-giant enclosed-mass
+  interior (which still shrinks toward the core, so a dive stays escapable). `SHIP_CULL_K` deliberately
+  carries no term for it — but the exact guarantee is `SHIP_SURF_MAX ≤ SHIP_WELL_MAX`: the cull's 6x
+  headroom covers the worst combined factor at every distance precisely because the two caps are
+  equal (raise the surface cap past the well cap and `SHIP_CULL_K` needs a `max()` of the two).
+  Landing knock-on checked: residual settle drift is `g_surface / SURF_FRICTION` ≈ 28 u/s on the
+  deepest world (the canonical worst-case number, kept on `SURF_FRICTION`'s config comment), still
+  far inside `DOCK_SPEED` (60).
 - **Fog of war:** the minimap only draws bodies with `b.seen` (set by the `replenishWorld` scan once
   within sensor range; the sun is always visible). DENSE FIELDS are the one exception to the
   asteroids-stay-off-the-dial rule: every field rock in radar range draws as a dim tan 1px return
