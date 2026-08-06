@@ -338,6 +338,11 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+  **Gas giants are skipped entirely**: gas cannot crater (`damageBody`'s `canWear` — its damage
+  reads as weather), so a scar minted here would cut crater bites into the cloud tops in both
+  `render.worldSil` and `physics.surfRadius`; and the hp drip alone would cross `drawGasWound`'s
+  40%-damage glow gate on the way to the 50% floor — a glowing hole in the cloud deck with nothing
+  having hit it.
 - **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
   *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
   been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
