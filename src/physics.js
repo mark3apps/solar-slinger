@@ -1068,6 +1068,19 @@ export function shatter(game, body, credit = null) {
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 20, '#d8b8ff', 190, 1.3, 4);
     game.coreFound = true;
   }
+  // GEODE MOON: the cored-rock economy promoted one size class. Killing the
+  // moon (a PLAYER kill — the earnsScrap gate is the same "salvage is earned"
+  // rule the cored rocks ride) frees its crystal heart: one dense `core` body,
+  // fatter than any belt core, that plugs into the existing core want/scrap
+  // paths (world.js barge want, scrapValue 3.5x). Ambient traffic that happens
+  // to kill a geode moon mints nothing, exactly like an ambient cored-rock pop.
+  if (body.type === 'moon' && body.moonType === 'geode' && earnsScrap(credit)) {
+    const cm = clamp(body.mass * 0.5, 2500, 9000);
+    const core = spawnAsteroid(game.bodies, body.x, body.y, body.vx * 0.5, body.vy * 0.5, cm);
+    core.core = true; core.color = '#b98cff';
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 30, '#d8b8ff', 230, 1.5, 5);
+    game.coreFound = true;
+  }
   // SALVAGE CACHE: bursts into scrap + ice ammo pellets when you crack it
   if (body.cache && earnsScrap(credit)) {
     dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 120, body.fieldRock);
@@ -1194,6 +1207,23 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     body.sulfurPopT = 0.2;
     game.sulfurWarn = true;
   }
+  // HUSK MOONS: a hard PLAYER smash rings the wreck-plating like a dinner
+  // bell — a wreckwright descends on the moon (ai.js consumes game.huskWake;
+  // the same caps as its ambient descent, so this can never stack wrights).
+  // The sulfur gates exactly: earned credit only, not the killing blow, and a
+  // long cooldown ticked in world.js's always-running pre-pass — risk-priced
+  // mining, not a wright faucet.
+  if (body.type === 'moon' && body.moonType === 'husk' && earnsScrap(credit) &&
+      dmg > 8 && !(body.huskCd > 0) && body.hp - dmg > 0) {
+    body.huskCd = 60;
+    game.huskWake = body;
+    game.huskWarn = true;
+  }
+  // PUMICE MOONS: the first earned hit teaches the material (message only —
+  // the mechanics are the restitution and wear hooks below/in collideBodies).
+  if (body.type === 'moon' && body.moonType === 'pumice' && earnsScrap(credit) && dmg > 4) {
+    game.pumiceWarn = true;
+  }
   // CRYSTAL WORLDS: a hard PLAYER smash rings a facet loose — one dense core
   // shard (the cored-rock salvage economy: fat beam catch, 3.5x scrap) pops
   // off the impact point. The sulfur-vent gates, except the damage floor is 3,
@@ -1239,7 +1269,12 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // few points — see the CHUNK_* rationale in config.js. Corona heat's
   // per-call drip (~0.1% of maxHp) can never clear even the half gates.
   const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas';
-  const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS;
+  // PUMICE is world-class by SIZE, not mass: mMul 0.45 puts most pumice moons
+  // under the 3500 mass gate, but the gate is a proxy for "moons and up" and a
+  // pumice moon is one of the biggest drawn discs in a family — a huge moon
+  // that never sheds a chunk would contradict its whole crumbly-material job.
+  const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS ||
+    (body.type === 'moon' && body.moonType === 'pumice');
   const isWorldBody = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
   // Small rocks scar too — wear is universal, only the SPRAY needs the mass
   // gate. Their maxHp is tiny so the gate is fractional (a real bite of the
@@ -1259,9 +1294,14 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   if (canWear && scarHit) {
     // severity 0..1 blends both gates: frac carries moons, raw damage carries
     // planets (whose maxHp dwarfs any single hit)
-    const sev = clamp(frac * 8 + dmg / 60, 0.15, 1);
+    // PUMICE CRUMBLES AT DOUBLE RATE: the soft factor widens the `hard` gate
+    // and deepens sev, so the same hit takes a bigger bite and calves more —
+    // hp loss is untouched (a moon keeps its durability class, invariant 9);
+    // what doubles is how visibly the crust comes apart on the way down.
+    const soft = body.type === 'moon' && body.moonType === 'pumice' ? 2 : 1;
+    const sev = clamp((frac * 8 + dmg / 60) * soft, 0.15, 1);
     const ia = (hx !== undefined) ? Math.atan2(hy - body.y, hx - body.x) : Math.random() * TAU;
-    const hard = bigEnough && (dmg >= CFG.CHUNK_DMG_MIN || frac >= CFG.CHUNK_DMG_FRAC);
+    const hard = bigEnough && (dmg * soft >= CFG.CHUNK_DMG_MIN || frac * soft >= CFG.CHUNK_DMG_FRAC);
     // THE CRUMBLE. A WORLD calves real pieces of itself that STAY — they pop
     // out of the crater, tumble, and settle into a rubble halo hanging over
     // the wound (calveCrust / updateCrust). Every wounding hit sheds at both
@@ -1495,7 +1535,16 @@ export function killAlien(game, alien) {
   else if (alien.kind === 'lurker') bump(game, 'kLurker');
 }
 
-export function damageShip(game, dmg, cause, hitAng) {
+// `fxDmg` (default: dmg) is what the >= 1 fx/ledger gate below reads. A caller
+// applying a MULTIPLIER to continuous per-substep damage (the hostile-surface
+// skid venom) passes the unmultiplied tick here: sear ×3.5 pushes a fast
+// molten skid's single substep over 1.0 (vT ≈ 290 on a DT_COARSE machine),
+// and gating fx on the multiplied value would fire the hit sfx/shake at
+// substep rate and count grinding ticks as real "blows" in the achievement
+// ledger — exactly what the gate exists to prevent. The DAMAGE always stays
+// on `dmg` and always routes through here, so the god/dock/invuln early-outs
+// and the shield keep covering it.
+export function damageShip(game, dmg, cause, hitAng, fxDmg = dmg) {
   const s = game.ship;
   // godMode is the window.god() dev/test hook — every ship-damage path funnels
   // through here, so this one early-out is the whole feature.
@@ -1540,7 +1589,7 @@ export function damageShip(game, dmg, cause, hitAng) {
   }
   const hadShield = s.shield > 0 || game.st.shieldMax > 0;
   s.hull -= rem;
-  if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
+  if (fxDmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
     // ACHIEVEMENTS: count real BLOWS, not grinding ticks — the same >= 1 gate
     // the fx use, so "50 hits" means fifty things actually hit you.
     bump(game, 'hits');
@@ -2495,6 +2544,25 @@ function collideBodies(game, a, b) {
     // still left equal-mass hits at ~0.74 — thuds, not caroms). Kept under 1:
     // e >= 1 ADDS energy on every hit and a pocket this size boils itself apart.
     if (a.fieldRock && b.fieldRock) e = CFG.FIELD_BOUNCE;
+    // PUMICE BURIES WHAT HITS IT. The dominance scaling above is exactly wrong
+    // for a froth moon — a light rock on a heavy body is the LIVELIEST case
+    // (~0.75), and pumice's whole material read is that throws thud in and
+    // stay. Near-zero, not zero: a true 0 leaves bodies kissing the surface
+    // with no separating velocity at all and the contact re-resolves forever.
+    // ONLY when the pumice moon is the surface being hit, though: a pumice
+    // moon at 1,350-4,950 mass against its ≥15x host planet is the LIGHT
+    // partner, and deadening ITS rebound leaves a knocked-loose moon thudding
+    // along the host inside the closing<70 absorption window instead of being
+    // flung clear at the lopsided ~0.75 every other moon gets — a quiet
+    // census-eater (physics review, 2026-08).
+    {
+      const pum = a.type === 'moon' && a.moonType === 'pumice' ? a
+        : b.type === 'moon' && b.moonType === 'pumice' ? b : null;
+      if (pum) {
+        const other = pum === a ? b : a;
+        if (other.mass <= pum.mass * 15) e = 0.06;
+      }
+    }
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
     let j = ((1 + e) * closing) / (invA + invB || 1);
@@ -3056,16 +3124,35 @@ function collideShipBody(game, s, b, dt) {
     const tvx = rvx + closing * nx, tvy = rvy + closing * ny;   // tangential slide
     const vT = Math.hypot(tvx, tvy);
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
-      const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
-      damageShip(game, grind, `Ground apart skimming ${placeName(b, 'a ' + b.type)}.`, hitAng);
+      const baseGrind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
+      // HOSTILE SURFACES: a sulfur crust POISONS a skidding hull, a molten
+      // crust SEARS it — the same grind, multiplied. XP stays on the
+      // UNmultiplied grind below: skim XP is priced per hull point ground on
+      // an ORDINARY surface, and paying the multiplier out as XP would make
+      // the poison moon the best skate park in the sky, which is backwards —
+      // a hostile surface is a worse skate, not a richer one.
+      // (Applies to a PROMOTED landmark that rolled sulfur/molten too — the
+      // Forge Moon searing a skid is thematically coherent, unlike the coma /
+      // verdant-garden cases, so no volcanic/shepherd guard here on purpose.)
+      const sulfurSkid = b.type === 'moon' && b.moonType === 'sulfur';
+      const moltenSkid = b.type === 'moon' && b.moonType === 'molten';
+      const venom = sulfurSkid ? 2.5 : moltenSkid ? 3.5 : 1;
+      // fxDmg = the UNmultiplied tick: the venom must not let a single fast
+      // substep clear damageShip's >= 1 fx/ledger gate — see its signature note.
+      damageShip(game, baseGrind * venom,
+        sulfurSkid ? `Poisoned skidding across ${placeName(b, 'a brimstone moon')}.`
+          : moltenSkid ? `Seared skidding across ${placeName(b, 'a molten moon')}.`
+            : `Ground apart skimming ${placeName(b, 'a ' + b.type)}.`, hitAng, baseGrind);
       // Skating a surface is risky XP — and BANDED MOONS are the skate park:
       // same grind, same hull cost, triple the payout. DESERT WORLDS' dune
       // seas pay double, same law (bonus XP, hull cost never discounted).
       const banded = b.type === 'moon' && b.moonType === 'banded';
       const dune = b.type === 'planet' && b.ptype === 'desert';
-      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : dune ? PROG.XP_SKIM_DUNE : 1));
+      addXp(game, baseGrind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : dune ? PROG.XP_SKIM_DUNE : 1));
       if (banded && !game.tut.banded) game.bandedWarn = true;
       if (dune && !game.tut.dune) game.duneWarn = true;
+      if (sulfurSkid && !game.tut.sulfurSkid) game.sulfurSkidWarn = true;
+      if (moltenSkid && !game.tut.moltenSkid) game.moltenSkidWarn = true;
 
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;

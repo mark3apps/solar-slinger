@@ -333,9 +333,11 @@ export function contactPos(game, b, out = _pos) {
 // without the flight.
 //
 // Used by the readout strip and the journey rail — NOT by the chart's marks:
-// moons draw as icons only (see drawStarMap), because moons carry no individual
-// names in this game and a zoomed-in family printed four identical MOON OF
-// OSSIA labels in a ring around a disc already labelled OSSIA.
+// moons draw as icons only (see drawStarMap / labelsItself, which keys off
+// TYPE). Moons DO carry individual names now (world.MOON_NAMES — one pool per
+// moon type), but the icons-only law stands: a zoomed-in family printing four
+// name labels in a ring around a disc already labelled OSSIA is the clutter
+// the law exists to prevent. A moon's name is READOUT knowledge — click it.
 export function contactLabel(game, b) {
   const lvl = contactLevel(game, b);
   // Plain words. This said "UNCHARTED RETURN" — a "return" is radar jargon for
@@ -359,6 +361,26 @@ export function contactLabel(game, b) {
   return b.type.toUpperCase();
 }
 
+// A moon's readout line: [head, flavor]. The head names the archetype, the
+// flavor says what it DOES to you — the same contract as a world's ptype line.
+// Every MOON_TYPES row in world.js needs an entry here, or its moons chart as
+// a bare "A moon of X." and the archetype knowledge the chart sells is blank.
+const MOON_KIND = {
+  rock:     ['A rock moon', 'Bare, cratered, dependable ballast.'],
+  ice:      ['An ice moon', 'Cryo-geysers pop catchable shield ammo into low orbit.'],
+  iron:     ['An iron moon', 'Its magnetic field pools loose scrap at the surface.'],
+  dust:     ['A dust moon', 'Inside its haze, alien senses lose the ship.'],
+  sulfur:   ['A sulfur moon', 'A hard smash vents sling rock — and its brimstone crust poisons a skidding hull.'],
+  banded:   ['A banded moon', 'Skimming its bands pays a bonus, if you dare fly them.'],
+  lodestar: ['A lodestar moon', 'Impossibly dense — trajectories bend around it.'],
+  geode:    ['A geode moon', 'A crystal heart waits inside its shell.'],
+  verdant:  ['A verdant moon', 'Glow motes garden its low orbit, and grow back.'],
+  comet:    ['A comet moon', 'It vents ice at the low point of its long swing.'],
+  husk:     ['A husk moon', 'Plated in wreckage. Mining it wakes the wrights.'],
+  pumice:   ['A pumice moon', 'Featherweight froth — soft enough to bury a throw.'],
+  molten:   ['A molten moon', 'A black crust over live magma. Searing to skid on.'],
+};
+
 // The one-line description under a contact's name in the chart's readout. It
 // tracks the ladder too: an unvisited contact reports its CLASS, and a world's
 // archetype (the thing that decides what it does to you) is knowledge you only
@@ -377,7 +399,16 @@ export function contactClass(game, b) {
   if (b.comet) return 'A comet on a long fall toward the star.';
   if (b.type === 'moon') {
     const host = b.parent && b.parent.name ? ` of ${b.parent.name}` : '';
-    return `${b.fort ? 'A fortified moon' : 'A moon'}${host}.`;
+    // PROMOTED LANDMARKS FIRST: the Forge Moon / shepherd keep whatever
+    // moonType they rolled before world.js promoted them, so the rolled kind's
+    // line would describe a job the landmark no longer does.
+    if (b.volcanic) return `A volcanic moon${host}. Its eruptions cool into dense sling rock.`;
+    if (b.shepherd) return `A shepherd moonlet${host}, holding the ring in line.`;
+    // The archetype line is charted knowledge, same deal as a world's ptype:
+    // what a moon DOES is what the nameplate taught you.
+    const kind = MOON_KIND[b.moonType];
+    const head = b.fort ? 'A fortified moon' : (kind ? kind[0] : 'A moon');
+    return `${head}${host}.${b.fort || !kind ? '' : ` ${kind[1]}`}`;
   }
   if (b.dark) return 'A cold dwarf star, far out in the dark.';
   const kind = b.gasKind === 'azure' ? 'ICE GIANT' : PTYPE_LABELS[b.ptype] || 'WORLD';

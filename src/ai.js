@@ -582,6 +582,25 @@ export function updateAliens(game, dt) {
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
   updateForts(game, dt);
 
+  // HUSK MOONS call their own wright: a hard player smash on the wreck-plating
+  // (physics.damageBody sets game.huskWake, cooled per-moon) summons a
+  // wreckwright DOWN ON THE MOON — prompt, not on the ambient timer below, but
+  // under the ambient descent's exact caps (one wright, golems < 2), so mining
+  // a husk can never stack scavengers the timer wouldn't have allowed.
+  if (game.huskWake) {
+    const hm = game.huskWake;
+    game.huskWake = null;
+    const busy = game.aliens.some((a) => a.alive && a.kind === 'wright') ||
+      game.aliens.reduce((n, a) => n + (a.alive && a.kind === 'golem' ? 1 : 0), 0) >= 2;
+    if (hm.alive && game.ship.alive && !busy) {
+      const th = Math.random() * TAU;
+      const w = new Alien(hm.x + Math.cos(th) * 3400, hm.y + Math.sin(th) * 3400, 'wright');
+      w.anchor = { x: hm.x, y: hm.y };
+      game.aliens.push(w);
+      game.wrightWarn = true;
+    }
+  }
+
   // WRECKWRIGHTS lurk beyond your battles and descend on rich debris fields.
   // Collect your scrap or lose it to a golem.
   game.wrightTimer = (game.wrightTimer ?? 40) - dt;

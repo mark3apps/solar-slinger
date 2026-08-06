@@ -70,6 +70,49 @@ export function seedGlowPockets(game, rng) {
   game.glowPockets = pockets;
 }
 
+// VERDANT MOONS: each hosts ONE pocket anchored in its low orbit — the only
+// glow with a permanent address. It obeys the no-camping law by a different
+// route than relocation: when drained it REGROWS in place, one mote per
+// PROG.GLOW_REGROW seconds, so parking at it pays a trickle while returning
+// after a real trip pays a full spring. The pocket is still not a physics
+// body — it rides its host's position directly, so a flung verdant moon takes
+// its garden with it, and a dead one takes it to the grave (updateGlow culls).
+// `rnd` is a stream FORKED off the world seed (world.js) — cosmetic layout,
+// zero draws from the main seeded stream.
+export function seedMoonGlow(game, rnd) {
+  for (const b of game.bodies) {
+    if (b.type !== 'moon' || b.moonType !== 'verdant') continue;
+    // Not on a promoted landmark: the Forge Moon / shepherd keep the moonType
+    // they rolled before promotion, and a healing garden ringing an erupting
+    // landmark reads as the wrong invitation.
+    if (b.volcanic || b.shepherd) continue;
+    game.glowPockets.push(buildMoonPocket(b, rnd));
+  }
+}
+
+function buildMoonPocket(host, rnd) {
+  const motes = [];
+  for (let i = 0; i < PROG.GLOW_MOTES; i++) motes.push(moonMote(rnd));
+  return {
+    host,
+    // Low orbit: just off the surface, tight enough to read as the moon's own.
+    r: host.radius * 1.6,
+    ang: rnd() * TAU,
+    w: 0.12,   // slow cosmetic drift — not Keplerian; the pocket isn't a body
+    cx: host.x, cy: host.y,
+    motes,
+    regrowT: 0,
+  };
+}
+
+// A moon pocket's motes sit tighter than a roaming pocket's (GLOW_SPREAD is
+// sized for open-belt sweeps; a moon garden should hug the moon).
+function moonMote(rnd) {
+  const m = makeMote(rnd);
+  m.lx *= 0.55; m.ly *= 0.55;
+  return m;
+}
+
 // A replacement pocket, placed at a fresh random orbit that is NOT within view of
 // the ship — so a drained pocket's successor always fades in somewhere new.
 function spawnElsewhere(game) {
@@ -104,8 +147,25 @@ export function updateGlow(game, dt) {
   for (let pi = pockets.length - 1; pi >= 0; pi--) {
     const p = pockets[pi];
     p.ang += p.w * dt;
-    p.cx = sx + Math.cos(p.ang) * p.r;
-    p.cy = sy + Math.sin(p.ang) * p.r;
+    if (p.host) {
+      // Anchored to a verdant moon: dies with it, rides it everywhere else.
+      if (!p.host.alive) { pockets.splice(pi, 1); continue; }
+      p.cx = p.host.x + Math.cos(p.ang) * p.r;
+      p.cy = p.host.y + Math.sin(p.ang) * p.r;
+      // Regrowth ticks whether or not the ship is anywhere near — BEFORE the
+      // near-cull below, or the garden would only grow while being watched
+      // (i.e. only while camped, which is exactly backwards).
+      if (p.motes.length < PROG.GLOW_MOTES) {
+        p.regrowT += dt;
+        if (p.regrowT >= PROG.GLOW_REGROW) {
+          p.regrowT = 0;
+          p.motes.push(moonMote(Math.random));   // runtime spawns use Math.random by convention
+        }
+      }
+    } else {
+      p.cx = sx + Math.cos(p.ang) * p.r;
+      p.cy = sy + Math.sin(p.ang) * p.r;
+    }
 
     const dcx = p.cx - s.x, dcy = p.cy - s.y;
     if (dcx * dcx + dcy * dcy > near2) continue;
@@ -142,12 +202,18 @@ export function updateGlow(game, dt) {
         m.lx = nlx; m.ly = nly;
       }
     }
-    if (p.motes.length === 0) pockets.splice(pi, 1);   // drained → make way for a fresh one
+    // Drained → make way for a fresh one. A MOON pocket is exempt: it stays
+    // and regrows in place (see seedMoonGlow) rather than relocating.
+    if (p.motes.length === 0 && !p.host) pockets.splice(pi, 1);
   }
 
   // Keep the map stocked: drained pockets vanished above; fade fresh ones in
-  // ELSEWHERE, never where the ship is standing.
-  while (pockets.length < PROG.GLOW_POCKETS) spawnElsewhere(game);
+  // ELSEWHERE, never where the ship is standing. Moon-anchored pockets are
+  // EXTRA — counting them here would let a few verdant moons starve the
+  // roaming supply the whole mid-system relies on.
+  let roaming = 0;
+  for (const p of pockets) if (!p.host) roaming++;
+  while (roaming++ < PROG.GLOW_POCKETS) spawnElsewhere(game);
 }
 
 function collect(game, mx, my) {
