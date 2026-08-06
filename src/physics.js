@@ -3508,6 +3508,18 @@ const landing = { touch: null, settle: null, gate: '', b: null, t: 0 };
 // never be protective in one system and a building site in another.
 export function dockReady(d) { return !!d && d.t >= CFG.DOCK_BUILD; }
 
+// Is this station's footing blasted out from under it? The ONE crater test for
+// a STANDING pad — updateDock's collapse sweep and the autoland's engage scan
+// both read it, so the autoland can never fly an approach to a pad the very
+// same substep's sweep is about to collapse. Same CFG.DOCK_CRATER_MAX line the
+// landing gate refuses fresh berths across; q.ang is already surface-local, so
+// no b.rot correction here (the landing gate converts, this does not — see the
+// bearing-frame note where scars are stored).
+function padUndermined(q) {
+  return q.b.scars.length > 0 &&
+    1 - scarSurfaceAt(q.b.scars, q.b.radius, q.ang) > CFG.DOCK_CRATER_MAX;
+}
+
 // Cleared on a world REGEN as well as a run reset — the bodies these point at
 // are about to be thrown away, exactly like a chart route's stops.
 export function clearDocks(game) {
@@ -3536,8 +3548,7 @@ function updateDock(game, dt) {
   // steady-state cost is the alive check it always was.
   for (let i = docks.length - 1; i >= 0; i--) {
     const q = docks[i];
-    const undermined = q.b.alive && q.b.scars.length > 0 &&
-      1 - scarSurfaceAt(q.b.scars, q.b.radius, q.ang) > CFG.DOCK_CRATER_MAX;
+    const undermined = q.b.alive && padUndermined(q);
     // A PORT THE SHIP OUTGREW DECOMMISSIONS. The station's art and berth refit
     // to the CURRENT tier (dockTier reads game.st), so a tier-up can leave a
     // standing station on a world that can no longer carry its class — the
@@ -3807,7 +3818,11 @@ function updateAutoland(game, dt) {
   if (!s.alive || game.dock || game.launch || game.autolandCd > 0 || handsOn) return;
   let pick = null, best = CFG.AUTOLAND_R * CFG.AUTOLAND_R;
   for (const d of game.docks) {
-    if (!d.b.alive) continue;
+    // The same doomed-pad tests updateDock sweeps on, because this runs BEFORE
+    // the sweep in the step tail: without them, on the exact substep a pad is
+    // undermined or outgrown the autoland could engage it — and announce a pad
+    // that collapses before the frame's messages even drain.
+    if (!d.b.alive || padUndermined(d) || !dockHostOk(game.st, d.b.radius)) continue;
     const p = padPos(d, _padScratch);
     const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
     if (d2 < best) { best = d2; pick = d; }

@@ -1096,7 +1096,7 @@ is a POINT). The substructure block under the deck is what carries the visual ma
 station is a line with sticks on it.
 
 **THE STATION IS BUILT FROM MATERIAL, NOT LIGHT (2026-08).** Three near-opaque hull tones
-(`render.HULL_DK/MD/LT`) carry the structure's mass — caissons, deck plates, cabins, tanks are
+(the module-local `HULL_DK` / `HULL_MD` / `HULL_LT` consts above `drawPad` in render.js) carry the structure's mass — caissons, deck plates, cabins, tanks are
 FILLED bodies with seams and thickness — and the ink colour (steel / home rose) is reserved for lit
 edges, markings, lamps and glass, which is what keeps a home port readable at a glance without the
 whole building being made of glow. The pass this replaced drew everything as translucent ink strokes

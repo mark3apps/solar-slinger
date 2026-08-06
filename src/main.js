@@ -180,7 +180,8 @@ const game = {
   dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast' | 'crater' | 'small')
   autoland: null,          // the station currently FLYING THE SHIP IN (physics.
                            //   updateAutoland), or null. A reference into docks.
-  autolandCd: 0,           // s the autoland is stood down (manual override / launch)
+  autolandCd: 0,           // seconds the autoland stays stood down after a
+                           //   manual override or a launch (CFG.AUTOLAND_CD)
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
