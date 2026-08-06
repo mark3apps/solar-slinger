@@ -213,8 +213,9 @@ from breaking the invariants above:
     storm-shove law — never bodies/rails; ship magnet always wins); **sulfur** = player-credited
     smash (`earnsScrap`, >8 dmg, not the killing blow, 30s cd ticked in the always-running pre-pass)
     fountains capped loose rock; **dust** = `game.dustCloak` stealth (computed once per frame in
-    `updateAliens` with 1.2s release hysteresis; nest-bound aliens disengage through the
-    battle-tested return-home path, ORPHANS need the explicit cooldown fallback or they deadlock;
+    `updateAliens` with 1.2s release hysteresis; grabbers disengage through the battle-tested
+    return-home path — since the 2026-08 leash pass ORPHANS keep their DEAD nest as home and take
+    it too, so the explicit cooldown fallback now only guards a hypothetical nest-free spawn;
     never fortified); **banded** = skim XP ×`XP_SKIM_BANDED`, hull cost unchanged.
   - **The 2026-08 six** (same contract — one mechanic each, riding an existing system):
     **lodestar** = gravity as terrain (mMul 4.5 / rMul 0.5 — pure config; the attractor shortlist,
@@ -233,7 +234,9 @@ from breaking the invariants above:
     uncapped by fieldXp — measured, progression audit 2026-08); those vent on the plain ice-moon
     cadence instead, so a grab can't delete the mechanic OR buff it; **husk** = a hard player smash (`earnsScrap`, >8 dmg, not the killing blow, 60s
     `huskCd` ticked in the pre-pass) sets `game.huskWake` and ai.js sends ONE wreckwright down on
-    the moon under the ambient descent's exact caps; the moon itself is scrapValue ×1.8; never
+    the moon, capped at one wright / golems < 2 (since the 2026-08 nest-only pass this summon is
+    the ONLY wright source — the ambient debris-field descent timer is REMOVED, per "aliens live
+    only where the nests are"); the moon itself is scrapValue ×1.8; never
     fortified; **pumice** = featherweight froth (mMul 0.45 / rMul 1.28): restitution vs a pumice
     moon is a flat 0.06 (throws bury, never bounce — near-zero, not zero, or contacts re-resolve
     forever) and a ×2 `soft` factor widens the wear gates and deepens `sev` (double crumble; hp
