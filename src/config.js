@@ -2178,7 +2178,10 @@ export const CFG = {
   // invisible to alien senses (ai.js gates on game.dustCloak). The render
   // gradient reaches wider than the mechanic so the boundary never reads as a
   // hard edge (in-world transitions are organic, never geometric).
-  DUST_HALO: 2.4,
+  // 4.15 = the old 2.4 x sqrt(3): a 2026-08 user call tripled the stealth
+  // AREA (radius rides the square root). Render's halo/speck reach scales
+  // with it — retune both together (drawBody's dust block).
+  DUST_HALO: 4.15,
   // SHROUD PLANETS conceal the same way (ai.js feeds the same game.dustCloak
   // flag, so every AI gate works unchanged) — a smaller multiple because the
   // world is planet-sized. Fortified shrouds don't cloak (a permanently
@@ -3086,6 +3089,11 @@ export const PROG = {
   GLOW_HOME_ACCEL: 1600,   // homing acceleration (u/s²): the vacuum ramp from MIN to MAX
   GLOW_HEAL: 4,            // hull points mended per mote (small — there are many)
   GLOW_XP: 3,              // XP per mote
+  // Verdant-moon garden regrowth: seconds per mote regrown in place (glow.js).
+  // Sized so camping pays a trickle (~GLOW_HEAL hull per this many seconds —
+  // an order under a dock's DOCK_HEAL) while a full 9-mote spring takes ~3.5
+  // minutes to come back: the moon is a WAYPOINT you return to, not a heal-bot.
+  GLOW_REGROW: 24,
 };
 
 // SPECIALIZATIONS. You pick ONE at the start of a run (main.startGame -> the 'spec'

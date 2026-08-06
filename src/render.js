@@ -1873,8 +1873,9 @@ function drawBody(game, b) {
 
   // DUST MOONS trail their concealing halo — a soft brown gradient with slow
   // drifting specks seeded off the id. Drawn WIDER than the stealth radius
-  // (2.9 vs CFG.DUST_HALO 2.4) so the gradient IS the boundary read: no ring
-  // stroke at the exact mechanic radius, no hard edges in-world.
+  // (5.0 vs CFG.DUST_HALO 4.15 — same ~1.2 overreach the original 2.9-vs-2.4
+  // pair had) so the gradient IS the boundary read: no ring stroke at the
+  // exact mechanic radius, no hard edges in-world.
   // SHROUD PLANETS trail their concealing cloud haze — the dust-moon read at
   // planet scale: the gradient reaches 2.1x, WIDER than the cloak mechanic
   // (CFG.SHROUD_HALO 1.7), so the fade IS the boundary; no ring at the edge.
@@ -1889,19 +1890,24 @@ function drawBody(game, b) {
   }
 
   if (b.type === 'moon' && b.moonType === 'dust') {
-    const R = b.radius * 2.9;
+    const R = b.radius * 5.0;
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.8, b.x, b.y, R);
     g.addColorStop(0, 'rgba(116, 109, 101, 0.16)');
     g.addColorStop(0.6, 'rgba(116, 109, 101, 0.10)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+    // Many FINE grains over the tripled area — dust, not gravel: the specks
+    // ran radius*0.05 (5+ world units on a big moon) and read as orbiting
+    // ROCKS (2026-08 user call). A third the size, 2.5x the count, two size
+    // classes so the field has texture without any one grain reading as a body.
     ctx.fillStyle = 'rgba(150, 140, 128, 0.35)';
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 30; i++) {
       const a = b.id * 1.7 + i * 2.399 + game.time * (0.05 + (i % 3) * 0.02);
-      const rr = b.radius * (1.3 + (((b.id + i * 13) % 10) / 10) * 1.3);
+      const rr = b.radius * (1.2 + (((b.id + i * 13) % 20) / 20) * 3.3);
+      const sz = Math.max(0.5, b.radius * (i % 2 ? 0.012 : 0.018));
       ctx.beginPath();
-      ctx.arc(b.x + Math.cos(a) * rr, b.y + Math.sin(a) * rr, Math.max(0.8, b.radius * 0.05), 0, TAU);
+      ctx.arc(b.x + Math.cos(a) * rr, b.y + Math.sin(a) * rr, sz, 0, TAU);
       ctx.fill();
     }
   }
@@ -2463,12 +2469,264 @@ function drawMoonDetail(game, b) {
       ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)';
       ctx.fillRect(-R, -R + i * R * 0.7, R * 2, R * 0.5);
     }
+  } else if (b.moonType === 'lodestar') {
+    // Impossibly dense: the surface SAGS — a deep center darkening, short
+    // compression striations at broken angles and radii, and one hard
+    // off-center glint of bare compressed metal. NEVER full concentric rings
+    // with a center pip: that's a bullseye, and target grammar belongs to the
+    // aiming UI (2026-08 user call — "looks too much like a target"). The
+    // bent trajectory forecast does the rest of the talking.
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0, 'rgba(8, 6, 16, 0.55)');
+    g.addColorStop(0.7, 'rgba(8, 6, 16, 0.22)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(190, 185, 215, 0.26)';
+    ctx.lineWidth = Math.max(0.8, R * 0.045);
+    for (let i = 0; i < 5; i++) {
+      const a0 = b.id * 1.9 + i * 2.63;
+      const rr = R * (0.25 + (((b.id * 7 + i * 31) % 10) / 10) * 0.55);
+      const span = 0.5 + ((b.id + i) % 4) * 0.28;
+      ctx.beginPath(); ctx.arc(0, 0, rr, a0, a0 + span); ctx.stroke();
+    }
+    const ga = b.id * 0.9;
+    ctx.fillStyle = 'rgba(240, 236, 255, 0.7)';
+    ctx.beginPath();
+    ctx.arc(Math.cos(ga) * R * 0.3, Math.sin(ga) * R * 0.3, Math.max(1.2, R * 0.06), 0, TAU);
+    ctx.fill();
+  } else if (b.moonType === 'geode') {
+    craters(2);
+    // The tell: a glinting crystal seam in the same purple the freed core
+    // wears (#b98cff) — the cored-rock glint grammar at moon scale.
+    const a0 = b.id * 2.1;
+    ctx.strokeStyle = 'rgba(185, 140, 255, 0.55)';
+    ctx.lineWidth = Math.max(1, R * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a0) * R * 0.85, Math.sin(a0) * R * 0.85);
+    ctx.quadraticCurveTo(Math.cos(a0 + 1.8) * R * 0.3, Math.sin(a0 + 1.8) * R * 0.3,
+      Math.cos(a0 + 2.9) * R * 0.8, Math.sin(a0 + 2.9) * R * 0.8);
+    ctx.stroke();
+  } else if (b.moonType === 'verdant') {
+    // Moss beds in two greens, seeded biolum motes glinting between them —
+    // the same healing green the glow pockets pop (150,255,190).
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 1.4 + i * 1.7;
+      ctx.fillStyle = i % 2 ? 'rgba(60, 130, 90, 0.35)' : 'rgba(150, 220, 170, 0.22)';
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.45, Math.sin(a) * R * 0.45, R * 0.4, R * 0.26, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(150, 255, 190, 0.8)';
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 2.3 + i * 1.256;
+      const d = (((b.id * 11 + i * 37) % 100) / 100) * 0.8;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * R * d, Math.sin(a) * R * d, Math.max(0.8, R * 0.03), 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'comet') {
+    // Frost fields like the ice moon but sparser — the body is quiet; the
+    // coma outside the clip (below) is where this type spends its look.
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 1.9 + i * 2.4;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.45, Math.sin(a) * R * 0.45, R * 0.3, R * 0.18, a, 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'husk') {
+    craters(2);
+    // A WRECK-YARD WELDED OVER ROCK: angular hull plates with riveted seams,
+    // a snapped ring-girder, and hard little glints of bare metal — kin to
+    // the graveyard (#9fb0c2), and unmistakably CONSTRUCTED, not geology
+    // (2026-08 user call — "could be more visually interesting").
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.1 + i * 1.31;
+      const d = R * (0.15 + (((b.id * 5 + i * 17) % 10) / 10) * 0.5);
+      const w = R * (0.28 + ((b.id + i) % 3) * 0.1), h = w * 0.62;
+      ctx.save();
+      ctx.translate(Math.cos(a) * d, Math.sin(a) * d);
+      ctx.rotate(a * 1.7);
+      ctx.fillStyle = i % 2 ? 'rgba(125, 133, 146, 0.34)' : 'rgba(84, 66, 48, 0.38)';
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      // riveted seam along the plate's top edge — the "built" tell
+      ctx.fillStyle = 'rgba(200, 210, 224, 0.5)';
+      const nr = 3 + (i % 3);
+      for (let k = 0; k < nr; k++) {
+        ctx.beginPath();
+        ctx.arc(-w / 2 + (k + 0.5) * (w / nr), -h / 2 + h * 0.18, Math.max(0.6, R * 0.018), 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    // The snapped ring-girder: an arc that runs, breaks, resumes — wreckage,
+    // and deliberately NOT a closed ring (see the lodestar's bullseye note).
+    ctx.strokeStyle = 'rgba(159, 176, 194, 0.55)';
+    ctx.lineWidth = Math.max(1, R * 0.05);
+    const ha = b.id * 2.2;
+    ctx.beginPath(); ctx.arc(0, 0, R * 0.62, ha, ha + 1.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, R * 0.62, ha + 1.8, ha + 2.5); ctx.stroke();
+    // bare-metal glints
+    ctx.fillStyle = 'rgba(230, 238, 248, 0.75)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 3.1 + i * 2.1;
+      const d = R * (0.2 + (((b.id + i * 7) % 10) / 10) * 0.55);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * d, Math.sin(a) * d, Math.max(0.8, R * 0.025), 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'pumice') {
+    // Froth rock: vesicle stipple ONLY — the shared crater set is exactly
+    // what made a pumice moon read as one more rock moon ("Shale and Curd
+    // look too similar", 2026-08). Dense, fine, low-contrast pocks over
+    // chalk-pale ground, plus two soft bright froth patches; nothing sharp,
+    // nothing shared with the rock look.
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    for (let i = 0; i < 2; i++) {
+      const a = b.id * 1.3 + i * 2.8;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.4, Math.sin(a) * R * 0.4, R * 0.45, R * 0.3, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.13)';
+    for (let i = 0; i < 34; i++) {
+      const a = b.id * 2.7 + i * 0.361;
+      const d = (((b.id * 13 + i * 41) % 100) / 100) * 0.88;
+      const rr = R * (0.022 + ((b.id + i) % 4) * 0.014);
+      ctx.beginPath(); ctx.arc(Math.cos(a) * R * d, Math.sin(a) * R * d, rr, 0, TAU); ctx.fill();
+    }
+  } else if (b.moonType === 'molten') {
+    // A COOLED BLACK CRUST OVER LIVE MAGMA — three layers (2026-08 second
+    // pass; the first cut was flat black with zigzag scribbles):
+    //   1. near-black ground with broad mottled crust plates,
+    //   2. soft magma pools GLOWING THROUGH thin crust (the drawMoltenCrust
+    //      convection cells, dimmer and fewer — heat under, not fire on top),
+    //   3. smooth CURVED fissures: a wide soft under-glow beneath a hot
+    //      hairline core, with short side-branches — cracks, not pipes.
+    // All breathing on per-crack phases (the drawMoltenCrust precedent:
+    // pulsing lava, not a blinking light). Additive passes reset after.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(70, 40, 32, 0.25)';
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.3 + i * 2.51;
+      const d = R * (((b.id * 3 + i * 23) % 10) / 10) * 0.6;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * d, Math.sin(a) * d, R * 0.38, R * 0.24, a * 2.1, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 2.9 + i * 1.71;
+      const d = R * (0.15 + (((b.id + i * 11) % 10) / 10) * 0.6);
+      const sz = R * (0.16 + ((b.id + i) % 3) * 0.07);
+      const boil = 0.55 + 0.45 * Math.sin(game.time * (0.5 + (i % 3) * 0.25) + i * 1.9 + b.id);
+      const cx2 = Math.cos(a) * d, cy2 = Math.sin(a) * d;
+      const pg = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, sz);
+      pg.addColorStop(0, `rgba(255, 120, 45, ${0.18 * boil})`);
+      pg.addColorStop(1, 'transparent');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(cx2, cy2, sz, 0, TAU); ctx.fill();
+    }
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      const a0 = b.id * 1.7 + i * 1.047;
+      const glow = 0.5 + 0.5 * Math.sin(game.time * (0.6 + (i % 3) * 0.3) + i * 2.1 + b.id);
+      const pts = [];
+      let px = Math.cos(a0) * R * 0.95, py = Math.sin(a0) * R * 0.95;
+      let aa = a0 + Math.PI * (0.9 + Math.sin(b.id * 1.1 + i) * 0.12);
+      // A standing per-crack drift plus a big per-step wobble: the first cut
+      // wandered so gently it read as STRAIGHT lines ("too much like straight
+      // lines", 2026-08) — shorter steps, harder turns, and a constant bias
+      // so every fissure ARCS instead of shooting across the disc.
+      const drift = Math.sin(b.id * 2.7 + i * 4.3) * 0.3;
+      pts.push([px, py]);
+      for (let k = 1; k <= 11; k++) {
+        aa += drift + Math.sin(b.id * 3.3 + i * 7 + k * 2.7) * 0.85;
+        px += Math.cos(aa) * R * 0.12; py += Math.sin(aa) * R * 0.12;
+        pts.push([px, py]);
+      }
+      const trace = () => {
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length - 1; k++) {
+          const mx = (pts[k][0] + pts[k + 1][0]) / 2, my = (pts[k][1] + pts[k + 1][1]) / 2;
+          ctx.quadraticCurveTo(pts[k][0], pts[k][1], mx, my);
+        }
+        ctx.stroke();
+      };
+      ctx.strokeStyle = `rgba(255, 90, 30, ${0.10 + 0.14 * glow})`;
+      ctx.lineWidth = Math.max(1.5, R * 0.05);
+      trace();
+      ctx.strokeStyle = `rgba(255, 170, 80, ${0.35 + 0.4 * glow})`;
+      ctx.lineWidth = Math.max(0.6, R * 0.011);
+      trace();
+      ctx.strokeStyle = `rgba(255, 130, 50, ${0.2 + 0.25 * glow})`;
+      ctx.lineWidth = Math.max(0.6, R * 0.009);
+      for (let k = 2; k <= 4; k += 2) {
+        const ba = Math.atan2(pts[k][1] - pts[k - 1][1], pts[k][0] - pts[k - 1][0]) + (k % 4 ? 1 : -1) * 1.1;
+        ctx.beginPath(); ctx.moveTo(pts[k][0], pts[k][1]);
+        ctx.lineTo(pts[k][0] + Math.cos(ba) * R * 0.14, pts[k][1] + Math.sin(ba) * R * 0.14);
+        ctx.stroke();
+      }
+      // HOT SPOTS: two seeded joints per fissure run WHITE-hot — a crack is
+      // not uniformly warm, it has places where the crust is thinnest. Each
+      // node breathes on its own faster phase, out of step with its crack.
+      for (let n = 0; n < 2; n++) {
+        const k = 2 + ((b.id * 5 + i * 3 + n * 7) % (pts.length - 4));
+        const [hx2, hy2] = pts[k];
+        const hot = 0.5 + 0.5 * Math.sin(game.time * (1.1 + (n % 2) * 0.5) + i * 3.7 + n * 2.3 + b.id * 1.9);
+        const hr = R * (0.045 + 0.03 * hot);
+        const hg = ctx.createRadialGradient(hx2, hy2, 0, hx2, hy2, hr);
+        hg.addColorStop(0, `rgba(255, 235, 190, ${0.5 * hot})`);
+        hg.addColorStop(0.45, `rgba(255, 150, 60, ${0.3 * hot})`);
+        hg.addColorStop(1, 'transparent');
+        ctx.fillStyle = hg;
+        ctx.beginPath(); ctx.arc(hx2, hy2, hr, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.lineCap = 'butt';
+    ctx.globalCompositeOperation = 'source-over';
   } else {
     craters(b.moonType === 'dust' ? 5 : 3);
   }
   ctx.restore();
-  // Subtle tinted rim — dimmer than the old flat bright ring
-  ctx.strokeStyle = 'rgba(210, 224, 245, 0.35)';
+  // COMET COMA — outside the clip, in the WORLD frame: the tail points away
+  // from the sun, never with the spin. A real object, so no hard edge — one
+  // soft additive breath, brightening as the moon nears the periapsis where it
+  // vents (the same rail read world.js's vent gate uses).
+  // NOT on a promoted landmark: the Forge Moon / shepherd keep the moonType
+  // they rolled before promotion (world.js overrides name and job, not type),
+  // and a volcanic moon wearing a comet's breath misreads as the wrong hazard.
+  if (b.moonType === 'comet' && !b.volcanic && !b.shepherd && game.homeStar) {
+    // e >= 0.15 mirrors world.js's vent-timetable gate: below it the moon
+    // vents on the plain ice cadence, and a full-bright coma on a low-e comet
+    // would promise a burst event the mechanic no longer delivers.
+    let k = 0.4;
+    const rail = b.rail;
+    if (rail && rail.e >= 0.15 && rail.parent) {
+      const dp = Math.hypot(b.x - rail.parent.x, b.y - rail.parent.y);
+      const peri = rail.a * (1 - rail.e), apo = rail.a * (1 + rail.e);
+      k = 0.25 + 0.75 * clamp(1 - (dp - peri) / Math.max(1, apo - peri), 0, 1);
+    }
+    const a = Math.atan2(b.y - game.homeStar.y, b.x - game.homeStar.x);
+    const cx2 = b.x + Math.cos(a) * R, cy2 = b.y + Math.sin(a) * R;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(b.x, b.y, R * 0.8, cx2, cy2, R * 2.6);
+    g.addColorStop(0, `rgba(190, 230, 240, ${0.2 * k})`);
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx2, cy2, R * 2.6, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+  // Subtle tinted rim — dimmer than the old flat bright ring. A MOLTEN moon
+  // takes a faint EMBER rim instead: the pale stroke that helps a lit moon
+  // read against the sky turns into a bright outline against a near-black
+  // crust ("looks off", 2026-08) — heat at the limb is the honest edge there.
+  ctx.strokeStyle = b.moonType === 'molten'
+    ? 'rgba(255, 120, 55, 0.16)' : 'rgba(210, 224, 245, 0.35)';
   ctx.lineWidth = Math.max(0.8, 1.1 / game.cam.zoom);
   ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
 }
@@ -8412,10 +8670,11 @@ export function drawStarMap(game) {
       ctx.lineWidth = 1;
       ctx.strokeRect(x - rr - 2.5, y - rr - 2.5, (rr + 2.5) * 2, (rr + 2.5) * 2);
     }
-    // NAMES: worlds and landmarks only. MOONS ARE ICONS — they carry no
-    // individual names in this game, so a zoomed-in family printed the same
-    // MOON OF OSSIA four times in a ring around a disc already labelled OSSIA.
-    // Their host names them; the readout strip names them on demand.
+    // NAMES: worlds and landmarks only. MOONS ARE ICONS — they DO carry
+    // individual names now (MOON_NAMES in world.js), but a zoomed-in family printing
+    // four name labels in a ring around a disc already labelled OSSIA is the
+    // clutter this rule exists to prevent. The readout strip names them on
+    // demand (labelsItself keys off TYPE, so naming moons can't leak in here).
     if (labelsItself(game, b)) {
       ctx.font = `600 ${big ? 11 : 9.5}px system-ui, sans-serif`;
       ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';

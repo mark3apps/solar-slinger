@@ -1394,6 +1394,19 @@ const EVENT_MSGS = [
     first: ['DUST SHROUD — inside this halo, alien senses cannot find you. Pursuers lose their lock.', 5.5] },
   { flag: 'bandedWarn', tut: 'banded', snd: sfx.sfxChime,
     first: ["BANDED SKIMMING — grinding this moon's bands pays triple XP. Risky flying, rewarded.", 5.5] },
+  { flag: 'cometVentWarn', tut: 'cometVent', snd: sfx.sfxChime,
+    first: ['COMET MOON — at the low point of its swing it vents catchable ice. The chart knows its timetable.', 5.5] },
+  { flag: 'pumiceWarn', tut: 'pumice', snd: sfx.sfxChime,
+    first: ['PUMICE — featherweight froth rock. Throws bury instead of bouncing, and the crust crumbles fast.', 5.5] },
+  // Hostile contact, not opportunity — the one moon job that bites back.
+  { flag: 'huskWarn', tut: 'husk', snd: sfx.sfxWarnLow,
+    first: ['HUSK MOON — the wreck-plating rang out. A wreckwright is descending on this moon.', 5.5],
+    repeat: ['The husk moon is calling its wright down.', 3] },
+  // Hostile SURFACES (physics skim venom) — bad news in progress, warn low.
+  { flag: 'sulfurSkidWarn', tut: 'sulfurSkid', snd: sfx.sfxWarnLow,
+    first: ['BRIMSTONE CRUST — this surface is poisonous. Skidding here eats the hull far faster.', 5.5] },
+  { flag: 'moltenSkidWarn', tut: 'moltenSkid', snd: sfx.sfxWarnLow,
+    first: ['MOLTEN CRUST — the rock under you is barely cooled magma. Skidding here sears the hull.', 5.5] },
   // ---- planet-archetype mechanics (terran/ocean/desert/shroud/crystal) ----
   { flag: 'atmoWarn', tut: 'atmo', snd: sfx.sfxChime,
     first: ['ATMOSPHERIC BURN-UP — small rocks flash to nothing in this sky. Only a heavyweight reaches the surface.', 5.5] },
@@ -2086,7 +2099,16 @@ function updateStorm(dtReal) {
         const b = game.stormShelter;
         const kin = b.type === 'moon' && b.parent && b.parent.name
           ? `a moon of ${placeName(b.parent)}` : null;
-        game.stormLeeName = placeName(b, kin);
+        // EVERY moon carries a name now (MOON_NAMES in world.js) — but names
+        // are EARNED (the chart ladder): an uncharted moon shelters you as
+        // kin of its host, not by a name you haven't read off it yet. Worlds
+        // keep the behavior they always had. The no-chartKey arm mirrors
+        // starmap.contactLevel's contract exactly: a runtime-spawned moon
+        // (replenishWorld mints no chartKey) earns its name by being SEEN,
+        // not by existing — `!b.chartKey` alone named it unconditionally.
+        const earned = b.type !== 'moon' ||
+          (b.chartKey ? (game.charted && game.charted[b.chartKey]) : b.seen);
+        game.stormLeeName = earned ? placeName(b, kin) : (kin || 'this moon');
       }
     }
   }
