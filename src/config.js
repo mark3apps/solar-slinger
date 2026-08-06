@@ -326,6 +326,11 @@ export const CFG = {
   // planets and moons — moons were deliberately left untouched the first
   // time, but the second ask named both explicitly (the moon range itself is
   // baked half-speed in entities.js, there being no prior moon knob to reuse).
+  // NOT purely cosmetic: `spin` feeds `util.surfaceVel` (surface friction's
+  // drag target, the dock speed gate, and a body's post-crumble/gravel spin),
+  // so halving it also halves the tangential ground speed a landing or a
+  // docked ship has to match — smaller worlds/moons barely move the number,
+  // but it is a real, if gentle, easing of the fastest-spinning giants' decks.
   PLANET_SPIN_SLOW: 0.25,
   PLANET_SPIN_REF: 300,
   PLANET_SPIN_POW: 0.85,

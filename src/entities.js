@@ -70,7 +70,7 @@ export class Body {
         * Math.pow(CFG.PLANET_SPIN_REF / Math.max(CFG.PLANET_SPIN_REF, o.radius), CFG.PLANET_SPIN_POW)
       : this.type === 'moon' ? spinDir * (0.025 + Math.random() * 0.045)
       : (Math.random() - 0.5) * 0.6;
-    this.rot = Math.random() * 6.28;
+    this.rot = Math.random() * TAU;
     this.attractor = this.type === 'star' || o.mass >= CFG.ATTRACT_MIN;
     // Stations/nests override hp: light enough to grab, tough enough to matter.
     // PLANETS are their own durability CLASS — a flat base plus a gentle mass
