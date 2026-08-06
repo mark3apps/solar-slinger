@@ -898,6 +898,17 @@ against them with exhaust washing sideways off the deck (it has nowhere else to 
 pinned, which is exactly what makes a held burn look held), the shake climbs, and then the pad lets
 go. It commits once started — a launch you can abort halfway is a stutter, not a moment.
 
+**A FINISHED BERTH IS A VISTA** (`CFG.DOCK_VISTA` / `DOCK_VISTA_K`, main.js's cinematic zoom). Once
+the station is built the camera eases OUT — `DOCK_VISTA`× wider — so a berth becomes a moment to
+survey the neighbourhood: the world you built on, its moons, whatever is inbound. It is gated on
+`dockReady`, the same gate as the shield and the repair, so the exposed ten-second build stays at
+flight zoom — the pull-back is part of the harbour's reward, not of the commitment. The ease rate is
+deliberately slower than the tier zoom's (an establishing shot, not a level-up), and the frame the
+launch spool starts the target snaps back to flight zoom at the normal rate, so the dive back in
+overlaps the clamps releasing instead of following the kick. `viewR` rides the zoom, so sensors and
+the wake bubble genuinely widen with the vista — safe, because a berth is the one place nothing can
+touch you.
+
 **HOME IS THE LIVES ROSE, on all three surfaces** — the in-world pad, the radar and the chart
 (`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker colour: rose already means
 "a life" in this cockpit, and a home port is exactly the place a life hands the ship back. Other
