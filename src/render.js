@@ -1,6 +1,7 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
+  shipVis,
 } from './config.js';
 import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive } from './physics.js';
 import * as gravel from './gravel.js';
@@ -4562,8 +4563,8 @@ function shipScars(tier, dmg) {
 // THE HULL IS SPEC DNA. Each specialization flies a visibly different ship,
 // and the difference says what that spec DOES before any HUD does:
 //   HAULER  — ring arms with orb pods. The arms ARE the orbit rock rack.
-//   SCOUT   — long thin swept wings carrying weapon hardpoints, fed by a rock
-//             intake and hopper. Grows by WINGSPAN and hardpoint count.
+//   SCOUT   — long thin swept wings, left BARE, on a needle fuselage carrying a
+//             slewing sensor gimbal. Grows by LENGTH and sensor gear.
 //   BRAWLER — a front-heavy wedge behind a ram prow and hinged deflector
 //             slabs, with a conspicuously BARE TAIL: the spec has no shield at
 //             all and its one layer (the War Rack ram) is welded to the bow, so
@@ -4579,6 +4580,13 @@ function shipScars(tier, dmg) {
 // every tier, so the art is normalized to the FOOTPRINT (u = r / (frac ×
 // reach)), NOT to the body disc — the drawn size never moves when the
 // hitbox fraction is tuned.
+//
+// ACROSS SPECS that reach normalization is then multiplied by config.SHIP_VIS,
+// because equal REACH is not equal SIZE: a ladder whose reach comes from one
+// outlier (this scout's nose, this brawler's deflector brow) gets its whole body
+// shrunk to pay for it. The tables below are therefore the RAW art — read them
+// as shapes, not as sizes, and let SHIP_VIS do the matching. If you change one,
+// re-run render.measureShipArt(game) and re-bake SHIP_VIS from its `raw` column.
 //
 // HAULER — the original ladder:
 //   0 SKIFF       bare wedge, tail fins
@@ -4606,9 +4614,24 @@ const HAULER_TIERS = [
     spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
 ];
 
-// SCOUT — a winged gun platform. It arms itself by swallowing rock, so the
-// silhouette reads bow to stern: intake maw -> hopper -> feed conduits out the
-// wing roots -> weapons on the wing hardpoints.
+// SCOUT — a winged SENSOR platform on a needle fuselage. The silhouette reads
+// bow to stern: gimballed sensor head -> intake maw -> hopper -> feed conduits
+// out the wing roots -> clean, bare wings.
+//
+// THE WINGS ARE BARE (2026-08 user call: "drop the guns on its wings"). The
+// pod-and-barrel hardpoints are gone, and with them `hard`, `coils` and
+// `longBarrel`. The class was already documented as escalating GUIDANCE rather
+// than armament — its kit is Nav Plotter, Lead Computer, Impact Warning and
+// Reflex Jink, and the gun count was frozen at four from tier 2 on — so the
+// hardware that actually carries the ladder (gimbal, dishes, fire-control
+// arrays, sensor booms, the crescent sail) is untouched, as is the evolving wing
+// planform that carries the silhouette.
+//
+// LOOSE END, kept visible rather than quietly papered over: the intake maw and
+// the hopper are still drawn, and they now feed NOTHING. "It arms itself by
+// swallowing rock" was this class's fiction and no longer has an endpoint. Either
+// give the swallowed rock a new destination or retire the intake — don't leave a
+// third reading where it is decoration.
 //
 // THE SCOUT GROWS LONGER, NOT WIDER (user design rule). Length runs 2.2 -> 4.4
 // while span only runs 1.6 -> 2.5, so the class sharpens into a needle instead
@@ -4617,29 +4640,22 @@ const HAULER_TIERS = [
 // grows slower than length for the same reason: the fuselage gets thinner in
 // proportion every tier.
 //
-// FOUR HARDPOINTS PER WING IS THE CEILING (user design rule). Tiers 4 and 5
-// carry the same four; T5 buys BETTER guns (longer coil barrels, wingtip
-// launchers) and better eyes, never more of them. A rack of eight read as a
-// weapon fence rather than a ship, and it left the top tier nothing to say.
-//
-// `hard` are fractions along the leading edge from root to tip. Layout inside
-// drawScoutHull is expressed in fractions of the hull's LENGTH, not in fixed
-// multiples of u, so a nose that nearly doubles across the ladder stretches the
-// fuselage instead of overrunning the gear mounted on it. `reach` is the nose
-// on every tier — the wingtip never out-reaches it, which is the rule that
-// keeps this class long.
-//   0 SPLINTER  bare wings, empty hardpoint nubs — a frame waiting to be armed
-//   1 DART      one pod per wing, rangefinder vanes, twin bells
-//   2 STILETTO  two pods per wing, spotter dish, feed conduits
-//   3 LONGSHOT  three pods, fire-control arrays, emitter posts, coil barrels
-//   4 FARSIGHT  four pods + wingtip launchers, twin hoppers, masts, triple bell
-//   5 ORACLE    same four guns, longer barrels, crescent fire-control sail
-// FOUR GUNS, TOTAL — two per wing, and that is the ceiling from tier 2 on
-// (user design rule). Everything after that is spent on the thing this class
-// actually is: TRACKING. Its kit is Nav Plotter, Lead Computer, Impact Warning
-// and Reflex Jink, so the ladder escalates GUIDANCE hardware, not armament —
-// a scout that grew by bolting on more barrels was telling you it was a
-// gunship, which is the brawler's job.
+// Layout inside drawScoutHull is expressed in fractions of the hull's LENGTH,
+// not in fixed multiples of u, so a nose that nearly doubles across the ladder
+// stretches the fuselage instead of overrunning the gear mounted on it. `reach`
+// is the nose on every tier — the wingtip never out-reaches it, which is the
+// rule that keeps this class long.
+//   0 SPLINTER  bare wings, one bell — a frame with nothing on it yet
+//   1 DART      rangefinder vanes, twin bells
+//   2 STILETTO  spotter dish, feed conduits, the gimbal appears
+//   3 LONGSHOT  fire-control arrays, emitter posts, chin, split drive
+//   4 FARSIGHT  twin hoppers, two dishes, four arrays, sensor booms, nacelles
+//   5 ORACLE    crescent fire-control sail, mast, winglets, blades
+// THE LADDER ESCALATES GUIDANCE, NOT ARMAMENT (user design rule). Its kit is Nav
+// Plotter, Lead Computer, Impact Warning and Reflex Jink, so what each rung buys
+// is a better view: a scout that grew by bolting on more barrels was telling you
+// it was a gunship, which is the brawler's job. That rule long predates the guns
+// coming off, and is the reason removing them cost the ladder nothing.
 //
 // The gimmick is the GIMBAL: a sensor head on the nose that physically slews to
 // wherever you are aiming, independent of where the hull is pointing. It is the
@@ -4653,30 +4669,29 @@ const HAULER_TIERS = [
 // raked scythe at T5. `tipChord` shrinks the whole way — the wing gets more
 // slender as it gets longer, which is what "refined" reads as.
 const SCOUT_TIERS = [
-  { bR: 0.26, nose: 1.25, rear: 0.95, span: 0.80, sweep: 0.26, hard: [],
+  { bR: 0.26, nose: 1.25, rear: 0.95, span: 0.80, sweep: 0.26,
     wing: { le: 0.52, root: 0.18, tipChord: 0.080 },
     eng: 1, core: 0, dish: 0, arrays: 0, hopper: 1, reach: 1.25 },
-  { bR: 0.28, nose: 1.50, rear: 1.05, span: 0.92, sweep: 0.27, hard: [0.62],
+  { bR: 0.28, nose: 1.50, rear: 1.05, span: 0.92, sweep: 0.27,
     wing: { le: 0.53, root: 0.19, tipChord: 0.084 },
     eng: 2, core: 1, dish: 0, arrays: 0, hopper: 1, vanes: true, reach: 1.50 },
-  { bR: 0.30, nose: 1.78, rear: 1.18, span: 1.02, sweep: 0.28, hard: [0.45, 0.80],
+  { bR: 0.30, nose: 1.78, rear: 1.18, span: 1.02, sweep: 0.28,
     wing: { le: 0.54, root: 0.20, kink: 0.55, kinkSweep: 0.05, tipChord: 0.088 },
     eng: 2, core: 1, dish: 1, arrays: 0, hopper: 1, vanes: true,
     conduit: true, gimbal: 1, reach: 1.78 },
-  { bR: 0.32, nose: 2.08, rear: 1.32, span: 1.14, sweep: 0.30, hard: [0.45, 0.80],
+  { bR: 0.32, nose: 2.08, rear: 1.32, span: 1.14, sweep: 0.30,
     wing: { le: 0.56, root: 0.22, kink: 0.50, kinkSweep: 0.07, tipChord: 0.094 },
     eng: 2, core: 2, dish: 1, arrays: 2, hopper: 1, vanes: true,
-    conduit: true, coils: 2, gimbal: 1, chin: true, split: true, reach: 2.08 },
-  { bR: 0.34, nose: 2.40, rear: 1.48, span: 1.28, sweep: 0.32, hard: [0.45, 0.80],
+    conduit: true, gimbal: 1, chin: true, split: true, reach: 2.08 },
+  { bR: 0.34, nose: 2.40, rear: 1.48, span: 1.28, sweep: 0.32,
     wing: { le: 0.58, root: 0.25, kink: 0.45, kinkSweep: 0.09, tipChord: 0.100, lerx: true },
     eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
-    conduit: true, coils: 2, gimbal: 2, chin: true, split: true,
+    conduit: true, gimbal: 2, chin: true, split: true,
     booms: true, nacelles: true, reach: 2.40 },
-  { bR: 0.36, nose: 2.75, rear: 1.65, span: 1.44, sweep: 0.34, hard: [0.45, 0.80],
+  { bR: 0.36, nose: 2.75, rear: 1.65, span: 1.44, sweep: 0.34,
     wing: { le: 0.60, root: 0.27, kink: 0.40, kinkSweep: 0.12, tipChord: 0.108, lerx: true, rake: true },
-    longBarrel: true,
     eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
-    conduit: true, coils: 3, gimbal: 3, chin: true, blades: true,
+    conduit: true, gimbal: 3, chin: true, blades: true,
     sail: true, split: true, booms: true, nacelles: true,
     winglets: true, mast: true, bigSail: true, reach: 2.75 },
 ];
@@ -4785,14 +4800,25 @@ function shipReach(t) {
   return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2));
 }
 
+// The size-match factor for the ladder currently being flown (config.SHIP_VIS):
+// what the reach normalization has to be multiplied by for this spec to read
+// the same SIZE as the hauler rather than merely the same outer reach. 1 on
+// the hauler, and 1 before a spec is chosen.
+function shipVisOf(game, tier) {
+  return shipVis(game.prog && game.prog.spec, tier);
+}
+
 // How far the DRAWN ship reaches from its center (world units). The shield
 // bubble and any effect that should wrap the art uses this, NOT the (smaller)
 // collision radius — a titan's bubble must clear its outer ring and nose.
 // Since the collision radius is SHIP_HIT_FRAC of the footprint, the footprint
-// is simply r / SHIP_HIT_FRAC — identical for every tier by construction.
-function shipVisualR(tier, r) {
-  void tier;
-  return r / SHIP_HIT_FRAC;
+// is r / SHIP_HIT_FRAC — identical for every TIER by construction, but no
+// longer for every SPEC: the size match scales the art past that, so the
+// scout's needle and the brawler's brow genuinely reach further out than the
+// hauler's ring does. Anything wrapping the art must ask here, not divide by
+// SHIP_HIT_FRAC itself.
+function shipVisualR(game, tier, r) {
+  return (r / SHIP_HIT_FRAC) * shipVisOf(game, tier);
 }
 
 // ---- shared hull pieces (all three specs) -----------------------------------
@@ -4870,18 +4896,25 @@ function drawShipScars(tier, dmg, cx, ex, ey, ss) {
   }
 }
 
-// Dispatch on the run's spec. Normalizes the art to the FOOTPRINT
-// (r / SHIP_HIT_FRAC), not the body disc: the collision circle covers
-// SHIP_HIT_FRAC of the drawn reach, uniformly on every tier and every spec.
+// Dispatch on the run's spec. TWO normalizations, in this order:
+//   1. to the FOOTPRINT (r / SHIP_HIT_FRAC), not the body disc — which is what
+//      keeps the collision circle a uniform fraction of the drawn reach across
+//      the six TIERS of any one ladder, so the hitbox feel never changes as you
+//      climb;
+//   2. then by config.SHIP_VIS, so the three SPECS read the same SIZE as each
+//      other and not merely the same outer reach. See the SHIP_VIS comment for
+//      why reach alone was the wrong match and what it cost the scout/brawler.
 function drawShipHull(game, tier, dmg, r) {
   const table = shipTierTable(game);
   const t = table[tier];
-  const u = r / (SHIP_HIT_FRAC * shipReach(t));
+  const u = r * shipVisOf(game, tier) / (SHIP_HIT_FRAC * shipReach(t));
+  // ONE stroke for every spec — see outlineW. `u` still differs per spec (it is
+  // that ladder's art scale and always was); the LINE WEIGHT no longer does.
+  const lw = outlineW(tier, r);
   ctx.lineJoin = 'round';
-  if (table === SCOUT_TIERS) drawScoutHull(game, t, tier, dmg, u, outlineW(game, u));
-  else if (table === BRAWLER_TIERS) drawBrawlerHull(game, t, tier, dmg, u, outlineW(game, u));
-  // The hauler keeps its original expression so its shipped art is untouched.
-  else drawHaulerHull(game, t, tier, dmg, u, Math.max(1.1, 0.07 * u));
+  if (table === SCOUT_TIERS) drawScoutHull(game, t, tier, dmg, u, lw);
+  else if (table === BRAWLER_TIERS) drawBrawlerHull(game, t, tier, dmg, u, lw);
+  else drawHaulerHull(game, t, tier, dmg, u, lw);
   ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
 }
 
@@ -4891,13 +4924,133 @@ function drawShipHull(game, tier, dmg, r) {
 // ship is ~12 world units long, so a 1.1-unit outline was most of what you
 // could see of it. Dividing the floor by the camera zoom keeps the line from
 // vanishing when zoomed out without letting it eat the ship when zoomed in.
-function outlineW(game, u) {
-  // The PROPORTIONAL term carries the weight; the screen floor only stops the
-  // line vanishing when zoomed out. Fixing the old world-unit floor, the
-  // proportional term got dropped from 0.07 to 0.055 at the same time, which
-  // overshot in the other direction and left every hull under-drawn — this
-  // sits slightly above the original weight, with the floor still in pixels.
-  return Math.max(1.0 / game.cam.zoom, 0.085 * u);
+// ONE STROKE WEIGHT, SHARED BY ALL THREE SPECS, AND IT IS THE HAULER'S (2026-08
+// user call: "the outlines of the scout and brawler seem larger than the
+// hauler, which looks good" — said twice, because the first fix did not go far
+// enough).
+//
+// The bug was never the coefficient, it was the UNIT. Every spec's stroke was
+// `k x u`, and `u` is an ART-SPACE unit — `r x vis / (SHIP_HIT_FRAC x reach)` —
+// so it means something different on each ladder: the reaches run 1.85 (hauler),
+// 2.75 (scout) and 2.56 (brawler) at tier 5, and SHIP_VIS scales two of them up
+// on top of that. Equal coefficients over unequal units are unequal strokes.
+// Dropping 0.085 -> 0.07 narrowed it and could not close it: the brawler still
+// drew 1.20-1.29x the hauler's line at tiers 3-5 and the scout 1.07-1.16x at
+// 2-4.
+//
+// So the stroke stops being derived per spec at all. It is computed ONCE off the
+// HAULER's art unit for that tier and handed to whichever hull is drawing, which
+// is both the literal reading of the note above and the only version with no
+// residual: all three hulls are matched to the same apparent size by SHIP_VIS,
+// so one line weight is the correct line weight for all of them.
+//
+// The hauler's own expression is reproduced EXACTLY, floor included, so its
+// shipped art does not move by a pixel. That 1.1 is a WORLD-unit floor and it
+// binds on the first three tiers — a known wart, kept deliberately: it is what
+// the hauler has always drawn and what the user is calling correct.
+function outlineW(tier, r) {
+  const u = r / (SHIP_HIT_FRAC * shipReach(HAULER_TIERS[tier]));
+  return Math.max(1.1, 0.07 * u);
+}
+
+// Draw one spec's hull into SOMEBODY ELSE'S context, in that context's current
+// transform, at collision radius `r`. The module owns a single `ctx` that every
+// draw helper closes over, so borrowing it means swapping it and putting it back
+// on the way out — `finally`, because a throw mid-hull would otherwise leave the
+// whole renderer pointed at a scratch canvas and the game would go black.
+// Dev-only (measureShipArt and the size-comparison sheet); the frame loop never
+// calls it. `game.prog.spec` picks the ladder, so callers set it and restore it.
+export function drawShipHullTo(target, game, tier, r, dmg = 0) {
+  const saveCanvas = canvas, saveCtx = ctx;
+  canvas = target.canvas; ctx = target;
+  try { drawShipHull(game, tier, dmg, r); }
+  finally { canvas = saveCanvas; ctx = saveCtx; }
+}
+
+// THE DERIVATION TOOL BEHIND config.SHIP_VIS. Draws all three ladders off-screen
+// at a fixed collision radius and measures the INK each hull actually lays down,
+// so the size-match constants are measured rather than felt.
+//
+// THE METRIC IS THE RADIUS OF GYRATION of the ink: the RMS distance of drawn
+// material from the hull's own ink centroid. Two simpler metrics were measured
+// and rejected against a side-by-side of all three ladders:
+//   BOUNDING BOX (geometric mean of w,h) over-inflates the brawler — the
+//     hauler's box is mostly the AIR inside its ring arms while the brawler's is
+//     solid, so matching boxes made the brawler read as the biggest ship by far.
+//   INK AREA (sqrt of painted pixels) over-stretches the scout — a needle with
+//     little ink has to grow enormously to match a ring-armed hauler's pixel
+//     count, and at T3 it came out half again as long as anything else.
+// Gyration sits between them and, tellingly, AGREES with ink area on the solid
+// brawler (1.27 vs 1.26 at T5) while refusing to blow the thin scout up. It is
+// also the principled reading of "apparent size": how far a shape's substance
+// spreads from its own centre.
+//
+// Returns per spec and tier: `size` (gyration AS CURRENTLY DRAWN), `raw` (that
+// with the live SHIP_VIS divided back out), plus the ink box and pixel count for
+// context. BAKE FROM `raw`, READ `size` TO CHECK YOUR WORK — raw is the
+// un-matched art and does not move when SHIP_VIS does, so
+// SHIP_VIS[spec][tier] = hauler.raw / spec.raw is a fixed point re-derivable from
+// any state, while `size` should come out EQUAL across specs once the table is
+// right. Dev-only — nothing in the frame loop calls it. Re-run and re-bake
+// whenever a tier table changes:
+//   copy(JSON.stringify(render.measureShipArt(game)))
+export function measureShipArt(game) {
+  const R = 100, N = 900;
+  const spec0 = game.prog && game.prog.spec;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const mctx = cv.getContext('2d', { willReadFrequently: true });
+  const out = {};
+  try {
+    for (const spec of ['hauler', 'scout', 'brawler']) {
+      game.prog.spec = spec;
+      out[spec] = [];
+      for (let tier = 0; tier < 6; tier++) {
+        mctx.setTransform(1, 0, 0, 1, 0, 0);
+        mctx.clearRect(0, 0, N, N);
+        mctx.save();
+        mctx.translate(N / 2, N / 2);
+        // The hull draws in the ship's local frame at world scale; at r = 100 a
+        // reach of ~3 fits the 900px sheet with room to spare on every tier.
+        drawShipHullTo(mctx, game, tier, R);
+        mctx.restore();
+        const px = mctx.getImageData(0, 0, N, N).data;
+        let x0 = N, y0 = N, x1 = -1, y1 = -1, ink = 0, sx = 0, sy = 0;
+        for (let y = 0; y < N; y++) {
+          for (let x = 0; x < N; x++) {
+            // Alpha 24/255: ignore the faint outer haze of a glow so the box is
+            // the SHIP, not its bloom.
+            if (px[(y * N + x) * 4 + 3] < 24) continue;
+            ink++; sx += x; sy += y;
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }
+        }
+        // Second pass for the gyration: the centroid has to exist first, and it
+        // is the INK's centroid, not the origin — a hull whose mass sits forward
+        // of its own pivot (every brawler) would otherwise read as larger for
+        // being off-centre, which is a position, not a size.
+        const cx = sx / ink, cy = sy / ink;
+        let s2 = 0;
+        for (let y = 0; y < N; y++) {
+          for (let x = 0; x < N; x++) {
+            if (px[(y * N + x) * 4 + 3] < 24) continue;
+            s2 += (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          }
+        }
+        const size = Math.sqrt(s2 / ink);
+        out[spec].push({
+          tier, w: x1 - x0 + 1, h: y1 - y0 + 1,
+          size: +size.toFixed(2),
+          raw: +(size / shipVis(spec, tier)).toFixed(2), ink,
+          reach: +(Math.max(x1 - N / 2, N / 2 - x0, y1 - N / 2, N / 2 - y0)).toFixed(1),
+        });
+      }
+    }
+  } finally {
+    game.prog.spec = spec0;
+  }
+  return out;
 }
 
 // ---- SCOUT: winged gun platform ---------------------------------------------
@@ -4985,7 +5138,6 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
   const leX0 = at(wLE), leY0 = bR * 0.82;                // wing leading edge, root
   const leX1 = at(wLE - t.sweep), leY1 = tipY;            // ...and tip
   const teX0 = at(wLE - wRoot);                           // root trailing edge
-  const barrel = (t.longBarrel ? 0.19 : t.coils ? 0.16 : 0.12) * len;
 
   // ======================= DRIVE SECTION (trails aft) =======================
   ctx.save();
@@ -5194,9 +5346,10 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
     ctx.lineTo(teX0, m * bR * 0.95);
     ctx.closePath(); ctx.fill(); ctx.stroke();
   }
-  // Feed conduits: the rock path from hopper out to the hardpoints, drawn as
-  // a seam down each wing root. This is the ONE line that makes the intake and
-  // the guns read as one system rather than two unrelated greebles.
+  // Feed conduits: a seam down each wing root, carrying the hopper's line out
+  // into the wing. (It used to terminate at the wing guns, which is what tied
+  // the intake and the armament into one system; the guns are gone — see below —
+  // so it now reads as structural plumbing, which is all it ever drew.)
   if (t.conduit) {
     ctx.strokeStyle = 'rgba(43, 52, 68, 0.55)'; ctx.lineWidth = lw * 0.8;
     for (const m of [1, -1]) {
@@ -5207,39 +5360,19 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
     }
   }
 
-  // Wing hardpoints: a pod with a forward rail barrel. Tier 0 gets bare nubs —
-  // the empty mount is the promise that this class becomes a gun. FOUR TOTAL
-  // is the ceiling: two per wing.
-  const mounts = t.hard.length ? t.hard : [0.55];
-  for (const f of mounts) {
-    const px = lerp(leX0, leX1, f), py = lerp(leY0, leY1, f);
-    for (const m of [1, -1]) {
-      const y = m * py;
-      if (!t.hard.length) {
-        ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-        ctx.beginPath(); ctx.arc(px, y, 0.055 * u, 0, TAU); ctx.fill(); ctx.stroke();
-        continue;
-      }
-      ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-      ctx.beginPath();
-      ctx.moveTo(px, y - 0.038 * u); ctx.lineTo(px + barrel, y - 0.026 * u);
-      ctx.lineTo(px + barrel, y + 0.026 * u); ctx.lineTo(px, y + 0.038 * u);
-      ctx.closePath(); ctx.fill(); ctx.stroke();
-      if (t.coils) {
-        ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
-        for (let i = 1; i <= t.coils; i++) {
-          const cx2 = px + barrel * (i / (t.coils + 1));
-          ctx.beginPath();
-          ctx.moveTo(cx2, y - 0.062 * u); ctx.lineTo(cx2, y + 0.062 * u);
-          ctx.stroke();
-        }
-      }
-      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-      ctx.beginPath(); ctx.arc(px, y, 0.088 * u, 0, TAU); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = SHIP_CYAN;
-      ctx.beginPath(); ctx.arc(px + barrel, y, 0.024 * u, 0, TAU); ctx.fill();
-    }
-  }
+  // THE WINGS CARRY NOTHING (2026-08 user call: "for the scout drop the guns on
+  // its wings"). There were pod-and-barrel hardpoints here — a rail barrel with
+  // coil rings, a mount pod and a lit muzzle, two per wing from tier 2, and bare
+  // nubs at tier 0 standing in as empty mounts.
+  //
+  // The class survives losing them, and arguably reads truer for it: the ladder
+  // was ALREADY documented as escalating GUIDANCE rather than armament (gimbal,
+  // dishes, fire-control arrays, sensor booms, the crescent sail), with the gun
+  // count deliberately frozen at four from tier 2 on. What changed the
+  // silhouette tier to tier was never the pods; it was the wing planform — the
+  // cranked leading edge, the root extension, the raked scythe — and all of that
+  // is untouched. The wing is now a clean aerofoil, which is what makes the
+  // sensor gear on it read.
 
   // SENSOR BOOMS: long slim spars reaching forward off the wing roots, each
   // ending in a lit pod well ahead of the leading edge. They stretch the
@@ -6155,12 +6288,16 @@ function drawShip(game) {
   // shield bubble, the tier-morph scale and the engine-flame anchors all need
   // them, and re-deriving a speed/thrust-dependent value per pass lets the
   // passes disagree inside a single frame.
-  const uG = r / (SHIP_HIT_FRAC * shipReach(tG));
+  // Same two normalizations drawShipHull applies, in the same order — the
+  // footprint, then the spec size match. They MUST agree: this is the scale the
+  // bubble and the flame anchors are laid out in, and drawShipHull is the scale
+  // the hull is actually drawn in.
+  const uG = r * shipVisOf(game, tier) / (SHIP_HIT_FRAC * shipReach(tG));
   const splitX = tG.split ? scoutSplit(game, (tG.nose + tG.rear) * uG).gap : 0;
   // THE BUBBLE HAS TO WRAP THE WHOLE SHIP, and on a split hull the drive
   // section is trailing outside the footprint the un-split art occupied. Add
   // the stand-off, or the drive flies naked behind its own shield.
-  const visR = shipVisualR(tier, r) + splitX;   // how far the drawn art reaches
+  const visR = shipVisualR(game, tier, r) + splitX;   // how far the drawn art reaches
 
   if (tier !== morphTierSeen) {
     // First frame ever doesn't morph; every later tier change (up OR down —
