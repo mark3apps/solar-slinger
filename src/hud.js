@@ -203,7 +203,7 @@ export function initMenus(handlers) {
       el.sysName.value = '';
     });
   }
-  if (el.sysName) el.sysName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnSysSave.click(); });
+  if (el.sysName && el.btnSysSave) el.sysName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnSysSave.click(); });
   // The library rows are DELEGATED like the journey rail — they are rebuilt on
   // every save/delete, so a listener bound per row would die with its row.
   // The ✕ is a separate button beside the row (never nested inside it): a
@@ -228,7 +228,7 @@ export function initMenus(handlers) {
       el.btnGoSave.textContent = 'SYSTEM SAVED ✓';
     });
   }
-  if (el.goName) el.goName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnGoSave.click(); });
+  if (el.goName && el.btnGoSave) el.goName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnGoSave.click(); });
   // Every shell panel backs out the same way (main.closeShellPanel)
   bind('btnSettingsBack', handlers.onCloseShell);
   bind('btnControlsBack', handlers.onCloseShell);
