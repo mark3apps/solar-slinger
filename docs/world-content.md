@@ -576,10 +576,7 @@ from breaking the invariants above:
   - **SHOAL LURKERS** (`Alien` kind `'lurker'`) are the fields' ambush predators, and they fight like
     BRAWLERS, not grabbers: no beam — they BODY-CHECK field rocks at you. Entering `FIELD_WAKE` springs
     one from a nearby rock (`FIELD_BROOD` per field per run, `FIELD_HUNTERS` of them hunting at
-    once — and **zero in a no-hostiles GAME MODE**: `world.applyModeRules` spends every brood and
-    presets `cleared`, since leaving `updateFields` to notice would announce every shoal as cleared
-    on frame one and bump the achievement with it. See
-    [docs/shell-and-menus.md](shell-and-menus.md)); it picks a rock roughly between itself and the ship,
+    once); it picks a rock roughly between itself and the ship,
     swings around to the far side (`line` — the visible tell), and CHARGES through it (`charge`), which
     launches the rock on a two-pass lead solve, marked alien-thrown so it plugs into every existing
     counter (a ring rock blocks it for XP — passively, or actively once Guard Sling is owned; Deflector parries it, Dead Stop primes on the catch). Three
@@ -614,6 +611,10 @@ from breaking the invariants above:
     to cover the lane's long axis overshot the short axis 2x and lurkers visibly hunted empty space;
     now they engage while the ship is inside ~1.15 of the footprint, turn back at 1.3, and ambushes
     only spring with the ship actually IN the rocks (frac < ~1).
+    A **no-hostiles GAME MODE fields no brood at all**: `world.applyModeRules` zeroes every
+    `f.brood` and PRESETS `f.cleared`, because leaving `updateFields` to notice a spent brood bumps
+    the `fieldClear` achievement and raises a message — every shoal in the system would announce
+    itself as cleared on frame one. See [docs/shell-and-menus.md](shell-and-menus.md).
   - **Glow pockets** (`game.glowPockets`, glow.js): sparse WIDE FIELDS of small bioluminescent motes that
     ride the belt's prograde orbit (a circular rail, `w` matched to the flow at their radius), scattered
     thin across the mid system — a field (`GLOW_SPREAD`) is wide enough that you SWEEP the ship through it,

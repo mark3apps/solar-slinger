@@ -417,7 +417,11 @@ function scrambleTitle() {
 // Replay the power-on. The class is stripped and re-added (with a reflow between)
 // so the CSS animations retrigger on every return to the splash, not just load.
 let bootTimer = null;
-const BOOT_MS = 1400;   // the cascade's last delay (1.09s) plus its own 0.4s
+// The cascade's last delay (the tray's 1.09s) plus that animation's own 0.4s,
+// rounded up. Anything shorter strips .boot mid-flight and SNAPS the last few
+// tray items to their end state — re-derive this if the delays in the
+// `.boot .menutray > *` block move.
+const BOOT_MS = 1500;
 function playBoot() {
   if (!el.splashScreen) return;
   el.splashScreen.classList.remove('boot');

@@ -203,8 +203,9 @@
   </div>
   <!-- GAME MODE. Three cards, built ONCE from config.MODES by hud.buildModes —
        the catalog is the single source of truth for the rules, so it may as
-       well be the source of the labels too. Only the .selected class moves
-       after that; nothing here is rebuilt per frame. -->
+       well be the source of the labels too. Nothing here is rebuilt per frame,
+       and the cards carry no state to mirror: a click commits and advances the
+       step, so there is nothing to keep in sync afterwards. -->
   <!-- THE TITLE SCREEN IS TWO STEPS: pick a mode, then pick a sky to fly it in.
        main.js owns `game.splashStep` and hud.syncMenus derives which of these is
        showing — the same owner-split every other panel here uses. -->

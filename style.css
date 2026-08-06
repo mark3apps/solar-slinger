@@ -1654,9 +1654,10 @@ body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
    THE TITLE SCREEN'S SHAPE: wordmark → mode cards → launch → tray.
    The splash is the widest of the shell panels because the three mode cards
    have to sit SIDE BY SIDE — stacked, they stop reading as one choice and turn
-   back into three more menu rows. 720px is the same ceiling #upgradeScreen's
-   spec banners take, which is not a coincidence: this is the same gesture (pick
-   one of three tall cards) and it should feel like it.
+   back into three more menu rows. 660px is what a three-up row of NAME + rule
+   line needs and no more; it was 720 (matching #upgradeScreen's spec banners)
+   while the cards still carried a sentence of blurb each, and came back down
+   with them.
    ------------------------------------------------------------------------ */
 #splashScreen {
   width: min(660px, calc(100vw - 28px));
@@ -1669,9 +1670,10 @@ body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
    the wordmark. */
 #splashScreen .titleblock { padding: 22px 0 8px; }
 
-/* MODE CARDS. Same octagon-slab language as the spec banners (.uprow), but a
-   PERSISTENT selection rather than a one-shot pick: the unselected cards stay
-   legible and dim, the chosen one is lit in its own accent and wears a bar.
+/* MODE CARDS. Same octagon-slab language as the spec banners (.uprow), and the
+   same one-shot gesture: the three are PEERS with no chosen state between them,
+   because clicking one commits and moves the screen on (see hud.buildModes).
+   Hover is therefore the only lit state, and it is a full one.
    Each mode's accent is semantic, and taken from the existing HUD palette:
    violet = the house chrome (the game as it has always been), green = safe
    (hull), cyan = sensors and discovery. */
