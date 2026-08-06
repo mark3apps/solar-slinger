@@ -967,10 +967,19 @@ rather than being discarded, and it only advances while you are berthed — you 
 some, because a world both ORBITS and SPINS: a coordinate pair is stale within a frame, and a bearing
 that didn't subtract `b.rot` would leave the pad sliding across the surface as the world turned. The
 radius is a FRACTION so a world chipped down under fire keeps its pad on the crust rather than
-floating where the crust used to be. `world.respawnShip` places the ship `DOCK_LIFT` hull-radii ABOVE
-the pad (materializing flush with the collider means being shoved off your own dock on frame one) and
-riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the ship back standing
-still in front of it.
+floating where the crust used to be.
+
+**A HOME RESPAWN ARRIVES BERTHED (2026-08).** A death with a live home port hands the ship back IN
+the clamps — `physics.berthAt`, called from main.js's respawn path — docked, shielded, repairing, one
+thrust from a launch, rather than hovering over its own pad to re-earn a berth it already owns. It
+lives in physics.js because the landing latch is module scratch there: a `game.dock` set without
+seeding it is cleared by `updateDock` on the very next substep. `berthAt` re-seats `rf` off
+`surfRadius` plus 0.92 of the CURRENT hull radius — a sliver INTO contact, because seated exactly at
+the boundary, contact is a floating-point coin flip and the latch drains (the seating lesson
+devtest's `setDown` documents). The `DOCK_LIFT` hover placement in `world.respawnShip` remains as the
+staging the berth overrides, and the no-home respawn still uses the run's opening orbit. Either way
+the ship arrives riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the
+ship back standing still in front of it.
 
 **A DOCK IS WHERE YOU STOP WORKING.** The beam, the orbit ring, the Recovery Tether, the shotgun and
 the mobility abilities are all inert while berthed — `main.dockBlocking` refuses their inputs and
@@ -990,6 +999,73 @@ built the station — but the ship grows from radius 4 to ~44 across the tiers, 
 hull to exactly that height. Left at its build-time value, returning to an early pad in a bigger ship
 parks the hull short of contact or buries it in the crust. Re-measured on every berth, which is also
 honest about what a station is: the art already refits to your current tier, and so does the berth.
+
+**THE GROUND HAS TO BE ABLE TO HOLD A DOCK (2026-08).** Two refusals the landing gates issue that no
+amount of flying can clear — their guide wording says "go elsewhere", never "fly better":
+
+- **No berth in a wound** (`CFG.DOCK_CRATER_MAX`, gate `'crater'`). A pad is pinned at a fraction of
+  the body's NOMINAL radius (`util.padPos` knows nothing about scars), so a station laid down inside
+  a crater stood on the phantom surface — floating across the mouth of the hole the player can see.
+  Ground cratered deeper than `DOCK_CRATER_MAX` of the radius (read off `util.scarSurfaceAt`, the
+  same profile the collider and the silhouette draw from) refuses the berth outright.
+- **A station whose footing is blasted away BREAKS** — the same `DOCK_CRATER_MAX` line, swept in
+  `updateDock`. Aliens (or you) cratering the crust under a standing station collapse it: debris,
+  shake, and a named message (`dockLostName`, or the alarm-grade `homeDockLostName` when it was the
+  respawn point — where a death puts you back just changed, and that must never be discovered by
+  dying). A structure does not survive its foundations, and the pre-rule behaviour — the pad
+  hovering on its build-time standoff over a hole — read as a glitch because it was one.
+- **A PORT NEEDS A WORLD THAT CAN CARRY IT** (`config.dockHostOk`, gate `'small'`). The berth is
+  sized by the SHIP (the berth floor wins over `dockPadR`'s host cap), so a high-tier port on a small
+  moon claimed most of the horizon — a megastructure the moon wore. The line is the berth floor
+  against 0.55 of the host radius, deliberately looser than the 0.42 aesthetic cap: the cap is where
+  a pad stops looking right, the gate is where it stops being plausible. It reads the same `berthR`
+  the pad does, so the gate and the structure can never disagree about how big a berth this ship
+  needs — and it therefore varies by SPEC as well as tier, which is correct: a brawler really is a
+  wider thing to park. Host radius needed, tiers 0–5: hauler 26/26/44/76/132/230, scout
+  26/39/75/116/197/321, brawler 26/37/68/130/231/384. Against the real sky (moons 41–232, planets
+  293–1998) every moon hosts tier 0, the median moon carries to ~tier 3, the biggest moon takes a
+  tier-4 hull, and a top-tier port is planet infrastructure. The same predicate runs in
+  `updateDock`'s refit sweep: the art refits to your CURRENT tier, so a tier-up that outgrows a
+  station's world DECOMMISSIONS it — retired quietly with a message (`dockOutgrownName` /
+  `homeOutgrownName`), never a bang, because nothing destroyed it; the ship simply grew past what the
+  world can hold.
+
+**THE BERTH IS SIZED BY THE HULL AS DRAWN, NOT AS COLLIDED** (`config.berthR`, 2026-08). `st.radius`
+is the collision circle and is deliberately one number for every spec — `SHIP_VIS` is what makes all
+three ladders read the same SIZE, and its own note spells out the knock-on: everything that wraps the
+ART rather than the hitbox multiplies by `vis`. A pad is as art-wrapping as anything gets, and it
+never got that multiply, so the deck was sized for a hauler and every scout and brawler overhung it:
+a tier-1 brawler's drawn hull reached 16.0 units across a deck whose half-width was 15.2 — **the ship
+was wider than its own berth** at tiers 1–4 (scout 1–2, worst 0.88×). Multiplying the ship term by
+`vis` makes the pad-to-hull ratio come out exactly the hauler's (1.43 → 1.92 as the tier widens the
+deck for what stands on it) at every tier and spec, and leaves the hauler ladder untouched by
+construction.
+
+**A STANDING STATION LANDS YOU ITSELF (2026-08).** `physics.updateAutoland`, `CFG.AUTOLAND_*`: come
+in close (`AUTOLAND_R`) and slow (`AUTOLAND_VMAX`) with the throttle released and the pad takes the
+ship — eases the velocity down an approach vector (floored at `AUTOLAND_TOUCH`, under `DOCK_SPEED`,
+so the stillness gate is satisfied at contact by design), stands the nose up, and lets the ordinary
+three-gate latch do the rest. Returning to a dock you already built is never a piloting test twice;
+the FIRST landing on bare ground is still flown by hand — the approach challenge is part of what a
+station costs, and the autoland is part of what it pays back. **Hands-off is the contract, both
+ways**: it never engages with the throttle up or against a ship that is plainly leaving, and any
+thrust mid-approach hands the helm straight back and stands it down for `AUTOLAND_CD` — the same
+cooldown a launch sets, so the pad that just threw you off cannot reel you back in. Dash and warp
+count as hands-on too: neither touches the throttle, so without an explicit cancel the autoland
+simply eased the dart back out, which is the game fighting the pilot.
+
+**IT ONLY TAKES A SHIP THAT HAS A STRAIGHT LINE IN** (`padPathClear`). The approach is a straight
+line — this is a docking aid, not a pathfinder — so engaging it with a world across the path would
+drive the ship into that world, the exact thing the pilot is trusting it not to do. A segment-vs-disc
+test over the local celestials runs LAST, after the cheap gates have picked a candidate. **The pad's
+own host is tested too**, at 0.995 of its radius, and that is the elegant half: the pad sits on that
+surface, so the segment only crosses the interior when the ship is over the horizon from it —
+"can this berth be seen from here?" falls out of the same arithmetic, with no special case. While it flies,
+the guide shows its hand (dashed approach line — helper UI, so dashes are the correct grammar — and
+the ring naming who has the helm): a ship steering itself with nothing on screen saying so reads as
+a stuck control. Deliberately NOT mirrored in `predictPaths`: unlike the rubber band and the long
+arms it only exists hands-off inside one pad's approach cone and terminates at the berth — the
+moments it is steering are the moments nobody is aiming a throw off the forecast.
 
 **THE SHIP IS HELD, AND LEAVING IS A SEQUENCE.** A berthed ship stands UPRIGHT (`DOCK_UPRIGHT`) and
 is pinned EXACTLY to its pad: the clamps own the attitude and the position, the mouse stops steering,
@@ -1012,15 +1088,20 @@ overlaps the clamps releasing instead of following the kick. `viewR` rides the z
 the wake bubble genuinely widen with the vista — safe, because a berth is the one place nothing can
 touch you.
 
-**HOME IS THE LIVES ROSE, on all three surfaces** — the in-world pad, the radar and the chart
-(`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker colour: rose already means
-"a life" in this cockpit, and a home port is exactly the place a life hands the ship back. Other
-stations are steel — somewhere you can go, not the place you have committed to. The home port also
-flies a **lit beacon spire with a pennant**, so the two are told apart by shape and not by hue alone.
-(It used to wear a full RING and that was wrong twice over: the ring sat concentric-ish with the
-shield dome and the two read as a lens of overlapping circles rather than as a mark on a structure,
-and a ring says nothing about what a home port *is*. A spire does — it caps the gantry at the tiers
-that have one, and it competes with nothing.)
+**HOME IS THE LIVES ROSE** (`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker
+colour: rose already means "a life" in this cockpit, and a home port is exactly the place a life
+hands the ship back.
+
+**But in-world it is A FLAG, NOT A PAINT JOB** (user call, 2026-08: "the only part of it that should
+change is a flag shows up and it's a red flag, the colour of the rest of it should not change"). The
+STRUCTURE stays steel at every station, home or not — a dock is the same building either way, and
+repainting the whole thing said "a different kind of place" when the truth is "the same place, and
+it's yours". So the rose lives entirely in the **lit spire and its pennant**, which is also why the
+mark has a SHAPE: it reads as home from any distance without the structure ever changing colour. (It
+used to wear a full RING and that was wrong twice over: the ring sat concentric-ish with the shield
+dome and the two read as a lens of overlapping circles rather than as a mark on a structure, and a
+ring says nothing about what a home port *is*.) The two INSTRUMENTS still mark home in rose outright
+— that is their own grammar, where a colour is all a two-pixel blip has to work with.
 
 **THE STATION'S ART TRACKS THE SHIP'S TIER** (`config.DOCK_TIERS`, six rows read via `dockTier(st)` off `game.st.tier`,
 i.e. your CURRENT tier and not the one it was laid down at). A dock is infrastructure you keep
@@ -1045,12 +1126,63 @@ for the deck lamps and they washed out the structure they were meant to be light
 is a POINT). The substructure block under the deck is what carries the visual mass — without it the
 station is a line with sticks on it.
 
+**THE STATION IS BUILT FROM MATERIAL, NOT LIGHT (2026-08).** Three near-opaque hull tones
+(the module-local `HULL_DK` / `HULL_MD` / `HULL_LT` consts above `drawPad` in render.js) carry the structure's mass — caissons, deck plates, cabins, tanks are
+FILLED bodies with seams and thickness — and the ink colour (steel / home rose) is reserved for lit
+edges, markings, lamps and glass, which is what keeps a home port readable at a glance without the
+whole building being made of glow. The pass this replaced drew everything as translucent ink strokes
+and the station read as a hologram parked on the world rather than a thing standing on it.
+
+**THE BUILD IS A WORKSITE, NOT A LOADING SCREEN (2026-08).** The ten seconds of `DOCK_BUILD` are a
+staged ASSEMBLY (`render.bstage` windows, in construction order): the caisson and legs rise out of
+the crust, the deck is craned in plate by plate (centre-out, each lowered with an ease-out), the
+clamp arms unfold from flat on the deck up over the berth — the same joints the launch later swings
+open, one mechanism working both directions — the mast telescopes, the cabins lower in, the dish
+unfolds, and a commissioning pass paints the touchdown markings on and walks the lamps up one by one.
+Every stage MOVES its piece into place: ten seconds of opacity ramps reads as waiting for a bar, ten
+seconds of visible work reads as building. A constructor drone and weld glints (both off `game.time`)
+mark where the work is right now — sanctioned motion, because the build is an event — and the solid
+progress arc stays underneath as the honest clock. All of it is strictly gated on `prog < 1`: the
+finished station is static except for its events.
+
 **THE SHIELD DOME IS A REAL FIELD, NOT A DECAL.** It repels loose rock and aliens
-(`physics.updateDomeShield`) as well as blocking damage — immunity alone is half a shield, and a hull
-sitting inside a heap of debris it happens to be invulnerable to reads as a bug rather than as
+(`physics.updateDomeShield`) as well as blocking damage — absorption alone is half a shield, and a
+hull sitting inside a heap of debris it happens to be safe from reads as a bug rather than as
 protection. That is also why the tier table lives in **config.js**: its drawn edge and its pushing
 edge must come from one expression (`dockDomeR`), never two. Where it throws something off, the rim
 flares — an EVENT, the one thing this otherwise-calm surface animates for.
+
+**AND THE FIELD IS FINITE** (user call, 2026-08: "the dock shield shouldn't be invulnerable — it
+should have a fixed amount but really high, it shouldn't recharge, and when it breaks the dock
+breaks"). A berth used to be TOTAL immunity, which made a finished dock the one place in the game
+nothing could ever reach you — a safe room rather than a fortification. It is a POOL now
+(`CFG.DOCK_SHIELD`, 2400 ≈ 7.5 top-tier hulls or ~35 full CME passes), carried on the station as
+`d.hp`, issued once at the build site and **never credited by anything** — not by time, not by
+berthing, not by a tier-up. Each station has its own, so a second port is a second pool.
+
+- **Two drains, one debit path** (`physics.spendDome`): damage that would have reached the ship, and
+  the cost of throwing something off the rim (`DOCK_REPEL_COST`, priced on the same saturating mass
+  knee as collision damage and capped per bite at `DOCK_REPEL_MAX`). Measured: a 4,267-mass rock at
+  260 u/s costs 3.8 of 2400; three minutes berthed in ambient traffic costs ~0.2.
+- **No free frame** — whatever the pool cannot cover reaches the hull on that same call, exactly the
+  rule the ram runs on. Protection is total, then it is over, with no cliff between.
+- **When it breaks, the STATION breaks** (`breakDock`) — the dome *is* the harbour's survival, so
+  there is no such thing as a standing station with a dead shield, and it goes through the same
+  collapse path a blasted-out foundation does.
+- **EVERY VELOCITY IN THE REPEL IS MEASURED IN THE DOCK'S OWN FRAME** (`util.surfaceVel`, the same
+  expression surface friction and the stillness gate read). The dome rides a world that orbits at up
+  to ~700 u/s: read absolutely, a rock merely drifting alongside bills as a 700 u/s impact, and the
+  separation floor is satisfied without the rock ever separating from a dome moving just as fast — so
+  the same contact re-bills every substep at 120 Hz. Harmless while the field only pushed; the moment
+  a repel cost charge it emptied the whole pool in about a second off one drifting rock ("the dock
+  shield went almost completely away on one small asteroid hit").
+- The dome **shows what it has left** through INTENSITY, never size or motion: the geometry stays
+  exactly `dockDomeR` because that is the real collider, and a field drawn smaller than it pushes
+  would be the mirror-drift trap in visual form. The cockpit carries the number on the **DOCK bar**
+  (top-left, under the ship's own gauges) — in the dome's own pale ice rather than the ship shield's
+  blue, because it is the one gauge there that measures something which is not the ship, and on its
+  own fixed width rather than the hull/shield points-per-pixel scale, which a pool seven hulls deep
+  would flatten.
 
 **IT STANDS ON THE GROUND**, and getting that right is the whole job of drawing it. It
 is centred on the SURFACE POINT under the pad — not the pad origin, which sits a hull-radius above

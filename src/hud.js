@@ -8,10 +8,15 @@ import {
 } from './starmap.js';
 import { mulberry32, defaultSystemName } from './util.js';
 import { drawStatIcon } from './render.js';
+// The ONE "is this station finished" test — the dome's push, its draw and the
+// DOCK gauge below all read it. physics.js imports nothing from here, so this
+// closes no cycle.
+import { dockReady } from './physics.js';
 
 const el = {};
 let msgTimer = null;
 let prevHull = Infinity, prevShield = Infinity;
+let prevDockHp = Infinity;   // dock dome charge last frame — the bar flashes on a bite
 let dispHull = -1, dispShield = -1;   // eased readout values — numbers COUNT, not snap
 let prevXpFrac = 0;        // XP-bar fill fraction last frame — pulse on gain
 let prevCombo = 0;         // combo stamp retriggers its pop on every increment
@@ -76,6 +81,7 @@ export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
+    'dockBar', 'dockFill', 'dockNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     // SHIP SYSTEMS cluster (bottom right): dial, throw gauge, sprite rows
     'shipPanel', 'spVel', 'spThrN', 'velDial', 'spVelRated',
@@ -1334,6 +1340,38 @@ export function updateHud(game) {
     el.burnBar.classList.toggle('burning', !!game.burnerOn);
     // Below the engage threshold the tank can't light — dim it so the wait reads
     el.burnBar.classList.toggle('low', !game.burnerOn && fuel < 0.25);
+  }
+
+  // THE HARBOUR'S SHIELD (CFG.DOCK_SHIELD). Up only while berthed at a FINISHED
+  // station — the same gate the dome itself draws on, because that is exactly
+  // when the pool is doing anything. It is the one gauge here that measures
+  // something which is NOT the ship, so it wears the dome's own pale ice rather
+  // than the ship shield's blue: the bar and the field it reports have to be
+  // recognisably the same object.
+  //
+  // It does NOT share the hull/shield points-per-pixel scale. That scale exists
+  // to make the ship's split pool comparable at a glance, and this pool is ~7
+  // hulls deep — folding it in would either flatten the ship's gauges to
+  // slivers or run this one off the side of the screen. Fixed width, no
+  // point-cells, exactly like the fuel tank, for the same reason: it is not
+  // part of the ship's hit-point pool.
+  // `dockReady`, not an inline `t >= DOCK_BUILD` — the dome's push, its draw and
+  // this gauge must all key off ONE predicate or they drift apart.
+  const dk = game.dock;
+  const dockLive = dockReady(dk);
+  el.dockBar.classList.toggle('hidden', !dockLive);
+  if (dockLive) {
+    const hp = Math.max(0, dk.hp ?? CFG.DOCK_SHIELD);
+    const frac = Math.max(0, Math.min(1, hp / CFG.DOCK_SHIELD));
+    setWidth(el.dockFill, `${frac * 100}%`);
+    setText(el.dockNum, `${Math.ceil(hp)}/${CFG.DOCK_SHIELD}`);
+    // The SAME threshold physics warns on, so the bar going red and the message
+    // saying so are one event rather than two nearly-agreeing ones.
+    el.dockBar.classList.toggle('low', frac < CFG.DOCK_SHIELD_WARN);
+    if (game.started && hp < prevDockHp - 0.4) flash(el.dockBar);
+    prevDockHp = hp;
+  } else {
+    prevDockHp = Infinity;
   }
 
   // Combo stamp: throw-kill chains slam a multiplier onto the screen

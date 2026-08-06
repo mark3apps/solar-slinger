@@ -277,6 +277,52 @@ body.preGame #hud::after { opacity: 0; }
 }
 #burnBar.burning #burnFill { animation: gaugeSheen .6s linear infinite; }
 #burnBar.low #burnFill { opacity: .55; }
+
+/* THE HARBOUR'S SHIELD — visible only while berthed at a finished station
+   (hud.js). Wears the DOME'S OWN pale ice (render.drawPad's field is
+   rgba(206,245,255)), deliberately NOT the ship shield's saturated blue: this
+   is the only gauge in the stack that measures something other than the ship,
+   and the bar must read as the same object as the field over the berth. Fixed
+   width and no point-cells, like the fuel tank — its pool is ~7 hulls deep and
+   is not part of the ship's hit-point scale. `.low` is the same threshold
+   physics warns on, and it does not blink: the dome is a calm thing, and the
+   message is what raises the alarm. */
+/* Pulled TEAL-ward from the dome's literal ice. Two near neighbours had to be
+   cleared: zone.js's `fringe` accent (198,226,255) and `corona` (110,205,255) —
+   and corona is genuinely reachable, since the innermost lava world sits inside
+   the corona envelope and that zone outranks `world`, so berthing there would
+   have put an ice-blue cockpit around an ice-blue gauge and the instrument
+   would stop reading as an instrument. Still recognisably the dome's colour,
+   and still clear of the ship SHIELD's saturated blue by the pale/deep split. */
+#dockBar { width: 220px; }
+#dockBar .statlabel { color: #b9f0f6; text-shadow: 0 0 8px rgba(150, 226, 236, .85); }
+#dockBar .statnum { text-shadow: 0 0 9px rgba(150, 226, 236, .6), 0 1px 2px rgba(0, 0, 0, .9); }
+#dockBar .statwell { background: linear-gradient(0deg, rgba(140, 216, 228, .1), rgba(140, 216, 228, .1)), rgba(8, 4, 20, .6); }
+#dockFill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px;
+  transition: width .12s ease;
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .25) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #dcf9fd, #8fd8e8 55%, #4f9fb8);
+  box-shadow: 0 0 12px rgba(150, 226, 236, .8), inset 0 1px 0 rgba(255, 255, 255, .6);
+  animation: gaugeSheen 4.5s linear infinite;
+}
+/* AMBER-EMBER, not hull red. Two long bars in one stack going the same red
+   means a spent dome can be misread as a critical hull in the one moment that
+   matters — and the only other separators are the word and the fact that hull's
+   label blinks. This alarms without colliding, and it does NOT blink: the dome
+   is a calm thing, and the message is what raises the alarm. */
+#dockBar.low .statlabel { color: #ffb648; text-shadow: 0 0 8px rgba(255, 170, 60, .9); }
+#dockBar.low .statwell {
+  background: linear-gradient(0deg, rgba(255, 165, 55, .12), rgba(255, 165, 55, .12)), rgba(8, 4, 20, .6);
+}
+#dockBar.low #dockFill {
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .22) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #ffe2a0, #ffa32e 55%, #c96a08);
+  box-shadow: 0 0 12px rgba(255, 165, 55, .9), inset 0 1px 0 rgba(255, 255, 255, .4);
+}
 #shieldBar.down .statlabel { animation: shieldBlink 1s steps(2) infinite; color: #ff8a6c; }
 @keyframes shieldBlink { 50% { opacity: .3; } }
 .statbar.hit .stattrack { animation: barHit .25s ease; }
