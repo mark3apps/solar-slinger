@@ -1636,6 +1636,18 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
     if (heavy && heavyMul !== 1) {
       const f = d / (b.radius * CFG.SHIP_WELL_START);
       if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+      // SURFACE WEIGHT (see CFG.SHIP_SURF_*): inside SHIP_SURF_END radii the
+      // pull ramps toward the surface by up to radius/SHIP_SURF_REF — big
+      // worlds are hard to launch straight up from, moons and small worlds
+      // (peak <= 1) are untouched. Ends exactly where LONG ARMS begins, so
+      // past 2.5 radii nothing changes. Ship-only; predictPaths mirrors this.
+      else {
+        const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
+        if (peak > 1) {
+          const t = Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1));
+          w *= 1 + (peak - 1) * t;
+        }
+      }
       // GAS DIVE: inside a gas giant the ship feels enclosed-mass gravity
       // (uniform-density: x d³/R³ of the point value) — without this, the
       // point-mass interior pull (~380 at half depth) makes every dive
@@ -6038,9 +6050,15 @@ export function predictPaths(game) {
       atr.push({
         x: b.x, y: b.y, vx: b.vx, vy: b.vy, mass: b.mass, radius: b.radius,
         star: b.type === 'star',
-        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet,
-        // rubber-band eligible: real worlds only (majorComet is weighted for
-        // gravity but the capture assist doesn't apply near a comet)
+        // MIRROR LAW: this predicate must equal gravityAt's `heavy` exactly —
+        // planet/moon/rogue, NO majorComet. It used to include majorComet
+        // ("weighted for gravity"), but the sim never weighted comets, so near
+        // Vesper the drawn path felt PLANET_GRAV_SHIP × LONG ARMS pull the
+        // flown path didn't — a lie that doubled when the mul went 6 → 12
+        // (2026-08). The sim is the truth; the forecast comes down to match.
+        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
+        // rubber-band eligible: real worlds only (the capture assist doesn't
+        // apply near a comet)
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
         // crystal ghosts hit-test against the shard polygon at the CURRENT
@@ -6160,6 +6178,16 @@ export function predictPaths(game) {
       if (b.weighted && heavyMul !== 1) {
         const f = d / (b.radius * CFG.SHIP_WELL_START);
         if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+        // Mirror of gravityAt's SURFACE WEIGHT near-surface ramp — the
+        // forecast must steepen at a big world's surface exactly like the
+        // real pull, or the drawn launch/descent path lies.
+        else {
+          const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
+          if (peak > 1) {
+            const t = Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1));
+            w *= 1 + (peak - 1) * t;
+          }
+        }
         if (b.gas && d < b.radius) {   // enclosed-mass interior, like gravityAt
           const q = d / b.radius;
           w *= q * q * q;

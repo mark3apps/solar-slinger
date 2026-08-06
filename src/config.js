@@ -158,7 +158,10 @@ export const CFG = {
   // ARMS (SHIP_WELL_START, below) are measured in body radii so a giant's well
   // reaches out proportionally rather than absolutely: a gas giant is now
   // something you fly ALONG, not something that snatches you. Raise
-  // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
+  // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look —
+  // and SURFACE WEIGHT (SHIP_SURF_*, below) is the size-graded answer to the
+  // 1/mul² surface-gravity erosion this note describes: it restores strong
+  // surface pull on exactly the worlds this pass grew.
   // 5.25 = the previous 3 grown 1.75x (2026-08 user call: "planets should be
   // 1.5x to 2x bigger"). The 1.5-2x SPREAD comes from world.js's per-planet
   // seeded size jitter (x0.86-1.14 on the authored radius), so each world
@@ -222,13 +225,16 @@ export const CFG = {
   STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this).
-  // 6.0 = the old 3.0 x 2 (2026-08 user call, first "about 1.4x as strong",
-  // then raised to "2x instead"), cashing in the invitation the WORLD SCALE
-  // note above makes: the growth pass left masses alone, so surface pull fell
-  // as 1/mul² while the worlds grew — this claws the felt grab back toward
-  // how big they now look. Ship-only, like everything in this family: rails,
-  // moon orbits, thrown rocks and damage never read it.
-  PLANET_GRAV_SHIP: 6.0,
+  // 12.0 = 6.0 x 2 (2026-08 user call: "double it — I really want it to be
+  // able to slingshot you"); 6.0 was itself the old 3.0 x 2 from the earlier
+  // "2x instead" call, cashing in the invitation the WORLD SCALE note above
+  // makes: the growth pass left masses alone, so surface pull fell as 1/mul²
+  // while the worlds grew. Ship-only, like everything in this family: rails,
+  // moon orbits, thrown rocks and damage never read it. Landing knock-on:
+  // residual settle drift is g_surface / SURF_FRICTION — see the canonical
+  // worst-case number on SURF_FRICTION's own comment (~28 u/s with SURFACE
+  // WEIGHT stacked on this mul, inside DOCK_SPEED 60).
+  PLANET_GRAV_SHIP: 12.0,
   // LONG ARMS (ship only): beyond SHIP_WELL_START planet radii, the
   // ship-felt pull of a world falls off as 1/r instead of 1/r² until the
   // boost caps at SHIP_WELL_MAX — wells reach farther WITHOUT deepening
@@ -237,6 +243,33 @@ export const CFG = {
   // debris, and celestials are untouched.
   SHIP_WELL_START: 2.5,
   SHIP_WELL_MAX: 6,
+  // SURFACE WEIGHT (ship only): inside SHIP_SURF_END body radii the ship-felt
+  // pull of a world ramps up toward the surface by up to radius/SHIP_SURF_REF
+  // (capped at SHIP_SURF_MAX). 2026-08 user call: "it should be semi difficult
+  // to launch straight up from a planet ... strong on the larger planets, not
+  // a straight pull across the board." The world-scale pass grew radii without
+  // masses, so surface g came out FLAT-TO-BACKWARDS across the sky (big worlds
+  // ~24 u/s², small dense ones ~47, thrust 180 — every launch a 7x-overpowered
+  // hop). This claws surface pull back in proportion to how big the world
+  // LOOKS: at REF 390 the largest giant peaks ~5.2x (surface g ~125, a real
+  // fight against thrust 180 but always escapable), mid worlds ~2-3x, worlds
+  // at/below REF and ALL moons are untouched (peak <= 1 never amplifies).
+  // SHIP_SURF_END deliberately equals SHIP_WELL_START so this hands off
+  // exactly where LONG ARMS begins — no overlap, no gap, and past 2.5 radii
+  // (cruise, slingshots, approach) nothing changes. Ship-only like the rest
+  // of this family, and MIRRORED in predictPaths.accelAt (keep in sync).
+  // SHIP_CULL_K needs no term for this: the boost exists only within 2.5
+  // radii, where a world's unboosted pull is orders of magnitude above the
+  // cull threshold — it can never rescue a culled attractor.
+  SHIP_SURF_REF: 390,
+  // COUPLED TO SHIP_CULL_K (physics.js): the ship cull's headroom is sized by
+  // SHIP_WELL_MAX (6), and this cap being <= that is the exact guarantee that
+  // no attractor the surface boost could matter for is ever culled. Raise it
+  // past SHIP_WELL_MAX and SHIP_CULL_K needs a max() of the two.
+  SHIP_SURF_MAX: 6,
+  // Must stay > 1 — the ramp normalizes by (SHIP_SURF_END - 1), i.e. "fades
+  // from the surface out"; at exactly 1 it divides by zero.
+  SHIP_SURF_END: 2.5,
   // ORBIT RUBBER BAND (ship only): inside SHIP_BAND_RANGE body radii (+300)
   // of a world, the INWARD radial component of the ship's velocity relative
   // to that world is damped by up to SHIP_BAND_DAMP/s (accel capped at
@@ -309,8 +342,11 @@ export const CFG = {
   // that is what makes a landing possible at all: the radial part cancels the
   // gravity the ship keeps falling in with, so it settles against the
   // resolver's push-out instead of chattering on it. Residual drift is
-  // g_surface / SURF_FRICTION — under 1 u/s on a mid world, ~4 u/s under the
-  // deepest LONG ARMS amplification, i.e. far inside DOCK_SPEED either way.
+  // g_surface / SURF_FRICTION — THE canonical worst case is ~28 u/s, on the
+  // deepest world under SURFACE WEIGHT (surface g ~125 at PLANET_GRAV_SHIP 12
+  // × SHIP_SURF peak; other comments cite this number, update them together),
+  // still inside DOCK_SPEED (60). Mid worlds sit around 12, small worlds and
+  // moons under 6.
   //
   // It never touches the BOUNCE: the kick below is an impulse applied in the
   // same substep, and at 1/120s this rate removes 3.7% of a velocity. A hard

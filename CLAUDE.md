@@ -240,8 +240,10 @@ changing anything it touches.**
     wall by up to 1.4 body radii and the hull bounced in open space.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
-`game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
-interiors, the orbit rubber band, fog of war, and the frame-relative trajectory forecast.
+`game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, SURFACE WEIGHT (ship-felt pull
+ramps up near a big world's surface, scaled by radius — launching off a giant is meant to be a
+fight), corona/lava heat, gas-giant interiors, the orbit rubber band, fog of war, and the
+frame-relative trajectory forecast.
 
 Plus **SURFACE FRICTION** (`CFG.SURF_FRICTION`): contact with a planet or moon drags the ship toward
 the velocity of the ground under it (`util.surfaceVel` — the world's motion plus its spin's
