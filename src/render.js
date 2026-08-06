@@ -1725,7 +1725,8 @@ function bakeGranTiles() {
     for (let n = 0; n < GRAN_BAKES; n++) granTiles.push(bakeOneGranTile(9137 + n * 4271));
   } catch (e) {
     // Tiles we cannot bake cost the sun its granulation, nothing else — the
-    // disc, the spots and the limb all draw without it (capability rule).
+    // disc, the supergranules, the prominences and the limb all draw without it
+    // (capability rule).
     granDead = true;
     granTiles.length = 0;
   }
@@ -2033,7 +2034,13 @@ function drawStar(game, b) {
       ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU); ctx.fill();
     }
   }
-  ctx.globalCompositeOperation = 'lighter';
+  // Back to source-over EXPLICITLY, and this line is load-bearing: the pass
+  // below is the only one on the face that has to SUBTRACT light. Left on the
+  // 'lighter' the supergranule loop ends in, it silently inverts into a warm
+  // bloom over the outer disc — which still looks plausible, and is exactly why
+  // that bug survived a playtest. Never let this be inherited from whatever
+  // pass happened to run last.
+  ctx.globalCompositeOperation = 'source-over';
 
   // ---- The limb-darkening pass proper, over everything painted on the face.
   // The base gradient shades the disc; this one shades the DETAIL, so a granule
