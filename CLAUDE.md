@@ -240,7 +240,9 @@ changing anything it touches.**
     wall by up to 1.4 body radii and the hull bounced in open space.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
-`game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, SURFACE WEIGHT (ship-felt pull
+`game.viewR`), the ship's flow-relative speed ceiling and its GRAVITY SLING CREDIT (slingshot
+speed banks an extra allowance that decays slowly; thrust overspeed still bleeds fast), LONG ARMS,
+SURFACE WEIGHT (ship-felt pull
 ramps up near a big world's surface, scaled by radius — launching off a giant is meant to be a
 fight), corona/lava heat, gas-giant interiors, the orbit rubber band, fog of war, and the
 frame-relative trajectory forecast.

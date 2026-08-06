@@ -267,6 +267,11 @@ export class Ship {
     this.thrusting = false;
     this.braking = false;
     this.engineOutT = 0;     // flare EMP: seconds of dead engines remaining
+    // SLING CREDIT (physics.js speed governor, CFG.SLING_*): extra ceiling
+    // earned when WORLD gravity does positive work on the over-ceiling
+    // deviation — a slingshot rides above maxSpeed and decays on its own
+    // slow clock instead of being bled off like thrust overspeed.
+    this.slingSpd = 0;
   }
 }
 

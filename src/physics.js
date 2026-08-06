@@ -5608,10 +5608,28 @@ export function step(game, dt) {
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
-    if (rsp > cap) {
-      const brake = (rsp - cap) * CFG.SPEED_BLEED * dt;
+    // GRAVITY SLING CREDIT (CFG.SLING_*): WORLD gravity doing positive work
+    // on the flow-relative deviation banks extra allowance — the whole
+    // rationale lives on the constants. shipGx/Gy is this substep's stash
+    // (worlds only, sun excluded), so the credit accrues at exactly the rate
+    // gravity is adding speed along the current deviation. Deliberately NO
+    // over-cap gate: a slingshot builds its speed on the plunge, BELOW the
+    // ceiling (at periapsis gravity runs perpendicular to the track and
+    // accrues nothing), so gating on rsp > cap starves the whip and the
+    // bleed clamps it at the cap — measured 294 vs 465 u/s peak on the same
+    // flyby. Climbing out banks nothing (gravity work turns negative), and
+    // the bound + decay keep a banked dive from becoming a standing
+    // afterburner.
+    if (rsp > 1e-6) {
+      const gdot = (game.shipGx * rvx + game.shipGy * rvy) / rsp;
+      if (gdot > 0) s.slingSpd = Math.min(cap * CFG.SLING_MAX, s.slingSpd + gdot * dt);
+    }
+    s.slingSpd *= Math.exp(-CFG.SLING_DECAY * dt);   // the slow falloff — always ticking
+    const capEff = cap + s.slingSpd;
+    if (rsp > capEff) {
+      const brake = (rsp - capEff) * CFG.SPEED_BLEED * dt;
       let f = Math.max(0, (rsp - brake) / rsp);
-      const hard = cap * CFG.SPEED_HARD;
+      const hard = capEff * CFG.SPEED_HARD;
       if (rsp * f > hard) f = hard / rsp;
       s.vx = flow.vx + rvx * f; s.vy = flow.vy + rvy * f;
     }
@@ -5621,9 +5639,11 @@ export function step(game, dt) {
     // brakes on. Direction matters: drifting sideways or backwards at speed
     // must not read as "hitting max" (a bounce or fling recoil isn't cruise).
     // Post-bleed, so a clean burn can kiss >1 briefly; floored at 0 when the
-    // deviation points behind the nose.
+    // deviation points behind the nose. Over capEff, not cap: a banked sling
+    // IS the current legal ceiling, and dividing by the bare cap would pin
+    // the speed voice at 1.2 for the whole ride down the credit.
     game.speedFrac = Math.min(1.2, Math.max(0,
-      ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / cap));
+      ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / capEff));
     // ...and for the HUD's SHIP DATA readout: the flow-relative speed itself
     // (full magnitude, post-bleed) — the number the ceiling actually governs.
     // Sky-frame speed is the WRONG readout against TOP SPEED: near the sun the
@@ -6344,8 +6364,12 @@ export function predictPaths(game) {
       }
       ship.vx += ax * dt; ship.vy += ay * dt;
       // Mirror the speed governor (relative to the orbital flow) so the path
-      // stays honest — same flow-relative clamp the real ship gets
-      const pcap = game.st.maxSpeed;
+      // stays honest — same flow-relative clamp the real ship gets. The
+      // SLING CREDIT rides in FROZEN at its current value: simulating its
+      // accrual/decay along the path would need the whole credit machine per
+      // step, and at SLING_DECAY 0.12/s it moves too slowly over a forecast
+      // horizon to bend the drawn path visibly.
+      const pcap = game.st.maxSpeed + (game.ship ? game.ship.slingSpd : 0);
       const pflow = orbitalFlow(game, ship.x, ship.y);
       const prvx = ship.vx - pflow.vx, prvy = ship.vy - pflow.vy;
       const prsp = Math.hypot(prvx, prvy);

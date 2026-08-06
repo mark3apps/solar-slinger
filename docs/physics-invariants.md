@@ -13,6 +13,21 @@
   deviation in any direction — with the spin you reach flow+maxSpeed, against it flow−maxSpeed (so out
   in the belt, where maxSpeed exceeds the flow, you can fly retrograde; near the sun the flow outruns
   maxSpeed and sweeps you prograde). Mirrored in predictPaths — keep in sync.
+- **GRAVITY SLING CREDIT** (`SLING_MAX`/`SLING_DECAY`, added 2026-08): over the ceiling, WORLD gravity
+  (the `game.shipGx/Gy` compass stash — sun excluded) doing positive work on the flow-relative
+  deviation banks `s.slingSpd`, an extra allowance on the governor's cap, up to `SLING_MAX` (1.0) ×
+  maxSpeed. It decays exponentially at `SLING_DECAY` (0.12/s, half-life ~5.8s) while ordinary bleed
+  pins speed to the falling cap+credit — so a slingshot rides high and comes down slowly, thrust or
+  knockback overspeed (no credit) still bleeds inside a second, and the tier cap is always the floor
+  it settles back to. Accrual deliberately has NO over-cap gate: the plunge builds a slingshot's
+  speed below the ceiling (at periapsis gravity is perpendicular to the track), so an over-cap gate
+  starves the whip and the bleed clamps it at the cap — measured 294 vs 465 u/s peak on the same
+  flyby. A descent banking credit is the accepted cost: converting a dive into speed IS the
+  maneuver, the bound and the decay keep it from becoming a standing afterburner, and a climb-out
+  banks nothing (gravity work is negative). The credit ceiling means a hard cap of
+  (cap+credit)×`SPEED_HARD` — momentarily up to ~3.8× tier at full bank. `game.speedFrac` divides by
+  cap+credit so the audio speed voice doesn't pin during the ride. predictPaths mirrors the elevated
+  cap FROZEN at the current credit (it moves too slowly over a forecast horizon to bend the path).
 - **Sun-anchored orbits are slightly non-uniform:** `railBody` nudges each star-anchored body's angular
   speed by a deterministic ±~4% (hashed off `b.id`), so the sky isn't one rigid disc. Kept SUBTLE — a
   bigger spread lets same-radius rocks catch up and grind each other. Moons/installations stay exact.

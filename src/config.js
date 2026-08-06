@@ -914,6 +914,31 @@ export const CFG = {
   // the bleed, the hard cap, AND the flow-relative reference; keep all in sync.
   SPEED_BLEED: 1.6,
   SPEED_HARD: 1.9,
+  // GRAVITY SLING CREDIT (2026-08 user call: "up the max rate at which being
+  // slung by gravity can propel your velocity ... it should still come down
+  // to the normal tier but speed increased due to gravity should fall off
+  // slower than other speed increases"). While the ship is over its ceiling
+  // AND world gravity is doing positive work on the flow-relative deviation
+  // (a slingshot, not a burn), the ship BANKS that work as s.slingSpd — an
+  // extra allowance added to the governor's cap, up to SLING_MAX × maxSpeed.
+  // The credit decays at SLING_DECAY (exponential, half-life ~5.8s), and the
+  // ordinary bleed keeps speed pinned to the falling cap+credit — so a sling
+  // rides high and comes down on the credit's slow clock, while thrust or
+  // knockback overspeed (no credit) still bleeds at SPEED_BLEED within a
+  // second. The signal is game.shipGx/Gy — WORLDS ONLY, same stash the
+  // gravity compass reads — so coasting a deep sun dive banks nothing.
+  // Accrual has deliberately NO over-cap gate: a slingshot builds its speed
+  // on the plunge, below the ceiling — at periapsis gravity runs
+  // perpendicular to the track and adds nothing — so an over-cap gate
+  // starves the whip and the bleed clamps it at the cap (measured: 294
+  // gated vs 465 ungated on the same flyby). A descent does bank credit on
+  // the way down, and that is the accepted cost: converting a dive into
+  // speed IS the slingshot maneuver, the credit is bounded and decaying,
+  // and climbing out accrues nothing since gravity work turns negative.
+  // predictPaths mirrors the elevated cap (frozen at the current credit —
+  // it decays too slowly for the forecast to lie).
+  SLING_MAX: 1.0,          // × maxSpeed of extra ceiling a sling can bank
+  SLING_DECAY: 0.12,       // 1/s — the slow falloff; tier cap is the floor
 
   // Fair-view normalization: cam.zoom is scaled by the canvas diagonal so
   // EVERY window sees the same world extent — a small screen renders the
