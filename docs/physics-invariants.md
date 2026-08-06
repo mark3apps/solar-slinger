@@ -321,9 +321,13 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
   down with the sky on purpose (slower cruise ⇒ gentler pull). (History: mass was once 3.2e7 to speed
   the sky up 1.4x; it was lowered to 1.42e7 — ~1.5x slower than that — to calm flight at the 2.46 zoom.)
 - **LONG ARMS** (`SHIP_WELL_START`/`SHIP_WELL_MAX`): the SHIP feels planet/moon/rogue gravity fall off
-  as 1/r (capped at 3.5x) beyond 4 body radii — longer reach, identical close-range gravity. It lives
-  in `gravityAt` behind `heavyMul !== 1` (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two
-  must stay in sync or the forecast lies. Thrown rocks, aliens, debris, celestials never feel it.
+  as 1/r (capped at `SHIP_WELL_MAX`, 6x) beyond `SHIP_WELL_START` (2.5) body radii — longer reach
+  without deepening the far field's 1/r² shape inside the knee. (This bullet once read "4 radii,
+  capped 3.5x"; the constants are the truth.) It lives in `gravityAt` behind `heavyMul !== 1`
+  (ship-only) and is MIRRORED in `predictPaths.accelAt`; the two must stay in sync or the forecast
+  lies. Thrown rocks, aliens, debris, celestials never feel it. Inside the 2.5-radius knee,
+  close-range gravity is no longer identical to plain GM/r² — SURFACE WEIGHT (below) takes over
+  there.
 - **SURFACE WEIGHT** (`SHIP_SURF_REF`/`SHIP_SURF_MAX`/`SHIP_SURF_END`, added 2026-08): the SHIP feels
   a world's pull ramp UP toward the surface, by a peak of `radius/SHIP_SURF_REF` (capped at 6x), fading
   to nothing at `SHIP_SURF_END` (2.5) body radii — deliberately the same knee as `SHIP_WELL_START`, so

@@ -1631,8 +1631,9 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
     const d = Math.sqrt(d2);
     // LONG ARMS (see CFG.SHIP_WELL_*): only the SHIP passes heavyMul != 1,
     // so this far-field boost never touches aliens, debris, or thrown rocks.
-    // Inside SHIP_WELL_START radii f <= 1 and nothing changes — same
-    // close-range gravity, longer reach. predictPaths mirrors this exactly.
+    // Beyond SHIP_WELL_START radii the pull falls as 1/r instead of 1/r²
+    // (capped at SHIP_WELL_MAX); inside that knee SURFACE WEIGHT takes over
+    // below. predictPaths mirrors this exactly.
     if (heavy && heavyMul !== 1) {
       const f = d / (b.radius * CFG.SHIP_WELL_START);
       if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
@@ -1641,10 +1642,13 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
       // worlds are hard to launch straight up from, moons and small worlds
       // (peak <= 1) are untouched. Ends exactly where LONG ARMS begins, so
       // past 2.5 radii nothing changes. Ship-only; predictPaths mirrors this.
+      // t is clamped BOTH ways: without the lower clamp, tuning SHIP_SURF_END
+      // below SHIP_WELL_START would leave a band where t < 0 UNDER-weights
+      // gravity instead of leaving it alone.
       else {
         const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
         if (peak > 1) {
-          const t = Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1));
+          const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
           w *= 1 + (peak - 1) * t;
         }
       }
@@ -6180,11 +6184,13 @@ export function predictPaths(game) {
         if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
         // Mirror of gravityAt's SURFACE WEIGHT near-surface ramp — the
         // forecast must steepen at a big world's surface exactly like the
-        // real pull, or the drawn launch/descent path lies.
+        // real pull, or the drawn launch/descent path lies. t clamped both
+        // ways, same as the sim (the lower clamp guards a SHIP_SURF_END
+        // tuned below SHIP_WELL_START from under-weighting the gap).
         else {
           const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
           if (peak > 1) {
-            const t = Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1));
+            const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
             w *= 1 + (peak - 1) * t;
           }
         }
