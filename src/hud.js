@@ -480,11 +480,12 @@ function initAchPanel(game) {
 }
 
 // ---- Achievement toasts ----------------------------------------------------
-// A landed achievement announces itself on its own rail. Lifetime is driven in
-// JS rather than by a fixed CSS animation delay for one reason: HOVERING PAUSES
-// IT. A notification you have to read in four seconds is a notification you
-// miss, so pointing at a toast holds it open and reveals its full description;
-// the clock only restarts once the pointer leaves.
+// A landed achievement announces itself on its own rail, description shown up
+// front — no hover needed to find out what you just did. Lifetime is still
+// driven in JS rather than by a fixed CSS animation delay for one reason:
+// HOVERING PAUSES IT. A notification you have to read in a few seconds is a
+// notification you miss, so pointing at a toast holds it open; the clock only
+// restarts once the pointer leaves.
 //
 // HOVER WITHOUT POINTER-EVENTS. The rail sits in the middle of the play area
 // (right of the canvas, under the radar), so the toasts stay
@@ -493,7 +494,7 @@ function initAchPanel(game) {
 // toast swallow the mousedown that starts a tractor grab — the canvas listener
 // would simply never fire, and a rock you reached for would be missed because a
 // notification happened to be in the way.
-const TOAST_DWELL = 4200;       // ms on screen when never pointed at
+const TOAST_DWELL = 5200;       // ms on screen when never pointed at — longer than before, since there's now a description to read up front
 const TOAST_LINGER = 1400;      // ms of grace once the pointer leaves
 const TOAST_OUT_MS = 460;       // must match the toastOut animation in style.css
 const TOAST_MAX = 4;            // a burst drops the oldest rather than growing off-screen
