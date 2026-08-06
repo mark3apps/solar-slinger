@@ -33,9 +33,9 @@ code "works."
     same-frame throw). `b.holdT` is **null** for anything not in the beam — the ring, the rack, a
     rock in flight — and `beamGrip` exempts those, so a volley never winds up.
 
-  **NEITHER applies to the orbit shield or the brawler's trail rack** (`tractor.updateOrbit` owns
+  **NEITHER applies to the orbit ring or the brawler's trail rack** (`tractor.updateOrbit` owns
   those, with its own caps): those are formations you have already paid for, and re-spooling every
-  rock in a seven-slot ring on every capture would make the wall sag exactly when it is being shot
+  rock in a fourteen-slot ring on every capture would make the wall sag exactly when it is being shot
   at. The grip is VISIBLE — `game.heldGrip` feeds `render.drawBeam`, which draws a fresh or heavy
   hold thin, dim and fluttering and settles it as the emitters take hold; at grip 1 it is exactly the
   beam it always was. A mechanic the player cannot see reads as the beam being broken.
@@ -138,6 +138,72 @@ code "works."
   so the effect builds into the full hold with no visual step at the hand-over. The progress ring is
   the exception — full brightness from the first instant, because it is the one element that has to
   be legible before the effect is.
+- **THE RING RIDES CLOSE — HALF-DISTANCE, EXCEPT MOONS** (user call, 2026-08). `RING_CONDENSE` 0.5
+  scales BOTH the standoff pad and the per-rock step in `tractor.orbiterRings`, which takes a full
+  14-rock ring from ~297 units of reach to ~151 (measured ratio 0.51). Halving only the steps would
+  not have done it: for the innermost rock the PAD is most of the distance, so the first shell would
+  have sat exactly where it was and only the outer shells pulled in.
+  **A MOON IS EXEMPT and the exemption is geometric, not taste** — a moon is stowable from Sling
+  Winch 4 (`liftClass` floors a moon at rung 3 however light it rolled) and its drawn radius is an
+  order of magnitude above belt rock, so condensing its standoff puts a body wider than the ship's
+  whole pad inside the hull. A moon keeps its own full clearance step; it still ends up nearer the
+  ship than before, because everything stacked INSIDE it condensed, and that is correct — pinning it
+  to its old absolute radius would leave a dead gap between the rock shells and the moon.
+  A hard floor keeps any body's INNER EDGE off the hull, applied to the accumulator rather than the
+  stored value so a body pushed out by it also pushes the ones after it.
+  **THE CONDENSE SCALES PADDING, NEVER BULK**, and that is what makes the ring safe: `orbiterRings`
+  is the ONLY thing keeping two orbiters apart, because `physics.collideBodies` early-outs on an
+  orbit/orbit pair and nothing downstream ever shoves them. Two circles at radii r and R from one
+  centre are >= |R - r| apart at ANY bearing, so a radial gap wider than the two radii makes overlap
+  impossible without any angular slot assignment — which is what lets the bearings stay loose and
+  organic. Scaling the WHOLE step by the condense shrank the bulk term too and broke that invariant
+  for any radius past ~10; it took a MOON to make it visible, but the ring was interpenetrating for
+  real belt rock as well.
+- **A SLOT IS A TARGET, NOT A RAIL — SO THE GAP MUST COVER THE HUNT.** Separation margin is
+  `0.6x` the pair's radii, never a constant. Every orbiter oscillates about its slot, and a heavy one
+  oscillates WIDE: a moon's spring authority floors at 260 u/s^2 while the approach cap let it arrive
+  at 380, so it overshot and hunted ~80 units either side — enough to put two moons with correctly
+  separated ASSIGNED radii visibly on top of each other. Two fixes together, and both are needed:
+  the margin scales with the bodies, and `maxApproach` eases down with radius (`60 / b.radius`,
+  floored at 0.4) so mass arrives at a speed it can actually stop at. Belt rock is untouched — at
+  radius 60 and under the ease is exactly the old flat 380.
+- **RIGHT-CLICK IS THE STOW, AND THE STOW IS A CHOICE** (user call, 2026-08). Pointing at a rock
+  and pressing right mouse seats it in the ring directly (`tractor.stowFromCursor`), never passing
+  through the beam — the hauler's exact mirror of the brawler's `absorbIntoRam`, one button meaning
+  "put that in my rack" for both specs. It replaced an AUTO-STOW on the left-click grab, which made
+  one button mean two things depending on the rock's mass (throw this pebble, silently pocket that
+  one) and left no way to THROW a stowable rock at all. Holding the button SWEEPS on the same 0.12s
+  cadence as the ram, because filling 14 slots with 14 separate clicks turns a doubled ladder into a
+  chore. Pointing at empty space leaves the press to the shotgun charge, and the choice is committed
+  for the whole press, so a sweep that crosses open space keeps stowing instead of arming a volley
+  mid-drag. Both stow paths funnel through one `seatInRing` — a rock seated by the sweep and a rock
+  seated from the beam must be the same kind of object, or one quietly misses the spin, the XP or
+  the `primed` clear and behaves differently in the ring forever after.
+- **AN INTERCEPT IS THE SHIP SLINGING THE ROCK, NOT THE ROCK SWIMMING** (user design rule, 2026-08).
+  Every orbiter breaking formation to block carries `b.guardBeam`, and `drawShip` paints a tether
+  onto it through the SAME `render.drawBeam` the hold uses — dimmer (grip 0.55) and narrower
+  (width ×0.6), bite suppressed, because the rock is being shoved, not gripped for a throw.
+  **GOLD, NOT THE HOLD BEAM'S CYAN** (user call, 2026-08): it shipped cyan on the reasoning that
+  it is the same tractor doing the same job, but the two fire at the same moment off the same
+  emitter at the same width, and two cyan beams read as one confused effect. Hue is the only
+  channel left. Cyan is what you are STEERING, gold is what the ship is doing FOR you — the same
+  split the hover rings make between the left button's promise and the right's. Drawn BEFORE the held beams so the rock in your hand keeps the
+  foreground. Iterated over `game.orbit` rather than off a flag on loose bodies, so a rock that has
+  left the ring can never leave a beam painted into empty space; `updateOrbit` clears the flag every
+  substep before it re-assigns, so the beam lives exactly as long as the lunge.
+- **THE STOW GAUGE IS LIVE OCCUPANCY, AND IT ZIG-ZAGS** (user calls, 2026-08). One SOCKET per slot
+  you own (`st.maxOrbiters`, itself derived from `config.ORBIT_SLOTS`), LIT for each slot currently
+  holding a rock. It used to draw the whole 14-slot ladder with the slots you had EARNED lit, which
+  made "unlit" carry two meanings at once — empty slot, and rank not yet bought — and two states
+  cannot say three things; occupancy is the reading you need mid-fight, and the ladder is already on
+  the ability bar. The pips are laid out as an alternating **zig-zag**, not a row: at a flat 6px gap
+  a full ring measured 178px and pushed the readout past the panel edge, i.e. off screen at exactly
+  the ranks that earn it. Offsetting alternate pips vertically lets the pitch drop to 2px without
+  the diamonds touching (~126px for 14). The offset is `top`, NOT a transform — `.pp` already spends
+  its transform on the 45deg diamond, and a translate stacked there resolves in the rotated frame
+  and comes out diagonal. Structure is rebuilt only when capacity moves and the lit class retoggled
+  only when the fill moves: this runs every frame, and rewriting innerHTML at 60fps to change a
+  class would be the expensive way to do nothing.
 - **PICKING UP A WORLD UNSTICKS ITS SKY.** A world's family — moons, ring chunks, probe junk, its
   rubble shell — rides RAILS anchored to it, and the rails pass reads the parent's LIVE position
   every substep. So a grabbed planet used to carry its whole system with it, **welded**: fifty bodies
@@ -456,7 +522,13 @@ code "works."
   identically, so they meet seamlessly — and they must never overlap: at `globalAlpha` 0.4 a
   double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
   terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
-- **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
+- **Hover hint ring colors:** green = right-click STOWS it into the ring, amber = right-click
+  CRUSHES it into the ram (brawler's own hue — the green stow promise is never true for a spec with
+  no ring), cyan = left-click HOLDS it in the beam, red = too heavy. Green and amber are both the
+  RIGHT button and cyan is the LEFT — since the stow moved off the left-click grab (2026-08) the
+  hues split cleanly by button, which is what lets the ring be read without a legend. Every hue runs
+  the SAME `config.canLift`/`canStow` the click itself runs, so the ring can never promise a grab
+  the beam would refuse.
 - **The cockpit chrome is LOCALE-reactive, the instruments are not.** `zone.js` — built as the same
   machine as `music.js`, and meant to stay that way: buckets, a presence score each, ENTER/EXIT
   hysteresis, a minimum dwell, a crossfade — decides which of five places the ship is in and publishes
@@ -788,8 +860,11 @@ code "works."
     regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. A thin layer that covers every
     angle and comes back fast is the whole of the scout's defence — it is a forgiveness mechanic for
     a ship with no armour, and it is deliberately not enough to stand and trade with.
-  - **HAULER — none.** The orbit rock wall is its protection; Rockwall / Reinforced Hull harden that
-    identity instead.
+  - **HAULER — none.** The orbit rock wall is its protection, and since 2026-08 that wall is a
+    THREE-row build rather than one: Orbital Sling carries the rock (up to 14 slots), Guard Sling
+    makes it break formation to block, Rockwall (5x HP at max) lets it survive the block. Reinforced
+    Hull armors what gets through. Splitting carry from screen is the point — a hauler who wants an
+    active wall has to spend a pick on one.
   - **BRAWLER — none.** Its protection is hull plus what the fused War Rack prow eats head-on
     (`physics.collideShipBody` → `spendRam`), which is spent by what it absorbs and rebuilt only by
     going and finding more rock. (History: it carried **War Plating**, a thin front-arc plate at
@@ -809,8 +884,9 @@ code "works."
   and **devtest T6 exercises it against an EXPLICIT wedge written onto `game.st`** so it cannot rot
   unnoticed between users. **Anything asserting the split must DERIVE it from `st.shieldArc`** — a
   hardcoded half re-breaks every time the angle moves.
-  - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
-    Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
+  - **HAULER has NONE** — by design its protection is the orbit rock wall (Guard Sling makes it
+    screen, Rockwall hardens it, Reinforced Hull — id `cargoPlating` — armors the hull); never add a
+    `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
 
 

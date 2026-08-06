@@ -583,6 +583,14 @@ export const CFG = {
   // own low threshold — fling/alien-throw speeds are ship-derived, not orbital.
   DMG_THRESH: 240,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
+  // RECOVERY TETHER: seconds without a fresh contact before a thrown rock
+  // counts as SPENT and is allowed home (tractor.updateTethers). Space has no
+  // drag, so a heavy shot that punches through its target never slows below
+  // DMG_THRESH_THROWN on its own — this, not the speed test, is what actually
+  // ends most throws. Long enough that a rock ricocheting through a moon
+  // family keeps its streak and stays out; short enough that a punch-through
+  // into empty space turns around promptly instead of expiring unrecovered.
+  TETHER_QUIET: 2.5,
   DMG_THROWN_MULT: 2,
   // DEALT damage is tempered (user calls, 2026-08: damage "shouldn't increase
   // exponentially as things get bigger", then "it shouldn't just affect the
@@ -2564,6 +2572,13 @@ export const TIERS = {
 // Off the ladder entirely — no beam tier ever reaches these.
 export const LIFT_NEVER = 99;
 
+// RING SLOTS PER ORBITAL SLING RANK — the one copy of this ladder. shipStats
+// derives `maxOrbiters` from it and hud.js draws one stow pip per entry; the
+// gauge used to hard-code the length and quietly stopped counting at 7 the
+// moment the ladder's top doubled to 14 (2026-08). Same rule as DOCK_TIERS: a
+// number the sim and the instrument both read lives here, once.
+export const ORBIT_SLOTS = [1, 4, 6, 9, 11, 14];
+
 export function liftClass(b) {
   // A GAS GIANT HAS NOTHING TO GRIP (user design law). It is not a heavier rung
   // you buy your way up to; it is not on the ladder. This is the same fact the
@@ -2949,7 +2964,7 @@ export const PROG = {
 // modal). It sets your starting kit and gates which named ABILITIES you can be
 // offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats
 // bases), so every spec is playable from the first frame; the kit + tree layer on.
-// KIT RULE (design law): every kit must contain at least THREE abilities with
+// KIT RULE (design law): every kit must contain at least TWO abilities with
 // max > 1. A max-1 unlock arrives already maxed and can never rank, so a kit
 // short on rankable tracks opens the run with almost no automatic progress to
 // watch — the ability bars ARE the minute-one feedback, and the first card is a
@@ -2957,6 +2972,16 @@ export const PROG = {
 // between-tier picks could only deepen owned abilities, so a thin kit made the
 // first picks a non-choice. Same rule, same fix, different failure mode —
 // SCOUT once shipped with a lone rankable track behind Retro Jets.)
+// THE FLOOR WAS THREE UNTIL 2026-08 and is now TWO (user call). What forced it
+// down was HAULER: Salvage Magnet left the kit for the pool, and backfilling a
+// third row purely to satisfy an arity rule is how a kit stops being an identity
+// statement and becomes a quota. Two rankable tracks still clear the bar the
+// rule actually defends — the opening minute has bars visibly climbing — and
+// every ability is six ranks now, so a two-row kit is two long tracks rather
+// than the two-and-a-stub the rule was originally written against.
+// NOTE the kits are NOT all two rows: BRAWLER still ships three and SCOUT four.
+// This is a FLOOR, not a target, and a spec whose identity genuinely needs more
+// frame-one verbs should keep them.
 export const SPECS = [
   // Kit carries the COMPLETE RAM LOOP, not stat sliders: War Rack IS the loop
   // — built by eating rocks, spent by what it absorbs and rams (there is no
@@ -2978,16 +3003,29 @@ export const SPECS = [
   // ring, the Deflector is the scout's signature move — so the identity track
   // is the one whose bar moves fastest.
   // The orders are also SEARCHED, not just authored: the tightest gap between
-  // any two kit rank-ups is 100 / 102 / 76 XP here against devtest's floor of
-  // 40 (two ranks landing closer than that read as one event and the stagger
-  // has failed). The obvious authored orders were much worse — the hauler's
-  // longArmTractor-first reading scored 39 and tripped the suite outright.
+  // any two kit rank-ups is measured against devtest's floor of 40 XP (two ranks
+  // landing closer than that read as one event and the stagger has failed). The
+  // obvious authored orders were much worse — the hauler's longArmTractor-first
+  // reading scored 39 on the old THREE-row kit and tripped the suite outright.
+  // Dropping the hauler to two rows re-opened that: with one fewer track there
+  // are fewer pairs to collide, and the ladderScale spread is divided between
+  // two positions instead of three, so the surviving pair sits further apart
+  // than any three-row arrangement managed. Re-run devtest T-ladders after ANY
+  // kit edit — the gap is a property of the whole kit, not of one row.
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
     start: ['bulwarkRing', 'reinforcedHull', 'kineticSling'] },
+  // TWO ROWS, and it is the smallest kit in the game (see the kit rule above).
+  // Salvage Magnet moved to the POOL (user call, 2026-08): scrap vacuuming is a
+  // quality-of-life radius, not a statement about what a hauler IS, and it was
+  // sitting in the slot that should be teaching the ring. What is left is
+  // exactly the spec's thesis — the ring you fill, and the reach you fill it
+  // with. The ring's DEFENSIVE half is deliberately NOT here: Guard Sling is a
+  // card you have to draw, so an early hauler carries rock rather than hiding
+  // behind it.
   { id: 'hauler', name: 'HAULER', icon: '◎',
-    desc: 'Master of the beam — long reach, big hauls, orbit shields.',
-    start: ['orbitalSling', 'salvageMagnet', 'longArmTractor'] },
+    desc: 'Master of the beam — long reach, big hauls, a ring you fill with rock.',
+    start: ['orbitalSling', 'longArmTractor'] },
   { id: 'scout', name: 'SCOUT', icon: '◇',
     desc: 'Eyes and speed — sensors, precision, and mobility.',
     start: ['deflector', 'phaseScreen', 'tunedThrusters', 'navPlotter'] },
@@ -3025,8 +3063,8 @@ export const SPECS = [
 // An optional `needs: '<channel>'` is a HARD PREREQUISITE, not a soft floor: the
 // ability is not OFFERED at all until you own something feeding that channel
 // (prereqMet). It exists for rows that are literally inert on their own —
-// Rockwall/Aegis/Recovery Tether all act on ORBIT rocks, and with no
-// orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
+// Rockwall/Guard Sling/Sling Winch/Recovery Tether all act on ORBIT rocks, and
+// with no orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
 // never a rock for them to act on; Impact Warning marks a spot on the FORECAST
 // PATH, and shipStats gates it behind the plotter outright (`hasCrashWarn =
 // collisionC > 0 && hasPredict`). Offering one of those was a dead card: it
@@ -3043,10 +3081,14 @@ export const SPECS = [
 // slots a stat top-up. Every remaining row owns its channel outright, so the
 // pool is shorter and every card in it does something the others don't.
 // NAMING LAW (user design rule): two abilities that DO the same thing carry the
-// SAME name/icon/desc even across specs — Heavy Winch is the catch starter in
-// both BRAWLER and HAULER, Reinforced Hull is the hull track in both (ids stay
-// distinct, they're separate catalog rows). With the second tracks gone this is
-// now the ONLY reason two rows ever share a name.
+// SAME name/icon/desc even across specs — Reinforced Hull is the hull track in
+// both HAULER and BRAWLER (ids stay distinct, they're separate catalog rows).
+// With the second tracks gone this is now the ONLY reason two rows ever share a
+// name. IT CUTS BOTH WAYS, and HAULER's winch is the worked example: it was
+// "Heavy Winch" alongside BRAWLER's for exactly as long as both fed the beam's
+// `catch` channel, and became "Sling Winch" the moment it was rebuilt to size
+// the RING alone (`sling`). Two rows sharing a name while moving two different
+// numbers is the drift this law exists to stop.
 // BRAWLER's runtime abilities (War Rack's ram, Cluster Rounds, Shockwave,
 // Wall Splat, Berserker, Demolition) are live — their hooks live in physics.js
 // (collideShipBody's ram + absorption, brawlerThrowKill) and tractor.js
@@ -3054,9 +3096,10 @@ export const SPECS = [
 // ram used to have a spec-DNA floor in shipStats that made it hit harder at
 // rank 0 than any other spec, and that is gone — every spec now starts at the
 // universal base and differs only by what its kit and pool contain.
-// HAULER's: Recovery Tether + Twin Grip + Dead Stop (tractor.js), Aegis
-// Reflector (physics collideBodies), Rockwall (physics damageBody hardening +
-// tractor orbit spin). SCOUT's: Deflector (the parry state machine in
+// HAULER's: Recovery Tether + Twin Grip + Dead Stop (tractor.js), Guard Sling
+// (the interception scan in tractor.updateOrbit, drawn by render.drawBeam off
+// b.guardBeam), Rockwall (physics damageBody hardening only — the orbit spin
+// term was removed with the screening split). SCOUT's: Deflector (the parry state machine in
 // physics.js), Afterburner (fuel tank in main.js, thrust + governor in
 // physics), Dash Jets (A/D — main.onDash), Reflex Jink (the auto-dodge scan in
 // physics.step), Slipstream (main.onWarp), Recon Drone (world.js survey). All
@@ -3102,8 +3145,23 @@ export const ABILITIES = [
   // 📡 HAULER
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
   { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
-  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
-  { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
+  // THE SLING IS A CARRY RACK, NOT A SHIELD (user design rule, 2026-08). Ranks
+  // buy SLOTS and nothing else — the ring holds rocks, spins them, and feeds the
+  // shotgun. It does NOT step in front of anything: that verb moved out to Guard
+  // Sling below, so a hauler who wants an active screen has to actually own one.
+  // The ladder tops out at DOUBLE what it used to (7 -> 14 slots, same user
+  // call), and it is authored as an explicit array rather than a rounded slope
+  // because the old `1 + round((lvl-1) * 1.2)` expression was already being read
+  // as a table by everyone who touched it.
+  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Stow rocks into an orbit ring that rides with you. Ranks buy slots — up to fourteen.' },
+  // NOT "Heavy Winch" ANY MORE, and the rename is the naming law doing its job:
+  // this row no longer does what BRAWLER's Heavy Winch does. It has stopped
+  // feeding the beam's own mass allowance entirely (channel 'catch' -> 'sling')
+  // and now sizes THE RING ALONE — both the class of rock the sling accepts and
+  // the mass allowance inside that class. Two rows called Heavy Winch that moved
+  // two different numbers would be exactly the drift the law exists to stop.
+  // `needs: 'orbit'` because it is now literally inert without a ring.
+  { id: 'heavyWinch',     spec: 'hauler', name: 'Sling Winch',      icon: '✦', channel: 'sling',  max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your orbit ring takes bigger, heavier rock. Ranks raise both the class it accepts and the weight inside it.' },
   // HAULER has NO energy shield ON PURPOSE (design law): the orbit rock wall IS
   // its protection — Rockwall/Reinforced Hull harden that identity instead.
   // chMul 2/3: the HAULER's hull track was deliberately SHORTER than the
@@ -3114,11 +3172,55 @@ export const ABILITIES = [
   // coefficient in shipStats would have nerfed the brawler's own track, which
   // never changed length.
   { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 6, chMul: 2 / 3, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
-  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
-  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  // GUARD SLING owns the verb Orbital Sling used to give away for free: a ring
+  // rock BREAKING FORMATION to meet something on its way in. Splitting it out is
+  // the point — the ring is a rack you fill, the screen is a thing you choose —
+  // and it is why the block reads as the SHIP doing the work: the tether beam
+  // snaps onto the interceptor for as long as the lunge lasts (render.drawBeam
+  // off `b.guardBeam`), so the rock is visibly being SLUNG into the path rather
+  // than swimming there under its own power.
+  // Ranks buy the three things that decide whether a block actually lands:
+  // how far out the screen sees (perimeter), how far a rock may leave its slot
+  // to reach the line (shift), and HOW MANY can lunge at once — rank 1 is
+  // exactly the one-interceptor screen the sling used to give, so nobody's
+  // defence is worse for the split, and rank 6 puts four rocks in the way.
+  { id: 'guardSling',     spec: 'hauler', name: 'Guard Sling',      icon: '⊗', channel: 'guard',  max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your orbit rocks break formation to block incoming fire — the beam slings them into the path. Ranks see farther, reach farther, and block more at once.' },
+  // ROCKWALL IS TOUGHNESS, FULL STOP (user design rule, 2026-08). The spin term
+  // is GONE — it lived here because a faster wall covered more sky per second,
+  // which is a screening effect, and screening is Guard Sling's job now. One
+  // ability, one number.
+  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher — up to five times the punishment before they break.' },
+  // THE TETHER RECOVERS A SPENT SHOT, NEVER A LIVE ONE (user call, 2026-08).
+  // It used to start homing 0.7s after release, UNCONDITIONALLY — about 300
+  // units downrange at a tier-0 fling — so it did not recover your rock, it
+  // CANCELLED your throw: anything further away than that got recalled before it
+  // arrived, and `returnSpd` rising with rank meant every rank sabotaged the
+  // hauler's main offensive verb harder. It also made the three snipe
+  // achievements (throw-kills at 1,200 / 2,500 / 4,000 units) unreachable for
+  // anyone who took the card.
+  // Now it waits for the rock to be SPENT: it must have HIT something, and its
+  // speed must have fallen under `CFG.DMG_THRESH_THROWN` — the exact line below
+  // which a thrown body does no damage at all. So a flung moon ploughs through a
+  // whole family and only comes home once it has stopped being a weapon.
+  // DESTROYED OR NEVER CONNECTED = GONE. There is no recall for a rock that
+  // shattered or sailed off into the dark; the recovery is a reward for a shot
+  // that landed, not insurance against a miss.
+  // RANKS BUY RELOAD, not return speed (`tetherCool`, 14s -> 4s). The old ranks
+  // made the recall more aggressive, which was making the problem worse; what a
+  // player actually wants from more of this is to be able to do it AGAIN sooner.
+  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'A thrown rock that has spent its force comes home to your orbit ring. Ranks reload it faster. A rock that shatters, or never connects, is gone.' },
   { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 6, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
-  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 6, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
-  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once. Ranks steady the rig — the second rock rides tighter and drags you around less.' },
+  // AEGIS REFLECTOR IS DELETED (user call, 2026-08), not retuned. It fired the
+  // blocked rock RADIALLY OUTWARD from the ship rather than at anything, at a
+  // flat 320 + 65/rank — under the hauler's own fling speed at every tier — so a
+  // reflect left the ring, lost the argument with sun gravity and came back
+  // before it reached whatever had shot at you. The verb it was reaching for
+  // (read the incoming rock, send it back aimed) is SCOUT's Deflector and is
+  // better there; the hauler's answer to incoming fire is now the Guard Sling
+  // screen plus a Rockwall that survives it. Nothing may replace it on an
+  // `aegis` channel: the three achievements that rode `aegisBack` are deleted
+  // with it, so re-adding the channel alone would not bring the feature back.
+  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once — with one in the beam, sweep the cursor over another to pick it up. Ranks steady the rig: the second rock rides tighter and drags you around less.' },
 
   // 🔭 SCOUT
   // ICONS ARE MONOCHROME LINE GLYPHS, never emoji. ⏩ (U+23E9) has emoji
@@ -3438,8 +3540,12 @@ export function shipStats(prog) {
   // SCOUT: the parry (Deflector moved here from BRAWLER).
   const deflectC = c('deflect');
   // HAULER runtime channels.
-  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'),
-    rockwallC = c('rockwall'), deadstopC = c('deadstop');
+  // HAULER runtime channels. `sling` is the RING's own mass track (Sling Winch)
+  // and is deliberately separate from `catch`, which is the BEAM's — see the
+  // orbitTier/orbitCap derivation for why the two must not be the same number.
+  // There is no `aegis` channel any more; Aegis Reflector is deleted.
+  const tetherC = c('tether'), twinC = c('twin'), slingC = c('sling'),
+    guardC = c('guard'), rockwallC = c('rockwall'), deadstopC = c('deadstop');
   // SCOUT runtime channels.
   const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'),
     slipC = c('slipstream'), autoevadeC = c('autoevade');
@@ -3515,14 +3621,44 @@ export function shipStats(prog) {
   // one-class-below gate, so early tiers can promise nothing the beam
   // hasn't earned.
   const frontRam = prog.spec === 'brawler';
-  // Floored at 0, not at tier-1: a tier-0 beam still has a class to stow FROM,
-  // and an orbit ability that granted nothing until the first tier-up would be
-  // a dead card in two of the three starting kits.
-  let orbitTier = orbitLvl > 0 ? Math.max(0, tier - 1) : -1;
-  if (frontRam && orbitTier >= 0) {
-    orbitTier = Math.min(orbitTier, orbitLvl <= 2 ? 1 : 2);
+  // THE RING'S CLASS IS THE SLING WINCH'S, NOT THE BEAM'S (user design rule,
+  // 2026-08: "the Tier upgrades shouldn't upgrade what rocks can be added to the
+  // sling"). A beam tier-up used to silently hand the ring a whole new rung
+  // through `tier - 1`, which meant the two levers a hauler actually pulls —
+  // tier and Sling Winch — pushed the same number and the winch's own ranks were
+  // half-invisible behind the tier ladder. The ring now climbs on ONE track.
+  // Rank 0 still stows PEBBLES so Orbital Sling is never a dead card on its own,
+  // and the ladder stops at rung 4 (Large moons): a ring of PLANETS is not a
+  // thing, and the old `tier - 1` topped out at 4 too, so nothing is lost.
+  const SLING_RUNGS = [0, 1, 2, 2, 3, 3, 4];
+  // BRAWLER is untouched by all of the above and must stay that way — its stow
+  // is the ram, its class ladder is War Rack's own rank clamped at boulder, and
+  // it has no Sling Winch row to read. Keep it on the old beam-derived rung.
+  let orbitTier;
+  if (orbitLvl <= 0) orbitTier = -1;
+  else if (frontRam) orbitTier = Math.min(Math.max(0, tier - 1), orbitLvl <= 2 ? 1 : 2);
+  else orbitTier = SLING_RUNGS[Math.min(6, Math.round(slingC))];
+  // Mass allowance INSIDE that rung. The hauler's is the same asymptotic fill
+  // the beam runs on `catch` (see catchFill) but driven by `sling`, so the ring
+  // fills toward its rung's ceiling without ever rounding into the rung above.
+  // The old `capacity * 0.55` coupling is gone for the hauler on purpose: that
+  // was the beam sizing the ring, which is exactly what this change removes.
+  // THE 0.55 SURVIVES AS THE UNWINCHED FLOOR, and that is not nostalgia. Decoupling
+  // the ring from beam tier is the whole change; letting the ring OPEN stronger
+  // than it used to is a separate buff nobody asked for. Starting the fill at
+  // 55% of the rung's own caps puts a rank-0 tier-0 ring at exactly the 605 it
+  // has always been, so the opening is untouched and every point of growth from
+  // here is a Sling Winch rank you can watch land.
+  const slingFill = 1 - Math.pow(0.82, slingC);
+  let orbitCap = 0;
+  if (orbitTier >= 0) {
+    if (frontRam) {
+      orbitCap = Math.min(capacity * 0.55, TIERS.ceil[orbitTier]);
+    } else {
+      const floor = TIERS.caps[orbitTier] * 0.55;
+      orbitCap = floor + (TIERS.ceil[orbitTier] - floor) * slingFill;
+    }
   }
-  const orbitCap = orbitTier >= 0 ? Math.min(capacity * 0.55, TIERS.ceil[orbitTier]) : 0;
   const orbitLabel = orbitTier >= 0 ? TIERS.labels[orbitTier] : 'Nothing yet';
   // THE RAM'S TOTAL. Absorbed rock is DESTROYED and banked here as one number
   // (tractor.absorbIntoRam -> ship.ram), so a brawler never puts anything into
@@ -3600,11 +3736,21 @@ export function shipStats(prog) {
     // Physics still scales all of it by how full the ram actually is: an
     // empty-nosed brawler deals exactly what any other spec does.
     ramBiteMax: 0.30 + 0.25 * orbitLvl + 0.06 * orbitLvl * orbitLvl,
-    // 1/2/3/5/6/7 ring slots, capped at 7 — and HARD 0 for the brawler, which
-    // has no ring at all any more: its stow is the ram, and a spec that could
-    // fill both would be carrying two stows off one ability.
+    // RING SLOTS, and the top of this ladder DOUBLED in 2026-08 (user call:
+    // "at the top end allow twice as many rocks"). 1/4/6/9/11/14 against the old
+    // 1/2/3/5/6/7 — rank 1 is unchanged, so the split from Guard Sling doesn't
+    // also quietly move the opening, and the doubling is spent where it was
+    // asked for. HARD 0 for the brawler, which has no ring at all any more: its
+    // stow is the ram, and a spec that could fill both would be carrying two
+    // stows off one ability.
+    // Authored as a table, not a slope: this was `1 + round((lvl - 1) * 1.2)`
+    // and every reader had to evaluate it six times to see the ladder anyway.
+    // The table is ORBIT_SLOTS, exported, because hud.js draws one pip per slot
+    // and a second copy of "7" over there is the mirror-drift trap that
+    // DOCK_TIERS is in this file to avoid — when the ladder doubled, the
+    // hard-coded 7-pip gauge silently saturated and under-reported the ring.
     maxOrbiters: frontRam ? 0
-      : orbitLvl > 0 ? Math.min(7, 1 + Math.round((orbitLvl - 1) * 1.2)) : 0,
+      : orbitLvl > 0 ? ORBIT_SLOTS[Math.min(ORBIT_SLOTS.length - 1, Math.round(orbitLvl) - 1)] : 0,
     orbitLvl,
     // Kept for render (engine-flare size, chart-length) — indexed like the old levels
     levels: { beam: tier, orbit: orbitLvl, fling: flingC, hull: hullC, thrust: engineC, chart: deepC },
@@ -3677,8 +3823,31 @@ export function shipStats(prog) {
     // front-arc plating sets PI/2; physics.damageShip + render both read it.
     shieldArc,
     // ---- HAULER runtime abilities ----
-    tether: tetherC,                              // Recovery Tether: thrown rocks home back to orbit
-    aegis: aegisC,                                // Aegis Reflector: orbit rocks reflect intercepted fire
+    tether: tetherC,                              // Recovery Tether: SPENT thrown rocks home back to orbit
+    // RELOAD, in seconds — the one thing this ability's ranks buy. A throw only
+    // arms the tether when the reload has run out (tractor.releaseHeld), so the
+    // rank decides how often you get a rock back, never how hard it yanks. 14s
+    // at rank 1 down to 4s at rank 6.
+    tetherCool: tetherC > 0 ? 14 - 2 * (tetherC - 1) : 0,
+    // SLING WINCH's rank, published for the HUD/achievements. The numbers it
+    // actually moves (orbitTier, orbitCap) are derived above — this is the raw
+    // track, the same way orbitLvl is.
+    slingLvl: slingC,
+    // GUARD SLING: the active screen. `guard` is the rank; the three derived
+    // numbers are what updateOrbit reads. NOTHING may key off `guard > 0` alone
+    // in a hot loop — read guardCount, which is 0 without the ability and is the
+    // single test that turns the whole interception scan off.
+    guard: guardC,
+    // How many orbiters may break formation at once: 1 at rank 1 (exactly the
+    // screen Orbital Sling used to include for free), 4 at rank 6. Rounded down
+    // through a table so a fractional channel can never buy half an interceptor.
+    guardCount: guardC > 0 ? [1, 1, 2, 2, 3, 4][Math.min(5, Math.round(guardC) - 1)] : 0,
+    // Detection perimeter (world units). 520 was the old hard-coded scan radius
+    // and stays rank 1, so the split changes nothing for a rank-1 owner.
+    guardRange: guardC > 0 ? 520 + 70 * (guardC - 1) : 0,
+    // How far a defender may leave its slot to reach the threat's line. Was
+    // `80 + 25 * orbitLvl` — orbit rank no longer buys reach, guard rank does.
+    guardShift: guardC > 0 ? 80 + 34 * guardC : 0,
     twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
     maxHeld: twinC > 0 ? 2 : 1,
     twinLvl: twinC,
@@ -3690,7 +3859,7 @@ export function shipStats(prog) {
     // hold halves it to 75 in the first place — ranks may not claw that back.
     twinHold: twinC > 0 ? 1 + 0.14 * (twinC - 1) : 1,   // x hold force on the second rock
     twinTug: twinC > 0 ? 1 - 0.06 * (twinC - 1) : 1,    // x the halved per-rock tug cap
-    rockwall: rockwallC,                          // Rockwall: hardened, faster-spinning orbit rocks
+    rockwall: rockwallC,                          // Rockwall: hardened orbit rocks (toughness only — no spin term)
     deadStop: deadstopC,                          // Dead Stop: caught alien throws prime for a harder fling
     // ---- SCOUT runtime abilities ----
     afterburner: afterburnerC,                    // hold Shift: fuel-tank overdrive (main.js drains, physics burns)

@@ -8,7 +8,7 @@ A top-down 2D space game about **gravity**. Fly a ship through a vast single-sun
 
 ## The loop
 
-1. **Pick a specialization.** Every run opens on a free choice of BRAWLER (smash and ram), HAULER (long beams, big hauls, orbit shields), or SCOUT (sensors, precision, mobility). The spec sets your starting kit and gates which named abilities the run can offer you.
+1. **Pick a specialization.** Every run opens on a free choice of BRAWLER (smash and ram), HAULER (long beams, big hauls, a ring you fill with rock), or SCOUT (sensors, precision, mobility). The spec sets your starting kit and gates which named abilities the run can offer you.
 2. **Fly.** Your ship obeys gravity — planets really grab at you, and the local orbital current carries you with the sky. Slingshot cleanly through a well without touching the throttle and the game pays you XP for it.
 3. **Grab & fling.** Hold the tractor beam on a rock, aim with the mouse, release to hurl it. Throws fly exactly at the cursor — the lead-marker ✕s (an ability) show where to release to hit a moving target.
 4. **Earn picks.** Good play — catching, smashing, surveying worlds, skimming surfaces, shield-blocks, billiard combos — grants XP. Each threshold pauses the game for a choice: small picks deepen abilities you own; every fourth pick is a **tier-up** that offers a new ability, auto-ranks your whole build once, grows the ship a hull class, and adds a life.
@@ -24,8 +24,8 @@ A top-down 2D space game about **gravity**. Fly a ship through a vast single-sun
 | `S` | Reverse thrust *(Retro Jets ability)* |
 | Hold **Left mouse** | Tractor-grab an object near the cursor |
 | Release **Left mouse** | **Fling** it toward the cursor |
-| **Left mouse** on empty space | Pull a rock back out of your orbit shield |
-| **Right mouse** (while holding) | Stow the rock in your orbit shield |
+| **Left mouse** on empty space | Pull a rock back out of your orbit ring |
+| **Right mouse** (while holding) | Stow the rock in your orbit ring |
 | Hold **Right mouse** | Charge the shotgun — release to fire armed orbiters *(ability)* |
 | `Shift` | Afterburner *(ability)* |
 | `Space` | Evasion roll *(ability)* |

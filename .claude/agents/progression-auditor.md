@@ -33,7 +33,7 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
 3. **A new ability is a catalog row + reading its channel in `shipStats`.** If a change needs a
    third place to know the ability exists, that's a smell — say so and name the place.
 4. **`needs: '<channel>'` is only for rows that are literally INERT alone** (Scattergun, Rockwall,
-   Aegis Reflector, Recovery Tether, Impact Warning). It names a CHANNEL, not an id. Two checks:
+   Guard Sling, Sling Winch, Recovery Tether, Impact Warning). It names a CHANNEL, not an id. Two checks:
    every channel a `needs` points at must have at least one **un-gated tier-0 provider in that
    spec's pool** (otherwise the gate deadlocks), and it must NOT be added to the second-track
    duplicates (Grapple Extenders, Expanded Bay, Overtuned Drive, Bulk Freighter, Juggernaut) —
@@ -98,7 +98,7 @@ Also check the runtime hook sites when an ability is mechanical — `physics.js`
   *Specialist* landing on frame one is a freebie.** Say so explicitly in your report.
 - **Predicates are PURE READS with no loops and no allocation.** Anything needing a scan is computed
   once into the shared context `c`. The one sanctioned loop is the orbit-mass sum (capped at seven by
-  `st.maxOrbiters`). Flag a predicate that iterates `game.bodies`.
+  `st.maxOrbiters`, max 14 — see `config.ORBIT_SLOTS`). Flag a predicate that iterates `game.bodies`.
 - **Prefer feeding an existing counter.** Only add a new `bump`/`best`/`least`/`mark` if nothing
   already records the event — several rows ride `ACH_EVENT_STATS` off existing `EVENT_MSGS` flags
   rather than instrumenting the sim twice. Flag a duplicate instrument.
