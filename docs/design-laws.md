@@ -992,9 +992,11 @@ frays, jitters and arcs harder as `strain` rises. `scoutSplit` caches on `game.t
 `drawShip`'s flame anchors and `shipVisualR` read the same number in different passes, and two
 evaluations of a thrust-dependent value drift apart inside one frame.
 
-**Outline width** is `outlineW`: `max(1.0 / cam.zoom, 0.085 * u)`. The floor MUST be in screen
-pixels. It was 1.1 WORLD units, and since `u` shrinks with the tier that floor won on every small
-hull — a tier-0 ship is ~12 world units long, so the outline was most of what you could see of it.
+**Outline width** is `outlineW(tier, r)`: `max(1.1, 0.07 * u_hauler)` — ONE weight per tier, shared
+by all three specs and derived from the HAULER's art unit. It is never derived per spec; see "One
+stroke weight, and it is the hauler's" below for why that was the whole bug. The `1.1` is a WORLD-unit
+floor and it binds on the first three tiers — a known wart, kept because it is what the hauler has
+always drawn.
 
 Damage scars are seeded per
 (tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. WHERE they land
@@ -1052,9 +1054,10 @@ Gyration splits them, and the check that it is the right split is that it **agre
 the solid brawler** (1.27 vs 1.26 at T5) while still refusing to inflate the thin scout.
 
 MEASURED, NOT FELT: `render.measureShipArt(game)` draws all three ladders off-screen and returns the
-numbers; bake `hauler.raw / spec.raw`. **Re-bake twice** — outline width is `0.085 × u` with a
-screen-pixel floor, so ink doesn't scale in exact proportion to the factor being measured; one pass
-lands within ~3.6%, a second converges to **0.1%**. Re-run it whenever a tier table changes.
+numbers; bake `hauler.raw / spec.raw × 1.25`. **Re-bake twice** — outline width is one shared weight
+per tier (`max(1.1, 0.07 × u_hauler)`) that does NOT scale with the factor being applied, so a hull
+drawn 1.25× bigger doesn't lay down 1.25× the ink; one pass lands within ~1.5–3.6%, a second
+converges to **~0.2%**. Re-run it whenever a tier table *or the stroke weight* changes.
 
 The knock-on to know: a spec's drawn reach is now `r / SHIP_HIT_FRAC × vis`, so scout and brawler
 extend past their collision circle by that factor. That is the deliberate trade — `SHIP_HIT_FRAC`

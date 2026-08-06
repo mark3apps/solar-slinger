@@ -4918,12 +4918,6 @@ function drawShipHull(game, tier, dmg, r) {
   ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
 }
 
-// Hull outline width. The floor has to be in SCREEN PIXELS, not world units:
-// the old `max(1.1, 0.07 * u)` floored at 1.1 WORLD units, and since u shrinks
-// with the tier, that floor won the argument on every small hull — a tier-0
-// ship is ~12 world units long, so a 1.1-unit outline was most of what you
-// could see of it. Dividing the floor by the camera zoom keeps the line from
-// vanishing when zoomed out without letting it eat the ship when zoomed in.
 // ONE STROKE WEIGHT, SHARED BY ALL THREE SPECS, AND IT IS THE HAULER'S (2026-08
 // user call: "the outlines of the scout and brawler seem larger than the
 // hauler, which looks good" — said twice, because the first fix did not go far
@@ -4996,10 +4990,16 @@ export function drawShipHullTo(target, game, tier, r, dmg = 0) {
 //   copy(JSON.stringify(render.measureShipArt(game)))
 export function measureShipArt(game) {
   const R = 100, N = 900;
-  const spec0 = game.prog && game.prog.spec;
+  // Fail LEGIBLY. This is driven by hand from devtools, so the two ways it can
+  // go wrong — called before the game object exists, or a browser that won't
+  // hand out another 2D context — should say which rather than surfacing as a
+  // TypeError from somewhere deep in a hull draw.
+  if (!game || !game.prog) throw new Error('measureShipArt: needs the live game object (try window.game)');
   const cv = document.createElement('canvas');
   cv.width = cv.height = N;
   const mctx = cv.getContext('2d', { willReadFrequently: true });
+  if (!mctx) throw new Error('measureShipArt: could not get a 2D context for the scratch canvas');
+  const spec0 = game.prog.spec;
   const out = {};
   try {
     for (const spec of ['hauler', 'scout', 'brawler']) {

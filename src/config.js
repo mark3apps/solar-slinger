@@ -2774,16 +2774,16 @@ export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnoug
 //
 // RE-BAKE AFTER TOUCHING OUTLINE WIDTH. render.outlineW feeds the ink these
 // numbers are measured from, so changing the stroke weight moves the
-// measurement — the 0.085 -> 0.07 fix that put the scout and brawler on the
-// hauler's stroke shifted every entry here by ~1.5%.
+// measurement — putting the scout and brawler onto the hauler's single shared
+// stroke shifted every entry here by ~1.5%.
 //
 // RE-BAKE TWICE. The measurement is very slightly non-linear in the factor it is
-// measuring: hull OUTLINE width is `0.085 x u` (0.07 on the hauler) with a
-// screen-pixel floor, so scaling a hull up does not scale its ink in exact
-// proportion. One pass lands within ~3.6%; feeding that pass's ratios back in
-// converges to ~1%, which is well under the animation wobble above. The table
-// below is a second-pass bake — don't be surprised that it does not equal a
-// single measurement.
+// measuring: the hull OUTLINE is one weight per tier for every spec —
+// `max(1.1, 0.07 x u_hauler)`, see render.outlineW — so it does NOT scale with
+// the factor being applied here, and a hull drawn 1.25x bigger does not lay down
+// 1.25x the ink. One pass lands within ~1.5-3.6%; feeding that pass's ratios
+// back in converges to ~0.2%. The table below is a second-pass bake — don't be
+// surprised that it does not equal a single measurement.
 //
 // The knock-on to know: a spec's DRAWN reach is now `r / SHIP_HIT_FRAC x vis`,
 // so the scout and brawler extend past their collision circle by that factor.
