@@ -2099,12 +2099,15 @@ function updateStorm(dtReal) {
         const b = game.stormShelter;
         const kin = b.type === 'moon' && b.parent && b.parent.name
           ? `a moon of ${placeName(b.parent)}` : null;
-        // EVERY moon carries a name now (world.MOON_NAMES) — but names are
-        // EARNED (the chart ladder): an uncharted moon shelters you as kin of
-        // its host, not by a name you haven't read off it yet. Worlds keep
-        // the behavior they always had.
+        // EVERY moon carries a name now (MOON_NAMES in world.js) — but names
+        // are EARNED (the chart ladder): an uncharted moon shelters you as
+        // kin of its host, not by a name you haven't read off it yet. Worlds
+        // keep the behavior they always had. The no-chartKey arm mirrors
+        // starmap.contactLevel's contract exactly: a runtime-spawned moon
+        // (replenishWorld mints no chartKey) earns its name by being SEEN,
+        // not by existing — `!b.chartKey` alone named it unconditionally.
         const earned = b.type !== 'moon' ||
-          !b.chartKey || (game.charted && game.charted[b.chartKey]);
+          (b.chartKey ? (game.charted && game.charted[b.chartKey]) : b.seen);
         game.stormLeeName = earned ? placeName(b, kin) : (kin || 'this moon');
       }
     }

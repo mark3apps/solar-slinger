@@ -334,7 +334,7 @@ export function contactPos(game, b, out = _pos) {
 //
 // Used by the readout strip and the journey rail — NOT by the chart's marks:
 // moons draw as icons only (see drawStarMap / labelsItself, which keys off
-// TYPE). Moons DO carry individual names now (world.MOON_NAMES — one pool per
+// TYPE). Moons DO carry individual names now (MOON_NAMES in world.js — one pool per
 // moon type), but the icons-only law stands: a zoomed-in family printing four
 // name labels in a ring around a disc already labelled OSSIA is the clutter
 // the law exists to prevent. A moon's name is READOUT knowledge — click it.

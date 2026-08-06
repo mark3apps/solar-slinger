@@ -8534,7 +8534,7 @@ export function drawStarMap(game) {
       ctx.strokeRect(x - rr - 2.5, y - rr - 2.5, (rr + 2.5) * 2, (rr + 2.5) * 2);
     }
     // NAMES: worlds and landmarks only. MOONS ARE ICONS — they DO carry
-    // individual names now (world.MOON_NAMES), but a zoomed-in family printing
+    // individual names now (MOON_NAMES in world.js), but a zoomed-in family printing
     // four name labels in a ring around a disc already labelled OSSIA is the
     // clutter this rule exists to prevent. The readout strip names them on
     // demand (labelsItself keys off TYPE, so naming moons can't leak in here).
