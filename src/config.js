@@ -3036,16 +3036,24 @@ export function dockDomeR(st, hostR, groundY) {
 // not welded on — it is HELD, floating a short gap off the nose in the same
 // braided energy field that couples the scout's split drive section, and it
 // visibly compresses into that field when it takes a hit or eats a rock. A flat
-// working face across the front, rocky everywhere else, and WIDER THAN THE
-// SHIP at every size — the overhang is the silhouette; a slab narrower than the
-// hull would just read as a bigger nose.
+// working face across the front, rocky everywhere else, and — once it is
+// actually a wall — WIDER THAN THE SHIP: the overhang is the silhouette, and a
+// slab flush with the hull line would just read as a bigger nose. That overhang
+// is carried at every tier by the HULL PROW, not by this slab
+// (render.BRAWLER_TIERS `prowW`, never below 1.20 hull half-widths, tier 0
+// included — "a prow flush with the hull line stops being a ram and becomes a
+// nose"), which is exactly what frees the ROCK to follow the pack honestly and
+// come out narrower than the hull at the bottom of the density ladder. Band 1
+// is two boulders, and two boulders on a Titan's bow are meant to look like two
+// boulders. Do not clamp the width to restate the prow's rule — see `halfW`.
 //
 //   back   where the field's hull emitters end and the coupling gap begins —
 //          measured off the DRAWN nose (radius / SHIP_HIT_FRAC), not the
 //          collision circle, or the slab overlaps the art it must stand clear of
 //   gap    the energy gap the beams span (the spring's free length)
 //   depth  the slab's thickness along the nose axis
-//   halfW  half its width across the bow — always past the hull radius
+//   halfW  half its width across the bow — DERIVED from the stone and the pack,
+//          NEVER clamped against the hull (see its own note below)
 //
 // One definition, shared: render draws this exact slab and hangs the beams in
 // this exact gap, physics takes the front CONTACT EDGE from ramFace and the
@@ -3069,18 +3077,21 @@ export function ramPlate(st, ram) {
   // mounting (`back`, `gap`) stays on `r` — the true drawn hull — and only the
   // slab (`depth`, `halfW`) rides `rs`.
   //
-  // CAPPED AT `r * 2.5` TOO (2026-08 QA #183/#184). Uncapped, `rs` is
-  // dominated by RAM_MIN_R at the smallest hull (T0 brawler: r ~5.4, rs ~26.5
-  // — a 5x gap), and `depth`/`stone` and `halfW` all ride it, so a full War
-  // Rack ran the slab to 17x the hull's own half-width. Capping `rs` itself
-  // (rather than halfW alone) keeps `stone` and `halfW` deriving from the
-  // SAME number, which is load-bearing: render seats `perRow` stones of
-  // radius `stone` shoulder-to-shoulder across `halfW` (below), and a halfW
-  // clamped independently of stone would either bury the pack in overlap or
-  // fence it apart with daylight showing. A tier-0 ram is still built from
-  // rock a full 2.5x its own hull's radius — that is still unmistakably
-  // "recognisable rock", just no longer allowed to dwarf the ship it rides on.
-  const rs = Math.min(Math.hypot(r, CFG.RAM_MIN_R), r * 2.5);
+  // AND IT IS NOT CAPPED. A `Math.min(..., r * 2.5)` ceiling was tried here
+  // (2026-08 QA #183/#184) and taken back out (QA #202), because there is no
+  // value it can hold: `rs / r` is 4.95 at tier 0 and falls monotonically —
+  // 2.66, 1.66, 1.22, 1.07, 1.03 — so a ceiling loose enough to leave the top
+  // of the ladder alone never binds ANYWHERE, and any ceiling that binds at all
+  // bites hardest at tier 0, the one tier this floor exists for. At 2.5 it put
+  // the tier-0 stones at radius 3.5 — the value CFG.RAM_MIN_R's own rationale
+  // block explicitly rejected ("under the smallest gravel in the sky") — and it
+  // silently moved three numbers CLAUDE.md and docs/design-laws.md quote AS the
+  // design: the tier-0 stone ~7 -> 3.5, the tier-0 rank-1 protected arc
+  // 31deg -> 23.6deg, its contact edge 29 -> 20 units. The slab is ALLOWED to
+  // be big on a small hull; that is the whole of the user call this constant
+  // answers, and the mounting staying on `r` is what keeps it a plough on the
+  // nose rather than a wall floating out in front.
+  const rs = Math.hypot(r, CFG.RAM_MIN_R);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
@@ -3109,13 +3120,20 @@ export function ramPlate(st, ram) {
   // jammed rather than by how far apart they float.
   const depth = rs * (0.26 + 0.0275 * t + 0.34 * g);
   const stone = depth * RAM_STONE;
-  // THE FLOOR IS THE CLASS'S ONE HARD RULE MADE LITERAL (2026-08 QA #183):
-  // "WIDER THAN THE SHIP at every size". The `rs` cap above pulls T0 back
-  // out of the explosion, but at high tier a few big stones across a short
-  // slab (small `ramPerRow`, near-empty fill) can still solve narrower than
-  // the hull that mounts it — this floor is what the width law actually
-  // demands, not a cosmetic minimum.
-  const halfW = Math.max(stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1)), r * 1.05);
+  // AND IT IS NEVER CLAMPED. A `Math.max(..., r * 1.05)` minimum was tried here
+  // (2026-08 QA #183) and taken back out (QA #201). render.ramTierRocks solves
+  // its seating FROM this expression — outermost centre at `halfW - 0.7 x
+  // stone`, the rest spread evenly — so a width the STONE did not pay for is
+  // daylight by construction: the effective packing factor ran as high as 6.8
+  // (tier 5 band 1: two stones 210 units apart across a 233-unit slab), which
+  // is the same fence this law was written to kill, just walked into from the
+  // other side. The floor bound at band 1 on EVERY tier and at bands 1-7 on the
+  // big hulls, so it was not a corner case — every ram passes through band 1 on
+  // its first rock and again as it is spent. If the slab ever needs to be wider,
+  // raise the STONE (RAM_MIN_R, RAM_STONE) or the pack (ramPerRow/ramPack) and
+  // let the width follow; the "wider than the ship" silhouette itself is the
+  // hull prow's job — see this function's header.
+  const halfW = stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1));
   return {
     // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
     // is scaled up by its size-match factor — read against the bare footprint

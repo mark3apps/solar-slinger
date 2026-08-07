@@ -1397,8 +1397,32 @@ is the mirror-drift trap. The plate publishes `stone` rather than letting render
 render's per-stone jitter is bounded at ±10% and paid for by `ramPack`'s margin so even the two
 smallest neighbours still touch. **Nothing in `ramTierRocks` may size a stone from the width again.**
 
+**And the inverse: `halfW` may never be clamped either.** Both clamps have now been tried and both
+were reverted (2026-08, QA #201/#202). A `Math.max(halfW, r × 1.05)` floor is daylight *by
+construction* — render seats the outermost centre at `halfW − 0.7 × stone` and spreads the rest
+evenly, so any width the stone did not pay for goes straight into the gaps: the effective packing
+factor ran to **6.8** (tier 5, band 1 — two stones 210 units apart across a 233-unit slab), and it
+bound at band 1 on *every* tier, which every ram passes through on its first rock and again as it is
+spent. A `Math.min(rs, r × 2.5)` cap on the size basis is the same mistake one step upstream: `rs/r`
+is 4.95 at tier 0 and falls monotonically to 1.03 at tier 5, so a cap loose enough to spare the top
+of the ladder never binds anywhere, and any cap that binds at all bites hardest at tier 0 — putting
+the stones at radius **3.5**, the value `RAM_MIN_R`'s own block rejected. The measured packing factor
+is now exactly `ramPack(t)` at every tier × band × fill, 0.920 down to 0.788, with no exceptions.
+If the slab genuinely needs to be wider, **raise the stone or the pack and let the width follow.**
+
+The overhang the class's header talks about is the **hull prow's** job, not the rock slab's:
+`render.BRAWLER_TIERS`' `prowW` is never below 1.20 hull half-widths, tier 0 included ("a prow flush
+with the hull line stops being a ram and becomes a nose"). That is what frees the rock to come out
+*narrower* than the hull at the bottom of the density ladder — band 1 is two boulders, and on a Titan
+they are meant to read as two boulders.
+
 A useful side effect: with the width now following the pack instead of running ahead of it, the
-protected-arc inflation from the rock-scale floor above mostly went away.
+protected-arc inflation from the rock-scale floor above mostly went away. What remains is that the
+arc is **tier-dependent by construction** — `back`/`gap` ride the hull while the slab rides `rs` —
+and it spans roughly **4.5° (tier 5, band 1, nearly spent) to 59.5° (tier 0, band 12, full)**. That
+is deliberate and is the same mirror rule the section above states: the arc that protects you is the
+slab you can see. `src/physics.js`'s "~38° empty, ~48° full" note predates the derived width and no
+longer describes the range.
 
 ### The ram's density ladder is twelve bands, two per rank
 
