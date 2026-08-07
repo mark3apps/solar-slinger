@@ -95,6 +95,18 @@ export class Body {
     this.onRails = false;    // riding a precomputed orbit (circular or ellipse)
     this.rail = null;        // circular {parent,r,w,ang} | ellipse {parent,e,a,...}
     this.liveT = 0;          // seconds since derailed (for re-railing)
+    // FRESH-FRAGMENT GRACE (CFG.CHUNK_INERT), and it MUST be initialised here.
+    // It used to be stamped only by the code that mints a fragment, so on every
+    // other body it was `undefined` — and `undefined <= 0` is false, not true.
+    // physics.js's field settle re-rail reads exactly that test, so the gate
+    // that is supposed to put shoal rock back on its rail once it comes to rest
+    // could never pass: measured at 0 fires in 1,660,360 evaluations, with
+    // `inertT` blocking every one. Field rock was rejoining its pocket only by
+    // way of the GENERAL rail scan, which wants the velocity to already match a
+    // circular orbit — so a disturbed pocket recovered slowly and never fully.
+    // Leave this at 0. The `> 0` readers behave identically either way; it is
+    // the `<= 0` reader that undefined silently breaks.
+    this.inertT = 0;
     this.local = false;      // spawned by the view-local field (cullable)
   }
 }
