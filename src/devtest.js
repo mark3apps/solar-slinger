@@ -5,12 +5,12 @@ import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { Alien } from './entities.js';
 import { updateAliens } from './ai.js';
-import { damageShip, parryLive } from './physics.js';
+import { damageShip, parryLive, frameReg } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel, scarSurfaceAt, padPos, TAU } from './util.js';
+import { mulberry32, surfaceVel, scarSurfaceAt, padPos, senseBlind, TAU } from './util.js';
 import { ROCK_SHAPES } from './rockdata.js';
 import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
@@ -139,6 +139,45 @@ function parkShip(game, x, y) {
   s.x = x; s.y = y; s.vx = 0; s.vy = 0;
   s.invuln = 0;
   game.cam.x = x; game.cam.y = y;
+}
+
+// Closest approach of two constant-velocity points, solved rather than sampled
+// — a stepped reading would depend on the step and would let a near-miss hide
+// between two samples. `px,py` and `vx,vy` are the RELATIVE offset and relative
+// velocity (projectile minus target), and the window is clamped to [0, tMax] so
+// a shot already past its target reports the distance at t=0, not behind it.
+// Returns the miss VECTOR too: the aiming cases below read its SIGN along the
+// platform's own heading, which is what separates a systematic lead error from
+// scatter.
+function closestApproach(px, py, vx, vy, tMax) {
+  const vv = vx * vx + vy * vy;
+  let tc = vv > 0 ? -(px * vx + py * vy) / vv : 0;
+  tc = Math.max(0, Math.min(tMax, tc));
+  const mx = px + vx * tc, my = py + vy * tc;
+  return { t: tc, mx, my, d: Math.hypot(mx, my) };
+}
+
+// The emptiest spot in the sky, off a coarse polar sweep centred on the star:
+// the candidate whose nearest world SURFACE is furthest away. Used to park the
+// ship where no DUST moon or SHROUD world can reach it — their halo sets
+// game.dustCloak, and a sense-blind ship shuts alien fire gates outright, which
+// would read as a shot that missed rather than one that never happened.
+function clearestSpot(game) {
+  const star = game.bodies.find((b) => b.alive && b.type === 'star');
+  const worlds = game.bodies.filter((b) => b.alive &&
+    (b.type === 'planet' || b.type === 'moon' || b.type === 'star'));
+  let best = { x: 0, y: 0, clear: -Infinity };
+  for (let i = 0; i < 36; i++) {
+    const th = (i / 36) * TAU, cs = Math.cos(th), sn = Math.sin(th);
+    for (let j = 1; j <= 8; j++) {
+      const rr = CFG.WORLD_R * 0.09 * j;
+      const x = (star ? star.x : 0) + cs * rr, y = (star ? star.y : 0) + sn * rr;
+      let near = Infinity;
+      for (const b of worlds) near = Math.min(near, Math.hypot(b.x - x, b.y - y) - b.radius);
+      if (near > best.clear) best = { x, y, clear: near };
+    }
+  }
+  return best;
 }
 
 export function runMechTest(game, hooks, opts = {}) {
@@ -1683,7 +1722,6 @@ export function runMechTest(game, hooks, opts = {}) {
     // could switch avoidance off altogether.
     t('alien avoidance: the whisker is cast in the world\'s own frame', () => {
       hooks.freshRun(0, seed);
-      const nAliens = game.aliens.length;
       let al = null;
       try {
         // The most isolated moon that is actually MOVING — a slow one would
@@ -1760,8 +1798,261 @@ export function runMechTest(game, hooks, opts = {}) {
           + `into the path of a moon moving at ${W.toFixed(0)} u/s, which is the absolute-frame whisker aiming at where the moon USED to be`);
         return `${m.name || 'moon'} at ${W.toFixed(0)} u/s, alien ${d.toFixed(0)} out (clear ${clear.toFixed(0)}): veer ${along.toFixed(0)} u/s^2 aft`;
       } finally {
-        if (al) al.alive = false;
-        game.aliens.length = nAliens;
+        // Splice the rig alien out BY IDENTITY, never by truncating back to a
+        // captured length: physics.js compacts game.aliens on every step and
+        // updateAliens can PUSH (lurker springs, nest bursts, the husk wright),
+        // so a length taken before those ran either deletes a real alien or
+        // leaves the rig one behind.
+        if (al) {
+          al.alive = false;
+          const i = game.aliens.indexOf(al);
+          if (i >= 0) game.aliens.splice(i, 1);
+        }
+      }
+    });
+
+    // ---- INTERCEPT LEAD IS SOLVED IN THE LAUNCHER'S OWN FRAME ---------------
+    // T24b/T24c are the same law as T24's whisker, one step further on: if a
+    // projectile INHERITS its launcher's motion, the lead that aims it has to
+    // be solved in the launcher's frame, or the shot never flies along the
+    // angle that was solved. physics.js's lurker body-check already obeyed it;
+    // the grabber's throw and the Bastion's gatling did not.
+    //
+    // Both rigs make the error a THRESHOLD the buggy code cannot clear by luck,
+    // by killing the true lead outright — a PARKED ship for the thrower, a
+    // CO-ORBITING one for the fort. With the true lead at zero, every unit of
+    // miss IS the launcher's own velocity leaking into the aim point, so the
+    // assertion reads one term and nothing else. Both take their reading
+    // ANALYTICALLY off the launch velocity rather than by flying the shot: a
+    // stepped flight would fold in gravity, the crumble and every rock in the
+    // way, and this is a check on where the shot was AIMED.
+
+    // T24b — ai.js's carry state, the grabber's throw. The rock leaves at
+    // `al.v + ALIEN_THROW*dir`, and a grabber's own budget is
+    // GRABBER_SPEED x ALIEN_SPEED = 215 u/s against a 430 u/s throw, so a lead
+    // solved absolutely and launched with the carry added flies up to ~27 deg
+    // off. Measured against a parked hull 400 out: the rock passed 157 u away
+    // before the fix, 5 u after — the hull-plus-rock hit radius is ~13.
+    t('alien throw: the lead is solved in the thrower\'s own frame', () => {
+      hooks.freshRun(0, seed);
+      const s = game.ship;
+      let al = null, r = null;
+      try {
+        // Somewhere with no world in reach. Nothing has to FLY through this
+        // space (the reading is analytic) — the requirement is that no cloaker
+        // halo covers the hull, because senseBlind shuts the throw gate and a
+        // shot that never fired is not a shot that missed.
+        const spot = clearestSpot(game);
+        expect(spot.clear > 2500,
+          `the emptiest spot in this sky is only ${spot.clear.toFixed(0)} u off a world — too close to rule out a dust/shroud halo`);
+        parkShip(game, spot.x, spot.y);
+        // One frame first: update() is what stamps game.st onto s.radius, and
+        // the hit threshold below is quoted in hull radii. Re-park after it —
+        // the step drifts the hull under whatever gravity reaches out here.
+        hooks.stepSim(1 / 60);
+        parkShip(game, spot.x, spot.y);
+
+        // THE STRAFE. The grabber sits 400 out along +x carrying its full
+        // cruise purely LATERAL to that bearing: no closing speed at all, so
+        // the absolute-frame solve aims the rock DEAD at the hull and then
+        // hands it 215 u/s of sideways drift on top.
+        const D = 400;
+        al = new Alien(s.x + D, s.y, 'grabber');
+        const gsp = CFG.ALIEN_SPEED * CFG.GRABBER_SPEED;
+        al.vx = 0; al.vy = gsp;
+        // updateAlien re-stamps al.angle from the ship's bearing on entry, so
+        // the hold point has to be built off that same angle or the rock is
+        // somewhere the carry state would never have put it.
+        al.angle = Math.atan2(s.y - al.y, s.x - al.x);
+        // A boulder, so the hit threshold is the real radius sum of a body the
+        // grabber can actually haul rather than a pebble's rounding error.
+        r = spawnAsteroid(game.bodies, 0, 0, al.vx, al.vy, 3000);
+        const hold = al.radius + r.radius + 26;
+        r.x = al.x + Math.cos(al.angle) * hold;
+        r.y = al.y + Math.sin(al.angle) * hold;
+        r.heldBy = al;
+        al.target = r; al.state = 'carry'; al.carryT = 0;
+        game.aliens.push(al);
+
+        // Setup gates. Every one of these, unmet, produces NO THROW — and a
+        // silent no-throw read as a bad shot is the failure mode that would
+        // make this case lie about which code is broken.
+        const distShip = Math.hypot(al.x - s.x, al.y - s.y);
+        expect(!senseBlind(game),
+          'the ship is sense-blind (dust halo, shroud or solar wave) — the throw gate is shut before the rig even runs');
+        expect(distShip < CFG.ALIEN_THROW_R,
+          `the grabber is ${distShip.toFixed(0)} u out, past ALIEN_THROW_R ${CFG.ALIEN_THROW_R} — it would never throw`);
+        const A = Math.hypot(al.vx, al.vy);
+        expect(A > 150,
+          `the thrower carries only ${A.toFixed(0)} u/s — too slow for the two frames to disagree, so the case would prove nothing`);
+        expect(!al.nest,
+          'the rig alien has a nest — updateAlien\'s territorial branch would send it home instead of throwing');
+
+        // updateAliens, not stepSim: physics would integrate the thrower and
+        // the hull between arrangement and launch, and the whole point is that
+        // al.v at the instant of the throw is the number under test.
+        updateAliens(game, 1 / 60);
+        expect(!senseBlind(game),
+          'the ship went sense-blind inside the step — the throw gate never opened');
+        expect(r.heldBy === null && r.thrownBy === 'alien' && al.state === 'cooldown',
+          `no throw fired (heldBy ${r.heldBy ? 'still set' : 'null'}, thrownBy ${r.thrownBy}, state ${al.state}) `
+          + '— the aim below would be reading a rock that was never launched');
+
+        // THE READING. Ship parked, so its ray is a point and every unit of
+        // miss is the thrower's own drift.
+        const m = closestApproach(r.x - s.x, r.y - s.y, r.vx - s.vx, r.vy - s.vy, 5);
+        const hit = s.radius + r.radius;
+        expect(m.d < hit,
+          `the thrown rock passes ${m.d.toFixed(0)} u from a PARKED hull (hit radius ${hit.toFixed(1)}) — with the ship `
+          + `stationary the true lead is zero, so that gap is the thrower's own ${A.toFixed(0)} u/s of strafe added AFTER `
+          + 'the lead was solved against the ship\'s ABSOLUTE velocity');
+
+        // AND THE CARRY STAYS. Solving relatively is only half the law: the
+        // launch must still inherit the thrower's motion, or the shot's ground
+        // speed — and so its damage — moves. This fails on the other "fix",
+        // deleting the carry, which would also make the assertion above pass.
+        const carry = Math.hypot(r.vx - al.vx, r.vy - al.vy);
+        expect(Math.abs(carry - CFG.ALIEN_THROW) < 1e-6,
+          `the rock leaves at ${carry.toFixed(3)} u/s in the THROWER's frame, not ALIEN_THROW ${CFG.ALIEN_THROW} — `
+          + 'the velocity carry has been dropped, which silently moves the shot\'s ground speed and its damage');
+
+        return `thrower ${A.toFixed(0)} u/s lateral at ${distShip.toFixed(0)} u: miss ${m.d.toFixed(1)} u (hit ${hit.toFixed(1)}), carry ${carry.toFixed(1)}`;
+      } finally {
+        // BY IDENTITY, not by truncating to a captured length — see T24's own
+        // note. updateAliens above can push a fresh alien and physics compacts
+        // the list, so a length is not a handle on the rig's own alien.
+        if (al) {
+          al.alive = false;
+          const i = game.aliens.indexOf(al);
+          if (i >= 0) game.aliens.splice(i, 1);
+        }
+        if (r) {
+          r.alive = false; r.heldBy = null; r.extAx = 0; r.extAy = 0;
+          const i = game.bodies.indexOf(r);
+          if (i >= 0) game.bodies.splice(i, 1);
+          const aw = game.bodies._awake;
+          if (aw) { const j = aw.indexOf(r); if (j >= 0) aw.splice(j, 1); }
+        }
+      }
+    });
+
+    // T24c — ai.updateForts, the Bastion gatling. Same law, and the case that
+    // makes it absurd is the commonest one in play: a ship holding station
+    // beside the fort is CO-ORBITING, so the true lead is ZERO — yet solved
+    // absolutely every shell of the barrage was thrown the world's own 41-130
+    // u/s ahead of a hull whose radius is at most 44. Measured from a muzzle
+    // 492 u out on a 66 u/s world: 153 u of miss before the fix, 0.0 after,
+    // against updateForts' own bolt hit radius of s.radius + 6 = 10.
+    t('bastion turret: the lead is solved in the fort\'s own frame', () => {
+      hooks.freshRun(0, seed);
+      const s = game.ship;
+      // This case spawns no alien of its own, but it calls updateAliens, which
+      // can (lurker springs, nest bursts, the husk wright). Hold the roster BY
+      // IDENTITY so the finally can drop exactly what this call added and
+      // nothing else — a captured length would be wrong the moment physics
+      // compacts the list.
+      const hadAliens = new Set(game.aliens);
+      let saved = null, wasBolts = null;
+      try {
+        const fb = game.bodies.find((x) => x.alive && x.fort);
+        expect(fb, 'no fortified world in this sky — nothing to fire the case');
+        const f = fb.fort;
+        expect(f.turrets.length > 0, 'the fort has no turrets left to fire');
+        const W = Math.hypot(fb.vx, fb.vy);
+        expect(W > 40,
+          `the fort world carries only ${W.toFixed(0)} u/s — a near-stationary platform makes the two frames agree and proves nothing`);
+
+        // THE STAND-OFF IS A NARROW BAND, and that is the fort world's doing:
+        // it is ~990 units across the radius on this seed while updateForts
+        // only fires inside 1300 of the CENTRE, so there are barely 300 units
+        // of sky to hold station in. Sit at the top of it — the miss this case
+        // reads grows with the muzzle range — and let the gates below refuse
+        // outright if a future layout closes the band.
+        const R = Math.min(fb.radius + 300, 1290);
+        const park = () => {
+          const n = Math.hypot(fb.x, fb.y) || 1;   // stand off along the outward radial
+          parkShip(game, fb.x + (fb.x / n) * R, fb.y + (fb.y / n) * R);
+        };
+        park();
+        // One frame so the LOD has built this frame's registries (updateForts
+        // walks frameReg(game).forts) and s.radius carries game.st. Re-park
+        // after: the world orbited and the hull fell during it.
+        hooks.stepSim(1 / 60);
+        park();
+        // CO-ORBITING — the whole rig. Matching the world's velocity puts the
+        // true lead at exactly zero.
+        s.vx = fb.vx; s.vy = fb.vy;
+
+        const d = Math.hypot(s.x - fb.x, s.y - fb.y);
+        expect(d <= 1300, `the hull is ${d.toFixed(0)} u out, past updateForts' 1300 fire gate — nothing would fire`);
+        expect(d - fb.radius > s.radius + 40,
+          `the stand-off puts the hull ${(d - fb.radius).toFixed(0)} u off the surface — too close to be flying rather than landing`);
+        expect(frameReg(game).forts.includes(fb),
+          'the fort is not in this frame\'s fort registry — updateForts never looks at it, and a no-fire would misreport as a bad shot');
+
+        // ONE TURRET FIRES, AND IT IS THE ONE FACING YOU. The battery rings the
+        // whole world, so a far-side muzzle is ~2,280 u from the hull — 8.8 s
+        // of flight against a bolt that lives 5.5 — and a shell that EXPIRES
+        // short reads as an enormous miss for reasons that have nothing to do
+        // with where it was aimed. The near turret is the one whose shell
+        // actually arrives, so it is the one whose aim is worth asserting; the
+        // rest are cooled out of the way so they cannot contribute.
+        const muzzle = (tu) => Math.hypot(
+          fb.x + Math.cos(fb.rot + tu.ang) * fb.radius - s.x,
+          fb.y + Math.sin(fb.rot + tu.ang) * fb.radius - s.y);
+        let near = f.turrets[0];
+        for (const tu of f.turrets) if (muzzle(tu) < muzzle(near)) near = tu;
+        const L = muzzle(near);
+        expect(L / 260 < 5.3,
+          `even the nearest turret is ${L.toFixed(0)} u from the hull — ${(L / 260).toFixed(2)} s of flight against a 5.5 s bolt, `
+          + 'so the shell would expire rather than arrive and the miss below would not be an aiming error');
+
+        // Fire on OUR frame, not on a random burst boundary: cool 0 clears the
+        // cadence gate and burst 2 keeps updateForts out of the re-arm branch,
+        // so the near turret puts exactly one shell up on the next call.
+        // Captured and restored below (issue #151) — the battery is run state,
+        // not the harness's.
+        wasBolts = game.bolts;
+        saved = f.turrets.map((tu) => ({ tu, cool: tu.cool, burst: tu.burst, fireT: tu.fireT }));
+        game.bolts = [];
+        for (const tu of f.turrets) tu.cool = 99;
+        near.cool = 0; near.burst = 2;
+
+        updateAliens(game, 1 / 60);
+        const fired = game.bolts.slice();
+        expect(fired.length === 1,
+          `${fired.length} shells in the air, not the one the rig armed — the aim assertion below would be reading `
+          + 'either an empty barrage or a turret whose range was never gated');
+
+        // updateForts advances a bolt by dt on the same call that pushes it, so
+        // the hull is advanced to match; otherwise the reading carries one
+        // frame of skew that has nothing to do with the aim.
+        const sx = s.x + s.vx / 60, sy = s.y + s.vy / 60;
+        let worst = -1, worstAhead = -Infinity;
+        for (const bo of fired) {
+          const m = closestApproach(bo.x - sx, bo.y - sy, bo.vx - s.vx, bo.vy - s.vy, bo.life);
+          if (m.d > worst) worst = m.d;
+          worstAhead = Math.max(worstAhead, (m.mx * fb.vx + m.my * fb.vy) / W);
+        }
+        const hit = s.radius + 6;            // updateForts' own bolt hit radius
+        expect(worst < hit,
+          `the shell passes ${worst.toFixed(0)} u from a CO-ORBITING hull (hit radius ${hit.toFixed(1)}) `
+          + `— matching the world's velocity puts the true lead at zero, so that gap is the fort's own ${W.toFixed(0)} u/s `
+          + 'leaking into an aim point solved against the ship\'s ABSOLUTE velocity');
+        // AND THE SIGN. An absolute-frame lead misses in one direction only —
+        // ahead of the hull along the world's own heading. Scatter would not.
+        expect(worstAhead < 1,
+          `the miss sits ${worstAhead.toFixed(0)} u AHEAD of the hull along the fort world's own heading — a systematic `
+          + 'lead in the direction the platform is travelling, not scatter');
+
+        return `${W.toFixed(0)} u/s world, muzzle ${L.toFixed(0)} u out: miss ${worst.toFixed(1)} u (hit ${hit.toFixed(1)}), ahead ${worstAhead.toFixed(1)}`;
+      } finally {
+        if (wasBolts) game.bolts = wasBolts;
+        if (saved) for (const o of saved) { o.tu.cool = o.cool; o.tu.burst = o.burst; o.tu.fireT = o.fireT; }
+        for (let i = game.aliens.length - 1; i >= 0; i--) {
+          const a = game.aliens[i];
+          if (!hadAliens.has(a)) { a.alive = false; game.aliens.splice(i, 1); }
+        }
       }
     });
 
