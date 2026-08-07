@@ -86,6 +86,17 @@ let VESPER_PERI = SR(3900);           // ...and Vesper's perihelion, deliberatel
 let VESPER_SEMI = SR(12000);
 let TINKER_R = SR(12000);             // the barge's trade lane
 
+// THE OUTER ANCHORS RIDE THE BOUNDARY, not the authored gap ladder. The lane
+// ladder's length became EMERGENT with the need-based spacing in buildLayout
+// (a seed whose gas giants want room takes it), so the two things that have to
+// sit OUTSIDE the outermost lane can no longer be authored distances that only
+// track the gaps. Both keep exactly the proportion they were authored in —
+// 41500 and 44300 against the 46000 that has always been WORLD_R's own
+// authored radius — so every note written about those numbers still describes
+// the same sky, and moving CFG.WORLD_R moves the pair together.
+const LADDER_CAP = () => CFG.WORLD_R * (41500 / 46000);
+const FARSHOAL_R = () => CFG.WORLD_R * (44300 / 46000);
+
 const PTYPE_COLORS = {
   lava:    ['#e0603a', '#d4502c', '#e8784a'],
   rocky:   ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
@@ -333,6 +344,39 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   return m;
 }
 
+// THE FAMILY GEOMETRY, IN TWO EXPRESSIONS AND ONLY TWO. The lane ladder
+// (buildLayout) has to know how much room a family will want BEFORE the world
+// exists, and moonZone has to hand out that same room once it does — two
+// copies of either number is the mirror-drift trap, and here it drifts silent:
+// the ladder would reserve a gap the zone then declined to use, or hand out a
+// zone the ladder never made room for.
+//
+// The inner floor. The absolute term covers small worlds; the proportional
+// term covers what each archetype DRAWS around itself — a ring's outer band
+// reaches ~2.2r (render.drawRing at 2.14r + half its stroke), the terran burn
+// deck 1.58r, a crystal's spikes 1.32r — so a ringed world's family starts
+// clear of its rings and a terran's clear of its sky.
+function moonFloor(radius, ptype, ring) {
+  const propFloor = ring ? 2.5
+    : ptype === 'terran' ? 1.75
+    : ptype === 'crystal' ? 1.6 : 1.45;
+  return Math.max(radius + 90 * CFG.MOON_R_MUL, radius * propFloor);
+}
+// ...and the radial room ONE moon occupies. See addPlanet's count clamp for
+// how this is solved: a slot floor of 220*MOON_R_MUL keeps even two
+// top-of-jitter siblings clear at the tightened 0.3-0.7 placement draw.
+const moonSlot = () => 220 * CFG.MOON_R_MUL;
+// THE REACH A FULL FAMILY WANTS, in world units from the planet's centre —
+// the number the lane ladder reserves gaps against. Apoapsis, not semi-major
+// axis (an ellipse reaches a*(1+e), and MOON_E_MAX is the ceiling spawnMoon
+// draws under), because what must not touch a neighbour is the reach.
+// A world with no family still wants its own drawn kit kept clear of the next
+// lane, which is what the moonless branch covers.
+function familyReach(radius, ptype, ring, moons) {
+  if (!moons) return radius * 1.6;
+  return (1 + CFG.MOON_E_MAX) * (moonFloor(radius, ptype, ring) + moons * moonSlot());
+}
+
 // How far out this planet can hold a moon. Rails hold moons on their orbits
 // regardless of the sun's tide, so the zone extends far beyond raw Hill
 // stability — wide, majestic moon systems. (A derailed outer moon may drift
@@ -354,25 +398,48 @@ function moonZone(star, planet, orbitR) {
   // spawnMoon's eCap tops out at MOON_E_MAX, so THAT is the multiple of maxR
   // the boundary has to leave room for, not maxR itself.
   const room = Math.max(0, CFG.WORLD_R - orbitR) / (1 + CFG.MOON_E_MAX);
+  // ...AND SO IS THE NEIGHBOURING LANE, for exactly the same reason and by
+  // exactly the same idiom — the bound this function was missing. The Hill
+  // term is not a local bound at all: hill goes with orbitR x cbrt(mass/3M),
+  // and at this sun's mass that is ~25% of the orbital radius for a gas giant,
+  // so MOON_ZONE_MUL x Hill asked for a family several times wider than the
+  // gap to the next lane. What actually ended those families was the WORLD_R
+  // clamp above — i.e. the far edge of the map — and the sky it built had 90%
+  // of all moons on a heliocentric annulus covering another planet's LANE and
+  // 84% sweeping clean across another planet's DISC (measured, 40 seeds).
+  // Nothing died of it quickly, because the railed-conjunction pass-through in
+  // physics.collideBodies catches these at ~10-30 u/s, far under DMG_THRESH —
+  // but a 45,000-second soak (one full synodic cycle of the crowded outer
+  // giants; 600s and 6,000s runs both showed nothing) lost two moons, one into
+  // the star and one into a gas giant. It is a geometry law first and a
+  // slow leak second.
+  //
+  // `moonRoom` is the APOAPSIS REACH this world's family is allowed, stamped
+  // by generateWorld's lane pass — that is the one place that knows the
+  // ladder, and replenishWorld calls this 60 seconds at a time with no layout
+  // in sight. It is a per-world allowance rather than a raw gap because the
+  // two families sharing a gap divide it in PROPORTION to what each wants (the
+  // PLANET_LANE_GAP disc-clamp idiom), so a giant next to a small ice world
+  // keeps its own reach instead of settling for half the gap. Undefined —
+  // the dark star, anything minted outside the layout — falls back to
+  // unbounded, exactly what those bodies had before.
+  // Divided by (1 + MOON_E_MAX) for the same reason `room` is: a zone is a
+  // SEMI-MAJOR axis and an ellipse reaches a*(1+e), so bounding the axis by
+  // the reach would still let the apoapsis cross it.
+  const laneRoom = (planet.moonRoom ?? Infinity) / (1 + CFG.MOON_E_MAX);
   // The inner clearance rides MOON_R_MUL because that is what it is FOR: 90
   // comfortably cleared a 42-radius moon, and a doubled moon parked on the old
   // floor would hang 84 units into a planet that also grew underneath it.
   // ...AND THE FLOOR IS PROPORTIONAL NOW TOO (user call, 2026-08: moons —
   // "especially" the gas giants' — orbited visibly inside their own world's
-  // drawn kit). The absolute term covers small worlds; the proportional term
-  // covers what each archetype DRAWS around itself: a ring's outer band
-  // reaches ~2.2r (render.drawRing at 2.14r + half its stroke), the terran
-  // burn deck 1.58r, a crystal's spikes 1.32r — so a ringed world's family
-  // starts clear of its rings and a terran's clear of its sky. The ring-gap
-  // SHEPHERD is spawned pinned to its lane by its own path (spawnShepherd)
-  // and never consults this zone; a tighter zone degrades to FEWER moons via
-  // spawnMoon's count clamp, never to a crossing pair.
-  const propFloor = planet.ring ? 2.5
-    : planet.ptype === 'terran' ? 1.75
-    : planet.ptype === 'crystal' ? 1.6 : 1.45;
+  // drawn kit). It lives in `moonFloor` above, because the lane ladder has to
+  // reserve room against the same number. The ring-gap SHEPHERD is spawned
+  // pinned to its lane by its own path (spawnShepherd) and never consults this
+  // zone; a tighter zone degrades to FEWER moons via spawnMoon's count clamp,
+  // never to a crossing pair.
   return {
-    minR: Math.max(planet.radius + 90 * CFG.MOON_R_MUL, planet.radius * propFloor),
-    maxR: Math.min(hill * CFG.MOON_ZONE_MUL, room),
+    minR: moonFloor(planet.radius, planet.ptype, planet.ring),
+    maxR: Math.min(hill * CFG.MOON_ZONE_MUL, room, laneRoom),
   };
 }
 
@@ -412,6 +479,10 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
     parent: star,
   });
   if (opts.gasKind) p.gasKind = opts.gasKind;
+  // The apoapsis reach this world's family may take, carried on the body
+  // because moonZone is the consumer and replenishWorld calls it long after
+  // the layout is gone. See the stamp in generateWorld's lane pass.
+  if (opts.moonRoom) p.moonRoom = opts.moonRoom;
   bodies.push(p);
   railBody(p, star);
 
@@ -442,8 +513,7 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   // measures real slack per moon and shrinks or skips the shell.
   // An over-draw therefore degrades to FEWER moons, never to a crossing pair.
   const { minR, maxR } = moonZone(star, p, orbitR);
-  const count = Math.min(opts.moons || 0,
-    Math.floor((maxR - minR) / (220 * CFG.MOON_R_MUL)));
+  const count = Math.min(opts.moons || 0, Math.floor((maxR - minR) / moonSlot()));
   if (count > 0) {
     if (maxR > minR + 50) {
       const slotW = (maxR - minR) / count;
@@ -839,37 +909,98 @@ function buildLayout(rng, graveyardR) {
     c.mass *= c.ptype === 'gas' ? rand(rng, 0.9, 1.1) : rand(rng, 0.85, 1.15);
     if (c.moons) c.moons = Math.round(c.moons * rand(rng, 1, 1.5));
   };
-  // Walk the ladder into WORLD-unit lane radii, starting from the graveyard
-  // ring the sun's own size dictated. Belt counts jitter too.
+  // Draw the ladder's gaps and jitter the contents. SPLIT from the walk below
+  // so the need pass can open a gap BEFORE anything is placed at a radius —
+  // and the draw order (gap, then the slot's own jitter) is exactly the order
+  // the single-pass walk used, so the seeded stream is untouched.
+  const gaps = slots.map((s) => {
+    const g = SR(s.gap * rand(rng, 0.9, 1.15));
+    if (s.belt) s.count = Math.round(s.belt.count * rand(rng, 0.85, 1.2));
+    else if (s.c) { jit(s.c); if (s.c.partner) jit(s.c.partner); }
+    return g;
+  });
+  // A LANE IS SPACED BY WHAT ITS FAMILY NEEDS, not by the authored gap alone —
+  // the authored ladder is the FLOOR and the shape, this opens it where the
+  // shape does not fit. The authored gaps are near-uniform (1400-4300) while a
+  // family's reach is anything but: a ringed giant grown through PLANET_R_MUL
+  // wants ~22,000 units and a small ice world ~9,000, so uniform spacing
+  // over-serves the small worlds and starves exactly the ones whose families
+  // are the point ("a gas giant's family should read as a system you fly
+  // through, not a bracelet"). Under the flat ladder every giant came out with
+  // ZERO moons the moment moonZone started respecting its neighbours.
+  //
+  // The requirement is stated on the SPAN between two consecutive worlds, not
+  // on one slot's gap, because belts and the co-orbital pairing's vacant lane
+  // sit between worlds and already contribute room. A short span is opened by
+  // scaling every gap inside it PROPORTIONALLY, so an intervening belt keeps
+  // its place in the ladder instead of being left hard against the inner world.
+  // Two neighbouring families may occupy CFG.MOON_LANE_SHARE of the span
+  // between them; the remainder is a corridor no moon enters.
+  const need = slots.map((s) => (s.c
+    ? Math.max(familyReach(s.c.radius * CFG.PLANET_R_MUL, s.c.ptype, s.c.ring, s.c.moons),
+      // A co-orbital partner rides the SAME lane, so the pair's two families
+      // share one gap and the hungrier of them sets what that gap must be.
+      s.c.partner ? familyReach(s.c.partner.radius * CFG.PLANET_R_MUL,
+        s.c.partner.ptype, s.c.partner.ring, s.c.partner.moons) : 0)
+    : 0));
+  for (let i = 0, prev = -1; i < slots.length; i++) {
+    if (!slots[i].c) continue;
+    if (prev >= 0) {
+      let span = 0;
+      for (let k = prev + 1; k <= i; k++) span += gaps[k];
+      const wantSpan = (need[prev] + need[i]) / CFG.MOON_LANE_SHARE;
+      if (span < wantSpan) {
+        const k = wantSpan / span;
+        for (let q = prev + 1; q <= i; q++) gaps[q] *= k;
+      }
+    }
+    prev = i;
+  }
+  // Walk the opened ladder into WORLD-unit lane radii, starting from the
+  // graveyard ring the sun's own size dictated.
   let r = graveyardR;
   const rows = [];
-  for (const s of slots) {
-    r += SR(s.gap * rand(rng, 0.9, 1.15));
+  slots.forEach((s, i) => {
+    r += gaps[i];
     if (s.belt) {
-      rows.push({ r, belt: true, spread: s.belt.spread,
-        count: Math.round(s.belt.count * rand(rng, 0.85, 1.2)),
+      rows.push({ r, belt: true, spread: s.belt.spread, count: s.count,
         spawnBelt: s.spawnBelt, carvedBelt: s.carvedBelt });
-      continue;
+      return;
     }
     if (s.vacant) {
       // The co-orbital pairing's vacated lane: no world, but the radius stays
       // real — the dark star threads the mid-point of the gap it leaves.
       rows.push({ r, vacant: true, darkMid: s.darkMid });
-      continue;
+      return;
     }
-    jit(s.c);
-    if (s.c.partner) jit(s.c.partner);
-    rows.push({ r, ...s.c, fieldMid: s.fieldMid, tinkerMid: s.tinkerMid,
-      ghostMid: s.ghostMid, darkMid: s.darkMid });
-  }
+    // famNeed rides the row so generateWorld's lane pass can split each gap
+    // between the two families that share it without re-deriving the reach.
+    rows.push({ r, ...s.c, famNeed: need[i], fieldMid: s.fieldMid,
+      tinkerMid: s.tinkerMid, ghostMid: s.ghostMid, darkMid: s.darkMid });
+  });
   // OUTERMOST-LANE GUARD: gap jitter can push the last lane far
-  // enough out to crowd the Farshoal's frost-fringe berth (authored 44300).
-  // Squeeze the whole ladder proportionally back under SR(41500) — invariant
+  // enough out to crowd the Farshoal's frost-fringe berth.
+  // Squeeze the whole ladder proportionally back under the cap — invariant
   // 6 stays structural either way (moonZone clamps every family by the room
   // WORLD_R actually leaves), this guard is about keeping the outer band's
   // CONTENT relationships intact on a hot draw.
+  //
+  // MEASURED AGAINST THE BOUNDARY, NOT AGAINST SR(). It was the authored
+  // literal 41500, which worked while the ladder was nothing but authored
+  // gaps: their sum is 40,180 of the same units, so the cap sat a flat 3%
+  // above the ladder it was guarding and jitter was all it ever had to absorb.
+  // The need pass above makes the ladder's length EMERGENT — a seed whose
+  // giants want room takes it — so a cap pinned 3% above the authored sum
+  // fires on most seeds and squeezes out exactly the room that pass just
+  // reserved (measured: it was clawing back ~15%, and every giant came up
+  // 2-5 moons short of its family). The same three anchors, in the same
+  // proportion they were authored in (41500 / 44300 / 46000), read off
+  // CFG.WORLD_R so the guard scales with the BOUNDARY the ladder has to fit
+  // inside rather than with the gaps it is made of. LADDER_CAP is exported
+  // because the Farshoal's berth is the thing this is protecting and the two
+  // must not drift apart.
   const first = rows[0].r, last = rows[rows.length - 1].r;
-  const cap = SR(41500);
+  const cap = LADDER_CAP();
   if (last > cap) {
     const k = (cap - first) / (last - first);
     for (const row of rows) row.r = first + (row.r - first) * k;
@@ -1047,6 +1178,36 @@ export function generateWorld(game, seed = 20260721) {
       // to FINAL units here, exactly where the host does.
       if (it.partner) it.partner.radius *= CFG.PLANET_R_MUL * (got[i] / want[i]);
       it.radius = got[i];
+      // ...and the SAME neighbour geometry bounds the MOON FAMILY (moonZone's
+      // laneRoom). Stamped here rather than recomputed there because this is
+      // the one place that knows the lane ladder — moonZone is handed a body,
+      // and replenishWorld calls it 60 seconds at a time with no layout in
+      // sight. It is stamped AFTER the outermost-lane squeeze below has had
+      // its say, so a squeezed ladder hands out squeezed families rather than
+      // families the ladder no longer has room for.
+      //
+      // Each gap is DIVIDED IN PROPORTION to what the two families sharing it
+      // want (`famNeed`, buildLayout's own reach), the PLANET_LANE_GAP
+      // disc-clamp idiom: the giant stays the giant instead of a giant and a
+      // small ice world each settling for half. MOON_LANE_SHARE is what the
+      // two of them may occupy between them; the rest is a corridor no moon
+      // enters. buildLayout already opened every span to fit these, so the
+      // split normally hands each family exactly its reach — this is what
+      // holds when the squeeze, or a belt-heavy span, leaves less.
+      // The NEAREST side wins: a family is symmetric about its lane, so the
+      // tighter side is what it has to fit inside. The innermost and outermost
+      // lanes each keep one open side (Infinity), leaving the WORLD_R clamp as
+      // that side's only bound, exactly as before.
+      // A co-orbital partner shares the lane, and the pair can never conjunct
+      // — so they do not bound each other, they inherit the lane's allowance.
+      const side = (gap, other) => (isFinite(gap)
+        ? gap * CFG.MOON_LANE_SHARE * (it.famNeed / Math.max(1e-6, it.famNeed + other))
+        : Infinity);
+      it.moonRoom = Math.min(
+        side(i > 0 ? it.r - lanes[i - 1].r : Infinity, i > 0 ? lanes[i - 1].famNeed : 0),
+        side(i < lanes.length - 1 ? lanes[i + 1].r - it.r : Infinity,
+          i < lanes.length - 1 ? lanes[i + 1].famNeed : 0));
+      if (it.partner) it.partner.moonRoom = it.moonRoom;
     });
   }
   // Names come off the PER-ARCHETYPE pools now (PLANET_NAME_POOLS), drawn
@@ -1102,6 +1263,13 @@ export function generateWorld(game, seed = 20260721) {
         color: pick(rng, PTYPE_COLORS[item.ptype]),
         name: p.name + ' B', ptype: item.ptype, parent: p,
       });
+      // A companion's moon room is bounded by the PAIR's separation as well as
+      // by the lane it shares with the primary — it is the one world in the sky
+      // with a close neighbour that is not a lane away (the same reason
+      // addStation below is handed a maxR). It holds no moons at generation;
+      // replenishWorld can still pick it as a refill host, and without this it
+      // would be the one host left refilling against an unbounded zone.
+      comp.moonRoom = Math.min(p.moonRoom ?? Infinity, sep - p.radius - compR);
       bodies.push(comp);
       railBody(comp, p);
       planets.push(comp);
@@ -1546,8 +1714,11 @@ export function generateWorld(game, seed = 20260721) {
   // GENERATED lane-gap midpoints collected above — the gaps are the point,
   // not the numbers — and the Farshoal keeps its authored frost-fringe berth,
   // which is pinned to WORLD_R by construction (44300 of the 46000 the
-  // boundary is authored at, both spread by the same SYS).
-  fieldRs.push({ name: 'The Farshoal', r: SR(44300) });
+  // boundary is authored at). It reads FARSHOAL_R rather than SR() because the
+  // lane ladder it has to stay clear of is need-spaced now and no longer a
+  // fixed multiple of the authored gaps — see LADDER_CAP, which is the same
+  // proportion and the same reason.
+  fieldRs.push({ name: 'The Farshoal', r: FARSHOAL_R() });
   seedDenseFields(game, sun, rng, fieldRs);
   seedDebrisBelts(bodies, planets, rng);
   // GAME MODE, applied LAST and by SUBTRACTION (see applyModeRules). Everything

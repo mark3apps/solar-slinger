@@ -1,6 +1,6 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
-  stormStrength, stormSpent, shelterR, SHIP_RADIUS } from './config.js';
+  stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { Alien } from './entities.js';
@@ -893,7 +893,23 @@ export function runMechTest(game, hooks, opts = {}) {
     // radius >= 40: comfortably above config.dockHostOk's tier-0 line (~33) —
     // a moonlet offers no anchorage at all now, so the dock tests must stage
     // on a moon that can actually host one.
-    const aWorld = () => game.bodies.find((b) => b.type === 'moon' && b.alive && b.radius >= 40);
+    // ...AND THE GROUND HAS TO BE QUIET. These tests berth the ship and then
+    // let the sim run free for a second at a time to watch what a berth GIVES,
+    // so anything shooting at the pad reads as a dock that would not hold. The
+    // filter used to be radius alone, which was stable only because the moon it
+    // happened to land on was harmless: the 2026-08 lane-spacing pass moved
+    // which moon comes first in game.bodies, the new one was the Bastion's own
+    // (world.js fortifies the desert world AND a moon of it), and six dock
+    // tests failed in a row reporting lost berths that were really turret fire.
+    // Skip a fortified moon and any moon of a fortified world — the fort always
+    // takes the desert world, so there is always somewhere else to stand.
+    // ONE predicate, because six staging sites read it and a moon that is
+    // quiet for one of them is quiet for all of them — two copies is how five
+    // of the six kept staging on the Bastion after the first was fixed.
+    const quietMoon = (b, maxR = Infinity) => b.type === 'moon' && b.alive
+      && b.radius >= 40 && b.radius < maxR
+      && !b.fort && !(b.parent && b.parent.fort);
+    const aWorld = () => game.bodies.find((b) => quietMoon(b));
 
     // T15 — the three gates, and that a berth actually forms
     t('dock: three gates latch a berth', () => {
@@ -1056,9 +1072,19 @@ export function runMechTest(game, hooks, opts = {}) {
       game.docks = []; game.dock = null; game.home = null;
       // A moon big enough to host tier 0 but NOT tier 5, so both host-size
       // verdicts in this test are structural rather than luck of the seed.
-      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
-        && b.radius >= 40 && b.radius < 200);
-      expect(w, 'no mid-size moon to stage on');
+      // DERIVED FROM config.dockHostOk, not from a magic 200. The literal was
+      // the claim above stated as a guess, and it was only ever true by luck of
+      // WHICH moon came first: the 2026-08 lane pass moved the staging to a
+      // 132-radius moon, which clears the tier-5 line (0.55 x 132) comfortably,
+      // and the 'small' refusal this test exists to prove simply never fired.
+      // dockHostOk is `max(14, berthR(st) * 1.9) <= hostR * 0.55`, so this is
+      // that same expression solved for hostR at each end of the ladder.
+      const hostFloor = (tier) => Math.max(14,
+        berthR(shipStats({ ...game.prog, tier })) * 1.9) / 0.55;
+      let w = game.bodies.find((b) => quietMoon(b)
+        && b.radius >= hostFloor(0) && b.radius < hostFloor(5));
+      expect(w, `no moon between the tier-0 and tier-5 anchorage lines`
+        + ` (${Math.round(hostFloor(0))}-${Math.round(hostFloor(5))})`);
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth on clean ground');
       game.dock.t = CFG.DOCK_BUILD;          // wind the build on — see T16's note
@@ -1082,7 +1108,13 @@ export function runMechTest(game, hooks, opts = {}) {
       // COLLAPSE: blast the ground under the standing station. The station
       // must break — before this rule it floated on its build-time standoff
       // over the hole (the pad knows only the NOMINAL radius).
-      w.scars.push({ a: dk.ang, s: 2.5, t: game.time });
+      // Kept by reference, because scars[0] is NOT reliably the one this test
+      // just made: the autoland's 8 seconds of free sim above are long enough
+      // for ambient rock to crater the same moon, and then the seat below is
+      // built for a shallow wound somewhere else on the world entirely — which
+      // reads as "no gate at all" rather than as the staging problem it is.
+      const blast = { a: dk.ang, s: 2.5, t: game.time };
+      w.scars.push(blast);
       hooks.stepSim(2 / 60);
       expect(!game.docks.includes(dk), 'a station survived losing its ground');
       expect(!game.dock, 'the berth survived the collapse');
@@ -1092,8 +1124,27 @@ export function runMechTest(game, hooks, opts = {}) {
       // deeper than setDown's seat, so a nominal seat would hover over the
       // hole with no contact and the test would pass for the wrong reason
       // (no gate at all instead of 'crater').
+      //
+      // FROM A CLEAN RUN, not from the wreckage of the collapse above. The
+      // collapse leaves real state behind — the eviction lock on this very
+      // site (landing.lock), a drained latch, and a spent autoland still
+      // pointing at a dock that no longer exists — and a landing staged on top
+      // of all three measures whichever of them answers first, not the crater.
+      // It survived on the old lane spacing only because the moon this test
+      // happened to land on was forgiving; the 2026-08 lane pass moved the
+      // staging to a different moon and it started reporting "gate was ''" —
+      // no gate at all, which is the signature of a seat that never reached
+      // the ground. Everything above is asserted before this reset, so nothing
+      // is lost by starting the gate's own scenario clean.
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      w = game.bodies.find((b) => quietMoon(b)
+        && b.radius >= hostFloor(0) && b.radius < hostFloor(5));
+      expect(w, 'no mid-size moon to stage the crater gate on');
+      const blastA = 0.7;                              // any bearing; the wound is what matters
+      w.scars.push({ a: blastA, s: 2.5, t: game.time });
       {
-        const scarA = w.scars[0].a;                    // ride the spin with it
+        const scarA = blastA;                          // ride the spin with it
         for (let t = 0; t < CFG.DOCK_TIME + 0.6; t += 1 / 60) {
           if (!game.dock) {
             const ang = scarA + w.rot;
@@ -1109,6 +1160,12 @@ export function runMechTest(game, hooks, opts = {}) {
         }
       }
       expect(!game.dock, 'berthed inside a crater');
+      // Contact first, gate second — T15's rule. A seat that misses the ground
+      // reports "gate was ''", which reads as a missing crater gate when the
+      // hull is simply not touching the wound.
+      expect(game.dockCand === w, `staging lost contact: cand=${game.dockCand && game.dockCand.name}`
+        + ` dist=${Math.round(Math.hypot(s.x - w.x, s.y - w.y))}`
+        + ` surf=${Math.round(w.radius * scarSurfaceAt(w.scars, w.radius, blastA))} r=${Math.round(w.radius)}`);
       expect(game.dockGate === 'crater', `refusing gate was "${game.dockGate}", wanted "crater"`);
       w.scars.length = 0;
       // HOST SIZE: the same clean moon refuses a tier-5 hull outright —
@@ -1117,9 +1174,33 @@ export function runMechTest(game, hooks, opts = {}) {
       const wasTier = game.prog.tier;
       game.prog.tier = 5;
       game.st = shipStats(game.prog);
-      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
-      expect(!game.dock, 'a titan berthed on a world too small for its class');
-      expect(game.dockGate === 'small', `refusing gate was "${game.dockGate}", wanted "small"`);
+      // THE BIGGEST MOON STILL UNDER THE LINE, not the first one over 40. Both
+      // ends of this probe have to be structural and they pull in opposite
+      // directions: the gate needs a host BELOW hostFloor(5), while the harness
+      // needs one the tier-5 hull can physically REST on. setDown seats a hull
+      // `s.radius * 0.35` deep — 1.5 units at tier 0 but 23 at tier 5 — and on
+      // a moon barely wider than the hull that is not a contact, it is an
+      // impact: the resolver answers it with a multi-thousand-u/s separation
+      // (measured 222 out against a 198 contact line, inside one 1/60 step) and
+      // the gates spend the hold watching a ship crash rather than stand.
+      // ...AND WATCH FOR THE REFUSAL rather than sampling it at the end.
+      // 'small' is an INSTANT gate — it never fills the latch, so there is
+      // nothing to hold for — and whichever substep happens to be last can
+      // still be airborne. The claim is "it named the refusal while it was on
+      // the ground, and it never berthed".
+      const big = game.bodies.filter((b) => quietMoon(b) && b.radius < hostFloor(5))
+        .sort((a, b) => b.radius - a.radius)[0];
+      expect(big, `no moon under the tier-5 anchorage line (${Math.round(hostFloor(5))})`);
+      let sawSmall = false;
+      for (let t = 0; t < CFG.DOCK_TIME + 0.6; t += 1 / 60) {
+        if (!game.dock) setDown(big, 0);
+        hooks.stepSim(1 / 60);
+        if (game.dockGate === 'small') sawSmall = true;
+        expect(!game.dock, 'a titan berthed on a world too small for its class');
+      }
+      expect(sawSmall, `never named the 'small' refusal (last gate "${game.dockGate}",`
+        + ` hull ${Math.round(s.radius)} on a ${Math.round(big.radius)} moon,`
+        + ` line ${Math.round(hostFloor(5))})`);
       game.prog.tier = wasTier;
       game.st = shipStats(game.prog);
       return `autoland berthed at ${Math.round(pr + 300)}u out; collapse, crater and host-size gates all hold`;
@@ -1136,8 +1217,7 @@ export function runMechTest(game, hooks, opts = {}) {
       // Small enough that the far side is INSIDE CFG.AUTOLAND_R — otherwise the
       // distance gate would refuse first and this would pass for the wrong
       // reason, proving nothing about line of sight.
-      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
-        && b.radius >= 40 && b.radius * 2 + 60 < CFG.AUTOLAND_R);
+      const w = game.bodies.find((b) => quietMoon(b) && b.radius * 2 + 60 < CFG.AUTOLAND_R);
       expect(w, `no moon small enough for the far side to sit inside AUTOLAND_R ${CFG.AUTOLAND_R}`);
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth');
@@ -1172,8 +1252,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const s = game.ship;
       hooks.freshRun(0, seed);
       game.docks = []; game.dock = null; game.home = null;
-      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
-        && b.radius >= 40 && b.radius < 200);
+      const w = game.bodies.find((b) => quietMoon(b, 200));
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth');
       const dk = game.dock;
@@ -1220,8 +1299,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const s = game.ship;
       hooks.freshRun(0, seed);
       game.docks = []; game.dock = null; game.home = null;
-      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
-        && b.radius >= 40 && b.radius < 200);
+      const w = game.bodies.find((b) => quietMoon(b, 200));
       expect(w, 'no mid-size moon to stage on');
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth');
@@ -1286,8 +1364,7 @@ export function runMechTest(game, hooks, opts = {}) {
       const s = game.ship;
       hooks.freshRun(0, seed);
       game.docks = []; game.dock = null; game.home = null;
-      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
-        && b.radius >= 40 && b.radius < 200);
+      const w = game.bodies.find((b) => quietMoon(b, 200));
       expect(w, 'no mid-size moon to stage on');
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'setup: no berth');

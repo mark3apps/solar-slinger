@@ -76,7 +76,7 @@ Skills wrap the recurring procedures; subagents audit a diff against the rules i
 
 | Skill | For |
 |---|---|
-| `balance-test` | long-horizon sky stability — `window.soak` against the run's own start-of-soak census (17 planets; moons vary per seed, ~70-80) |
+| `balance-test` | long-horizon sky stability — `window.soak` against the run's own start-of-soak census (17 planets; moons vary per seed, ~64-71) |
 | `mechanics-test` | fast "did I break the game loop?" — the fixed-seed `window.mechTest` suite |
 | `playtest` | **the default way to drive the game** — Browser pane: park the ship, force the event, screenshot it |
 | `run-solar-slinger` | clean-machine setup + scripted/unattended runs (Electron driver, nothing visible) |
@@ -226,6 +226,11 @@ changing anything it touches.**
 5. Ship bounce kick is hard-capped at 200.
 6. `WORLD_R` exceeds every system's outermost reach — enforced by construction in `world.moonZone`,
    not by arithmetic redone by hand; star-anchored bodies are exempt from the boundary force.
+   `moonZone` bounds a family by THREE things now — the Hill radius, the room `WORLD_R` leaves, and
+   **the neighbouring lane** (`planet.moonRoom`, stamped by generateWorld's lane pass off
+   `CFG.MOON_LANE_SHARE`). The third is the local one: a Hill radius here is ~25% of the orbital
+   radius, so the first two let a family span five to eight lanes — 84% of all moons swept clean
+   across a foreign planet's disc. See the constant's note in config.js.
 7. Chunk shedding is gated, or it cascades — and every fragment system answers to one debris budget.
    7b. A split must not chain (no credit propagation, `chainOk`, `CHUNK_INERT`).
 8. A planet is its own durability class (flat `PLANET_HP_BASE` + gentle slope, not the mass curve).
@@ -519,6 +524,15 @@ Plus the three scaling rules that make a big debris cascade affordable:
   because the *relationships* between those numbers are what the content is built on. It moves
   distance only: sky speed is `sqrt(G*sunMass/r)`, so spreading the sky slows every orbit rather
   than keeping it (the sun's mass is the speed knob, and it is deliberately not recompensated).
+- **A LANE IS SPACED BY WHAT ITS FAMILY NEEDS** (`buildLayout`'s need pass, `world.familyReach`) —
+  the authored gap ladder is the FLOOR and the shape, and every span between two worlds is opened
+  until both their moon families fit inside `CFG.MOON_LANE_SHARE` of it. The authored gaps are
+  near-uniform while a family's reach is not (a ringed giant wants ~22,000 units, a small ice world
+  ~9,000), so uniform spacing over-serves the small worlds and starves the giants — the ones whose
+  families are the point. The ladder's length is therefore **EMERGENT**, which is why `CFG.BOUND`
+  sizes the boundary instead of `SYS`, and why the outer anchors (`world.LADDER_CAP`,
+  `FARSHOAL_R`) are fractions of `CFG.WORLD_R` rather than authored `SR()` distances.
+  Inner lanes barely move — the lava world still sits at ~7,500.
 - **A PLANET SYSTEM IS RARE, AND IT IS AN EVENT** — fewer worlds, each with a bigger entourage.
   Cuts come off the DUPLICATED archetypes only, never a unique ptype and never a landmark host
   (`PTYPE_COUNT` and "strip every gas giant" both count them). Moon counts and `MOON_ZONE_MUL` move
