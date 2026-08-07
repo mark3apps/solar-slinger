@@ -77,10 +77,6 @@
        crossed a row. hud.js fills and places it. -->
   <div id="abilOut" class="hidden"></div>
   <div id="combo" class="hidden"></div>
-  <!-- Achievement toasts stack here (hud.achToast pushes, each removes itself).
-       Its own channel, deliberately clear of #msg: a score notification must
-       never overwrite a hazard warning, or be overwritten by one. -->
-  <div id="achRail"></div>
   <canvas id="radar" width="200" height="200"></canvas>
   <!-- Docked into the radar's bezel (see #menuBtn in style.css): the button's
        box is the dial's, clipped to an arc, so the glyph needs its own node to
@@ -163,6 +159,16 @@
       </div>
     </div>
   </div>
+  <!-- Achievement toasts stack here (hud.achToast pushes, each removes itself).
+       Its own channel, deliberately clear of #msg: a score notification must
+       never overwrite a hazard warning, or be overwritten by one.
+       AFTER #bottomright ON PURPOSE: the rail's floor is that column's top
+       edge, taken with CSS anchor positioning rather than mirrored as a
+       number (see #achRail in style.css), and an anchor element has to PRECEDE
+       the box it positions. Moving this node back above the column silently
+       drops the rail onto its hard-coded fallback offset, which is blind to
+       the perf overlay stacked inside that same column. -->
+  <div id="achRail"></div>
   <div id="msg" class="hidden"></div>
 </div>
 

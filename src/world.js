@@ -4129,10 +4129,21 @@ export function replenishWorld(game, dt) {
     // MOONSHADOW is pure geometry with no player action required, so a world
     // whose moon already happens to sit aligned at spawn credits the
     // achievement for free — the same frame-one class PR #169 deleted
-    // elsewhere (maydaySeen, flareSeen). game.time floors it past that
-    // window the way visitorDone/mayday already do above, without touching
-    // the cooldown or the geometry a real eclipse relies on.
-    if (s.alive && game.time > 3) for (const p of game.bodies) {
+    // elsewhere (maydaySeen, flareSeen). A `game.time` floor does NOT close
+    // that, it only hides it from the frame-one sweep (issue #213): the
+    // alignment window is 2*asin(1.7*r_moon/r_orbit)/|w_moon - w_planet|,
+    // measured at a MINIMUM of 5.36s over 313 moons (median 28.1s), so no
+    // alignment in this sky is short enough to expire inside any floor short
+    // enough to be invisible — the freebie just landed a few seconds later,
+    // still with zero player action. The CREDIT is gated on the world being
+    // CHARTED instead, which is #180's other option and the real fix: charting
+    // is an act the player performed, and generateWorld's spawn-clearance
+    // search guarantees nothing is charted at spawn (it walks the start point
+    // out of every chartZoneR plus CHART_CLEAR_MARGIN, for exactly this class
+    // of freebie). The COSMETIC shadow is deliberately NOT gated — p.eclipseT
+    // must draw from t=0, or the first seconds of a real eclipse are invisible
+    // and the achievement rewards something the player was never shown.
+    if (s.alive) for (const p of game.bodies) {
       if (!p.alive || p.type !== 'planet') continue;
       if (p.eclipseCd > 0) p.eclipseCd -= 0.5;
       const d = Math.hypot(p.x - s.x, p.y - s.y);
@@ -4149,7 +4160,11 @@ export function replenishWorld(game, dt) {
         if (proj <= 0 || proj >= pr) continue;          // must sit between sun and planet
         if (Math.abs(mx * uy - my * ux) < m.radius * 1.7) {
           p.eclipseT = 1.2;                             // refreshed while aligned
-          if (!(p.eclipseCd > 0)) { p.eclipseCd = 90; game.eclipseName = p.name; }
+          // Credit (and the 90s cooldown that rations it) only once the world
+          // is charted — see the note above. The cooldown starts WITH the
+          // credit, never before it, or an uncharted alignment would burn the
+          // window the player's first real one is owed.
+          if (!(p.eclipseCd > 0) && game.charted[p.chartKey]) { p.eclipseCd = 90; game.eclipseName = p.name; }
           break;
         }
       }

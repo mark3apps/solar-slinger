@@ -2362,26 +2362,119 @@ body.preGame #radar { opacity: 0; }
 /* ---- Toast rail -----------------------------------------------------------
    Under the radar cluster on the right, well clear of #msg (bottom centre):
    an achievement must never be able to cover a hazard warning, or be covered
-   by one. Each toast animates itself in and out over its own lifetime; the
-   stack grows DOWNWARD so a new one never shifts the one you're reading.
+   by one. Each toast animates itself in and out over its own lifetime.
    It sits directly under the dial now that the menu button has moved onto the
-   bezel — the old top left a button-shaped hole in the cluster. */
+   bezel — the old top left a button-shaped hole in the cluster.
+
+   THE RAIL IS A BAND, AND IT IS ROUTINELY SHORTER THAN ITS OWN CONTENTS —
+   ceiling under the dial, floor on #bottomright's top edge — so WHICH END
+   CLIPS is the whole design. It is BOTTOM-ANCHORED and the stack grows UPWARD
+   (`justify-content: flex-end` against hud.js's appendChild): the toast that
+   just landed sits hard against the floor, fully drawn, and it is the OLDEST
+   that retires off the top. The `max-height` form this replaced was the exact
+   inverse — top-anchored, growing down into the ceiling — so the achievement
+   you had just earned was always the most-hidden one, and at the shell's own
+   minimum window the band is 4px and it was hidden ENTIRELY. That rect is also
+   hud.js's cheap `near` reject (railHover), so a clipped toast cannot be
+   hovered either, which quietly kills the hover-to-hold-open behaviour that is
+   the whole reason the lifetimes are driven from JS. The toast you cannot read
+   in five seconds has to be the one you have already read.
+   The cost is that an arrival nudges the older toasts up by one — a bounded
+   rail has to clip somewhere, and clipping the new one is not a choice. */
 #achRail {
-  position: absolute; top: 228px; right: 14px; z-index: 3;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-  /* BOUNDED AGAINST #shipPanel below. The two share the right edge, and
-     #shipPanel can run ~314px tall bottom-anchored 12px off the viewport at
-     the shell's own minimum window (960x600, electron/main.js) — a rail with
-     no ceiling paints its z-index:3 toasts straight over that z-index:0
-     canopy readout. A stack that would run into the panel clips instead of
-     burying it; the clipped toast is already mid-lifetime and fades on its
-     own regardless of whether it's visible. */
+  position: absolute; top: auto; right: 14px; z-index: 3;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: flex-end; gap: 8px;
+  /* FLOOR = #bottomright's TOP EDGE. The two share the right edge, and a rail
+     with no floor paints its z-index:3 toasts straight over that z-index:0
+     canopy readout. The literal is a FALLBACK ONLY: #bottomright is a column,
+     and the PERF OVERLAY stacks above #shipPanel inside it, so a hard-coded
+     panel height is a mirror of a number that moves — switch the debug readout
+     on and the overlap reopens. Where anchor positioning exists (the shipping
+     Electron shell, and every current browser) the rail measures the real
+     column instead; see the @supports below, which is also why #achRail now
+     sits AFTER #bottomright in index.html. */
+  bottom: calc(12px + 314px + 10px);
+  /* CEILING: the dial. The stack stops under the radar cluster rather than
+     climbing over the scan. It spells the column out because `anchor()` is
+     only valid in the inset properties, never in a sizing one — and that makes
+     it a HEIGHT measured off an ASSUMED floor, which is the whole of its
+     weakness: it only lands the stack's top on y228 while `bottom` is at its
+     nominal 336px. It is a limit on how far the stack may climb, NOT the thing
+     that keeps the rail off the panel; do not lean on it as a backstop. See
+     the measured table below for exactly what it does and does not buy. */
   max-height: calc(100vh - 228px - 12px - 314px - 10px);
+  /* ...EXCEPT THAT ONE WHOLE TOAST ALWAYS FITS. `min-height` beats
+     `max-height` in CSS, deliberately used here: at the shell's own minimum
+     window (960x600 -> a 960x568 viewport, electron/main.js) the radar
+     cluster's bezel runs to y252 while #shipPanel already starts at y242 —
+     those two overlap before the rail is even in the room — so the band the
+     ceiling leaves is FOUR PIXELS and the rule above would show a twentieth of
+     a toast. 102px is the tallest row in the 403-entry catalog ("Somewhere To
+     Come Back To", 100.4px) rounded up — measured, not counted: name and
+     description wrap independently, so text length does not order the rows.
+
+     WHAT IT COSTS, MEASURED (radar dial y12..212 at every size):
+
+       viewport   perf   rail box        over the dial
+       1440x868   off    y430..532 (1)   —
+       1440x868   off    y228..532 (4)   —
+       1280x688   off    y250..352 (1)   —
+       1280x688   off    y228..352 (4)   —
+        960x568   off    y130..232       82px
+       1440x868   ON     y338..440 (1)   —
+       1440x868   ON     y136..440 (4)   76px
+       1280x688   ON     y158..260 (1)   54px
+       1280x688   ON     y136..260 (4)   76px
+        960x568   ON     y38..140        102px — the whole rail, over the
+                                         dial's centre and its sweep
+
+     So it is NOT "one toast of the dial's lower edge, and never more than one"
+     — that was the first draft of this note and it is wrong twice over. At the
+     minimum window the band is PINNED at 102px whatever the burst (the ceiling
+     has already resolved to 4px, so min-height IS the height) and that 102px
+     lands on the dial's lower two-fifths, not its edge. And switching the perf
+     overlay on lifts the anchored floor ~92px; the ceiling is a height off an
+     assumed floor, so it rides up too instead of holding the line, and the
+     stack climbs with it — at 960x568 the rail clears the dial's bottom edge
+     entirely and sits across its middle.
+
+     It is bounded and it is not a functional break: `pointer-events: none`
+     below means clicks, the bezel buttons and the menu all still pass through,
+     the scan is obscured and never disabled, and the worst case lasts one
+     TOAST_DWELL (5.2s, hud.js). The alternative — clipping the achievement you
+     just earned down to 4px, where hud.js's railHover cannot even find it — is
+     worse. But the trade is "a burst can cover the dial for five seconds",
+     not "a sliver of its lower edge". */
+  min-height: 102px;
+  /* Clip VERTICALLY ONLY. Horizontally a toast slides in from +42px and wears
+     a 12px drop-shadow, and a box that clips both axes eats its own entrance.
+     `overflow: hidden` stays as the fallback for anything without `clip`:
+     over-clipping beats under-clipping here, because the overflow lands on the
+     radar. */
   overflow: hidden;
+  overflow: visible clip;
   /* NOT interactive. The rail sits in the middle of the play area, and a toast
      with real pointer-events would swallow the mousedown that starts a tractor
      grab. hud.js hit-tests the pointer against the toast rects instead. */
   pointer-events: none;
+}
+@supports (bottom: anchor(--brcol top)) {
+  #bottomright { anchor-name: --brcol; }
+  /* THE FALLBACK ARGUMENT IS LOAD-BEARING, and `@supports` is not a substitute
+     for it: the query tests that the GRAMMAR parses, never that the target
+     resolves. Let --brcol stop being resolvable — the column display:none'd,
+     renamed, or moved back above this node in the DOM, where an anchor cannot
+     be seen — and an `anchor()` with no fallback is invalid at computed-value
+     time, so `bottom` falls to `auto`. NOT back to the literal in the rule
+     above: the cascade replaced that declaration outright, so what is left is
+     the initial value and the rail drops to its static position, directly over
+     the radar. Verified in Chromium, not reasoned about.
+     The argument stands in for the ANCHOR'S OWN value, so it is the column's
+     top offset (its 12px bottom inset plus its 314px nominal height) and the
+     +10px gap stays outside it — which makes the two forms agree exactly at
+     336px, instead of one of them being a number to keep in step by hand. */
+  #achRail { bottom: calc(anchor(--brcol top, calc(12px + 314px)) + 10px); }
 }
 .actoast {
   --acc: var(--gold);
