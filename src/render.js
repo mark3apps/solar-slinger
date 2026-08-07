@@ -206,8 +206,12 @@ function beginFrame(game) {
 // also paint faint orbit guides that can be on-screen while the body itself
 // is not — those get their own geometric checks so nothing ever pops.
 function bodyOnScreen(b) {
-  // Vesper's anti-sunward tail reaches ~34x radius at full perihelion bloom
-  const m = (b.majorComet ? b.radius * 36 : b.comet ? b.radius * 10 : b.radius * 4) + 80;
+  // Vesper's anti-sunward tail reaches ~34x radius at full perihelion bloom.
+  // A STAR gets its own margin: the generic 4x is a bound over every sprite
+  // pass, but drawStar's envelope is known exactly (SUN_HALO), and at this
+  // radius the difference is a ~2,000-unit shell of pure waste.
+  const m = (b.type === 'star' ? b.radius * SUN_HALO
+    : b.majorComet ? b.radius * 36 : b.comet ? b.radius * 10 : b.radius * 4) + 80;
   if (b.x + m > view.x0 && b.x - m < view.x1 && b.y + m > view.y0 && b.y - m < view.y1) return true;
   if (b.onRails && b.rail && b.rail.parent.alive) {
     if (b.type === 'moon') {
@@ -225,6 +229,16 @@ function bodyOnScreen(b) {
     }
   }
   return false;
+}
+
+// Circle-vs-view, for the passes INSIDE a body that are each their own little
+// sprite — the sun's corona lobes and supergranules. bodyOnScreen answers "is
+// this body worth drawing"; on a 4,800-unit star that question is far too
+// coarse, because the answer is yes while nine tenths of its own detail sits
+// off the far side of a disc bigger than the screen. Four compares against a
+// createRadialGradient + arc + fill is a trade worth making every time.
+function circleOnScreen(cx, cy, r) {
+  return cx + r > view.x0 && cx - r < view.x1 && cy + r > view.y0 && cy - r < view.y1;
 }
 
 // The frame's world matrix, kept as three numbers (it is always a uniform
@@ -1686,6 +1700,18 @@ function drawRing(game, b, near) {
 // surface feature is placed in that ROTATING FRAME, or the granulation would
 // stream past stationary spots and the whole illusion would come apart.
 const SUN_SPIN = 0.0175;         // rad/s — a full turn in ~6 minutes
+// THE STAR'S DRAWN ENVELOPE, in radii — the corona gradient's outer stop, and
+// the outermost thing drawStar paints. Every other pass is inside it: the
+// corona lobes reach 3.02R (seated at <=1.62R with a <=1.40R tail), the
+// prominences 1.23R, the limb smear 1.10R.
+//
+// EXPORTED TO THE CULL ON PURPOSE. bodyOnScreen's generic margin is 4R + 80,
+// which for a 4,800-unit sun overshoots by ~2,000 units — a shell where the
+// star paints literally nothing (measured: a framebuffer diff at 17,500 units
+// came back zero) and still cost 0.13ms a frame, ~43% of the frame's whole
+// draw. Two of the four inner worlds sit in that shell. Read from one constant
+// so the cull can never drift wider than what is actually painted.
+const SUN_HALO = 3.6;
 const GRAN_PX = 256;             // baked tile resolution
 const GRAN_CELLS = 7;            // cells per tile side
 // Octave world spans. `span` is how wide one tile lands in world units, so a
@@ -1714,6 +1740,10 @@ const PROM_BANDS = [
   [0.46, 'rgba(255, 194, 104, 0.048)'],
   [0.24, 'rgba(255, 226, 152, 0.055)'],
 ];
+// Widest band's half-width, in radii — the inflation the prominence cull adds
+// to the ribbon's control hull. Derived from the table rather than typed, so
+// widening a band cannot leave the cull clipping the thing it widened.
+const PROM_W_MAX = 0.05 * Math.max(...PROM_BANDS.map(([w]) => w)) + 0.002;
 
 // Bake the convection tile once: a dark intergranular bed, cells ERASED out of
 // it (so the lanes are what is left, the way granulation actually reads), then
@@ -1815,7 +1845,7 @@ function drawStar(game, b) {
   // ---- CORONA. Many stops, not four: the old four-stop ramp printed visible
   // concentric BANDS across a body this large, which is a hard edge in world by
   // any other name. The falloff below is roughly exponential and reads smooth.
-  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * 3.6);
+  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * SUN_HALO);
   cg.addColorStop(0, b.color);
   cg.addColorStop(0.14, b.color + 'ee');
   cg.addColorStop(0.24, b.color + 'b0');
@@ -1826,9 +1856,17 @@ function drawStar(game, b) {
   cg.addColorStop(0.82, b.color + '0e');
   cg.addColorStop(1, 'transparent');
   ctx.fillStyle = cg;
-  ctx.beginPath(); ctx.arc(b.x, b.y, R * 3.6, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * SUN_HALO, 0, TAU); ctx.fill();
 
   ctx.globalCompositeOperation = 'lighter';
+
+  // EVERY PASS BELOW CULLS AGAINST THE VIEW. The limb pass (bottom of this
+  // function) has always walked only the arc the camera can see; nothing else
+  // did, so on a disc wider than the screen the star submitted its whole self —
+  // fifteen corona lobes, sixty-six prominence polygons, twenty-six
+  // supergranules and a full-disc pattern fill — however little of it landed.
+  // Each pass now tests its own exact extent, which is cheaper and tighter than
+  // one shared bearing window would be: they sit at very different radii.
 
   // ---- CORONAL STRUCTURE. The corona is not a fog, it is a SHAPE — it reaches
   // further where the field is open and hugs the limb where it is closed. Built
@@ -1848,6 +1886,10 @@ function drawStar(game, b) {
     const d = R * (0.95 + 0.55 * h2 + 0.12 * Math.sin(t * 0.06 + i));
     const br = R * (0.55 + 0.85 * h);
     const cx = b.x + Math.cos(a) * d, cy = b.y + Math.sin(a) * d;
+    // A lobe IS a circle — (cx, cy, br) is its exact extent, since the gradient
+    // reaches zero at br. So the cull is exact, not a bound, and from anywhere
+    // outside the corona all fifteen of these fall out for four compares each.
+    if (!circleOnScreen(cx, cy, br)) continue;
     // The tail has to fall off SMOOTHLY or the lobe prints its own circle: a
     // gradient that runs linearly to zero has a kink at its outer stop, and
     // where several overlap that kink reads as an arc drawn in the corona.
@@ -1890,6 +1932,14 @@ function drawStar(game, b) {
     const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
     const am = a0 + span / 2;
     const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
+    // SIX filled 30-point polygons hang off this loop, and on a body whose disc
+    // is wider than the screen most of the eleven loops are round the back. A
+    // quadratic Bezier is contained in the CONVEX HULL of its three control
+    // points, so the hull's box inflated by the widest band is an exact bound —
+    // no sampling, and it can never clip a ribbon it should have kept.
+    const pw = R * PROM_W_MAX;
+    if (Math.min(x0, x1, cxp) - pw > view.x1 || Math.max(x0, x1, cxp) + pw < view.x0
+      || Math.min(y0, y1, cyp) - pw > view.y1 || Math.max(y0, y1, cyp) + pw < view.y0) continue;
     const at = (k) => {   // point on the quadratic at parameter k
       const m = 1 - k;
       return [m * m * x0 + 2 * m * k * cxp + k * k * x1, m * m * y0 + 2 * m * k * cyp + k * k * y1];
@@ -1986,15 +2036,37 @@ function drawStar(game, b) {
       for (let n = 0; n < 2; n++) {
         const pat = granPats[(idx + n) % granPats.length];
         if (!pat) continue;
-        ctx.save();
-        ctx.translate(b.x, b.y);
         // Each bake also gets its own bearing, so a cross-fade is never two
         // layouts sitting on the same spot fading into one another.
-        ctx.rotate(rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09);
+        const ang = rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09;
+        // THE RECT IS THE WHOLE DISC, AND THE DISC IS BIGGER THAN THE SCREEN.
+        // -q..q spans the star; on the finest octave that is a 25,000-unit
+        // square of pattern fill to cover a view a tenth as wide. So the rect
+        // is cut down to the VIEW, mapped back through this bake's own
+        // rotate+scale. The pattern is anchored to the TRANSFORM, not to the
+        // rect, so a smaller rect shifts nothing — inside the photosphere clip
+        // the pixels are identical, there are just far fewer tiles to lay.
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        let lx0 = Infinity, ly0 = Infinity, lx1 = -Infinity, ly1 = -Infinity;
+        for (let ci = 0; ci < 4; ci++) {
+          const wx = (ci & 1 ? view.x1 : view.x0) - b.x;
+          const wy = (ci & 2 ? view.y1 : view.y0) - b.y;
+          const lx = (wx * ca + wy * sa) / s, ly = (wy * ca - wx * sa) / s;
+          if (lx < lx0) lx0 = lx;
+          if (lx > lx1) lx1 = lx;
+          if (ly < ly0) ly0 = ly;
+          if (ly > ly1) ly1 = ly;
+        }
+        const rx0 = Math.max(-q, lx0), ry0 = Math.max(-q, ly0);
+        const rx1 = Math.min(q, lx1), ry1 = Math.min(q, ly1);
+        if (rx1 <= rx0 || ry1 <= ry0) continue;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(ang);
         ctx.scale(s, s);
         ctx.globalAlpha = o.alpha * k * (n ? f : 1 - f);
         ctx.fillStyle = pat;
-        ctx.fillRect(-q, -q, q * 2, q * 2);
+        ctx.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
         ctx.restore();
       }
     }
@@ -2025,6 +2097,10 @@ function drawStar(game, b) {
       const swell = 0.5 + 0.5 * Math.sin(t * (0.03 + h2 * 0.03) + i * 2.1);
       const br = R * (dark ? 0.22 + 0.20 * h2 : 0.14 + 0.13 * h2) * (0.75 + 0.35 * swell);
       const al = (dark ? 0.13 : 0.26) * (0.45 + 0.55 * swell);
+      // Exact, like the corona lobes: the gradient reaches zero at br, so a
+      // cell that misses the view contributes nothing. Half of them are round
+      // the back of the disc at any close range.
+      if (!circleOnScreen(bx, by, br)) continue;
       const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
       g.addColorStop(0, dark ? `rgba(196, 96, 22, ${al})` : `rgba(255, 250, 226, ${al})`);
       g.addColorStop(0.5, dark ? `rgba(204, 108, 30, ${al * 0.5})` : `rgba(255, 208, 128, ${al * 0.5})`);
