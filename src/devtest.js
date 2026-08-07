@@ -869,7 +869,16 @@ export function runMechTest(game, hooks, opts = {}) {
     // A radius-proportional seat is deep enough that 0.4s of gravity and surface
     // friction cannot lift the hull clear, at every tier, so contact is a
     // CONSTANT of these tests and the thing under test is the gate.
-    const setDown = (world, upOff = 0) => {
+    // AN ABSOLUTE BEARING IS NOT A FIXED SPOT ON A SPINNING WORLD. `at` is an
+    // optional pad record ({b, ang, rf}) to seat AGAINST: without it the hull
+    // goes down at absolute bearing 0, which is what every other staging site
+    // wants and is exactly what it always did; with it the seat rides the pad's
+    // LIVE bearing — `d.ang + world.rot`, padPos's own expression. A test that
+    // measures a DISTANCE FROM ITS PAD needs the second form, because a hull
+    // pinned to bearing 0 while the world turns under it walks away from that
+    // pad at |spin| x radius for free, and the test then bills the fixture's
+    // drift to the ship. See T18f, which spent half its budget that way.
+    const setDown = (world, upOff = 0, at = null) => {
       // ONE PRIMING FRAME FIRST — the hull must be staged against LIVE state,
       // not worldgen's. Straight off freshRun the ship is still the factory
       // hull (entities.Ship radius 9) until update() snaps it to st.radius
@@ -885,13 +894,15 @@ export function runMechTest(game, hooks, opts = {}) {
       // draws columns once, it does not loosen them.
       hooks.stepSim(1 / 60);
       const s = game.ship;
-      s.x = world.x + (world.radius + s.radius - Math.max(1.5, s.radius * 0.35));
-      s.y = world.y;
+      const up = at ? at.ang + world.rot : 0;   // outward bearing of the seat point
+      const seat = world.radius + s.radius - Math.max(1.5, s.radius * 0.35);
+      s.x = world.x + Math.cos(up) * seat;
+      s.y = world.y + Math.sin(up) * seat;
       const sv = surfaceVel(world, s.x, s.y);
       s.vx = sv.vx; s.vy = sv.vy; s.spin = 0; s.alive = true;
-      s.angle = upOff;                       // 0 = straight up off this contact point
+      s.angle = up + upOff;                  // upOff 0 = straight up off this contact point
       game.cam.x = s.x; game.cam.y = s.y;
-      aimAt(upOff);
+      aimAt(up + upOff);
     };
     // HOLD IT DOWN while the gates are read, instead of seating it once and
     // hoping. Seating alone puts the hull just inside the surface and the
@@ -908,9 +919,9 @@ export function runMechTest(game, hooks, opts = {}) {
     // model of the thing being tested — a pilot holds the ship against the
     // surface on thrust — and it stops at the berth, because from there the
     // clamps own the hull and that is exactly what the next tests check.
-    const holdDown = (world, upOff, seconds) => {
+    const holdDown = (world, upOff, seconds, at = null) => {
       for (let t = 0; t < seconds; t += 1 / 60) {
-        if (!game.dock) setDown(world, upOff);
+        if (!game.dock) setDown(world, upOff, at);
         hooks.stepSim(1 / 60);
       }
     };
@@ -1351,8 +1362,11 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(!game.docks.includes(dk), 'setup: the dome survived a killing blow');
       expect(!game.dock, 'setup: still berthed after the collapse');
       // STILL ON THE GROUND, every gate held, for three times DOCK_TIME. The
-      // ship never lifts — so nothing may be built here.
-      holdDown(w, 0, CFG.DOCK_TIME + 1.0);
+      // ship never lifts — so nothing may be built here. Held ON THE DEAD PAD
+      // (`dk`), not at a fixed absolute bearing: everything below this line is
+      // measured as a distance from that pad, and a hull the world turns out
+      // from under is not "the ship never lifts".
+      holdDown(w, 0, CFG.DOCK_TIME + 1.0, dk);
       expect(game.docks.length === 0,
         `${game.docks.length} station(s) rebuilt in their own rubble without the ship ever leaving`);
       expect(!game.dock, 'berthed at a station rebuilt in its own rubble');
@@ -1377,19 +1391,69 @@ export function runMechTest(game, hooks, opts = {}) {
         game.cam.x = s.x; game.cam.y = s.y;
         hooks.stepSim(1 / 60);
       };
-      for (let i = 0; i < 3; i++) { hop(); holdDown(w, 0, CFG.DOCK_TIME + 0.4); }
+      for (let i = 0; i < 3; i++) { hop(); holdDown(w, 0, CFG.DOCK_TIME + 0.4, dk); }
       expect(game.docks.length === 0,
         `${game.docks.length} station(s) rebuilt after a momentary bounce — a frame off the surface is not a departure`);
       expect(!game.dock, 'a bounce off the rubble handed the berth back');
+      // A NUDGE IS NOT A DEPARTURE EITHER — the case the hop above cannot
+      // reach, because a hop is teleported back down within one substep. A
+      // collapse KICKS the hull (up to 200 u/s, and the pad's pin is gone with
+      // the station), and a moon's ship-felt pull is small enough that even a
+      // 30 u/s nudge straight up is over a second of hang time while the hull
+      // travels a handful of units and falls back onto the crater it was
+      // evicted from. A grace measured in SECONDS lets that straight back in;
+      // one measured in DISTANCE does not. The two expects before the hold are
+      // PREMISE checks: they assert the coast really was long enough to clear
+      // the old stopwatch and short enough to still be the same site, so this
+      // can never pass by simply failing to be the hard case.
+      const up = Math.atan2(s.y - w.y, s.x - w.x);
+      const nsv = surfaceVel(w, s.x, s.y);
+      s.vx = nsv.vx + Math.cos(up) * 30; s.vy = nsv.vy + Math.sin(up) * 30;
+      let air = 0, far = 0;                  // seconds off the surface / units from the dead pad
+      for (let i = 0; i < 600; i++) {        // coast; local gravity brings it back
+        hooks.stepSim(1 / 60);
+        game.cam.x = s.x; game.cam.y = s.y;
+        // Straight off the collapsed record's own padPos — the SAME expression
+        // updateDock's eviction test measures against, so the premise and the
+        // code under test can never disagree about where the hull is. padPos
+        // cancels the moon's ORBIT; what cancels its SPIN is that the holds
+        // above seat the hull on `dk` rather than at a fixed absolute bearing.
+        // Both halves are needed: seated absolutely, the pad walks out from
+        // under the hull at |spin| x radius (5.6 u/s on this moon) and the
+        // post-collapse sim billed ~47u of pure fixture drift on top of the
+        // ~9u the nudge actually flies — over half the 90u premise spent by a
+        // ship that had not moved, one extra hold away from tipping, and
+        // when it tipped the failure accused the eviction rule, not the
+        // fixture. Measured surface-locally instead it would still read ~9u,
+        // but updateDock would go on seeing the drifted 56u, so the premise
+        // would be describing a hull that was not where the code under test
+        // thought it was — the drift has to be removed, not hidden.
+        const pp = padPos(dk);
+        far = Math.max(far, Math.hypot(s.x - pp.x, s.y - pp.y));
+        if (Math.hypot(s.x - w.x, s.y - w.y) - (w.radius + s.radius) > 0.5) air += 1 / 60;
+        else if (air > 0) break;             // back on the ground
+      }
+      expect(air > CFG.DOCK_TIME / CFG.DOCK_DRAIN,
+        `the nudge bought only ${air.toFixed(2)}s of air, inside the old ${(CFG.DOCK_TIME / CFG.DOCK_DRAIN).toFixed(2)}s grace — it proves nothing`);
+      expect(far < CFG.DOCK_BERTH_R,
+        `the nudge carried the hull ${far.toFixed(0)}u from the dead pad, past its own ${CFG.DOCK_BERTH_R}u — that is a real departure, not a bounce`);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6, dk);
+      expect(game.docks.length === 0,
+        `${game.docks.length} station(s) rebuilt after a ${air.toFixed(2)}s ballistic nudge that never left the dead pad's own ${CFG.DOCK_BERTH_R}u (peak ${far.toFixed(0)}u)`);
+      expect(!game.dock, 'a ballistic nudge off the rubble handed the berth back');
+      expect(game.dockGate === 'rubble', `refusing gate was "${game.dockGate}", wanted "rubble"`);
       // THE LEGITIMATE REBUILD: leave, come back, build again — a NEW station
-      // with a full pool and a build clock that starts at zero.
+      // with a full pool and a build clock that starts at zero. This half is
+      // what stops "make the eviction permanent" from being a passing answer to
+      // everything above it.
       liftClear(w);
       holdDown(w, 0, CFG.DOCK_TIME + 0.6);
       expect(game.dock, 'a rebuild after genuinely lifting clear was refused too — the eviction never lifts');
       expect(game.dock.hp === CFG.DOCK_SHIELD,
         `the rebuilt station carries hp ${game.dock.hp}, wanted a fresh ${CFG.DOCK_SHIELD}`);
       expect(game.dock.t < CFG.DOCK_BUILD, 'the rebuilt station arrived already finished');
-      return 'no rebuild in the rubble, bounces included; rebuild after lifting clear still pays DOCK_BUILD';
+      return `no rebuild in the rubble, bounces and a ${air.toFixed(2)}s/${far.toFixed(0)}u nudge included;`
+        + ' rebuild after lifting clear still pays DOCK_BUILD';
     });
 
     // T18g — THE AUTOLAND MUST NOT CAPTURE A SHIP THAT IS WORKING. `handsOn`

@@ -406,8 +406,18 @@ Plus the three scaling rules that make a big debris cascade affordable:
   when it runs out the STATION breaks with it (`breakDock`) — and **the site is EVICTED**: losing a
   station under you clears the landing latch AND locks that world's spot until the hull is genuinely
   off the ground (`landing.lock`, refused as the `'rubble'` gate), or the ship rebuilds a full pool
-  on the same spot on the very next substep without ever leaving. "Genuinely" is the BERTH'S OWN
-  grace, `DOCK_TIME / DOCK_DRAIN` — a dome dies under fire, so one frame of lost contact is a bounce,
+  on the same spot on the very next substep without ever leaving. **"Genuinely" is a DISPLACEMENT,
+  NEVER A STOPWATCH**: off the ground AND outside the dead pad's own `DOCK_BERTH_R`, measured through
+  `padPos` so the question is asked in the site's own frame. Seconds of air only answer "has the hull
+  left this site" through the host's gravity, and that is neither uniform nor large: bare `G*m/r²`
+  over the 67 moons runs 0.56–114.5 u/s² (median 3.16), and the number that actually sets hang time
+  is the SHIP-FELT pull — worlds reach the ship through `PLANET_GRAV_SHIP` (×12), so the staging
+  moon pulls at ~53 u/s² where the bare figure is 3.7 (SURFACE WEIGHT never enters: its peak is ≤ 1
+  for every moon). Even there a 30 u/s nudge coasts 1.2s and lifts the hull 9 units — seven times
+  the old 0.17s grace, spent falling back into the crater it was evicted from. The bigger the kick
+  the more it clears, and that is fine: the 200 u/s cap throws the hull thousands of units up, which
+  is a real departure. The contact half keeps the property the grace was there for: a
+  dome dies under fire, so one frame of lost contact is a bounce,
   not a departure. Damage drains it and the overflow of the
   killing blow still reaches the hull on that same call (no free frame, the ram's rule). Plus
   `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull never self-heals". The dome also
