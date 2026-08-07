@@ -8847,6 +8847,9 @@ const MINIMAP_NEAR = MINIMAP_RANGE / 2;              // inner half, unchanged sc
 const MINIMAP_FAR = MINIMAP_NEAR + MINIMAP_RANGE;    // outer half at half scale
 const MINIMAP_SWEEP_T = 7;                           // seconds per sweep revolution
 const MINIMAP_PING_T = 1.1;                          // how long an outer contact lingers
+// Scratch layer for the world discs' scan half — see drawWorldDiscs. Sized to
+// the radar's backing store and reused, never per-frame allocated.
+let discCv = null, discCx = null;
 const RADAR_SIZE = 200;   // CSS px of the #radar canvas (positioned + tilted by style.css)
 // Offscreen cache for the dense-field dot layer (see the bake in drawMinimap)
 let dotCanvas = null, dotCtx = null, dotBakeT = -1, dotBakeFx = 0, dotBakeFy = 0, dotBakeSeen = 0;
@@ -8985,6 +8988,43 @@ function drawMinimap(game) {
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
   };
+  // A BODY THAT OVERRUNS THE DIAL FADES OUT, IT DOES NOT GET GUILLOTINED.
+  // Big discs (the sun, and now every world at true size) routinely reach past
+  // the rim, and the dial clip alone ends them on a hard circular cut — which
+  // reads as the body having a straight edge there rather than as the RADAR
+  // running out of range. This paints them through a radial ramp centred on
+  // the dial, so what is in range shows at full strength and only the last
+  // sliver softens away. Same reason the world boundary is weather and not a
+  // stroke: the instrument's limit is not a feature of the thing it is showing.
+  // The same warped circle as a reusable Path2D — a world's disc is now filled
+  // MANY times per frame (once per sweep wedge, below), and rebuilding a
+  // 97-point path for each of those is the whole cost of the effect.
+  const HAS_PATH2D = typeof Path2D === 'function';
+  const worldCirclePath2D = (wx, wy, wr) => {
+    const p = new Path2D();
+    for (let i = 0; i <= 96; i++) {
+      const a = (i / 96) * TAU;
+      const dx = wx + Math.cos(a) * wr - fx, dy = wy + Math.sin(a) * wr - fy;
+      const d = Math.hypot(dx, dy) || 1;
+      const rr = radarR(d);
+      const x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
+      if (i === 0) p.moveTo(x, y); else p.lineTo(x, y);
+    }
+    return p;
+  };
+  const DISC_SOLID = 0.86;              // fraction of the rim that stays full
+  const discFill = (c2, col, a) => {
+    const [tr, tg, tb] = tintOf(col);
+    const rgb = `${Math.round(tr * 255)},${Math.round(tg * 255)},${Math.round(tb * 255)}`;
+    const gr = c2.createRadialGradient(cx, cy, 0, cx, cy, rim);
+    gr.addColorStop(0, `rgba(${rgb},${a})`);
+    gr.addColorStop(DISC_SOLID, `rgba(${rgb},${a})`);
+    gr.addColorStop(1, `rgba(${rgb},0)`);
+    return gr;
+  };
+  // Worlds whose SCAN half still has to be painted — filled by the contact
+  // loop, drained by drawWorldDiscs below.
+  const discQueue = [];
 
   // Dark well with a faint lit horizon toward the top
   const bg = ctx.createRadialGradient(cx, cy - r * 0.6, r * 0.2, cx, cy, r);
@@ -9086,12 +9126,12 @@ function drawMinimap(game) {
     // and a full ~15,600-body walk per frame the moment it does not.
     const sun = frameReg(game).stars.find(b => b.alive);
     if (sun && dSun - sun.radius < MINIMAP_FAR) {
-      ctx.fillStyle = 'rgba(255, 200, 105, 0.28)';
+      // No rim stroke (user call): an outline is an ANNOTATION, and it drew a
+      // hard edge exactly where the dial's own limit was already cutting the
+      // disc — so the sun read as a bordered token laid on the radar rather
+      // than as light the scan is picking up. The wash alone is the body.
+      ctx.fillStyle = discFill(ctx, '#ffc869', 0.28);
       worldCirclePath(sun.x, sun.y, sun.radius); ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 226, 150, 0.75)';
-      ctx.lineWidth = 1.5;
-      worldCirclePath(sun.x, sun.y, sun.radius); ctx.stroke();
-      ctx.lineWidth = 1;
     }
   }
 
@@ -9117,6 +9157,38 @@ function drawMinimap(game) {
     let lag = sweepAng - Math.atan2(dy, dx);
     lag %= TAU; if (lag < 0) lag += TAU;
     return lag * MINIMAP_SWEEP_T / TAU;
+  };
+  // ...AND THE SAME THING FOR A BODY THAT IS A REGION RATHER THAN A POINT.
+  // A contact drawn at true size SUBTENDS AN ARC, and asking when the beam
+  // "touched it" has to mean when the beam touched ANY of it. Reading the
+  // centre bearing alone is the identical mistake the dense-field loop below
+  // documents — "one shared age made a pocket this wide strobe as a single
+  // slab" — and on a world it is worse, because the disc is one object: parked
+  // beside a giant that spans 120° of the dial, the whole thing blinked on
+  // only as the beam crossed its CENTRE, and showed nothing while the beam was
+  // physically sitting on its near edge.
+  //
+  // So the age is measured from the arc, not the point: it is ZERO for as long
+  // as the sweep is anywhere within the body's own angular span, and only then
+  // starts counting from the span's trailing edge. A point-like body has a span
+  // of ~0 and comes out exactly where sweepAge left it, which is why this can
+  // safely serve the whole contact loop.
+  const sweepAgeOf = (dx, dy, radius) => {
+    let lag = sweepAng - Math.atan2(dy, dx);
+    lag %= TAU; if (lag < 0) lag += TAU;
+    let half = 0;
+    if (radius > 0) {
+      const d = Math.hypot(dx, dy) || 1;
+      // Guard before the asin: under ~1.1° of arc this is a pip and the whole
+      // correction is below a pixel, so the trig is skipped for almost every
+      // contact on the dial. Inside the body (radius >= d) the ship is under it
+      // and every bearing is its bearing.
+      if (radius >= d) half = Math.PI;
+      else if (radius > d * 0.02) half = Math.asin(radius / d);
+    }
+    if (half > 0 && lag >= TAU - half) return 0;   // beam already inside the leading edge
+    const a = lag - half;
+    return a <= 0 ? 0 : a * MINIMAP_SWEEP_T / TAU;
   };
   // INNER half: a blip FLARES as the beam crosses its bearing, then cools until
   // the next pass — the radar reads as actively scanning, not as a static chart.
@@ -9286,8 +9358,22 @@ function drawMinimap(game) {
     if (ion > 0 && Math.random() < ion * 0.82) continue;
     const dx = b.x - fx, dy = b.y - fy;
     const d = Math.hypot(dx, dy) || 1;
-    if (d > MINIMAP_FAR) continue;                 // beyond radar range
-    const outer = d > MINIMAP_NEAR;
+    // RANGE IS TO THE NEAREST EDGE, NOT THE CENTRE — for anything drawn at true
+    // size. A world is up to 1,935 units across, so culling on its centre made
+    // a giant POP out of the dial while a third of its disc was still solidly
+    // inside radar range (user call: the part that is over the line "should
+    // show fully"). The sun's own draw above has always measured this way; this
+    // is the same rule, now that worlds are discs too. Everything still drawn
+    // as a pip keeps the plain centre test.
+    // A WORLD IS A REGION ON EVERY TEST THE DIAL MAKES, not just this one: its
+    // range is to the NEAREST EDGE (here and for the inner/outer band below),
+    // and its sweep age is taken over its whole arc (sweepAgeOf). Reading any
+    // one of the three off the centre puts a planet in the wrong half of the
+    // dial, or pops it out of range, or strobes it — all while the disc the
+    // player is looking at plainly straddles the line in question.
+    const edge = b.type === 'planet' ? Math.max(0, d - b.radius) : d;
+    if (edge > MINIMAP_FAR) continue;              // beyond radar range
+    const outer = edge > MINIMAP_NEAR;
     // Fog of war: a body is IDENTIFIED once it has come within sensor range
     // (b.seen, set by the replenishWorld scan). Unexplored contacts have no
     // place on the chart half of the dial at all; in the scan half they come
@@ -9300,8 +9386,25 @@ function drawMinimap(game) {
     if (!b.seen && (!outer || b.hidden ||
       (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue' &&
         b.type !== 'station' && b.type !== 'nest' && !b.comet && !b.visitor))) continue;
-    const alpha = outer ? sweepPing(sweepAge(dx, dy)) : sweepFlare(sweepAge(dx, dy));
-    if (alpha <= 0.01) continue;
+    const age = sweepAgeOf(dx, dy, b.type === 'planet' ? b.radius : 0);
+    // A DISC STRADDLES THE SCALE BREAK, SO IT TAKES BOTH RULES AT ONCE (user
+    // call). The dial is two instruments sharing one face: inside MINIMAP_NEAR
+    // it is a chart and a contact PERSISTS, outside it is a scan and a contact
+    // exists only for MINIMAP_PING_T after the beam touches it. A point can
+    // only ever be in one of those halves, so a single alpha was always enough
+    // — but a world at true size is routinely in BOTH, and picking one rule for
+    // the whole body is wrong at one end of it no matter which rule you pick:
+    // the near half blinks out with the ping, or the far half never fades.
+    // So the disc is drawn twice under complementary clips, each half taking
+    // its own half's rule. `outer` still decides everything a PIP does.
+    const aIn = sweepFlare(age), aOut = sweepPing(age);
+    const asDisc = b.type === 'planet' && b.seen &&
+      (radarR(d + b.radius) - radarR(Math.max(0, d - b.radius))) / 2 >= 2.5;
+    const alpha = outer ? aOut : aIn;
+    // A disc reaching inside the break always has something to show (the flare
+    // has a floor), so it is only skippable when it is wholly in the scan half
+    // AND that half has gone dark.
+    if (asDisc ? (outer && aOut <= 0.01) : alpha <= 0.01) continue;
     const rr = radarR(d);
     let x = cx + (dx / d) * rr, y = cy + (dy / d) * rr;
     if (ion > 0) {   // the survivors smear off their true bearing
@@ -9328,7 +9431,44 @@ function drawMinimap(game) {
         : b.ember > 0.01 && Math.sin(game.time * 4) > 0 ? '#ff8040' : b.color;
       ctx.shadowColor = col;
       ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, TAU); ctx.fill();
+      // A WORLD IS DRAWN AT ITS TRUE SIZE (2026-08 user call), exactly like the
+      // sun above and for the same reason: a flat 2.5px pip said a 359-unit
+      // rock and a 1,935-unit giant were the same object. That was survivable
+      // when a world was a place you flew past; it is not now that its RADIUS
+      // is what decides whether you can land on it, take off from it again, or
+      // whip around it — SURFACE WEIGHT keys the whole ladder off size, so the
+      // one instrument you fly the approach on has to show it. Range 5200 over
+      // a 91px dial makes this genuinely legible: Pyrris reads ~6px, Corve ~20,
+      // Vashtar ~34.
+      // Sampled through the piecewise warp (worldCirclePath), so a disc
+      // straddling the scale break is drawn pinched, as the dial's own geometry
+      // says it must be — and the dial clip keeps an over-rim world from
+      // spilling, which is what preserves "the scan shows nothing past its rim".
+      if (asDisc && HAS_PATH2D) {
+        // A WASH, NOT A DISC WITH A BORDER (user call — same reasoning as the
+        // sun above). A filled blob would also bury every contact drawn over
+        // it, which is the other half of why the alpha stays low.
+        const disc = worldCirclePath2D(b.x, b.y, b.radius);
+        // THE INNER HALF IS A CHART: it persists, so it is one fill at the
+        // region flare — the beam brightens it as it crosses but never takes
+        // it away. Nothing is drawn if the world does not reach inside the
+        // break; the clip decides that, so no geometry test is needed.
+        ctx.save();
+        ctx.beginPath(); ctx.arc(cx, cy, mid, 0, TAU); ctx.clip();
+        ctx.globalAlpha = aIn;
+        ctx.fillStyle = discFill(ctx, col, 0.34);
+        ctx.fill(disc);
+        ctx.restore();
+        // ...and the SCAN half is deferred to one masked pass (drawWorldDiscs,
+        // after this loop) so the beam wipes across it per PIXEL.
+        if (!outer || aOut > 0.0001) discQueue.push({ path: disc, col });
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = col;                  // restore for the fort marker below
+      } else {
+        // Floor: out in the half-scale band a small world would sink under the
+        // blip size and read as a moon. The pip IS the old behaviour.
+        ctx.beginPath(); ctx.arc(x, y, 2.5, 0, TAU); ctx.fill();
+      }
       if (b.fort) { ctx.strokeStyle = '#78c8ff'; ctx.lineWidth = 1; ctx.strokeRect(x - 4, y - 4, 8, 8); }
     } else if (b.type === 'moon' && b.fort) {
       ctx.shadowColor = '#78c8ff';
@@ -9382,6 +9522,71 @@ function drawMinimap(game) {
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
+
+  // THE SCAN HALF OF EVERY WORLD DISC, IN ONE MASKED PASS.
+  //
+  // The beam has to wipe ACROSS a world rather than light all of it at once —
+  // a giant spans up to 77° of the dial from close range, so the beam is
+  // physically on its near edge for most of a second before it reaches the far
+  // one. The dense-field loop learned the same thing ("one shared age made a
+  // pocket this wide strobe as a single slab") and answered it per rock,
+  // because a field IS many objects. A world is one object, so the answer is a
+  // MASK (user call): the sweep carries its own alpha ramp, and the disc's own
+  // alpha is multiplied by it.
+  //
+  // Done as a composite rather than as angular wedges — which is what this
+  // first was — for three reasons: it is per-PIXEL instead of per-4°, it costs
+  // one mask and one blit for the WHOLE sky instead of ~20 clipped fills per
+  // world, and the disc keeps its radial rim fade, which a conic fillStyle
+  // could not have carried at the same time.
+  if (discQueue.length && HAS_PATH2D) {
+    const px = Math.max(1, Math.round(RADAR_SIZE * rdpr));
+    if (!discCv || discCv.width !== px) {
+      discCv = document.createElement('canvas');
+      discCv.width = discCv.height = px;
+      discCx = discCv.getContext('2d');
+    }
+    if (discCx) {
+      discCx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+      discCx.clearRect(0, 0, RADAR_SIZE, RADAR_SIZE);
+      // 1. the discs, at their own (radially faded) alpha
+      for (const q of discQueue) {
+        discCx.fillStyle = discFill(discCx, q.col, 0.34);
+        discCx.fill(q.path);
+      }
+      // 2. multiply in the SWEEP'S OWN alpha ramp. The conic runs from the beam
+      // (t=0) the whole way round, so a bearing's parameter t maps to an age of
+      // (1-t) x SWEEP_T — bright just BEHIND the beam, dark everywhere the beam
+      // has not reached since. The stops walk sweepPing's own k² curve so the
+      // mask and the pip fade are the same function, not two that resemble
+      // each other.
+      if (discCx.createConicGradient) {
+        const m = discCx.createConicGradient(sweepAng, cx, cy);
+        const t0 = 1 - MINIMAP_PING_T / MINIMAP_SWEEP_T;   // where the tail dies
+        m.addColorStop(0, 'rgba(0,0,0,0)');
+        m.addColorStop(t0, 'rgba(0,0,0,0)');
+        for (let i = 1; i <= 4; i++) {
+          const u = i / 4;                                  // 0..1 along the tail
+          m.addColorStop(t0 + (1 - t0) * u, `rgba(0,0,0,${(u * u).toFixed(3)})`);
+        }
+        discCx.globalCompositeOperation = 'destination-in';
+        discCx.fillStyle = m;
+        discCx.fillRect(0, 0, RADAR_SIZE, RADAR_SIZE);
+        discCx.globalCompositeOperation = 'source-over';
+      }
+      // 3. blit, clipped to the scan annulus — the chart half was already
+      // painted inline and must not be masked.
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, TAU);
+      ctx.arc(cx, cy, mid, 0, TAU, true);          // reversed winding = hole
+      ctx.clip();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(discCv, 0, 0);
+      ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+      ctx.restore();
+    }
+  }
 
   // The revealed-but-uncharted Wanderer's Star pins to the rim like the sun
   // does — the relay's promise, pointing the pilgrimage. Retires once charted

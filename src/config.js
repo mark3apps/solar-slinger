@@ -241,35 +241,107 @@ export const CFG = {
   // close-range gravity. Applies only on the ship's gravity path (and its
   // mirror in predictPaths — keep them in sync); thrown rocks, aliens,
   // debris, and celestials are untouched.
-  SHIP_WELL_START: 2.5,
+  // MOVED 2.5 -> 5 with SHIP_SURF_END, which it must equal (see that constant
+  // for the widening and why). The far field is the cost: the 1/r boost now
+  // starts at 5 radii instead of 2.5, so a distant world's tug is roughly
+  // halved at a given range. That is paid for many times over by the ramp
+  // below it, which now carries real pull all the way out to the handoff
+  // instead of dying at 2.5 radii.
+  SHIP_WELL_START: 5,
   SHIP_WELL_MAX: 6,
   // SURFACE WEIGHT (ship only): inside SHIP_SURF_END body radii the ship-felt
-  // pull of a world ramps up toward the surface by up to radius/SHIP_SURF_REF
-  // (capped at SHIP_SURF_MAX). 2026-08 user call: "it should be semi difficult
-  // to launch straight up from a planet ... strong on the larger planets, not
-  // a straight pull across the board." The world-scale pass grew radii without
-  // masses, so surface g came out FLAT-TO-BACKWARDS across the sky (big worlds
-  // ~24 u/s², small dense ones ~47, thrust 180 — every launch a 7x-overpowered
-  // hop). This claws surface pull back in proportion to how big the world
-  // LOOKS: at REF 390 the largest giant peaks ~5.2x (surface g ~125, a real
-  // fight against thrust 180 but always escapable), mid worlds ~2-3x, worlds
-  // at/below REF and ALL moons are untouched (peak <= 1 never amplifies).
-  // SHIP_SURF_END deliberately equals SHIP_WELL_START so this hands off
-  // exactly where LONG ARMS begins — no overlap, no gap, and past 2.5 radii
-  // (cruise, slingshots, approach) nothing changes. Ship-only like the rest
-  // of this family, and MIRRORED in predictPaths.accelAt (keep in sync).
-  // SHIP_CULL_K needs no term for this: the boost exists only within 2.5
-  // radii, where a world's unboosted pull is orders of magnitude above the
-  // cull threshold — it can never rescue a culled attractor.
-  SHIP_SURF_REF: 390,
-  // COUPLED TO SHIP_CULL_K (physics.js): the ship cull's headroom is sized by
-  // SHIP_WELL_MAX (6), and this cap being <= that is the exact guarantee that
-  // no attractor the surface boost could matter for is ever culled. Raise it
-  // past SHIP_WELL_MAX and SHIP_CULL_K needs a max() of the two.
-  SHIP_SURF_MAX: 6,
+  // pull of a world ramps up toward the surface by (radius/SHIP_SURF_REF)^POW,
+  // capped at SHIP_SURF_MAX. Worlds at/below REF and ALL moons are untouched
+  // (peak <= 1 never amplifies) — the lodestar keeps its character, which is
+  // the point: it already gets its bite honestly, from mMul 4.5 / rMul 0.5.
+  // The one shared expression is `surfWeight` below; sim and forecast both
+  // call it, so the mirror cannot drift.
+  //
+  // WHY A POWER LAW AND NOT A MULTIPLIER (2026-08 user call: "the gravity that
+  // planets put out still doesn't really seem to have much affect on ships even
+  // though we keep increasing it ... the lode moon does a much better job and
+  // it has less gravity than a planet"). The complaint is exactly right and
+  // PLANET_GRAV_SHIP was never the lever. Surface pull is GM/R², the world-
+  // scale pass grew R 5.25x with M untouched, so surface g fell ~28x — and a
+  // FLAT multiplier lifts the whole curve without changing its SHAPE, which is
+  // why doubling it twice barely moved the feel. A lodestar (R 76, surface g
+  // 781) beat the largest gas giant (R 1935, surface g 128) sixfold for
+  // exactly this reason: its well is narrow and STEEP where a planet's is wide
+  // and FLAT. The exponent is what restores steepness in proportion to how big
+  // the world is, i.e. it undoes the 1/R² erosion the growth pass caused
+  // instead of papering over it.
+  //
+  // MEASURED LADDER at REF 400 / POW 2.05 / MAX 12 (seed 12345, ship-felt
+  // surface g, VERIFIED by flying it — physics.shipSurfG plus a full-burn
+  // straight-up lift test at each tier):
+  //   Pyrris     R  359 ->  23   (peak <= 1, untouched)
+  //   Nivelle    R  592 ->  46
+  //   Lagune     R  620 ->  59
+  //   Wold       R  718 -> 106
+  //   Pell       R  914 -> 146
+  //   Kyrast     R 1214 -> 193  } the gate: over tier-0 thrust (180), so a
+  //   Corve      R 1166 -> 198  } fresh ship CANNOT lift off these
+  //   Ullur      R 1882 -> 225  } ballistically — measured, it sits on the
+  //   Maelgor    R 1386 -> 276  } deck at full burn and does not rise
+  //   Vashtar    R 1935 -> 310  } (hits MAX)
+  // That ladder IS the feature (2026-08 user call: "we also want to make it so
+  // that ships can't just escape especially a large planet by just shooting
+  // straight out. (unless from a lander)"). The five biggest worlds are a hard
+  // gate at tier 0 — the way off one is a pad launch (LAUNCH_KICK scales with
+  // the well, below) or a gravity assist — and tiering up buys the ability to
+  // burn off unaided. Small worlds and every moon are deliberately unchanged.
+  //
+  // TWO CEILINGS BOUND `MAX`, AND BOTH ARE EASY TO MISS.
+  //   THRUST. The engine channel is SCOUT-ONLY (tunedThrusters), so a hauler
+  //     or brawler tops out at 180 + 30 x tier = 330, NOT the 900 a maxed
+  //     scout reaches. MAX 12 puts the deepest world at 310, under 330, so
+  //     tier 5 walks off everything for EVERY spec — measured. Size this
+  //     against 330 and never against the scout's 900, or two thirds of the
+  //     roster is permanently stranded on the giants.
+  //   THE SPEED CEILING. maxSpeed is 280 and the governor holds the ship to it
+  //     OUTSIDE a well, so a world whose near-field circular speed far exceeds
+  //     280 can only ever CAPTURE the ship — it cannot be arrived at fast
+  //     enough to fly past. At MAX 24 that was every close pass of a giant
+  //     (measured: periapsis 0 at every impact parameter under 4 radii, no
+  //     unbound band at all, i.e. the slingshot this pass exists to create was
+  //     impossible). At 12 the band is back: a Vashtar pass at 2.8 radii peaks
+  //     at 1.8x the entry speed and leaves. The well and the speed ceiling are
+  //     ONE system — moving either alone re-tunes the other.
+  //
+  // A THIRD CEILING, on the LANDABLE worlds only: a settled ship drifts at
+  // g_surface / SURF_FRICTION and DOCK_SPEED (60) is the berth's gate, so a
+  // world you can berth on may not exceed ~270 here (270/4.5 = 60). The two
+  // worlds above that are both gas giants, which have no berth at all (the
+  // ship flies in). Measured drift on the deepest LANDABLE world, Corve: 44,
+  // inside 60 with room. Re-check whenever SURF_FRICTION, DOCK_SPEED or the
+  // world-size ladder moves — a solid world pushed past ~270 becomes quietly
+  // un-landable, which is this feature's silent failure mode.
+  SHIP_SURF_REF: 400,
+  SHIP_SURF_POW: 2.05,
+  // NOT coupled to SHIP_WELL_MAX any more (it was, at 6). The guarantee that
+  // SHIP_CULL_K needs is NOT "cap <= SHIP_WELL_MAX" — it is that the boost
+  // lives only inside SHIP_SURF_END radii, where a world's UNBOOSTED pull is
+  // already ~250x the GRAV_CULL_A threshold. No value of this cap can rescue a
+  // culled attractor, so it is free to exceed the long-arm cap.
+  SHIP_SURF_MAX: 12,
   // Must stay > 1 — the ramp normalizes by (SHIP_SURF_END - 1), i.e. "fades
   // from the surface out"; at exactly 1 it divides by zero.
-  SHIP_SURF_END: 2.5,
+  // Still deliberately equal to SHIP_WELL_START: this hands off exactly where
+  // LONG ARMS begins — no overlap, no gap, and past it nothing changes.
+  //
+  // WIDENED 2.5 -> 5 (2026-08, the slingshot pass; SHIP_WELL_START moved with
+  // it to hold the handoff). The surface value is untouched — t is 1 at the
+  // surface either way, so the escape gate above is unaffected — but the well
+  // it sits in was a CLIFF, and a cliff cannot sling. At 2.5 the ramp fell
+  // from the full peak to nothing across 1.5 radii, so a pass was binary:
+  // MEASURED on Vashtar, an impact parameter of 2.5 radii fell all the way in
+  // and 3.5 radii sailed by barely bent (270 -> 267 u/s), with no band in
+  // between. At 5 the gradient is spread over 4 radii and the band exists —
+  // 4.2 radii gives a 2.8-radius periapsis and 1.8x the entry speed, 5 gives a
+  // gentler 1.3x, under 4 still captures. THAT SPREAD IS THE SKILL GRADIENT,
+  // and it is the whole of what "we want to be able to slingshot using a
+  // planets gravity" asked for.
+  SHIP_SURF_END: 5,
   // ORBIT RUBBER BAND (ship only): inside SHIP_BAND_RANGE body radii (+300)
   // of a world, the INWARD radial component of the ship's velocity relative
   // to that world is damped by up to SHIP_BAND_DAMP/s (accel capped at
@@ -294,7 +366,79 @@ export const CFG = {
   // softening on the way in, which is the case the band was written for.
   // Kept rather than deleted: killing it outright makes every near-miss a
   // hyperbolic slingshot and there is no capture arc left at all.
+  //
+  // ...AND THE PLUNGE CASE IS NOW EXPLICITLY REVERSED (2026-08 user call: "we
+  // want to be able to slingshot using a planets gravity and right now we
+  // can't"). Softening a 200 u/s plunge is not a bonus, it IS the bug: the
+  // band was the single largest reason a planet felt inert while a lodestar
+  // did not, and the reason is that its reach is measured in BODY RADII. At
+  // RANGE 4 that is 6,105 units of approach corridor on the largest giant but
+  // 604 on a lodestar, so a 200 u/s inbound spent 40+ SECONDS inside a
+  // planet's band and under 3 inside a lodestar's — the same 0.3/s compounding
+  // to e^-12 on one and e^-0.9 on the other. MEASURED on one identical flyby
+  // of Vashtar: band on, the plunge collapses 252 -> 42 u/s at 2.9 radii and
+  // the ship parks in a slow bound orbit; band off, it holds and peaks at 555.
+  // The band was eating the entire whip.
+  //
+  // Two bounds make it the LANDING softener its comment always claimed it was,
+  // and nothing more. Both live in `shipBand`/`bandFade` below so the sim and
+  // the predictPaths mirror read one expression:
+  //   ALTITUDE CAP (SHIP_BAND_ALT). The ramp spans an altitude above the
+  //     surface, capped absolutely — so the corridor is a skin on a giant and
+  //     unchanged on a lodestar (whose radii-based span is already inside it).
+  //     This is what stops the reach from scaling with the thing it damages.
+  //   SPEED FADE (SHIP_BAND_SOFT/HARD). Full damping under SOFT inbound, none
+  //     over HARD. A settling descent is softened; a plunge, a flyby and a
+  //     slingshot are not touched at all. This is the direct inverse of the
+  //     paragraph above it, and it is the user's call, not a re-derivation.
   SHIP_BAND_RANGE: 4,
+  SHIP_BAND_ALT: 700,      // u — hard ceiling on the ramp's altitude span
+  // WIDENED 80/260 -> 120/460 (2026-08 user call: "it now becomes really
+  // difficult to land safely on a planet as tier zero, you kinda just crash
+  // and die"). The original pair was sized to keep the band off a SLINGSHOT,
+  // but that job is not actually the speed fade's — the band only ever damps
+  // INWARD RADIAL motion, and a slingshot is by definition TANGENTIAL (its vR
+  // is ~0 at the periapsis that matters), so the radial gate already excludes
+  // it for free. What the narrow fade actually excluded was the fast DESCENT,
+  // which is the one case the band exists for: a drop of half a radius onto
+  // Corve arrives at 366 u/s, far outside a 260 cutoff, so the cushion was
+  // fully off at exactly the moment it was needed. At 460 that same descent
+  // gets a partial cushion and a gentler one gets most of it, while a genuine
+  // dive still outruns it. This is the PASSIVE half of the landing
+  // forgiveness; SHIP_BRAKE_* below is the active half and does the real work.
+  SHIP_BAND_SOFT: 120,     // u/s inbound — at or under this, full damping
+  SHIP_BAND_HARD: 460,     // u/s inbound — at or over this, none at all
+
+  // ---- LANDING: THE RETRO ASSIST (CFG.SHIP_BRAKE_*) -----------------------
+  // A BURN AGAINST A DESCENT FIGHTS THE WORLD, NOT THE WORLD PLUS YOUR WEIGHT.
+  // While the ship is falling toward a world AND thrusting away from it, it
+  // gets extra outward authority worth up to SHIP_BRAKE_G x that world's local
+  // pull — so the deceleration you get is set by your engine, not by the
+  // difference between your engine and a gravity that may exceed it.
+  //
+  // THIS EXISTS BECAUSE THE ESCAPE GATE CUTS BOTH WAYS, and that was a genuine
+  // oversight in the pass that added it. SURFACE WEIGHT deliberately puts the
+  // five biggest worlds' surface pull OVER tier-0 thrust (Corve 198 vs 180) so
+  // a fresh ship cannot take off ballistically — but the SAME inequality says
+  // a fresh ship cannot arrest a descent either, so landing there was not
+  // difficult, it was IMPOSSIBLE: measured, an unpowered drop of half a radius
+  // onto Corve touches down at 366 u/s and takes 101 of 120 hull. "You kinda
+  // just crash and die" (user) was the literal, unavoidable outcome.
+  //
+  // THE ASYMMETRY IS THE WHOLE DESIGN, and it is what lets the gate survive:
+  // the assist is gated on INWARD radial motion and fades out as that motion
+  // stops (SHIP_BRAKE_REF), so it can null a descent and can never lift you.
+  // It is also strictly DISSIPATIVE — an outward force through a downward
+  // displacement does negative work — so it removes energy from a fall and can
+  // never add any to a climb. Hover-bobbing on it is possible and harmless;
+  // climbing away on it is not possible at all. Take-off is untouched, because
+  // a climbing ship has vR <= 0 and gets nothing.
+  //
+  // NOT MIRRORED in predictPaths, and correctly so — the same reason the
+  // autoland and surface friction are not: it exists only UNDER THRUST, and
+  // the forecast draws the ballistic path of a ship that is not thrusting.
+  SHIP_BRAKE_G: 1.0,       // × the world's local pull a retro burn can cancel
+  SHIP_BRAKE_REF: 45,      // u/s inbound at which the assist reaches full strength
   SHIP_BAND_DAMP: 0.3,
   SHIP_BAND_MAX: 130,
   // SURFACE SKIMMING: grinding tangentially along a body while in contact
@@ -382,12 +526,28 @@ export const CFG = {
   DOCK_SPEED: 60,          // u/s of SURFACE-RELATIVE speed that still reads as
                            //   stopped. Under SKIM_SPEED (100) on purpose:
                            //   anything still GRINDING is not parked.
-  DOCK_TIME: 0.5,          // s all three gates must hold before the clamps bite
+  // 2.0 s, was 0.5 (2026-08 user call: "we also need to make it so that the
+  // initial 'Landing' time is longer, I accidentally start creating a lander
+  // too easily now"). THE GATES STAY GENEROUS — this is not a retreat from the
+  // note above, which is about how tight the approach WINDOW is. What changed
+  // is that berthing is no longer something a landing can do by ACCIDENT.
+  // Half a second of three gates happening to be true is a duration a bounce,
+  // a skid or a botched arrival can satisfy on its own, and the cost of that
+  // false positive is not small: bare ground starts a STATION BUILD, which
+  // commits the player to ten exposed seconds they did not ask for and plants
+  // a permanent structure on the wrong world. Two seconds cannot be reached
+  // without deliberately parking. The approach is exactly as forgiving as it
+  // was; only the COMMITMENT now has to be meant.
+  DOCK_TIME: 2.0,          // s all three gates must hold before the clamps bite
   // The latch timer DRAINS this many times faster than it fills once the hull
   // leaves the surface, which is the whole of the berth's hysteresis: a berthed
-  // ship gets DOCK_TIME / DOCK_DRAIN (~0.17s) of grace so a bump across a
+  // ship gets DOCK_TIME / DOCK_DRAIN (~0.67s) of grace so a bump across a
   // crater lip cannot flicker the clamps, and a deliberate lift-off still
-  // reads as leaving almost at once.
+  // reads as leaving almost at once. That grace rides DOCK_TIME, so it grew
+  // with it (0.17s -> 0.67s) — which is the SAFE direction on both of its two
+  // users: a longer bump-tolerance for a berthed ship, and a longer hold on
+  // the post-collapse site lock (landing.lock), which exists to stop a station
+  // rebuilding on the spot it just died on.
   //
   // ATTITUDE AND STILLNESS ARE ENTRY GATES, NOT HOLDING ONES — only CONTACT
   // holds a berth. (The ship is held UPRIGHT while berthed anyway, so the
@@ -509,6 +669,24 @@ export const CFG = {
   LAUNCH_KICK: 300,        // u/s straight up as the clamps release — the shove
                            //   off the pad, so a launch clears the structure
                            //   without needing the player to fight gravity
+  // ...AND ON A HEAVY WORLD THE PAD IS THE WAY OFF IT (2026-08 user call:
+  // ships "can't just escape especially a large planet by just shooting
+  // straight out. (unless from a lander)"). SURFACE WEIGHT now puts the five
+  // biggest worlds' surface pull OVER tier-0 thrust, so on those the flat 300
+  // is no longer a courtesy shove — it is the difference between a station
+  // being an exit and being a trap. The kick therefore takes the LARGER of the
+  // flat number and LAUNCH_ESC_K x the world's own ship-felt escape velocity
+  // (config.launchKick, off physics' measured surface g), so a pad always
+  // clears the well it is built in, at any world size and any tier.
+  //
+  // 0.72 is sized against the CLIMB, not the escape: the kick only has to
+  // carry the hull up to where the SURFACE WEIGHT ramp has faded enough for
+  // the engine to walk away from it. A full 1.0 would fling the ship clear of
+  // the system. MEASURED with the throttle held OFF the whole way, so this is
+  // the kick alone: off Corve (surface g 198) it coasts to 2.35 radii, off
+  // Kyrast (193) to 3.3 — and at 2.35 radii the pull is down to ~25 u/s²
+  // against a tier-0 thrust of 180. The pad is an exit at every world size.
+  LAUNCH_ESC_K: 0.72,
   // ---- The berth vista (main.js cinematic zoom) ---------------------------
   // A FINISHED station pulls the camera out so a berth is a moment to survey
   // the neighbourhood — the world you built on, its moons, whatever is inbound.
@@ -1051,6 +1229,28 @@ export const CFG = {
   // the bleed, the hard cap, AND the flow-relative reference; keep all in sync.
   SPEED_BLEED: 1.6,
   SPEED_HARD: 1.9,
+  // THE WELL SETS THE LOCAL SPEED LIMIT (SHIP_WELL_CAP, ship only). The
+  // governor's ceiling is `max(maxSpeed, WELL_CAP x the ship-felt circular
+  // speed of the dominant world at this point)` — physics.wellSpeedCap.
+  //
+  // Without this a deep well is not merely unfelt, it is UNUSABLE, and that is
+  // a structural bug rather than a tuning one: orbitalFlow is the SUN's
+  // circular velocity, so it knows nothing about the world you are next to. A
+  // circular orbit just over a giant's cloud tops needs ~1,000 u/s and the tier
+  // ceiling is 280 — so the moment the well got deep enough to feel, the
+  // governor forbade the only speed that survives it. Every close pass would
+  // decay into a fall. It also silently kills CLOUD SKIMMING (a documented
+  // feature) and, with it, the whole slingshot: the whip's payoff is speed the
+  // bleed exists to remove.
+  //
+  // Scoping it to the well is what keeps it honest — the raised ceiling exists
+  // only where gravity itself justifies it, and it falls off with the pull.
+  // MEASURED on Vashtar, the deepest world in the sky (R 1935, surface g 310):
+  // 774 u/s at the cloud tops, 595 at 1.5 radii, 481 at 2, 329 at 3, and back
+  // under the tier cap (280) by ~3.5 — so it can never be carried across the
+  // system. What carries OUT of the well is the sling credit below, which is
+  // bounded and decaying — exactly as before.
+  SHIP_WELL_CAP: 1.0,
   // GRAVITY SLING CREDIT (2026-08 user call: "up the max rate at which being
   // slung by gravity can propel your velocity ... it should still come down
   // to the normal tier but speed increased due to gravity should fall off
@@ -1074,8 +1274,43 @@ export const CFG = {
   // and climbing out accrues nothing since gravity work turns negative.
   // predictPaths mirrors the elevated cap (frozen at the current credit —
   // it decays too slowly for the forecast to lie).
-  SLING_MAX: 1.0,          // × maxSpeed of extra ceiling a sling can bank
-  SLING_DECAY: 0.12,       // 1/s — the slow falloff; tier cap is the floor
+  // RE-TUNED with the well cap above (2026-08, same slingshot pass). The
+  // credit's job changed: it no longer has to hold the ship up THROUGH the
+  // encounter (SHIP_WELL_CAP does that now) — it has to carry the payoff OUT
+  // of the well, which is a different clock. At 0.12/s the half-life is 5.8s
+  // against a giant flyby that MEASURES 60-130s, so everything banked on the
+  // plunge had already decayed to nothing by periapsis and the assist arrived
+  // worth ~0. 0.06 is a ~11.6s half-life: the credit outlives the climb out
+  // and then spends itself over the following half-minute, which is what "it
+  // should still come down to the normal tier but speed increased due to
+  // gravity should fall off slower than other speed increases" asked for.
+  // MAX 1.5 (was 1.0) because a real giant assist now banks more than the old
+  // ceiling could hold, and clipping it there would silently cap the payoff of
+  // the biggest wells at the value of the smallest.
+  SLING_MAX: 1.5,          // × maxSpeed of extra ceiling a sling can bank
+  SLING_DECAY: 0.06,       // 1/s — the slow falloff; tier cap is the floor
+  // THE PERPENDICULAR BONUS (2026-08 user call: "give a bigger bonus to flying
+  // perpendicular to the gravity. AKA slingshoting"). The accrual above banks
+  // `g · v̂` — gravity's component ALONG the track — which is maximal when you
+  // are falling straight in and, as its own note admits, "at periapsis gravity
+  // runs perpendicular to the track and accrues nothing". So the credit was
+  // rewarding the DIVE and paying nothing for the whip, which is backwards
+  // from both the physics and the fantasy: a gravity assist is the TURN, and
+  // the turn happens where the velocity is perpendicular to the pull.
+  //
+  // This adds the other component, `|g x v̂|` — gravity's PERPENDICULAR part,
+  // i.e. |g|·sin(angle between track and pull) — at SLING_PERP of its rate. It
+  // peaks exactly where the old term goes to zero: deep in a well, flying
+  // across the pull rather than along it. The two together mean the plunge
+  // still builds the speed and the periapsis now banks the allowance to keep
+  // it, which is the manoeuvre the player is actually being asked to fly.
+  //
+  // Bounded by the same tier-cap ceiling and spent by the same decay, so this
+  // widens WHERE credit comes from, never how much of it there can be. A
+  // steady low orbit does bank the maximum over time — that is genuinely
+  // "flying perpendicular to the gravity", it costs time in a deep well, and
+  // SLING_MAX still caps the payout.
+  SLING_PERP: 0.6,         // × the perpendicular rate, banked as credit
 
   // Fair-view normalization: cam.zoom is scaled by the canvas diagonal so
   // EVERY window sees the same world extent — a small screen renders the
@@ -4562,3 +4797,50 @@ export function shipStats(prog) {
 // (History: flat 1.35 + 0.125·ab, rank1 1.475 -> rank6 2.1.)
 export const burnCap = (ab) => 1.475 + 0.065 * (ab - 1);   // × maxSpeed while burning
 export const burnThrust = (ab) => 1.75 + 0.175 * ab;        // × thrust while burning
+
+// ---- The ship-felt world well: the four expressions the forecast mirrors ----
+// physics.js has TWO gravity paths for the ship — the flown one (gravityAt,
+// the rubber band, the governor in step) and the DRAWN one (predictPaths'
+// accelAt and its own band/governor mirrors). They must agree exactly or the
+// trajectory line lies about the flight. Every previous member of this family
+// was written out twice with a "keep in sync" comment, which is the
+// mirror-drift trap dockDomeR's law names. These live here, once.
+
+// SURFACE WEIGHT's multiplier at distance `d` from the centre of a world of
+// radius `R`. 1 below the reference size and outside the ramp — callers can
+// apply it unconditionally. See CFG.SHIP_SURF_* for the ladder it produces
+// and why the exponent (not a flat multiplier) is the lever.
+export function surfWeight(R, d) {
+  const peak = Math.min(CFG.SHIP_SURF_MAX, Math.pow(R / CFG.SHIP_SURF_REF, CFG.SHIP_SURF_POW));
+  if (peak <= 1) return 1;
+  // t clamped BOTH ways: the upper clamp holds the full peak at and inside the
+  // surface (a berthed or dived ship), the lower guards a SHIP_SURF_END tuned
+  // below SHIP_WELL_START from UNDER-weighting the gap instead of leaving it be.
+  const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / R) / (CFG.SHIP_SURF_END - 1)));
+  return 1 + (peak - 1) * t;
+}
+
+// ORBIT RUBBER BAND geometry: the outer radius of the band around a world of
+// radius `R`. The altitude span is capped absolutely (CFG.SHIP_BAND_ALT) —
+// that cap is the whole fix, see the note on SHIP_BAND_RANGE.
+export const shipBand = (R) =>
+  R + Math.min(CFG.SHIP_BAND_ALT, R * (CFG.SHIP_BAND_RANGE - 1) + 300);
+
+// ...and its SPEED fade: 1 at or under SOFT inbound, 0 at or over HARD. A
+// settling descent is softened, a plunge/flyby/slingshot is left alone.
+export function bandFade(vR) {
+  if (vR <= CFG.SHIP_BAND_SOFT) return 1;
+  if (vR >= CFG.SHIP_BAND_HARD) return 0;
+  return (CFG.SHIP_BAND_HARD - vR) / (CFG.SHIP_BAND_HARD - CFG.SHIP_BAND_SOFT);
+}
+
+// THE WELL SETS THE LOCAL SPEED LIMIT: the governor's ceiling contribution
+// from a world pulling at `g` u/s² at distance `d`, i.e. the ship-felt
+// circular-orbit speed there. Callers take max() against the tier ceiling.
+export const wellCapAt = (g, d) => CFG.SHIP_WELL_CAP * Math.sqrt(g * d);
+
+// The pad's shove, given the world's ship-felt surface pull and radius. Takes
+// the larger of the flat kick and a fraction of the local escape velocity, so
+// a station is an exit at every world size — see CFG.LAUNCH_ESC_K.
+export const launchKick = (gSurf, R) =>
+  Math.max(CFG.LAUNCH_KICK, CFG.LAUNCH_ESC_K * Math.sqrt(2 * gSurf * R));

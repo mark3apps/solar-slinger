@@ -379,6 +379,30 @@ export const ACHIEVEMENTS = [
     (g, s) => s.slingBest >= 400),
   A('slingHuge', 'flight', PTS.hard, 'Catapult', 'Take 800 speed out of a single slingshot.',
     (g, s) => s.slingBest >= 800),
+  // THE THREE FEATS OF A WELL-FLOWN WELL. `slingBest` above measures the GAIN;
+  // these measure what the gain was FOR (the speed you left with), what it
+  // cost (how close you shaved), and the opposite discipline entirely (putting
+  // the hull down gently). All three ride stats that only bank on a clean,
+  // gaining pass — see main.js — except `softLand`, which is read at the
+  // substep contact begins, before surface friction touches the velocity.
+  A('slingSpeed', 'flight', PTS.tricky, 'Off The Rails',
+    'Leave a slingshot doing 500 — faster than your engine can hold on its own.',
+    (g, s) => s.slingExitSpd >= 500),
+  A('slingSpeedBig', 'flight', PTS.brutal, 'Thrown',
+    'Leave a slingshot doing 650. The well threw you; the engine just watched.',
+    (g, s) => s.slingExitSpd >= 650),
+  A('closePass', 'flight', PTS.tricky, 'Paint Scraper',
+    'Slingshot a world passing within 250 units of its surface.',
+    (g, s) => s.closePass !== undefined && s.closePass <= 250),
+  A('closePassHair', 'flight', PTS.brutal, 'Hairline',
+    'Slingshot a world passing within 120 units of its surface. Clean, and without touching.',
+    (g, s) => s.closePass !== undefined && s.closePass <= 120),
+  A('softLand', 'flight', PTS.normal, 'Feather',
+    'Touch down on a world at under 20 — a landing, not an arrival.',
+    (g, s) => s.softLand !== undefined && s.softLand <= 20),
+  A('softLandPerfect', 'flight', PTS.hard, 'Kiss The Ground',
+    'Touch down at under 6. The hull barely knows it happened.',
+    (g, s) => s.softLand !== undefined && s.softLand <= 6),
   A('dist50k', 'flight', PTS.easy, 'Cross Country', 'Fly 50,000 units.',
     (g, s) => s.dist >= 50000),
   A('dist250k', 'flight', PTS.tricky, 'Long Haul', 'Fly 250,000 units.',

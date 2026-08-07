@@ -1,6 +1,7 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR, dockHostOk,
   burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
+  surfWeight, shipBand, bandFade, wellCapAt, launchKick,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -12,7 +13,7 @@ import {
   surfaceVel, padPos, placeName,
 } from './util.js';
 import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
-import { bump, best, noteKill } from './achievements.js';
+import { bump, best, least, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
 import * as sfx from './sfx.js';
@@ -125,6 +126,50 @@ function orbitalFlow(game, x, y) {
   const sr = Math.max(sun.radius, Math.hypot(rx, ry));
   const v = Math.sqrt(CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass / sr);
   return { vx: (-ry / sr) * v, vy: (rx / sr) * v };   // CCW/prograde unit tangent x speed
+}
+
+// THE WELL SETS THE LOCAL SPEED LIMIT (CFG.SHIP_WELL_CAP): the ceiling a
+// world's own gravity justifies at this point — its ship-felt circular-orbit
+// speed. The governor takes max(tier ceiling, this), so close passes, cloud
+// skims and slingshots are flyable inside a deep well while the tier ceiling
+// still governs everywhere else. Read the constant's note for why a deep well
+// is UNUSABLE without it: orbitalFlow is the SUN's circular velocity and knows
+// nothing about the world you are next to, so a giant's cloud tops need ~1,000
+// u/s of orbit against a 280 ceiling and every close pass decays into a fall.
+//
+// Takes the MAX over worlds rather than a sum: this is "which well am I in",
+// and two wells overlapping does not make the local orbit faster. Reads the
+// same ship-felt weighting gravityAt does (surface ramp included), so the
+// ceiling tracks the pull exactly — including 1/r², which is what keeps it
+// local: already back under the tier cap by 2.5 radii on the largest giant.
+// A world's ship-felt pull AT ITS SURFACE — the same product gravityAt builds
+// (SHIP_GRAV x PLANET_GRAV_SHIP x the surface ramp x GM/d²), which is why it
+// sits next to wellSpeedCap rather than in config: config owns the shape, this
+// owns the reading. The launch kick sizes itself off it.
+export function shipSurfG(b) {
+  const d2 = b.radius * b.radius + SOFT2;
+  const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, b.radius);
+  return (w * CFG.G * b.mass) / d2;
+}
+
+function wellSpeedCap(attractors, x, y) {
+  let best = 0;
+  for (const b of attractors) {
+    if (!b.alive) continue;
+    if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
+    const dx = b.x - x, dy = b.y - y;
+    const d2 = dx * dx + dy * dy + SOFT2;
+    if (d2 > b.cullShip2) continue;
+    const d = Math.sqrt(d2);
+    // Only the near field can ever raise the ceiling, so the long-arm branch
+    // is deliberately absent — past SHIP_SURF_END this term is already well
+    // under maxSpeed and adding the 1/r boost would stretch it across the sky.
+    if (d > b.radius * CFG.SHIP_SURF_END) continue;
+    const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, d);
+    const cap = wellCapAt((w * CFG.G * b.mass) / d2, d);
+    if (cap > best) best = cap;
+  }
+  return best;
 }
 
 // Collision credit taxonomy (drives scrap + fling growth):
@@ -1720,7 +1765,13 @@ export const GRAV_CULL_K = CFG.G / GRAV_CULL_A;   // predictPaths mirrors the sa
 // The SHIP's cutoff must be far more conservative: its felt pull is scaled by
 // SHIP_GRAV × PLANET_GRAV_SHIP and LONG ARMS can boost a far world's tug by
 // up to SHIP_WELL_MAX — so its cull range is widened by exactly that worst
-// case, keeping every attractor the ship could feel above GRAV_CULL_A. The
+// case, keeping every attractor the ship could feel above GRAV_CULL_A.
+// SURFACE WEIGHT needs no term here even though its cap (SHIP_SURF_MAX 24)
+// now exceeds SHIP_WELL_MAX: that boost exists ONLY inside SHIP_SURF_END
+// radii, where a world's unboosted pull is already ~250× GRAV_CULL_A, so no
+// value of it can rescue a culled attractor. The guarantee is the boost's
+// RANGE, not its magnitude — the old "cap <= SHIP_WELL_MAX" note had it
+// backwards and would have forced a needless 2× widening of this radius. The
 // same constant is used by gravityAt (the real ship) AND predictPaths'
 // accelAt (the forecast), so the mirror law holds: the drawn path and the
 // flown path cull identically.
@@ -1755,20 +1806,13 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
       const f = d / (b.radius * CFG.SHIP_WELL_START);
       if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
       // SURFACE WEIGHT (see CFG.SHIP_SURF_*): inside SHIP_SURF_END radii the
-      // pull ramps toward the surface by up to radius/SHIP_SURF_REF — big
-      // worlds are hard to launch straight up from, moons and small worlds
-      // (peak <= 1) are untouched. Ends exactly where LONG ARMS begins, so
-      // past 2.5 radii nothing changes. Ship-only; predictPaths mirrors this.
-      // t is clamped BOTH ways: without the lower clamp, tuning SHIP_SURF_END
-      // below SHIP_WELL_START would leave a band where t < 0 UNDER-weights
-      // gravity instead of leaving it alone.
-      else {
-        const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
-        if (peak > 1) {
-          const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
-          w *= 1 + (peak - 1) * t;
-        }
-      }
+      // pull ramps toward the surface as (radius/SHIP_SURF_REF)^POW — big
+      // worlds are hard to launch straight up from (the five biggest are a
+      // hard gate at tier 0), moons and small worlds (peak <= 1) are
+      // untouched. Ends exactly where LONG ARMS begins, so past 2.5 radii
+      // nothing changes. Ship-only; config.surfWeight is the ONE expression
+      // and predictPaths' accelAt calls the same one.
+      else w *= surfWeight(b.radius, d);
       // GAS DIVE: inside a gas giant the ship feels enclosed-mass gravity
       // (uniform-density: x d³/R³ of the point value) — without this, the
       // point-mass interior pull (~380 at half depth) makes every dive
@@ -3304,6 +3348,12 @@ function collideShipBody(game, s, b, dt) {
   // where this term is live.
   if (b.type === 'planet' || b.type === 'moon') {
     const sv = surfaceVel(b, s.x, s.y);
+    // HOW HARD DID IT ARRIVE (achievements: `softLand`). Read BEFORE the
+    // friction below touches the velocity, and only on the substep contact
+    // BEGINS — a frame later the ground has already dragged the hull toward
+    // its own motion, so a hard arrival would score as a feather. `least`
+    // keeps the best of the run, so this is the gentlest touchdown flown.
+    if (!landing.touch) least(game, 'softLand', Math.round(Math.hypot(s.vx - sv.vx, s.vy - sv.vy)));
     const f = 1 - Math.exp(-CFG.SURF_FRICTION * dt);
     s.vx += (sv.vx - s.vx) * f;
     s.vy += (sv.vy - s.vy) * f;
@@ -4201,9 +4251,13 @@ function updateLaunch(game, dt) {
     }
   }
   if (L.t < CFG.LAUNCH_TIME) return;
-  // RELEASE.
-  s.vx += Math.cos(up) * CFG.LAUNCH_KICK;
-  s.vy += Math.sin(up) * CFG.LAUNCH_KICK;
+  // RELEASE. The shove is sized against the well it has to clear (see
+  // CFG.LAUNCH_ESC_K) — on the big worlds SURFACE WEIGHT now gates, the pad is
+  // the way off, so a flat kick would have made a station a trap rather than
+  // an exit.
+  const kick = launchKick(shipSurfG(d.b), d.b.radius);
+  s.vx += Math.cos(up) * kick;
+  s.vy += Math.sin(up) * kick;
   game.launch = null;
   game.dock = null;
   // The pad that just threw you off must not reel you straight back in — the
@@ -5885,13 +5939,16 @@ export function step(game, dt) {
     game.shipGx = _gp.ax * CFG.SHIP_GRAV; game.shipGy = _gp.ay * CFG.SHIP_GRAV;
     shipAx = g.ax * CFG.SHIP_GRAV + tx; shipAy = g.ay * CFG.SHIP_GRAV + ty;
 
-    // ORBIT RUBBER BAND (CFG.SHIP_BAND_*): near a world, bleed off the
-    // ship's INWARD radial velocity relative to it — plunges soften into
-    // captures and near-orbits circularize. Tangential motion and outbound
-    // climbs are untouched.
+    // ORBIT RUBBER BAND (CFG.SHIP_BAND_*): just above a world's surface,
+    // bleed off the ship's INWARD radial velocity relative to it, so a
+    // SETTLING descent softens instead of arriving as a rock-drop. Tangential
+    // motion and outbound climbs are untouched. Bounded twice — an absolute
+    // altitude cap (shipBand) and a speed fade (bandFade) — so it can no
+    // longer eat a plunge, a flyby or a slingshot; read the note on
+    // CFG.SHIP_BAND_RANGE for the measurement that forced both.
     for (const b of attractors) {
       if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
-      const band = b.radius * CFG.SHIP_BAND_RANGE + 300;
+      const band = shipBand(b.radius);
       const dx = b.x - s.x, dy = b.y - s.y;
       if (dx > band || dx < -band || dy > band || dy < -band) continue;
       const d = Math.hypot(dx, dy);
@@ -5899,9 +5956,49 @@ export function step(game, dt) {
       const ux = dx / d, uy = dy / d;                              // ship -> world
       const vR = (s.vx - b.vx) * ux + (s.vy - b.vy) * uy;          // >0 = falling in
       if (vR <= 0) continue;
+      const fade = bandFade(vR);
+      if (fade <= 0) continue;
       const t = 1 - (d - b.radius) / (band - b.radius);
-      const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t);
+      const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t * fade);
       shipAx -= ux * brake; shipAy -= uy * brake;
+    }
+
+    // THE RETRO ASSIST (CFG.SHIP_BRAKE_*): falling toward a world AND burning
+    // away from it buys extra outward authority worth up to SHIP_BRAKE_G x that
+    // world's local pull — so a landing burn is priced against your engine
+    // rather than against `thrust - gravity`, which on the gated worlds is
+    // NEGATIVE and made a soft landing impossible rather than merely hard.
+    // Gated on INWARD motion and faded out as it stops, so it can null a
+    // descent and never lift you: the escape gate is untouched. See the
+    // constant's note for why that asymmetry is safe (the force is strictly
+    // dissipative — outward through a downward displacement is negative work).
+    // Reads the ALREADY-APPLIED thrust vector, so the storm derate, the
+    // afterburner and reverse all price themselves correctly with no second
+    // copy of the throttle rules.
+    const tmag = Math.hypot(tx, ty);
+    if (tmag > 1e-6) {
+      const thx = tx / tmag, thy = ty / tmag;
+      const throttle = Math.min(1, tmag / Math.max(1, game.st.thrust));
+      for (const b of attractors) {
+        if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'rogue') continue;
+        const dx = b.x - s.x, dy = b.y - s.y;
+        const d2 = dx * dx + dy * dy + SOFT2;
+        if (d2 > b.cullShip2) continue;
+        const d = Math.sqrt(d2);
+        // Same near-field scope as the surface ramp and the well ceiling: past
+        // the handoff a world's pull is a few u/s² and needs no assist.
+        if (d > b.radius * CFG.SHIP_SURF_END) continue;
+        const ux = dx / d, uy = dy / d;                              // ship -> world
+        const vR = (s.vx - b.vx) * ux + (s.vy - b.vy) * uy;          // >0 = falling in
+        if (vR <= 0) continue;                                       // climbing: no assist
+        const align = -(thx * ux + thy * uy);                        // burning AWAY from it
+        if (align <= 0) continue;
+        const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, d);
+        const gLocal = (w * CFG.G * b.mass) / d2;
+        const k = Math.min(1, vR / CFG.SHIP_BRAKE_REF) * align * throttle;
+        const assist = CFG.SHIP_BRAKE_G * gLocal * k;
+        shipAx -= ux * assist; shipAy -= uy * assist;
+      }
     }
     const bnd = boundaryAccel(s.x, s.y);
     if (bnd) { shipAx += bnd.ax; shipAy += bnd.ay; }
@@ -6270,6 +6367,20 @@ export function step(game, dt) {
     // AFTERBURNER raises the ceiling too, so the burn actually reaches speed
     // (gated on the fuel tank via game.burnerOn, same as the thrust boost).
     if (game.burnerOn && s.engineOutT <= 0) cap *= burnCap(game.st.afterburner);
+    // THE SHIP'S OWN ceiling, kept separate before the well raises it below —
+    // the sling credit is bounded against THIS, never against the well. Bound
+    // it against the raised cap instead and a dive into a giant banks
+    // 1.5 x 1,000 u/s of allowance and the ship LEAVES at that speed, which is
+    // precisely the "far-field assists let low-level ships coast at absurd
+    // speeds" failure SPEED_HARD was added to stop. MEASURED at 1,153 banked
+    // on one Vashtar dive before this line existed, against an intended 420.
+    const tierCap = cap;
+    // ...and THE WELL raises the governor's ceiling, where the well itself is
+    // what would otherwise forbid the only speed that survives it. Applied
+    // AFTER the burner multiplier and as a floor, never a multiplier: deep in
+    // a giant the well already dwarfs the tier ceiling, and stacking the burn
+    // on top of it would hand the afterburner a 1,800 u/s cloud skim.
+    cap = Math.max(cap, wellSpeedCap(attractors, s.x, s.y));
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
@@ -6286,8 +6397,15 @@ export function step(game, dt) {
     // the bound + decay keep a banked dive from becoming a standing
     // afterburner.
     if (rsp > 1e-6) {
+      const bank = tierCap * CFG.SLING_MAX;
       const gdot = (game.shipGx * rvx + game.shipGy * rvy) / rsp;
-      if (gdot > 0) s.slingSpd = Math.min(cap * CFG.SLING_MAX, s.slingSpd + gdot * dt);
+      if (gdot > 0) s.slingSpd = Math.min(bank, s.slingSpd + gdot * dt);
+      // THE PERPENDICULAR BONUS (CFG.SLING_PERP): gravity's component ACROSS
+      // the track — the cross product to gdot's dot — which peaks exactly where
+      // gdot goes to zero, at the periapsis of a pass. The dive builds the
+      // speed; this is what banks the allowance to keep it. Same ceiling.
+      const gperp = Math.abs(game.shipGx * rvy - game.shipGy * rvx) / rsp;
+      if (gperp > 0) s.slingSpd = Math.min(bank, s.slingSpd + CFG.SLING_PERP * gperp * dt);
     }
     s.slingSpd *= Math.exp(-CFG.SLING_DECAY * dt);   // the slow falloff — always ticking
     const capEff = cap + s.slingSpd;
@@ -6939,16 +7057,9 @@ export function predictPaths(game) {
         if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
         // Mirror of gravityAt's SURFACE WEIGHT near-surface ramp — the
         // forecast must steepen at a big world's surface exactly like the
-        // real pull, or the drawn launch/descent path lies. t clamped both
-        // ways, same as the sim (the lower clamp guards a SHIP_SURF_END
-        // tuned below SHIP_WELL_START from under-weighting the gap).
-        else {
-          const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
-          if (peak > 1) {
-            const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
-            w *= 1 + (peak - 1) * t;
-          }
-        }
+        // real pull, or the drawn launch/descent path lies. Literally the
+        // same call the sim makes, so the two cannot drift.
+        else w *= surfWeight(b.radius, d);
         if (b.gas && d < b.radius) {   // enclosed-mass interior, like gravityAt
           const q = d / b.radius;
           w *= q * q * q;
@@ -6980,7 +7091,7 @@ export function predictPaths(game) {
   // covers elliptical rails and parent drift) — an over-full list only costs
   // a few extra distance tests, while the full-atr scans these replace were
   // two O(attractors) loops per forecast step.
-  const hitAtr = [], rbAtr = [];
+  const hitAtr = [], rbAtr = [], wellAtr = [];
   const horizon = steps * dt;
   // Per-ghost advance shortlist for LIVE LOOSE attractors (heavy belt rocks
   // that cleared ATTRACT_MIN but aren't railed — the view-local field spawns
@@ -7012,7 +7123,12 @@ export function predictPaths(game) {
       const reach = maxPathLen + shipDrift + (Math.hypot(b.vx, b.vy) * 2 + 100) * horizon + 200;
       const d = Math.hypot(b.x - ship.x, b.y - ship.y);
       if (d < reach + b.radius + ship.r) hitAtr.push(b);
-      if (b.rb && d < reach + b.radius * CFG.SHIP_BAND_RANGE + 300) rbAtr.push(b);
+      if (b.rb && d < reach + shipBand(b.radius)) rbAtr.push(b);
+      // ...and the same build-time shortlist for the WELL CEILING mirror. It
+      // only ever reads bodies within SHIP_SURF_END radii, and running that
+      // test against every attractor on every one of ~200 steps is the exact
+      // O(attractors x steps) cost the note above this block exists to avoid.
+      if (b.weighted && d < reach + b.radius * CFG.SHIP_SURF_END) wellAtr.push(b);
     }
   }
   for (let i = 0; i < steps; i++) {
@@ -7085,7 +7201,7 @@ export function predictPaths(game) {
       // Mirror of the orbit rubber band (step) — same inward-only radial
       // damping, so the forecast bends into captures exactly like the ship
       for (const b of rbAtr) {
-        const band = b.radius * CFG.SHIP_BAND_RANGE + 300;
+        const band = shipBand(b.radius);
         const bdx = b.x - ship.x, bdy = b.y - ship.y;
         if (bdx > band || bdx < -band || bdy > band || bdy < -band) continue;
         const d = Math.hypot(bdx, bdy);
@@ -7093,8 +7209,10 @@ export function predictPaths(game) {
         const ux = bdx / d, uy = bdy / d;
         const vR = (ship.vx - b.vx) * ux + (ship.vy - b.vy) * uy;
         if (vR <= 0) continue;
+        const fade = bandFade(vR);          // same two bounds as the sim
+        if (fade <= 0) continue;
         const t = 1 - (d - b.radius) / (band - b.radius);
-        const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t);
+        const brake = Math.min(CFG.SHIP_BAND_MAX, vR * CFG.SHIP_BAND_DAMP * t * fade);
         ax -= ux * brake; ay -= uy * brake;
       }
       ship.vx += ax * dt; ship.vy += ay * dt;
@@ -7102,9 +7220,25 @@ export function predictPaths(game) {
       // stays honest — same flow-relative clamp the real ship gets. The
       // SLING CREDIT rides in FROZEN at its current value: simulating its
       // accrual/decay along the path would need the whole credit machine per
-      // step, and at SLING_DECAY 0.12/s it moves too slowly over a forecast
+      // step, and at SLING_DECAY 0.06/s it moves too slowly over a forecast
       // horizon to bend the drawn path visibly.
-      const pcap = game.st.maxSpeed + (game.ship ? game.ship.slingSpd : 0);
+      // Mirror of the well ceiling too (step's wellSpeedCap): without it the
+      // drawn path brakes hard on every close pass the real ship flies clean,
+      // which is the forecast lying at exactly the moment it is being read.
+      // Over the wellAtr shortlist, and `atr` carries the same cullShip2 the
+      // sim stamps, as cull2Ship.
+      let pWell = 0;
+      for (const b of wellAtr) {
+        const bdx = b.x - ship.x, bdy = b.y - ship.y;
+        const bd2 = bdx * bdx + bdy * bdy + soft2;
+        if (bd2 > b.cull2Ship) continue;
+        const bd = Math.sqrt(bd2);
+        if (bd > b.radius * CFG.SHIP_SURF_END) continue;
+        const bw = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, bd);
+        const c = wellCapAt((bw * CFG.G * b.mass) / bd2, bd);
+        if (c > pWell) pWell = c;
+      }
+      const pcap = Math.max(game.st.maxSpeed, pWell) + (game.ship ? game.ship.slingSpd : 0);
       const pflow = orbitalFlow(game, ship.x, ship.y);
       const prvx = ship.vx - pflow.vx, prvy = ship.vy - pflow.vy;
       const prsp = Math.hypot(prvx, prvy);
