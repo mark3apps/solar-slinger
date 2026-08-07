@@ -9804,7 +9804,7 @@ function drawMinimap(game) {
         ctx.restore();
         // ...and the SCAN half is deferred to one masked pass (drawWorldDiscs,
         // after this loop) so the beam wipes across it per PIXEL.
-        if (!outer || aOut > 0.0001) discQueue.push({ path: disc, col });
+        if (!outer || aOut > 0.0001) discQueue.push({ path: disc, col, aOut });
         ctx.globalAlpha = alpha;
         ctx.fillStyle = col;                  // restore for the fort marker below
       } else {
@@ -9882,7 +9882,33 @@ function drawMinimap(game) {
   // one mask and one blit for the WHOLE sky instead of ~20 clipped fills per
   // world, and the disc keeps its radial rim fade, which a conic fillStyle
   // could not have carried at the same time.
-  if (discQueue.length && HAS_PATH2D) {
+  // THE MASK IS THE FEATURE, SO ITS ABSENCE IS A FALLBACK AND NOT A NO-OP.
+  // Without createConicGradient there is nothing to multiply the sweep into the
+  // discs, and blitting them anyway would leave the scan half PERMANENTLY lit —
+  // a world that never fades is the one thing the outer band must never show,
+  // since "the dial forgets the moment the sweep passes" is what buys its
+  // doubled reach. Caught in review. So on that path the layer is skipped
+  // entirely and each disc is drawn straight into the annulus at its own
+  // whole-body ping instead: coarser (the world lights at once rather than
+  // wiping in), correct on the rule that matters, and exactly what this drew
+  // before the mask existed.
+  const canMask = HAS_PATH2D && typeof ctx.createConicGradient === 'function';
+  if (discQueue.length && HAS_PATH2D && !canMask) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, TAU);
+    ctx.arc(cx, cy, mid, 0, TAU, true);
+    ctx.clip();
+    for (const q of discQueue) {
+      if (q.aOut <= 0.01) continue;
+      ctx.globalAlpha = q.aOut;
+      ctx.fillStyle = discFill(ctx, q.col, 0.34);
+      ctx.fill(q.path);
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+  if (discQueue.length && canMask) {
     const px = Math.max(1, Math.round(RADAR_SIZE * rdpr));
     if (!discCv || discCv.width !== px) {
       discCv = document.createElement('canvas');
@@ -9903,6 +9929,7 @@ function drawMinimap(game) {
       // has not reached since. The stops walk sweepPing's own k² curve so the
       // mask and the pip fade are the same function, not two that resemble
       // each other.
+      let masked = false;
       if (discCx.createConicGradient) {
         const m = discCx.createConicGradient(sweepAng, cx, cy);
         const t0 = 1 - MINIMAP_PING_T / MINIMAP_SWEEP_T;   // where the tail dies
@@ -9916,18 +9943,24 @@ function drawMinimap(game) {
         discCx.fillStyle = m;
         discCx.fillRect(0, 0, RADAR_SIZE, RADAR_SIZE);
         discCx.globalCompositeOperation = 'source-over';
+        masked = true;
       }
       // 3. blit, clipped to the scan annulus — the chart half was already
-      // painted inline and must not be masked.
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, TAU);
-      ctx.arc(cx, cy, mid, 0, TAU, true);          // reversed winding = hole
-      ctx.clip();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(discCv, 0, 0);
-      ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
-      ctx.restore();
+      // painted inline and must not be masked. Gated on the mask having
+      // ACTUALLY been applied: an unmasked blit is the persistent-contact bug
+      // the fallback above exists to avoid, and skipping the blit is the safe
+      // side of that choice (a missing return, never a lying one).
+      if (masked) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, TAU);
+        ctx.arc(cx, cy, mid, 0, TAU, true);        // reversed winding = hole
+        ctx.clip();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(discCv, 0, 0);
+        ctx.setTransform(rdpr, 0, 0, rdpr, 0, 0);
+        ctx.restore();
+      }
     }
   }
 

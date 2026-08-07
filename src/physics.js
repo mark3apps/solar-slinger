@@ -1,7 +1,7 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR, dockHostOk,
   burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass, seaChop,
-  surfWeight, shipBand, bandFade, wellCapAt, launchKick,
+  surfWeight, wellWeight, shipBand, bandFade, wellCapAt, launchKick,
 } from './config.js';
 import {
   Body, makeScrap, scrapValue, massToHp, railBody, derail, keplerStep, makeChunk, chunkHaloW,
@@ -139,16 +139,20 @@ function orbitalFlow(game, x, y) {
 //
 // Takes the MAX over worlds rather than a sum: this is "which well am I in",
 // and two wells overlapping does not make the local orbit faster. Reads the
-// same ship-felt weighting gravityAt does (surface ramp included), so the
-// ceiling tracks the pull exactly — including 1/r², which is what keeps it
-// local: already back under the tier cap by 2.5 radii on the largest giant.
+// same ship-felt weighting gravityAt does (`wellWeight` — the surface ramp AND
+// the gas interior), so the ceiling tracks the pull exactly, including the
+// 1/r² that keeps it LOCAL: it is back under the tier cap well inside the
+// SHIP_SURF_END knee even on the largest giant, so it can never be carried
+// across the system. See the measured profile on CFG.SHIP_WELL_CAP.
 // A world's ship-felt pull AT ITS SURFACE — the same product gravityAt builds
 // (SHIP_GRAV x PLANET_GRAV_SHIP x the surface ramp x GM/d²), which is why it
 // sits next to wellSpeedCap rather than in config: config owns the shape, this
 // owns the reading. The launch kick sizes itself off it.
 export function shipSurfG(b) {
   const d2 = b.radius * b.radius + SOFT2;
-  const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, b.radius);
+  // At exactly d == radius the gas term is q³ == 1, so this is `wellWeight` for
+  // every body type — routed through it anyway so there is no fourth copy.
+  const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * wellWeight(b.radius, b.radius, b.ptype === 'gas');
   return (w * CFG.G * b.mass) / d2;
 }
 
@@ -165,7 +169,10 @@ function wellSpeedCap(attractors, x, y) {
     // is deliberately absent — past SHIP_SURF_END this term is already well
     // under maxSpeed and adding the 1/r boost would stretch it across the sky.
     if (d > b.radius * CFG.SHIP_SURF_END) continue;
-    const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, d);
+    // wellWeight, NOT surfWeight: inside a gas giant the enclosed mass is q³ of
+    // the total, so a point-mass reading here would grant a ceiling several
+    // times the orbit the ship could actually hold down there.
+    const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * wellWeight(b.radius, d, b.ptype === 'gas');
     const cap = wellCapAt((w * CFG.G * b.mass) / d2, d);
     if (cap > best) best = cap;
   }
@@ -1776,7 +1783,7 @@ export const GRAV_CULL_K = CFG.G / GRAV_CULL_A;   // predictPaths mirrors the sa
 // SHIP_GRAV × PLANET_GRAV_SHIP and LONG ARMS can boost a far world's tug by
 // up to SHIP_WELL_MAX — so its cull range is widened by exactly that worst
 // case, keeping every attractor the ship could feel above GRAV_CULL_A.
-// SURFACE WEIGHT needs no term here even though its cap (SHIP_SURF_MAX 24)
+// SURFACE WEIGHT needs no term here even though its cap (CFG.SHIP_SURF_MAX)
 // now exceeds SHIP_WELL_MAX: that boost exists ONLY inside SHIP_SURF_END
 // radii, where a world's unboosted pull is already ~250× GRAV_CULL_A, so no
 // value of it can rescue a culled attractor. The guarantee is the boost's
@@ -1815,22 +1822,21 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
     if (heavy && heavyMul !== 1) {
       const f = d / (b.radius * CFG.SHIP_WELL_START);
       if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
-      // SURFACE WEIGHT (see CFG.SHIP_SURF_*): inside SHIP_SURF_END radii the
-      // pull ramps toward the surface as (radius/SHIP_SURF_REF)^POW — big
-      // worlds are hard to launch straight up from (the five biggest are a
-      // hard gate at tier 0), moons and small worlds (peak <= 1) are
-      // untouched. Ends exactly where LONG ARMS begins, so past 2.5 radii
-      // nothing changes. Ship-only; config.surfWeight is the ONE expression
-      // and predictPaths' accelAt calls the same one.
-      else w *= surfWeight(b.radius, d);
-      // GAS DIVE: inside a gas giant the ship feels enclosed-mass gravity
-      // (uniform-density: x d³/R³ of the point value) — without this, the
-      // point-mass interior pull (~380 at half depth) makes every dive
-      // terminal; with it, escape is hard but genuinely possible.
-      if (b.ptype === 'gas' && d < b.radius) {
-        const q = d / b.radius;
-        w *= q * q * q;
-      }
+      // SURFACE WEIGHT + THE GAS DIVE (see CFG.SHIP_SURF_* and config.
+      // wellWeight): inside SHIP_SURF_END radii the pull ramps toward the
+      // surface as (radius/SHIP_SURF_REF)^POW — big worlds are hard to launch
+      // straight up from (the five biggest are a hard gate at tier 0), moons
+      // and small worlds (peak <= 1) are untouched — and inside a GAS GIANT it
+      // then falls away with the enclosed mass (x d³/R³), which is what keeps
+      // a dive survivable rather than terminal. The ramp ends exactly where
+      // LONG ARMS begins (SHIP_SURF_END == SHIP_WELL_START), so past the knee
+      // nothing changes. Ship-only, and `wellWeight` is the ONE expression —
+      // the well ceiling, the retro assist and predictPaths' accelAt all call
+      // this same function rather than re-deriving half of it.
+      // The interior rule needs no branch of its own: `d < radius` implies
+      // `f = d / (radius x SHIP_WELL_START) < 1`, so a ship inside the cloud
+      // tops ALWAYS takes this arm, never the long-arm one above it.
+      else w *= wellWeight(b.radius, d, b.ptype === 'gas');
     }
     const inv = (w * CFG.G * b.mass) / (d2 * d);
     ax += dx * inv; ay += dy * inv;
@@ -6103,7 +6109,10 @@ export function step(game, dt) {
         if (vR <= 0) continue;                                       // climbing: no assist
         const align = -(thx * ux + thy * uy);                        // burning AWAY from it
         if (align <= 0) continue;
-        const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, d);
+        // wellWeight, NOT surfWeight — the assist is priced as a fraction of
+        // the pull the ship ACTUALLY feels, so inside a gas giant it has to
+        // fall away with the enclosed mass exactly as that pull does.
+        const w = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * wellWeight(b.radius, d, b.ptype === 'gas');
         const gLocal = (w * CFG.G * b.mass) / d2;
         const k = Math.min(1, vR / CFG.SHIP_BRAKE_REF) * align * throttle;
         const assist = CFG.SHIP_BRAKE_G * gLocal * k;
@@ -7336,11 +7345,7 @@ export function predictPaths(game) {
         // forecast must steepen at a big world's surface exactly like the
         // real pull, or the drawn launch/descent path lies. Literally the
         // same call the sim makes, so the two cannot drift.
-        else w *= surfWeight(b.radius, d);
-        if (b.gas && d < b.radius) {   // enclosed-mass interior, like gravityAt
-          const q = d / b.radius;
-          w *= q * q * q;
-        }
+        else w *= wellWeight(b.radius, d, b.gas);
       }
       const inv = (w * CFG.G * b.mass) / (d2 * d);
       ax += dx * inv; ay += dy * inv;
@@ -7511,7 +7516,7 @@ export function predictPaths(game) {
         if (bd2 > b.cull2Ship) continue;
         const bd = Math.sqrt(bd2);
         if (bd > b.radius * CFG.SHIP_SURF_END) continue;
-        const bw = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * surfWeight(b.radius, bd);
+        const bw = CFG.SHIP_GRAV * CFG.PLANET_GRAV_SHIP * wellWeight(b.radius, bd, b.gas);
         const c = wellCapAt((bw * CFG.G * b.mass) / bd2, bd);
         if (c > pWell) pWell = c;
       }

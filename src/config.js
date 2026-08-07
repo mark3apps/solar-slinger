@@ -5128,6 +5128,28 @@ export function surfWeight(R, d) {
   return 1 + (peak - 1) * t;
 }
 
+// THE WHOLE near-field ship-felt weight of a world: the surface ramp AND the
+// gas giant's enclosed-mass interior, which are the two rules that shape a
+// world's pull inside the knee. Everything that asks "how hard does this world
+// pull the ship HERE" must go through this, not through surfWeight alone.
+//
+// It exists because surfWeight alone was called from four places and only ONE
+// of them (gravityAt) also applied the gas rule — so the governor's well
+// ceiling and the retro assist both modelled a gas giant's interior as a POINT
+// MASS and came out far too strong down there, while the pull the ship actually
+// felt fell away as d³/R³. Caught in review. That is the mirror-drift trap with
+// three mirrors instead of two, and the fix is the same one this file keeps
+// reaching for: one expression, called by all of them.
+//
+// GAS INTERIOR (uniform density): inside the cloud tops the enclosed mass is
+// q³ of the total, so the point-value pull is scaled by q³ — the term that
+// keeps a dive survivable rather than terminal. See CFG.GAS_CRUSH_DPS.
+export function wellWeight(R, d, gas) {
+  let w = surfWeight(R, d);
+  if (gas && d < R) { const q = d / R; w *= q * q * q; }
+  return w;
+}
+
 // ORBIT RUBBER BAND geometry: the outer radius of the band around a world of
 // radius `R`. The altitude span is capped absolutely (CFG.SHIP_BAND_ALT) —
 // that cap is the whole fix, see the note on SHIP_BAND_RANGE.

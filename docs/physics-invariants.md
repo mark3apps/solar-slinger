@@ -460,7 +460,8 @@ ellipse of zero eccentricity is a circle, and the sim should only ever hold one 
   555. Two bounds now make it the landing softener its comment always claimed it was, both living in
   `config.shipBand`/`config.bandFade` so the sim and the predictPaths mirror read one expression:
   an **altitude cap** (`SHIP_BAND_ALT`, 700u) so the corridor is a skin on a giant and unchanged on a
-  lodestar, and a **speed fade** (`SHIP_BAND_SOFT` 80 → `SHIP_BAND_HARD` 260 u/s inbound) so a settling
+  lodestar, and a **speed fade** (`SHIP_BAND_SOFT` → `SHIP_BAND_HARD` u/s inbound — the constants are
+  the truth; they were widened once already when landing forgiveness landed) so a settling
   descent is softened while a plunge, a flyby and a slingshot are untouched.
 - **THE RETRO ASSIST** (`SHIP_BRAKE_G`/`SHIP_BRAKE_REF`, added 2026-08): ship-only, near-field,
   UNDER THRUST only. Falling toward a world while burning away from it buys extra outward
