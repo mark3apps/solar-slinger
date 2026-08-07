@@ -1777,12 +1777,14 @@ const SUN_SPIN = 0.0175;         // rad/s — a full turn in ~6 minutes
 // corona lobes reach 3.02R (seated at <=1.62R with a <=1.40R tail), the
 // prominences 1.23R, the limb smear 1.10R.
 //
-// EXPORTED TO THE CULL ON PURPOSE. bodyOnScreen's generic margin is 4R + 80,
-// which for a 4,800-unit sun overshoots by ~2,000 units — a shell where the
-// star paints literally nothing (measured: a framebuffer diff at 17,500 units
-// came back zero) and still cost 0.13ms a frame, ~43% of the frame's whole
-// draw. Two of the four inner worlds sit in that shell. Read from one constant
-// so the cull can never drift wider than what is actually painted.
+// THE CULL READS IT TOO, and that sharing is the point. bodyOnScreen's generic
+// margin is 4R + 80, which for a 4,800-unit sun overshoots by ~2,000 units — a
+// shell where the star paints literally nothing (measured: a framebuffer diff
+// at 17,500 units came back zero) and still cost 0.13ms a frame, ~43% of the
+// frame's whole draw. Two of the four inner worlds sit in that shell. Both the
+// cull and the corona gradient below take their reach from this one constant,
+// so the cull can never drift wider than what is actually painted. (Module
+// scope, not an export — bodyOnScreen lives in this file.)
 const SUN_HALO = 3.6;
 const GRAN_PX = 256;             // baked tile resolution
 const GRAN_CELLS = 7;            // cells per tile side

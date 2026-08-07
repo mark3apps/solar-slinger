@@ -2747,7 +2747,7 @@ function seedDenseFields(game, sun, rng, fieldRs, seed) {
       // every new achievement is checked against. applyModeRules sets both
       // together for exactly this reason; this follows it.
       brood: hostile.has(fi) ? CFG.FIELD_BROOD : 0, wakeT: 0, cleared: !hostile.has(fi),
-      hostile: hostile.has(fi), near: false, seen: false,
+      near: false, seen: false,
       // The pocket's own SILHOUETTE (config.fieldLobe): three harmonics drawn
       // once here, so a field's shape is part of the world seed and every
       // consumer of fieldFrac sees the same blob. Amplitudes sum to at most
