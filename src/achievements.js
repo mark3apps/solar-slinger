@@ -279,8 +279,22 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kGolem >= 5),
   A('lurker', 'combat', PTS.normal, 'Not A Rock', 'Kill a shoal lurker.',
     (g, s) => s.kLurker >= 1),
-  A('lurker8', 'combat', PTS.hard, 'Shoal Survivor', 'Kill eight shoal lurkers.',
-    (g, s) => s.kLurker >= 8),
+  // THE THRESHOLD LIVES INSIDE ONE BROOD, and it has to. Only a quarter of the
+  // pockets carry lurkers now (CFG.FIELD_HOSTILE_FRAC), so a run's ENTIRE lurker
+  // population is one brood — CFG.FIELD_BROOD, 7. The old bar of eight was set
+  // when four pockets fielded 28 between them; against 7 it is unreachable on
+  // every seed, and padding the brood to reach it would have retuned the
+  // encounter to serve the scoreboard. Five leaves two lurkers of slack for the
+  // ones that die to the rocks rather than to the player.
+  //
+  // THE ID STAYS `lurker8`. It is persisted in saved progress, so renaming it to
+  // match the number would orphan every unlock already earned. The name is
+  // historical; the bar is the predicate.
+  //
+  // Still PTS.hard: five of the seven that exist is a bigger share of the run's
+  // combat than eight of twenty-eight ever was, even though the number fell.
+  A('lurker8', 'combat', PTS.hard, 'Shoal Survivor', 'Kill five shoal lurkers.',
+    (g, s) => s.kLurker >= 5),
   A('fieldClear', 'combat', PTS.tricky, 'Quiet Waters', "Destroy a dense field's whole lurker brood.",
     (g, s) => s.fieldClear >= 1),
   A('fort', 'combat', PTS.hard, 'Liberator', 'Smash every turret on a Bastion fort.',

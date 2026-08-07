@@ -2207,17 +2207,17 @@ export const CFG = {
   // a property of that world (and of a saved system, which is only a seed).
   //
   // EXACTLY a quarter, not a 25% coin per pocket. Three achievements hang off
-  // lurkers — kill one, kill eight, clear a whole brood — and a per-pocket roll
+  // lurkers — kill one, kill some, clear a whole brood — and a per-pocket roll
   // leaves ~32% of seeds with no hostile shoal at all, which makes all three
   // unearnable on those worlds. `Math.max(1, round(n * frac))` guarantees one.
   FIELD_HOSTILE_FRAC: 0.25,
-  // ...AND THE ONE THAT HAS A BROOD CARRIES A BIGGER ONE. 7 per pocket x 4 was
-  // 28 lurkers a run; concentrating a quarter of the pockets at 7 would leave 7,
-  // and 'Shoal Survivor' wants EIGHT kills — unearnable on every seed. 12 keeps
-  // it earnable with room to spare while still cutting the run's lurker
-  // population by 57%, which is the point of the change. FIELD_HUNTERS still
-  // caps concurrent hunters at 3, so this is a longer fight, not a swarm.
-  FIELD_BROOD: 12,         // lurkers in a HOSTILE field per run — finite; a cleared field is QUIET
+  // THE BROOD ITSELF IS UNCHANGED at 7. A hostile pocket should feel exactly
+  // like a hostile pocket always did — the change is how MANY pockets are
+  // hostile, not what one is like inside. Padding the brood to keep an
+  // achievement reachable would have retuned the encounter to serve the
+  // scoreboard; the achievement moved instead (achievements.js 'lurker8' — its
+  // threshold now sits inside a single brood). Run total: 28 -> 7.
+  FIELD_BROOD: 7,          // lurkers in a HOSTILE field per run — finite; a cleared field is QUIET
   FIELD_HUNTERS: 3,        // how many of that brood may hunt at once (ai.updateFields)
   // NOT frail any more. At 34 hp a lurker was a jump-scare that died to the
   // first thing you threw, so an ambush resolved before it could develop and
