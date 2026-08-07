@@ -1,6 +1,7 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
-  stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR, modeRules } from './config.js';
+  stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR, modeRules,
+  ramPlate, ramPack, ramPerRow, shipVis, RAM_TIERS } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip, chartZoneR } from './world.js';
 import { Alien } from './entities.js';
@@ -349,6 +350,99 @@ export function runMechTest(game, hooks, opts = {}) {
       expect(worst <= BUD, `boundary error ${worst.toFixed(5)} radii exceeds the ${BUD} budget`);
       return `${Object.keys(ROCK_SHAPES).length} shapes, ${flips} boundary flips + ${gaps} concavity probes, ` +
         `${multi} non-radial shapes, worst boundary error ${worst.toExponential(1)} radii`;
+    });
+
+    // T0c — A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH. Pure config,
+    // no world and no RNG, so it sits up here with the other catalog checks and
+    // the `draws` column below it does not move.
+    //
+    // The law (CLAUDE.md, docs/design-laws.md) is that `halfW` is DERIVED —
+    // whatever `ramPerRow(t)` stones of radius `stone` occupy shoulder to
+    // shoulder at `ramPack(t)` centre spacing — because render.ramTierRocks
+    // solves its seating FROM that expression: outermost centre at
+    // `halfW - 0.7 x stone`, the rest spread evenly. So the packing factor is
+    // not a preference, it is RECOVERABLE from the plate, and any width the
+    // stone did not pay for comes back out as daylight between the stones.
+    //
+    // WHAT THIS CATCHES (issue #201). A `Math.max(halfW, r * 1.05)` floor was
+    // added to restate the class's "wider than the ship" silhouette in the one
+    // place that cannot say it: measured back out, the effective spacing ran to
+    // 6.8 stone-diameters at tier 5 band 1 — two boulders 210 units apart
+    // across a 233-unit slab, i.e. exactly the fence the derived width was
+    // written to kill. It bound at band 1 on EVERY tier, and every ram passes
+    // through band 1 on its first rock and again as it is spent. The silhouette
+    // is the hull prow's job (render.BRAWLER_TIERS `prowW`), not the slab's.
+    //
+    // Swept over every tier x band x fill rather than spot-checked, because the
+    // failure was a CLAMP: it is invisible everywhere it does not bind, and
+    // which samples it binds on moves with any of five constants.
+    t('ram pack integrity', () => {
+      const N = 400;                    // fill samples per tier — every band is crossed
+      let worst = 0, worstAt = '', drift = 0, driftAt = '';
+      const bands = new Set();
+      for (let tier = 0; tier < 6; tier++) {
+        // orbitLvl 6 = War Rack maxed, so ramTierOf's rank cap is off the ladder
+        // and all twelve density bands are reachable from this one sweep.
+        const st = { radius: SHIP_RADIUS[tier], vis: shipVis('brawler', tier), ramCap: 1, orbitLvl: 6 };
+        for (let i = 1; i <= N; i++) {
+          const pl = ramPlate(st, i / N);
+          expect(pl, `ramPlate returned null at tier ${tier} fill ${i}/${N}`);
+          bands.add(pl.tier);
+          // The packing factor read BACK OUT of the plate, by inverting the
+          // seating render lays down. n - 1 is never 0: ramPerRow(1) is 2.
+          const eff = (pl.halfW - 0.7 * pl.stone) / (pl.stone * (ramPerRow(pl.tier) - 1));
+          if (eff > worst) { worst = eff; worstAt = `tier ${tier} band ${pl.tier} fill ${(i / N).toFixed(3)}`; }
+          const d = Math.abs(eff - ramPack(pl.tier));
+          if (d > drift) { drift = d; driftAt = `tier ${tier} band ${pl.tier} fill ${(i / N).toFixed(3)}`; }
+        }
+      }
+      // THE SWEEP HAS TO CROSS THE WHOLE LADDER, and that has to be asserted
+      // rather than assumed: `N` fills, `orbitLvl 6` and `ramTierOf`'s rank cap
+      // between them decide which bands are reachable, so a change to any of
+      // the three could quietly narrow this case to a handful of bands while it
+      // went on passing — a clamp is invisible everywhere it does not bind, and
+      // the bands it binds on are exactly the ones a narrowed sweep would drop.
+      // Checked against RAM_TIERS, not a literal, so shortening the ladder is a
+      // legal change and failing to REACH it is not.
+      expect(bands.size === RAM_TIERS,
+        `the sweep only reached ${bands.size} of ${RAM_TIERS} density bands — it is no longer crossing the whole `
+        + `ladder, so a clamp that binds on a band it now misses would pass unnoticed (raise N, or check ramTierOf's rank cap)`);
+      // Under 1 is the law's own wording: the stones ALWAYS touch.
+      expect(worst < 1,
+        `the stones come apart — effective centre spacing ${worst.toFixed(3)} stone-diameters at ${worstAt}; `
+        + `a width the stone did not pay for is daylight by construction (see ramPlate's halfW note)`);
+      // ...and it must be EXACTLY the ladder, not merely under 1: a clamp that
+      // only bit at the bottom of the ladder would still pass a bare `< 1`.
+      expect(drift < 1e-9,
+        `halfW is not the derived width — effective pack ${(ramPack(1) + drift).toFixed(4)} vs ramPack ${ramPack(1).toFixed(4)} `
+        + `(worst drift ${drift.toExponential(2)} at ${driftAt}); something is clamping halfW or stone independently`);
+      return `6 tiers x ${N} fills, ${bands.size}/${RAM_TIERS} bands: worst pack ${worst.toFixed(3)} (${worstAt}), `
+        + `exact to ${drift.toExponential(1)}`;
+    });
+
+    // T0d — AND THE RAM IS MADE OF ROCK, WHICH HAS ITS OWN SCALE (issue #202).
+    // `rs = hypot(r, CFG.RAM_MIN_R)` is a SOFT floor whose entire purpose is the
+    // small hull: rs/r is 4.95 at tier 0 and falls to 1.03 at tier 5, so a
+    // ceiling loose enough to spare the top of the ladder never binds anywhere,
+    // and any ceiling that binds bites hardest at exactly the tier the floor
+    // exists for. A `Math.min(rs, r * 2.5)` cap put the tier-0 stones at radius
+    // 3.52 — under the smallest gravel in the sky, which is the value
+    // CFG.RAM_MIN_R's own rationale block rejects in as many words.
+    //
+    // The band is the belt rock the ram is built OUT OF (6-14, docs/design-laws
+    // and CLAUDE.md both quote "tier-0 stones at radius ~7, mid-class for the
+    // belt rock the ram is built from"), so this asserts the design's own
+    // published number rather than a tolerance around whatever it computes.
+    t('ram stone is belt-rock class', () => {
+      const st = { radius: SHIP_RADIUS[0], vis: shipVis('brawler', 0), ramCap: 1, orbitLvl: 1 };
+      const pl = ramPlate(st, 1);       // a full rank-1 ram: the published case
+      expect(pl, 'ramPlate returned null for a full tier-0 rank-1 ram');
+      expect(pl.stone >= 6 && pl.stone <= 14,
+        `tier-0 rocklet radius ${pl.stone.toFixed(2)} is outside the belt-rock band [6, 14] — `
+        + `the ram stopped being made of recognisable rock (hull r=${(st.radius * st.vis).toFixed(2)}, `
+        + `RAM_MIN_R=${CFG.RAM_MIN_R}); a cap on rs is the usual cause`);
+      return `tier-0 rank-1 stone r=${pl.stone.toFixed(2)}, slab ${(pl.halfW * 2).toFixed(1)} wide `
+        + `x ${pl.depth.toFixed(1)} deep, band ${pl.tier}`;
     });
 
     // T1 — world generation is deterministic for a fixed seed
