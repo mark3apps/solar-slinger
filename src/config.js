@@ -54,7 +54,24 @@ const SYS = 2.6;
 // at ~7,500), this covers the OUTER reach that the giants' families dictate.
 // Grow PLANET_R_MUL / MOON_R_MUL / the layout's moon counts and this has to be
 // re-measured; world.js's LADDER_CAP is what tells you, by starting to bite.
-const BOUND = 9.4;
+//
+// SIZE IT TO THE MEDIAN LADDER, NOT THE HOTTEST ONE. The first cut was 9.4 —
+// chosen so the cap cleared even the longest ladder in 40 seeds and the squeeze
+// guard never fired at all. That is the wrong target, and it SHOWS: the ladder
+// is emergent, its median (300k) runs well short of its maximum (328k), and a
+// boundary sized for the maximum left the median seed with 31% of its radius —
+// **52% of its AREA** — as empty space beyond the last world. The old sky ran
+// at 15% / 27%, because its authored ladder summed to within 3% of its own cap
+// and so effectively always reached it.
+// 7.7 puts the median back at 15% / 28%. The cap now BITES on the longest
+// draws, which is correct and is what a guard is for: the squeeze is
+// proportional, it tops out around 3.6%, and the old ladder lived permanently
+// in that regime (its median sat at 97% of its cap). Measured cost across 40
+// seeds: 65.0 -> 64.5 moons, 11.0 -> 11.0 per gas giant, crossings unchanged.
+// Do not chase the band smaller than this — at 7.2 the squeeze starts eating
+// families for real (61.2 moons, 10.6 per giant) and you are paying content
+// for scenery.
+const BOUND = 7.7;
 
 // All gameplay tuning lives here.
 export const CFG = {
