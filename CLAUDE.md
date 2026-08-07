@@ -16,11 +16,12 @@ lives in `docs/`. **Open the matching doc before editing, not after.**
 |---|---|
 | `physics.js`, rails, gravity, collisions, `CFG` hazard tuning | [docs/physics-invariants.md](docs/physics-invariants.md) |
 | `config.js` progression, `ABILITIES`, `shipStats`, `achievements.js` | [docs/progression.md](docs/progression.md) |
+| `config.js` `MODES`, `world.applyModeRules`, the title screen's mode flow | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
 | `render.js`, `hud.js`, `style.css`, `zone.js`, any new sprite or HUD element | [docs/design-laws.md](docs/design-laws.md) |
 | `world.js` generation, dense fields, the LOD, planet archetypes, `ai.js`, `glow.js` | [docs/world-content.md](docs/world-content.md) |
 | `rockshape.js`, `rockdata.js`, `tools/bake-rocks.mjs`, shaped-rock collision | [docs/rock-fracture.md](docs/rock-fracture.md) |
 | `main.js` frame loop, `CFG.DT`, pacing, which clock a system rides | [docs/architecture.md](docs/architecture.md) |
-| splash / pause / settings / controls / credits / achievements / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
+| splash / pause / settings / controls / credits / achievements / saved systems / system chart | [docs/shell-and-menus.md](docs/shell-and-menus.md) |
 | `starmap.js`, the chart's knowledge ladder, journey waypoints | [docs/design-laws.md](docs/design-laws.md) |
 | `sfx.js`, `music.js`, adding a sound to an event | [docs/audio.md](docs/audio.md) |
 | `electron/`, `package.json` `build:`, release workflow, changelog | [docs/packaging.md](docs/packaging.md) |
@@ -127,7 +128,7 @@ presentation loop.
 | [entities.js](src/entities.js) | The only classes: `Body`, `Ship`, `Alien`. Plus `railBody`/`derail`, `scrapValue`, `makeScrap`. |
 | [world.js](src/world.js) | `generateWorld` (seeded), `respawnShip`, `replenishWorld`, `spawnAsteroid`. |
 | [physics.js](src/physics.js) | `step` — N-body integration, collisions/damage, rails, the trajectory predictor. **The load-bearing file.** |
-| [tractor.js](src/tractor.js) | Grab / hold / fling, the aim lead-marker solver, the orbit shield. |
+| [tractor.js](src/tractor.js) | Grab / hold / fling, the aim lead-marker solver, the orbit ring + its Guard Sling screen. |
 | [ai.js](src/ai.js) | Alien state machines (grabbers, wreckwrights, golems, shoal lurkers), Bastion forts, nests. |
 | [glow.js](src/glow.js) | Glow pockets — the healing mote fields. Rides `dtReal`, never the fixed step. |
 | [achievements.js](src/achievements.js) | The run's scoreboard: the ~400-row catalog, the stat ledger, the per-frame predicate sweep. Imports only config — a near-leaf. |
@@ -183,8 +184,12 @@ Full pacing/backlog/`DT_COARSE` rules: [docs/architecture.md](docs/architecture.
 - **Determinism:** world *generation* uses a seeded `mulberry32`, but the seed is **random per run**
   — pin one with `?seed=` for a repeatable world. The layout itself is **SEEDED PER RUN** now
   (world.js `buildLayout`): which archetype sits at which lane, per-world size/mass jitter, moon
-  counts (base ×1–1.5), names (a seeded shuffle) and an optional co-orbital pairing of the two
-  outer-band worlds all come off the world rng. The planet COUNT stays the template's 15 (17 in
+  counts (base ×1–1.5) and an optional co-orbital pairing of the two
+  outer-band worlds all come off the world rng. **NAMES ride a PRIVATE stream** (world.js
+  `PLANET_NAME_POOLS` — one themed pool per archetype, each shuffled off its own avalanche-mixed
+  fork of the run seed), so different seeds wear genuinely different names; the old shared-pool
+  shuffle is still burned on the world rng and discarded, which is what keeps every seed's layout
+  bit-identical across that change. The planet COUNT stays the template's 15 (17 in
   census, with the binary companion and the Wanderer's Star) — variety comes from arrangement,
   never population — while the MOON census varies (~70–80), so soaks/benches judge against the
   run's own start-of-run counts. The GUARDRAILS are structural (see buildLayout's header): all nine
@@ -240,8 +245,12 @@ changing anything it touches.**
     wall by up to 1.4 body radii and the hull bounced in open space.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
-`game.viewR`), the ship's flow-relative speed ceiling, LONG ARMS, corona/lava heat, gas-giant
-interiors, the orbit rubber band, fog of war, and the frame-relative trajectory forecast.
+`game.viewR`), the ship's flow-relative speed ceiling and its GRAVITY SLING CREDIT (slingshot
+speed banks an extra allowance that decays slowly; thrust overspeed still bleeds fast), LONG ARMS,
+SURFACE WEIGHT (ship-felt pull
+ramps up near a big world's surface, scaled by radius — launching off a giant is meant to be a
+fight), corona/lava heat, gas-giant interiors, the orbit rubber band, fog of war, and the
+frame-relative trajectory forecast.
 
 Plus **SURFACE FRICTION** (`CFG.SURF_FRICTION`): contact with a planet or moon drags the ship toward
 the velocity of the ground under it (`util.surfaceVel` — the world's motion plus its spin's
@@ -267,7 +276,7 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **A big rock doesn't handle like a pebble** — beam authority falls with the load's fraction of your
   allowance (`TRACTOR_HEFT`, squared) and *spools up* over `TRACTOR_SPOOL`. The wind-up governs the
   **throw** as well as the hold (`beamGrip` feeds both), or grab-and-instant-fling and re-grab spam
-  beat holding. Neither applies to the orbit shield or the brawler's trail rack.
+  beat holding. Neither applies to the orbit ring or the brawler's trail rack.
 - **A moon or a world must be WINCHED first** — `config.LATCH_BAND` bands it by class and MASS
   (small moons 1.6–2.6s, large 2.6–4.0s, worlds 4.0–5.8s); belt rock still takes hold on the click.
   The winch holds on the button and on range, never on the cursor, and its seconds carry into the
@@ -282,8 +291,9 @@ Plus the three scaling rules that make a big debris cascade affordable:
   resolves as a rope (take separating velocity, split by mass). It **rubber-bands** into that limit
   (`TETHER_STRETCH`), and the rope's length is **state** (`b.ropeL`, reeled in at `TETHER_REEL`) —
   engaging at the constant instead snaps a lagging load across the gap in one frame.
-  **Ship mass is per-tier** (`SHIP_MASS` 10 → 4,200): that ratio is the whole fight, so it can't
-  stay constant.
+  **Ship mass is per-tier** (`SHIP_MASS` 10 → 11,200): that ratio is the whole fight, so it can't
+  stay constant. It is DERIVED — `10 × (SHIP_RADIUS[t]/SHIP_RADIUS[0])^2.5` — so it must be re-baked
+  whenever the size ladder moves, and the exponent compounds that move.
 - **Your own shot is the lowest-precedence grab target**: not a target *at all* for
   `CFG.THROW_LOCKOUT` (2s) after a beam launch, then merely demoted, and a loaded stow ring outranks
   it either way. Ladder: loose rock → orbit ring → your own shot.
@@ -326,24 +336,66 @@ Plus the three scaling rules that make a big debris cascade affordable:
   stop is a body reference, not a coordinate; arrival pops the HEAD ONLY, at world.js's own chart-scan
   zone (so a stop ticks over exactly as the place names itself); a destroyed body leaves a flagged
   "lost contact" at its last position rather than silently vanishing from the list.
-- **A WORLD IS SOMEWHERE YOU CAN STOP.** Set the ship down on a planet or moon ROCKETS-DOWN and hold
+- **A WORLD IS SOMEWHERE YOU CAN STOP — except an OCEAN world.** Open sea has no anchorage: the
+  landing gates skip ptype `'ocean'` outright (its collider is the SEABED at `CFG.OCEAN_CORE`, the
+  water above is a drag volume, and hits ripple instead of cratering — see
+  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. Everywhere else:
+  set the ship down on a planet or moon ROCKETS-DOWN and hold
   still and it BERTHS (`physics.updateDock`): three gates — contact, the nose within `DOCK_ARC` of
   straight up, and surface-relative speed under `DOCK_SPEED` — all true for `DOCK_TIME`. The gates
   are deliberately GENEROUS; the interesting part is what a dock IS, not how tight the approach
   window is. **Attitude and stillness are ENTRY gates; only CONTACT holds a berth**, and the latch
   drains `DOCK_DRAIN`× faster than it fills, which is the whole of the hysteresis. A landing that
   silently declines to latch is this feature's worst failure mode, so the approach SHOWS ITS STATE —
-  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing.
+  `render.drawDockGuide` fills an arc on the ship and names the gate that is refusing. Two refusals
+  no flying can clear (their wording says "go elsewhere"): **no berth in a wound** (ground cratered
+  past `CFG.DOCK_CRATER_MAX` of the radius, off `util.scarSurfaceAt` — a pad pins to the NOMINAL
+  radius and would float over the hole), and **no anchorage on a world too small for the ship class**
+  (`config.dockHostOk`, berth floor vs 0.55 of the host radius — a tier-5 port wrapped a median
+  moon). Both lines run again on STANDING stations in `updateDock`'s sweep: ground blasted past the
+  crater line COLLAPSES the station (debris + message; alarm-grade when it was home), and a tier-up
+  that outgrows a station's world DECOMMISSIONS it quietly.
+- **A STANDING STATION LANDS YOU ITSELF** (`physics.updateAutoland`, `CFG.AUTOLAND_*`): close, slow
+  and hands-off near a pad you built **with a clear straight line to it** (`padPathClear` — it flies
+  a straight approach, so a world across the way refuses; the host's own far side falls out of the
+  same test), and it takes the helm — eases the approach, stands the nose
+  up, and lets the ordinary gates latch. Any thrust cancels it (cooldown `AUTOLAND_CD`, also set by
+  a launch so the pad can't reel you straight back in, and by a dash or warp, which never touch the
+  throttle); the first landing on bare ground is still
+  flown by hand. **A SHIP CARRYING A LOAD IS WORKING, NOT COMING HOME** — a held rock, a winch,
+  anything in the ring, or a held-button ram/stow sweep refuses the capture, hands back an approach
+  in progress, and **stands the pad down for `AUTOLAND_CD` like a launch does** (refreshed every
+  substep, or the pad darts into the fractions of a second between a release and the next grab and
+  tugs without ever finishing). Every one of those verbs is mouse-driven, so mining your own pad's
+  world otherwise looks exactly like a hands-off return — and the berth's `standDown` would dump the
+  lot for nothing.
+  Not mirrored in `predictPaths` — see the doc for why.
+- **A HOME RESPAWN ARRIVES BERTHED** (`physics.berthAt`, called from main.js's respawn): docked in
+  the clamps, shield and repair live, one thrust from a launch — never hovering over its own pad to
+  re-earn a berth it already owns.
 - **A DOCK IS A STRUCTURE, NOT A STATE.** Berth on bare ground and you BUILD one: `DOCK_BUILD` (10s)
   of staying put, during which you get **nothing** — the shield and the repair both gate on
   `physics.dockReady`, so those ten exposed seconds are the price. Once built the station STANDS on
   that world for the rest of the run; fly back and you berth instantly with everything live.
   `game.docks` holds them (bounded by `DOCK_MAX`), and `game.dock`/`game.home` are REFERENCES into
   it, never copies — the build clock ticks on the station.
-- **A FINISHED DOCK IS A SAFE HARBOUR**: a shield dome over the berth and total damage immunity (one
-  early-out in `damageShip`), plus `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull
-  never self-heals". The dome also **REPELS** loose rock and aliens (`updateDomeShield`) — immunity
-  alone is half a shield. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
+- **A FINISHED DOCK IS A SHIELDED HARBOUR, AND THE SHIELD IS FINITE**: a dome over the berth backed
+  by a fixed pool (`CFG.DOCK_SHIELD` 2400, on the station as `d.hp`) that **never recharges** — and
+  when it runs out the STATION breaks with it (`breakDock`) — and **the site is EVICTED**: losing a
+  station under you clears the landing latch AND locks that world's spot until the hull is genuinely
+  off the ground (`landing.lock`, refused as the `'rubble'` gate), or the ship rebuilds a full pool
+  on the same spot on the very next substep without ever leaving. "Genuinely" is the BERTH'S OWN
+  grace, `DOCK_TIME / DOCK_DRAIN` — a dome dies under fire, so one frame of lost contact is a bounce,
+  not a departure. Damage drains it and the overflow of the
+  killing blow still reaches the hull on that same call (no free frame, the ram's rule). Plus
+  `DOCK_HEAL` hull/s — the second sanctioned exception to "the hull never self-heals". The dome also
+  **REPELS** loose rock and aliens (`updateDomeShield`, which costs charge) — absorption alone is
+  half a shield. **Every velocity in that repel is measured in the dock's own frame** (`surfaceVel`):
+  the dome rides an orbiting world, and read absolutely, a drifting rock bills as a 700 u/s impact
+  and re-bills every substep.
+- **A PAD IS SIZED BY THE HULL AS DRAWN** (`config.berthR` = `st.radius × st.vis`), never by the
+  spec-agnostic collision circle — the scout and brawler art reaches past it, and sizing the deck off
+  the hitbox left them wider than their own berth. `dockHostOk` reads the same expression. Its geometry is `config.dockDomeR`, the SAME expression render draws, which
   is why `DOCK_TIERS` lives in config.js: a field whose pushing edge and drawn edge were two
   expressions is the mirror-drift trap. The ship is **held UPRIGHT** while berthed (`DOCK_UPRIGHT`;
   the mouse stops steering, aiming is unaffected) and **pinned EXACTLY** to the pad — friction is an
@@ -352,6 +404,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **LEAVING IS A SEQUENCE** (`CFG.LAUNCH_*`): thrust from a berth doesn't drive the ship, it calls a
   release — clamps swing open, then the engine lights against them, then the pad lets go with
   `LAUNCH_KICK`. Pinned to the pad's velocity throughout, and it commits once started.
+- **A FINISHED BERTH IS A VISTA** (`CFG.DOCK_VISTA`): once the station is built the camera slowly
+  eases out to a wider view of the neighbourhood — gated on `dockReady` like the shield and repair,
+  never during the exposed build — and the launch spool starting hands the zoom back to the normal
+  cinematic rate, so the dive in overlaps the clamps releasing.
 - **A DOCK IS WHERE YOU STOP WORKING.** Beam, orbit ring, tether, shotgun and mobility abilities are
   all inert while berthed (`main.dockBlocking` refuses input AND update() skips their substep work —
   a half-live system re-welds a ring the dock just emptied). Anything in hand is dropped AT THE BERTH
@@ -363,17 +419,36 @@ Plus the three scaling rules that make a big debris cascade affordable:
   back. One at a time, and **it dies with its world**. A station is `{ b, ang, rf, t }` — a body, a
   SURFACE-LOCAL bearing, a fraction of its radius (`util.padPos`) and its build seconds — never a
   coordinate: a world orbits AND spins, and a chipped-down world must keep its pad on the surface.
-  HOME is the lives ROSE on all three surfaces (pad, dial, chart) because rose already means "a life"
-  and one meaning must not wear three hues. **The station's ART tracks the SHIP'S TIER**
+  HOME is the lives ROSE — because rose already means "a life" and one meaning must not wear three
+  hues — but IN-WORLD it is a FLAG, NOT A PAINT JOB: the structure stays steel at every station and
+  only a lit spire and pennant go rose. The two instruments (dial, chart) still mark home in it
+  outright, which is their own grammar. **The station's ART tracks the SHIP'S TIER**
   (`config.DOCK_TIERS` via `dockTier`, 6 rows) — a dock is infrastructure you keep improving, so tiering up refits
   every station you own from a landing slab to a working spaceport.
-- **Hover hint rings:** green = auto-orbits, cyan = holdable, red = too heavy.
+- **Hover hint rings:** green = right-click STOWS it, amber = right-click CRUSHES it into the ram
+  (brawler), cyan = left-click holds it, red = too heavy. Green/amber are the right button, cyan the
+  left — one grammar, no legend needed.
 - **The cockpit chrome is LOCALE-reactive; the instruments are not** (hull green / shield blue / lives
   pink stay semantic). `zone.js` picks the accent from WHERE THE SHIP IS — deep space violet, world
   gold, corona ice, shoal orchid, fringe glacial — each chosen to sit OPPOSITE that region's sky.
   Hue is the locale's; the edge wash's INTENSITY is still the music director's mood.
 - **No hard edges in-world** — the world boundary and the Oort cloud are stochastic weather, never a
   stroke at an exact radius. In-world transitions are organic, never geometric.
+- **THE SUN IS A PLACE, NOT A LIGHT SOURCE** (`render.drawStar`). A 4,800-unit star fills the screen
+  at every distance, so the whole draw answers one question: WHAT RESOLVES WHEN YOU GET CLOSER.
+  Detail rides three scales — **live** supergranule cells in **both signs** (the coarse scale, because
+  a tile that size reads as wallpaper), **baked** granulation tiles at three spans (the fine scales,
+  because repetition that small reads as grain), and the limb's boil cells. **Granulation must BOIL
+  and must not TILE**: three separate bakes that each octave cross-fades between on its own clock, and
+  every octave fades out under ~8px per cell or the disc becomes orange peel, which flattens a sphere
+  as hard as no texture at all. **THE LIMB SMEAR IS WIDE ON PURPOSE and is not to be tightened** — a
+  tight feather kills the seam more cheaply but makes the approach read as skimming a big warm object;
+  near a STAR the view is meant to drown in light. The fringe is **cells, not strands** (jets read as
+  hair), prominences are **filled tapered ribbons in six faint bands** (stroked segments print a chain
+  of discs; one wide band prints its own edge), and the corona is a **union of soft lobes** (wedges
+  read as searchlights, one envelope path prints its own outline). **NO SUNSPOTS** — a full anatomy was
+  built and cut, because at this size a dark object on an all-light surface reads as damage, not
+  weather.
 - **A rock is never a perturbed primitive, and never convex** — a base shape plus noise reads as the
   base shape, however hard you rough it. `util.rockOutline` is the ONE generator for gravel and
   landmarks alike: lobes, stretch, 1/f grain, half-plane facets, concave bites and gouges, composed
@@ -390,6 +465,53 @@ Plus the three scaling rules that make a big debris cascade affordable:
   and `beginGasStrip` must zero `ventT` or the throes run their first half silent. And **gas ejecta
   are terminal** — they puff, they never split, or the pebble cloud comes straight back one shot
   later.
+- **SHIP SCALE: the top tier is half again as big, and the boost tapers LINEARLY down the ladder**
+  (`SHIP_RADIUS`, ×1.0 at tier 0 → ×1.5 at tier 5). Two derived constants move WITH it or the change
+  is wrong: `SHIP_MASS` (power 2.5 on the footprint) and `SHIP_ZOOM`, re-derived to hold
+  `footprint × zoom` fixed so the ship looks unchanged in the viewport and the +50% is spent on the
+  ship **against the worlds**. `CFG.STORM_SHADOW_PAD` is sized in Titan-widths and moves too (45 →
+  68). Cost to know: tier 5 sits further back, so its `viewR` covers ~1.9× the area.
+- **EVERY SPEC IS SIZE-MATCHED AGAINST THE HAULER** (`config.SHIP_VIS`, applied after the per-tier
+  reach normalization; scout and brawler target **1.25×** the hauler). Equal REACH is not equal SIZE —
+  a ladder whose reach comes from one outlier (the scout's nose, the brawler's deflector brow) gets
+  its whole body shrunk to pay for it. The metric is the ink's RADIUS OF GYRATION, measured by
+  `render.measureShipArt(game)`, not felt; bounding box (inflates the brawler) and ink area (inflates
+  the scout) were both tried and rejected. Bake `hauler.raw / spec.raw × 1.25`, and **bake twice** —
+  it converges. A spec's drawn reach is now past its collision circle by `vis`, so anything wrapping
+  the ART (`shipVisualR`, `ramPlate`) multiplies by it while the collision circle stays one number
+  for every spec.
+- **THE RAM IS MADE OF ROCK, AND ROCK HAS ITS OWN SCALE** — the one thing `SHIP_VIS` can't fix, since
+  it matches the slab to the HULL and the problem is the slab against the WORLD. `config.ramPlate`
+  sizes it off `hypot(r, CFG.RAM_MIN_R)`: a SOFT floor, so it never stops growing with the ship and
+  it evaporates where it isn't wanted (+391% at tier 0, +3% at tier 5). **Size it off the STONE, not
+  the slab** — the rocklet is capped by the slab's depth, so 26 is what lands tier-0 stones at radius
+  ~7, mid-class for the belt rock (6-14) the ram is built from. The floor is the SLAB only —
+  `back`/`gap` stay on the true drawn hull, or the ram floats a ship-length out in front.
+  `ramFace`/`ramArc` follow it by the mirror rule, so a low-tier ram's protected arc grows with what
+  you can see (tier 0 rank 1: 27deg -> 31deg); absorption is priced on ram MASS so it doesn't move.
+- **A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH** — the slab's thickness sizes the STONE
+  (`depth x RAM_STONE`) and `halfW` is DERIVED as whatever `ramPerRow(t)` of them occupy shoulder to
+  shoulder at `ramPack(t)` spacing (under 1 at every band, so they always touch — 0.92 jammed at band
+  1 to a 0.79 overlap at band 12). An independent width ramp is the bug this replaced: the slab grew
+  without getting fuller and the stones hung apart on their beams. `ramRows`/`ramPerRow`/`ramPack`/
+  `RAM_STONE` are exported and the plate publishes `stone`, because render builds the layout and
+  config solves the width against it — nothing in `ramTierRocks` may size a stone from the width.
+- **THE RAM'S DENSITY LADDER IS TWELVE BANDS, TWO PER RANK** (`config.RAM_TIERS`), and **band 1 is a
+  PAIR** — two boulders, the one count the old ladder had no rung for. The EVEN bands are
+  the old six-band ladder exactly, so every rank still tops out on the build it always did. Three
+  things are keyed off the length and move with it: `ramPlate`'s `t` coefficients, `ramTierRocks`'
+  rows/perRow/packK ramp and rig count, and `spendRam`'s per-drop spall (a crossing now happens twice
+  as often, and the debris budget is not free).
+- **ONE HULL STROKE WEIGHT, AND IT IS THE HAULER'S** (`render.outlineW(tier, r)`). Never derive it
+  per spec: the old `k × u` form looked shared but `u` is an ART-SPACE unit that differs per ladder,
+  so equal coefficients drew unequal lines — and `SHIP_VIS` made it worse by scaling two ladders up.
+  **Re-bake `SHIP_VIS` after any stroke change**, since outline width feeds the ink it measures.
+- **SHIP MASS IS PER-SPEC TOO** (`config.SPEC_MASS`: brawler 1.39, hauler 1, scout 0.78, flat).
+  Tier = how big the hull is, spec = how dense. Measured off ink fill at matched size (0.75 / 0.54 /
+  0.42), not picked. Size is shared across specs; weight is not.
+- **THE SCOUT'S WINGS ARE BARE** — no gun pods, barrels or hardpoints. The class escalates GUIDANCE,
+  not armament, so the ladder still reads off the gimbal/dishes/arrays/booms/sail and the evolving
+  wing planform. (Loose end: the intake maw and hopper now feed nothing.)
 - **World scale:** `PLANET_R_MUL`/`MOON_R_MUL` grow radii only — masses are untouched, and the
   multiplier is a *ceiling* capped by neighbouring lane clearance.
 - **System scale:** `CFG.SYS_R_MUL` spreads the sky. **Every sun-anchored radius in world.js goes
@@ -437,9 +559,24 @@ Plus the three scaling rules that make a big debris cascade affordable:
   at slowly weathers, but never below `PLANET_WEAR_FLOOR`.
 - **Rogue planets are gone** (`type: 'rogue'` still supported everywhere — nothing spawns one).
 - **Enemy density is deliberately sparse**; nests and shoal-lurker broods are the only alien sources.
-- **The shield is an ability, not base, and its shape is spec DNA** (BRAWLER front plate / SCOUT
-  full-wrap / HAULER none). Hull does not self-heal — it mends only at a glow pocket, on a DOCK, and
-  on the sanctioned hull-gain heal.
+- **A GAME MODE IS A ROW, AND THE WORLD IS THE SAME WORLD IN EVERY MODE.** `config.MODES` (classic /
+  peaceful / exploration) carries the ruleset — `hostiles` and `dmgMul` — and every consumer reads a
+  FIELD off `game.rules`, never the mode id. The hostile layer is REMOVED after `generateWorld` has
+  built the sky (`world.applyModeRules`), never skipped while building it: generation is seeded, a
+  saved system is nothing but a seed, and swallowing `addNest`'s rng draws would give the same seed a
+  different sky per mode. `dmgMul` rides the one funnel in `physics.damageShip` — and never `fxDmg`,
+  which counts real blows. The mode is a persisted SETTING chosen on the title screen only, and
+  `window.freshRun` pins CLASSIC so no suite ever soaks a sky the code didn't change. Full rules:
+  [docs/shell-and-menus.md](docs/shell-and-menus.md).
+- **The shield is an ability, not base, and it is SCOUT-ONLY** (Phase Screen's full wrap). HAULER
+  answers a hit with the orbit rock wall — and that wall is TWO abilities, deliberately: Orbital
+  Sling is the rack that carries the rock, Guard Sling is what makes it step in front of anything
+  (Rockwall then decides whether it survives doing so). BRAWLER answers with hull plus the War Rack
+  ram — neither has a
+  `shield`-channel row, and nothing may give them one. The directional-arc machinery (`st.shieldArc`,
+  `physics.damageShip`, render's feathered wedge) is kept and tested but currently has no user.
+  Hull does not self-heal — it mends only at a glow pocket, on a DOCK, and on the sanctioned
+  hull-gain heal.
 
 ### Progression → [docs/progression.md](docs/progression.md)
 
@@ -496,7 +633,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; 30/30 must pass. Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (32 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

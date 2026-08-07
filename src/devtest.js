@@ -3,12 +3,14 @@ import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   stormStrength, stormSpent, shelterR, SHIP_RADIUS } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
+import { Alien } from './entities.js';
+import { updateAliens } from './ai.js';
 import { damageShip, parryLive } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
 import { setDeathVisible, updateHud } from './hud.js';
 import { setSfxVolume } from './sfx.js';
-import { mulberry32, surfaceVel, TAU } from './util.js';
+import { mulberry32, surfaceVel, scarSurfaceAt, padPos, TAU } from './util.js';
 import { ROCK_SHAPES } from './rockdata.js';
 import { rockCircleQuery } from './rockshape.js';
 import { input } from './input.js';
@@ -58,6 +60,21 @@ import { input } from './input.js';
 // VIEW_REF_DIAG/2/zoomCur — no rounding to differ about. It is also an
 // ordinary full-screen play window, so the suite exercises what people fly.
 const VIEW_PIN = { vw: 1920, vh: 1080 };
+
+// THE SPEAKERS ARE NOT PART OF ANY ASSERTION, so they may not be able to fail
+// the suite. setSfxVolume reaches sfxBus.gain.setTargetAtTime, which throws
+// InvalidStateError on a closed AudioContext — and there may be no audio graph
+// at all, since one is only built on a user gesture. Two distinct failures come
+// off that, both real:
+//   - at SETUP a throw aborts the whole run, so a headless or gesture-less
+//     session simply cannot run mechTest;
+//   - in the TEARDOWN it is worse. The restore sits in the middle of the
+//     finally, so a throw there skips every restore BELOW it — godMode,
+//     started, the cursor and the held keys — which is precisely the leak the
+//     teardown exists to prevent, reintroduced through the teardown itself.
+// Swallowed on purpose: muting is a courtesy to whoever is listening, and a
+// courtesy must not be load-bearing.
+const hushAudio = (v) => { try { setSfxVolume(v); } catch { /* no audio graph — carry on */ } };
 
 // Assertion helper: numbers land in the detail string so a failure is
 // diagnosable straight from the report, without re-running.
@@ -131,12 +148,17 @@ export function runMechTest(game, hooks, opts = {}) {
   const wall0 = performance.now();
 
   // ---- determinism + quiet: seeded RNG swap, sound off, picks auto-resolved
+  // CAPTURE EVERYTHING FIRST, MUTATE NOTHING UNTIL INSIDE THE TRY. Every
+  // restore below lives in the finally, so any mutation made BEFORE `try` is
+  // unprotected: the audio mute was the one that actually bit — a throw there
+  // left Math.random permanently stubbed and the view permanently pinned, i.e.
+  // exactly the leak this teardown exists to prevent, reached through the
+  // teardown's own setup. That call is belt-and-braces now (hushAudio swallows
+  // it), but the ORDERING is the rule and it holds for every mutation added
+  // here later, guarded or not. T23's comment states the same convention.
   const realRandom = Math.random;
   const rng = mulberry32(seed ^ 0x5f3759df);
-  draws = 0;
-  Math.random = () => { draws++; return rng(); };
   const wasAuto = game.autoUpgrade;
-  game.autoUpgrade = true;
   // PAUSE IS SHARED STATE TOO. T23 forces `paused = false` to prove a digit
   // cannot be spent into a paused run, and main.js's frame loop gates the sim
   // update on `game.paused` — so running the suite from the console while
@@ -157,16 +179,39 @@ export function runMechTest(game, hooks, opts = {}) {
   // view (applyZoom, and update()'s viewR + mouseWorld); the chart's DOM
   // handlers keep the real one, which the suite never touches.
   const wasViewPin = game.viewPin;
-  game.viewPin = VIEW_PIN;
-  // Mute the SFX bus for the scripted burst (there are no audio toggles any
-  // more — the volume slider IS the control; game.sfxVol still holds the
-  // user's level to restore).
-  setSfxVolume(0);
-  game.collisionLog = [];
-  game.deathLog = [];
-  game.nanEvents = 0;
+  // GOD MODE AND `started` ARE SHARED STATE, and the suite was FORCING them
+  // rather than restoring them: the old finally set `game.godMode = false`
+  // outright, so running mechTest() under window.god(true) silently disarmed
+  // it, and hooks.freshRun sets `game.started = true` and never put it back, so
+  // running from the splash returned you a live run playing behind the overlay.
+  const wasGod = game.godMode;
+  const wasStarted = game.started;
 
   try {
+    draws = 0;
+    Math.random = () => { draws++; return rng(); };
+    game.autoUpgrade = true;
+    game.viewPin = VIEW_PIN;
+    // PARK THE CURSOR AT THE PINNED CENTRE. The suite restored input.mouseX/Y
+    // but never INITIALISED them, and update() rebuilds game.aim from them
+    // every frame — so every case before the docking block (grab, fling, orbit,
+    // picks, shield, glow, death, delivery, chart) ran on wherever the player's
+    // real cursor happened to be. That is the +95-vs-+83 delivery XP wobble the
+    // note above records, and it is also why the view pin alone was not enough:
+    // pre-pin the offset was (mouseX - realVw/2)/zoom, so a centred cursor gave
+    // exactly zero on ANY window; post-pin it became (mouseX - 960)/zoom, which
+    // for that same centred cursor varies WITH the window. Pinning the cursor
+    // to the pinned view's centre restores the zero and closes both halves.
+    input.mouseX = VIEW_PIN.vw / 2;
+    input.mouseY = VIEW_PIN.vh / 2;
+    // Mute the SFX bus for the scripted burst (there are no audio toggles any
+    // more — the volume slider IS the control; game.sfxVol still holds the
+    // user's level to restore). Via hushAudio — see its note.
+    hushAudio(0);
+    game.collisionLog = [];
+    game.deathLog = [];
+    game.nanEvents = 0;
+
     // T0 — the achievement catalog is id-unique. The whole track is id-keyed:
     // `award` returns early on `st.got[a.id]`, so a duplicate id silently
     // forfeits the second row's points and XP while the panel — keyed the same
@@ -498,38 +543,68 @@ export function runMechTest(game, hooks, opts = {}) {
     });
 
     // T6 — shield ability: rank>0 unlocks a pool that absorbs BEFORE the hull.
-    // Also the ARC law — BRAWLER's War Plating covers the front only, so it
-    // eats a frontal hit whole, ignores one from behind, and soaks just its
-    // COVERAGE SHARE (half) of directionless damage: heat, gas crush, Oort.
+    //
+    // PROBED AS A SCOUT, and this is the DESIGN LAW half of the test: the
+    // shield is SCOUT-ONLY. Phase Screen is the sole shield-channel row in the
+    // catalog — BRAWLER's front-arc War Plating is deleted and HAULER never had
+    // one — so a brawler-spec probe would be asserting against a build no run
+    // can reach. The spec is restored after; every later test wants the brawler.
+    //
+    // The second half is the ARC law, which physics.damageShip still honours
+    // even though nothing in the catalog produces a partial wedge today: a hit
+    // outside the coverage arc skips the shield entirely, and DIRECTIONLESS
+    // damage (heat, gas crush, Oort grind) is soaked only in the arc's COVERAGE
+    // SHARE. It is exercised against an EXPLICIT wedge written onto game.st,
+    // not against an ability's number, so the mechanism cannot rot unnoticed
+    // while it sits between users.
     t('shield unlocks and absorbs first', () => {
       const s = game.ship;
-      game.prog.upgrades.warPlating = 3;         // BRAWLER's shield channel
+      const wasSpec = game.prog.spec;
+      game.prog.spec = 'scout';
+      game.prog.upgrades.phaseScreen = 3;        // SCOUT's shield channel
       game.st = shipStats(game.prog);
       expect(game.st.shieldMax > 0, 'shield rank did not unlock a pool');
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      expect(game.st.shieldArc >= Math.PI, 'Phase Screen is a FULL WRAP, not a wedge');
+      const pool = game.st.shieldMax;
+      s.shield = pool; s.invuln = 0;
       let hull0 = s.hull, sh0 = s.shield;
       damageShip(game, 10, 'suite: absorb probe', s.angle);   // straight up the nose
       expect(s.hull === hull0, 'damage leaked past a full shield');
       expect(Math.abs(sh0 - s.shield - 10) < 1e-9, `shield absorbed ${sh0 - s.shield}, wanted 10`);
-      // ...from BEHIND the front arc it soaks nothing — the tail is bare
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      // ...and a full wrap has no bare bearing: the same hit from behind is
+      // soaked exactly as the frontal one was.
+      s.shield = pool; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
       damageShip(game, 10, 'suite: rear probe', s.angle + Math.PI);
+      expect(s.hull === hull0, 'a full wrap let a rear hit through to the hull');
+      expect(Math.abs(sh0 - s.shield - 10) < 1e-9, 'a full wrap soaked the wrong amount from behind');
+      // ARC MECHANISM, forced: a narrow nose wedge eats a frontal hit whole,
+      // ignores one from behind, and takes only shieldArc / PI of an all-over
+      // effect. The share is DERIVED from the wedge rather than hardcoded, so
+      // retuning the angle here can't silently invert the assertion.
+      const wedge = Math.PI * 0.35;
+      game.st.shieldArc = wedge;
+      const share = wedge / Math.PI;
+      s.shield = pool; s.invuln = 0;
+      hull0 = s.hull; sh0 = s.shield;
+      damageShip(game, 10, 'suite: wedge rear probe', s.angle + Math.PI);
       expect(s.shield === sh0, 'the front arc soaked a hit from behind');
       expect(Math.abs(hull0 - s.hull - 10) < 1e-9, 'a rear hit did not go straight to hull');
-      // ...and DIRECTIONLESS damage splits by COVERAGE SHARE (shieldArc / PI),
-      // derived rather than hardcoded: the brawler wedge is deliberately under
-      // half (see shipStats), so a literal 5 here would just re-break every
-      // time that angle is tuned.
-      s.shield = game.st.shieldMax; s.invuln = 0;
+      s.shield = pool; s.invuln = 0;
       hull0 = s.hull; sh0 = s.shield;
-      const share = game.st.shieldArc / Math.PI;
       damageShip(game, 10, 'suite: directionless probe');
       expect(Math.abs(sh0 - s.shield - 10 * share) < 1e-9,
         `the wedge soaked ${sh0 - s.shield} of 10 directionless, wanted ${10 * share}`);
       expect(Math.abs(hull0 - s.hull - 10 * (1 - share)) < 1e-9, 'the rest never reached the hull');
+      // Put the brawler build back exactly as it was — including the hull/shield
+      // split, which shipStats rebuilds from the (now shieldless) spec.
+      game.prog.spec = wasSpec;
+      delete game.prog.upgrades.phaseScreen;
+      game.st = shipStats(game.prog);
+      expect(game.st.shieldMax === 0, 'BRAWLER came back carrying a shield pool');
       s.shield = game.st.shieldMax;
-      return `pool=${Math.round(game.st.shieldMax)}`;
+      s.hull = Math.min(s.hull, game.st.hullMax);
+      return `pool=${Math.round(pool)} (probed as scout; the shield is scout-only)`;
     });
 
     // T7 — window.god: the damageShip choke point ignores everything
@@ -564,14 +639,39 @@ export function runMechTest(game, hooks, opts = {}) {
         : `held at ${Math.round(hull0)}/${game.st.hullMax}`;
     });
 
-    // T9 — the shield DOES recharge after the quiet delay
+    // T9 — the shield DOES recharge after the quiet delay. Probed as a SCOUT
+    // for the same reason T6 is: the shield is scout-only now, so the suite's
+    // own brawler build has no pool for a regen tick to fill. Restored after.
+    //
+    // This one STEPS THE SIM for a second, so it strips the brawler's War Rack
+    // across the swap the same way T4 does — channels sum across specs, and a
+    // leftover orbit rank would run that second with a scout holding an open
+    // ring slot AND a loaded ram it no longer has the capacity for. T6 gets
+    // away without it because it only calls damageShip directly.
     t('shield recharges after quiet time', () => {
       const s = game.ship;
+      const wasSpec = game.prog.spec;
+      const hadRack = game.prog.upgrades.bulwarkRing || 0;
+      const hadRam = s.ram || 0;
+      delete game.prog.upgrades.bulwarkRing;
+      s.ram = 0;
+      game.prog.spec = 'scout';
+      game.prog.upgrades.phaseScreen = 3;
+      game.st = shipStats(game.prog);
+      s.hull = Math.min(s.hull, game.st.hullMax);
       s.shield = 0;
       game.lastDamage = game.time - (game.st.regenDelay + 1);
       hooks.stepSim(1);
-      expect(s.shield > 0, 'shield did not recharge after the quiet delay');
-      return `+${s.shield.toFixed(1)} in 1s`;
+      const gained = s.shield;
+      expect(gained > 0, 'shield did not recharge after the quiet delay');
+      // Put the brawler build back exactly as it was.
+      game.prog.spec = wasSpec;
+      delete game.prog.upgrades.phaseScreen;
+      if (hadRack) game.prog.upgrades.bulwarkRing = hadRack;
+      game.st = shipStats(game.prog);
+      s.ram = hadRam;
+      s.shield = 0;
+      return `+${gained.toFixed(1)} in 1s`;
     });
 
     // T10 — speed governor: an absurd velocity bleeds back toward the local
@@ -784,7 +884,10 @@ export function runMechTest(game, hooks, opts = {}) {
       put();                          // gravity pulls it back over that second
       hooks.stepSim(1 / 60);
     };
-    const aWorld = () => game.bodies.find((b) => b.type === 'moon' && b.alive);
+    // radius >= 40: comfortably above config.dockHostOk's tier-0 line (~33) —
+    // a moonlet offers no anchorage at all now, so the dock tests must stage
+    // on a moon that can actually host one.
+    const aWorld = () => game.bodies.find((b) => b.type === 'moon' && b.alive && b.radius >= 40);
 
     // T15 — the three gates, and that a berth actually forms
     t('dock: three gates latch a berth', () => {
@@ -813,9 +916,11 @@ export function runMechTest(game, hooks, opts = {}) {
     t('dock: build window is unprotected, finished berth heals', () => {
       const s = game.ship;
       expect(game.dock && game.dock.t < 10, 'test needs a fresh, unfinished berth');
-      // The suite has already granted a shield by now, and damageShip spends
-      // that first — an unzeroed pool would absorb the probe and read exactly
-      // like the immunity this test is trying to prove is ABSENT.
+      // Zeroed defensively: damageShip spends the shield pool first, so any
+      // pool at all would absorb the probe and read exactly like the immunity
+      // this test is trying to prove is ABSENT. The suite's brawler build
+      // carries none now (the shield is scout-only), but the earlier probes
+      // borrow the scout's, and this must not depend on them cleaning up.
       s.shield = 0; game.godMode = false; s.invuln = 0;
       s.hull = game.st.hullMax * 0.5;
       const hurt0 = s.hull;
@@ -914,16 +1019,327 @@ export function runMechTest(game, hooks, opts = {}) {
       const station = game.dock;
       // The KEY, not game.controls — readControls rebuilds controls from
       // input.keys every frame, so a field poked here is gone within one step.
+      // HELD IN A finally, not released mid-body: the `expect` between the two
+      // steps throws, makeT catches it and carries on, and the key stayed down
+      // — so T19b then ran with thrust held, the ship flew off the pad, and all
+      // four of its dock assertions failed pointing at dock logic instead of at
+      // a stuck key. Same convention as T23.
       input.keys.add('KeyW');
-      hooks.stepSim(0.1);
-      expect(game.launch, 'thrust at a berth did not start a launch sequence');
-      hooks.stepSim(2.0);                       // > LAUNCH_TIME
-      input.keys.delete('KeyW');
+      try {
+        hooks.stepSim(0.1);
+        expect(game.launch, 'thrust at a berth did not start a launch sequence');
+        hooks.stepSim(2.0);                       // > LAUNCH_TIME
+      } finally {
+        input.keys.delete('KeyW');
+      }
       expect(!game.dock, 'still berthed after the launch sequence finished');
       expect(game.docks.includes(station), 'the station vanished when the ship left it');
       expect(station.t >= 10, 'the finished station lost its build progress');
       hooks.stepSim(0.5);
       return `launched; ${game.docks.length} station still standing at t=${Math.round(station.t)}s`;
+    });
+
+    // T18c — THE DOCK GROUND RULES (2026-08): a standing station AUTOLANDS a
+    // hands-off return; blasting the ground under a station COLLAPSES it; the
+    // same wound refuses a fresh berth ('crater'); and a world too small for
+    // the ship class offers no anchorage at all ('small'). Each is exactly the
+    // kind of rule main.dockBlocking can't see and only this suite guards.
+    t('dock: autoland, ground collapse, crater + host-size gates', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      // A moon big enough to host tier 0 but NOT tier 5, so both host-size
+      // verdicts in this test are structural rather than luck of the seed.
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth on clean ground');
+      game.dock.t = CFG.DOCK_BUILD;          // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      // AUTOLAND: lift clear, then park hands-off inside the capture radius
+      // with the nose deliberately off-axis. The pad must take the helm, fly
+      // the approach and berth through the ordinary three gates — no input.
+      liftClear(w);
+      expect(!game.dock, 'setup: still berthed after lifting clear');
+      const dk = game.docks[0];
+      game.autolandCd = 0;
+      const a = dk.ang + dk.b.rot;
+      const pr = dk.b.radius * dk.rf;
+      s.x = dk.b.x + Math.cos(a) * (pr + 300); s.y = dk.b.y + Math.sin(a) * (pr + 300);
+      s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a + 1.0;
+      game.cam.x = s.x; game.cam.y = s.y;
+      hooks.stepSim(0.2);
+      expect(game.autoland === dk, 'a hands-off return inside the capture radius was not taken');
+      hooks.stepSim(8);
+      expect(game.dock === dk, 'the autoland never berthed the ship');
+      // COLLAPSE: blast the ground under the standing station. The station
+      // must break — before this rule it floated on its build-time standoff
+      // over the hole (the pad knows only the NOMINAL radius).
+      w.scars.push({ a: dk.ang, s: 2.5, t: game.time });
+      hooks.stepSim(2 / 60);
+      expect(!game.docks.includes(dk), 'a station survived losing its ground');
+      expect(!game.dock, 'the berth survived the collapse');
+      // CRATER GATE: a fresh landing ON THE WOUND ITSELF refuses, and names
+      // itself. Seated against the CRATERED floor (scarSurfaceAt — the same
+      // profile the collider reads), not the nominal radius: the wound is
+      // deeper than setDown's seat, so a nominal seat would hover over the
+      // hole with no contact and the test would pass for the wrong reason
+      // (no gate at all instead of 'crater').
+      {
+        const scarA = w.scars[0].a;                    // ride the spin with it
+        for (let t = 0; t < CFG.DOCK_TIME + 0.6; t += 1 / 60) {
+          if (!game.dock) {
+            const ang = scarA + w.rot;
+            const surf = w.radius * scarSurfaceAt(w.scars, w.radius, scarA);
+            const d = surf + s.radius - Math.max(1.5, s.radius * 0.35);
+            s.x = w.x + Math.cos(ang) * d; s.y = w.y + Math.sin(ang) * d;
+            const sv = surfaceVel(w, s.x, s.y);
+            s.vx = sv.vx; s.vy = sv.vy; s.spin = 0;
+            s.angle = ang;                             // rockets down on the radial
+            game.cam.x = s.x; game.cam.y = s.y;
+          }
+          hooks.stepSim(1 / 60);
+        }
+      }
+      expect(!game.dock, 'berthed inside a crater');
+      expect(game.dockGate === 'crater', `refusing gate was "${game.dockGate}", wanted "crater"`);
+      w.scars.length = 0;
+      // HOST SIZE: the same clean moon refuses a tier-5 hull outright —
+      // config.dockHostOk, the line the refit sweep also decommissions across.
+      // Restored spec-and-tier together below; T19b then does its own freshRun.
+      const wasTier = game.prog.tier;
+      game.prog.tier = 5;
+      game.st = shipStats(game.prog);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(!game.dock, 'a titan berthed on a world too small for its class');
+      expect(game.dockGate === 'small', `refusing gate was "${game.dockGate}", wanted "small"`);
+      game.prog.tier = wasTier;
+      game.st = shipStats(game.prog);
+      return `autoland berthed at ${Math.round(pr + 300)}u out; collapse, crater and host-size gates all hold`;
+    });
+
+    // T18d — THE AUTOLAND FLIES A STRAIGHT LINE, so it must only take a ship
+    // that HAS one. Parked on the far side of the pad's own world, inside the
+    // capture radius and perfectly hands-off, it must refuse — engaging there
+    // would drive the ship through the world it is trying to land on.
+    t('dock: autoland refuses a blocked approach', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      // Small enough that the far side is INSIDE CFG.AUTOLAND_R — otherwise the
+      // distance gate would refuse first and this would pass for the wrong
+      // reason, proving nothing about line of sight.
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius * 2 + 60 < CFG.AUTOLAND_R);
+      expect(w, `no moon small enough for the far side to sit inside AUTOLAND_R ${CFG.AUTOLAND_R}`);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      game.dock.t = CFG.DOCK_BUILD;
+      hooks.stepSim(1 / 60);
+      const dk = game.docks[0];
+      liftClear(w);
+      game.autolandCd = 0;
+      // THE FAR SIDE: same distance band as T18c's successful capture, but with
+      // the whole moon in the way.
+      const a = dk.ang + dk.b.rot + Math.PI;
+      const out = dk.b.radius + 40;
+      s.x = dk.b.x + Math.cos(a) * out; s.y = dk.b.y + Math.sin(a) * out;
+      s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a;
+      game.cam.x = s.x; game.cam.y = s.y;
+      const pp = padPos(dk);
+      const gap = Math.hypot(pp.x - s.x, pp.y - s.y);
+      expect(gap < CFG.AUTOLAND_R,
+        `staging put the pad ${Math.round(gap)}u away, outside AUTOLAND_R ${CFG.AUTOLAND_R} — the distance gate would refuse first`);
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the autoland engaged straight through the world it is standing on');
+      return `refused a pad ${Math.round(gap)}u away with ${Math.round(w.radius)}u of moon in the way`;
+    });
+
+    // T18e — THE DOME IS FINITE, NEVER REFILLS, AND ITS DEATH IS THE STATION'S.
+    // A berth used to be total immunity; it is a pool now (CFG.DOCK_SHIELD).
+    // Three things have to hold together or the feature is a lie: damage lands
+    // on the POOL and not the hull, the pool does NOT come back, and the
+    // overflow of the killing blow reaches the hull on that SAME call (the
+    // ram's own no-free-frame rule).
+    t('dock: the dome is a finite pool and takes the station with it', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      const dk = game.dock;
+      expect(dk.hp === CFG.DOCK_SHIELD, `a fresh station carries hp ${dk.hp}, wanted ${CFG.DOCK_SHIELD}`);
+      dk.t = CFG.DOCK_BUILD;
+      hooks.stepSim(1 / 60);
+      s.shield = 0; s.invuln = 0; game.godMode = false;
+      s.hull = game.st.hullMax;
+      const hull0 = s.hull;
+      damageShip(game, 40, 'test');
+      expect(s.hull === hull0, `the dome let ${(hull0 - s.hull).toFixed(1)} through to the hull`);
+      expect(Math.abs(dk.hp - (CFG.DOCK_SHIELD - 40)) < 0.001,
+        `the dome absorbed but banked ${dk.hp}, wanted ${CFG.DOCK_SHIELD - 40}`);
+      // NO RECHARGE — not over time, not at a berth. A full second of berthed
+      // sim must leave the pool exactly where the hit left it.
+      const spent = dk.hp;
+      hooks.stepSim(1);
+      expect(dk.hp <= spent + 0.001, `the dome recharged ${(dk.hp - spent).toFixed(2)} in a second`);
+      // THE KILLING BLOW: 10 left, 60 arrives. The dome eats 10, dies, takes the
+      // station with it, and the remaining 50 lands on the hull NOW.
+      dk.hp = 10;
+      s.hull = game.st.hullMax;
+      const before = s.hull;
+      damageShip(game, 60, 'test');
+      expect(!game.docks.includes(dk), 'the station survived its dome collapsing');
+      expect(!game.dock, 'still berthed at a station that no longer exists');
+      const through = before - s.hull;
+      expect(Math.abs(through - 50) < 0.001,
+        `the hull took ${through.toFixed(1)} of the 60-point blow, wanted the 50 the dome could not cover`);
+      return `pool ${CFG.DOCK_SHIELD}, no recharge, collapse passed 50 of 60 straight through`;
+    });
+
+    // T18f — A COLLAPSED DOME IS A LOSS, NOT AN INTERRUPTION. The landing latch
+    // is module scratch that outlives the station it filled, so a dome breaking
+    // under a berthed ship used to lay a FRESH site on the same spot on the
+    // very next substep — a brand-new CFG.DOCK_SHIELD pool for a player who
+    // never left the ground, which is the opposite of "a place you can lose".
+    // Clearing the latch alone would only have delayed that by DOCK_TIME
+    // (0.5s), so the site is EVICTED until the hull actually leaves. Both
+    // halves are asserted: no rebuild in the rubble, AND the honest rebuild
+    // after leaving and coming back still works — that one is sanctioned, and
+    // it still costs the full DOCK_BUILD exposed.
+    t('dock: a collapsed station cannot rebuild under the ship', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      const dk = game.dock;
+      dk.t = CFG.DOCK_BUILD;                 // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      s.shield = 0; s.invuln = 0; game.godMode = false;
+      s.hull = game.st.hullMax;
+      dk.hp = 5;                             // one blow from the dome's death
+      damageShip(game, 20, 'test');
+      expect(!game.docks.includes(dk), 'setup: the dome survived a killing blow');
+      expect(!game.dock, 'setup: still berthed after the collapse');
+      // STILL ON THE GROUND, every gate held, for three times DOCK_TIME. The
+      // ship never lifts — so nothing may be built here.
+      holdDown(w, 0, CFG.DOCK_TIME + 1.0);
+      expect(game.docks.length === 0,
+        `${game.docks.length} station(s) rebuilt in their own rubble without the ship ever leaving`);
+      expect(!game.dock, 'berthed at a station rebuilt in its own rubble');
+      // …and it SAYS SO. A latch that fills and then silently declines to lay a
+      // station is this feature's worst failure mode (drawDockGuide's rule).
+      expect(game.dockGate === 'rubble', `refusing gate was "${game.dockGate}", wanted "rubble"`);
+      // A BOUNCE IS NOT A DEPARTURE — and this is the case that matters, not
+      // the quiet hold above. A dome only ever dies while the ground and the
+      // hull are being hit, so contact breaking for a frame or two (debris off
+      // the collapse, the next shot landing, a scar opening under the pad) is
+      // the COMMON case there. holdDown re-seats the hull every substep, so it
+      // can only ever exercise perfect contact; this lifts the ship clear for
+      // one frame at a time — well inside the DOCK_TIME/DOCK_DRAIN grace a
+      // BERTH itself survives — and the eviction has to survive it too, or the
+      // rebuild comes back for 16ms of air.
+      const hop = () => {
+        const a = Math.atan2(s.y - w.y, s.x - w.x);
+        const off = w.radius + s.radius + 30;          // clear of contact, barely
+        s.x = w.x + Math.cos(a) * off; s.y = w.y + Math.sin(a) * off;
+        const sv = surfaceVel(w, s.x, s.y);
+        s.vx = sv.vx; s.vy = sv.vy; s.spin = 0;
+        game.cam.x = s.x; game.cam.y = s.y;
+        hooks.stepSim(1 / 60);
+      };
+      for (let i = 0; i < 3; i++) { hop(); holdDown(w, 0, CFG.DOCK_TIME + 0.4); }
+      expect(game.docks.length === 0,
+        `${game.docks.length} station(s) rebuilt after a momentary bounce — a frame off the surface is not a departure`);
+      expect(!game.dock, 'a bounce off the rubble handed the berth back');
+      // THE LEGITIMATE REBUILD: leave, come back, build again — a NEW station
+      // with a full pool and a build clock that starts at zero.
+      liftClear(w);
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'a rebuild after genuinely lifting clear was refused too — the eviction never lifts');
+      expect(game.dock.hp === CFG.DOCK_SHIELD,
+        `the rebuilt station carries hp ${game.dock.hp}, wanted a fresh ${CFG.DOCK_SHIELD}`);
+      expect(game.dock.t < CFG.DOCK_BUILD, 'the rebuilt station arrived already finished');
+      return 'no rebuild in the rubble, bounces included; rebuild after lifting clear still pays DOCK_BUILD';
+    });
+
+    // T18g — THE AUTOLAND MUST NOT CAPTURE A SHIP THAT IS WORKING. `handsOn`
+    // only sees the THROTTLE, but the beam, the winch and the ring are all
+    // mouse-driven — so mining the world your own pad is on, from inside
+    // AUTOLAND_R, reads as a hands-off return. The berth then calls standDown
+    // and the whole load is dropped for nothing. Both directions, because a
+    // gate that merely never engages would pass the first half.
+    t('dock: autoland refuses a ship with a load in the beam', () => {
+      const s = game.ship;
+      hooks.freshRun(0, seed);
+      game.docks = []; game.dock = null; game.home = null;
+      const w = game.bodies.find((b) => b.type === 'moon' && b.alive
+        && b.radius >= 40 && b.radius < 200);
+      expect(w, 'no mid-size moon to stage on');
+      holdDown(w, 0, CFG.DOCK_TIME + 0.6);
+      expect(game.dock, 'setup: no berth');
+      game.dock.t = CFG.DOCK_BUILD;          // wind the build on — see T16's note
+      hooks.stepSim(1 / 60);
+      const dk = game.docks[0];
+      liftClear(w);
+      game.autolandCd = 0;
+      // The SAME park T18c is captured from — hands off, slow, well inside the
+      // capture radius — so the only difference between the two halves below is
+      // what the ship is carrying.
+      const park = () => {
+        const a = dk.ang + dk.b.rot;
+        const pr = dk.b.radius * dk.rf;
+        s.x = dk.b.x + Math.cos(a) * (pr + 300); s.y = dk.b.y + Math.sin(a) * (pr + 300);
+        s.vx = dk.b.vx; s.vy = dk.b.vy; s.spin = 0; s.angle = a + 1.0;
+        game.cam.x = s.x; game.cam.y = s.y;
+      };
+      park();
+      const r = spawnAsteroid(game.bodies, s.x + 60, s.y, s.vx, s.vy, 100);
+      game.aim.x = r.x; game.aim.y = r.y;
+      expect(tryGrab(game) === 'held', 'setup: the staged rock was not taken by the beam');
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad took the helm off a ship with a rock in the beam');
+      expect(!game.dock, 'a working ship was berthed by the autoland');
+      expect(game.held === r, 'the load was dropped without a berth ever forming');
+      // DROP IT (never a throw — this is not what T3 is about). THE BRAWLER'S
+      // WHOLE WORK LOOP is the line after: right mouse held, sweeping rock into
+      // the ram. It populates neither the beam, the winch nor the ring (this
+      // spec's maxOrbiters is 0), so it is invisible to every other term in the
+      // gate — and a berth would disarm the button the player is still holding.
+      releaseHeld(game, false);
+      r.alive = false;
+      park();
+      // ZEROED FIRST, or this probes nothing: the phase above stood the pad
+      // down, and a leftover cooldown refuses the capture on its own — the
+      // sweep would then read as protected whether or not the gate has ever
+      // heard of it. (Measured: without this the case passes with the ram term
+      // deleted outright.)
+      game.autolandCd = 0;
+      game.ramEating = true;                 // exactly what main.js sets on RMB-down
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad took the helm off a brawler mid ram-sweep');
+      game.ramEating = false;
+      // …AND WORKING STANDS THE PAD DOWN FOR AUTOLAND_CD — the launch's own
+      // price, and for the same reason. Mining is a cycle whose gaps are
+      // fractions of a second, so a bare refusal would let the pad dart in
+      // between every release and the next grab: nose dragged round, guide
+      // blinking, never finishing.
+      expect(game.autolandCd > 0, 'working never stood the pad down — it would tug in every mining gap');
+      park();
+      hooks.stepSim(0.3);
+      expect(!game.autoland, 'the pad engaged inside its own stand-down');
+      // …and once that runs out the IDENTICAL park is taken, so none of the
+      // above can be passing merely because the autoland never engages at all.
+      for (let i = 0; i < 15 && !game.autoland; i++) { park(); hooks.stepSim(0.3); }
+      expect(game.autoland === dk, 'a genuinely hands-off, empty-handed return was never taken');
+      return `refused a load and a ram sweep, stood down ${CFG.AUTOLAND_CD}s, then took the identical park`;
     });
 
     // T19b — "Limped In" must mean what it says. The arm is set at a berth
@@ -1158,7 +1574,116 @@ export function runMechTest(game, hooks, opts = {}) {
       }
     });
 
-    // T24 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
+    // ---- ALIEN AVOIDANCE ----------------------------------------------------
+    // T24 — ai.avoidWorlds casts its look-ahead in the WORLD'S OWN FRAME, the
+    // same law as util.surfaceVel's and for the same reason: worlds ORBIT. The
+    // moons in this sky carry 33-95 u/s and the planets 41-130, so a ray aimed
+    // at where a world is NOW arrives 50-200 units behind it over the function's
+    // 1.6s horizon — as much as its whole `clear` band for a moon.
+    //
+    // The rig makes that error a SIGN, not a magnitude, so it cannot pass by
+    // luck. A golem flies at 350 u/s straight down the normal to a moon's own
+    // track, aimed 40 units to the LEADING side of its centre. Read absolutely
+    // that is a near dead-on hit passing AHEAD of the moon, so the old whisker
+    // veered forward, +u, INTO the path of the thing it was dodging — precisely
+    // the moon-pancaking the function exists to stop. Read in the moon's frame
+    // the alien passes behind it (the moon has moved on by then), so the only
+    // correct veer is aft, -u. Measured: +87 u/s^2 forward before the fix, -92
+    // aft after it.
+    //
+    // Everything else is arranged to contribute exactly zero along u, so the
+    // whisker is the only thing the assertion can be reading: the moon is the
+    // most isolated in the sky (asserted — no other world is within its own
+    // avoidance reach of the alien, and the star is far outside avoidStars' shell),
+    // the alien sits OUTSIDE the surface push's band so the radial term is zero
+    // (asserted), and the ship is parked 1200 back along -v, which puts steer()
+    // purely on v and is beyond the 700 at which the landed-ship exemption
+    // could switch avoidance off altogether.
+    t('alien avoidance: the whisker is cast in the world\'s own frame', () => {
+      hooks.freshRun(0, seed);
+      const nAliens = game.aliens.length;
+      let al = null;
+      try {
+        // The most isolated moon that is actually MOVING — a slow one would
+        // make the two frames agree and the case would prove nothing.
+        const worlds = game.bodies.filter((b) => b.alive && (b.type === 'planet' || b.type === 'moon'));
+        let m = null, iso = -1;
+        for (const c of worlds) {
+          if (c.type !== 'moon' || Math.hypot(c.vx, c.vy) < 60) continue;
+          let near = Infinity;
+          for (const b of worlds) {
+            if (b === c) continue;
+            near = Math.min(near, Math.hypot(b.x - c.x, b.y - c.y) - b.radius);
+          }
+          if (near > iso) { iso = near; m = c; }
+        }
+        expect(m, 'no moon in this sky is moving fast enough to tell the two frames apart');
+
+        const R = 350;    // the alien's closing speed, under steer()'s own clamp
+        const E = 40;     // aimed this far to the moon's LEADING side of centre
+        const K = 1200;   // ship stand-off: > 700, so the attack-run exemption is off
+        // One frame first, so physics has rebuilt the awake list avoidWorlds
+        // walks — with the ship already in the neighbourhood, or the moon is
+        // dormant and the function never looks at it at all.
+        parkShip(game, m.x, m.y - 2000);
+        hooks.stepSim(1 / 60);
+
+        const W = Math.hypot(m.vx, m.vy);
+        const ux = m.vx / W, uy = m.vy / W;          // the moon's own heading
+        const vx = -uy, vy = ux;                     // and its normal
+        al = new Alien(0, 0, 'golem');
+        const clear = m.radius + al.radius + 90;
+        const D = clear + 150;                       // outside the surface push's band
+        al.x = m.x + vx * D + ux * E;
+        al.y = m.y + vy * D + uy * E;
+        al.vx = -R * vx; al.vy = -R * vy;            // straight in at the moon
+        parkShip(game, al.x - vx * K, al.y - vy * K);
+        game.aliens.push(al);
+
+        // Setup gates: nothing but the whisker may be pushing along u.
+        const d = Math.hypot(m.x - al.x, m.y - al.y);
+        expect(d > clear + 120,
+          `the alien is inside the surface push's band (${d.toFixed(0)} < ${(clear + 120).toFixed(0)}) — that radial term would swamp the whisker`);
+        const star = game.bodies.find((b) => b.alive && b.type === 'star');
+        expect(Math.hypot(al.x - star.x, al.y - star.y) > star.radius * 1.6 + 400,
+          'the rig sits inside avoidStars\' shell — its push would land on u too');
+        for (const b of worlds) {
+          if (b === m) continue;
+          const reach = b.radius + al.radius + 90 + 120 + (R + Math.hypot(b.vx, b.vy)) * 1.6;
+          expect(Math.hypot(b.x - al.x, b.y - al.y) > reach,
+            `${b.type} ${b.name || b.id} is inside its own avoidance reach of the rig — it would contribute too`);
+        }
+        // steer() clamps thrustX and thrustY INDEPENDENTLY, in WORLD axes — so
+        // it only stays off u while its unclamped magnitude fits inside
+        // ALIEN_ACCEL. Let that margin close (a bump to ALIEN_SPEED, to the
+        // golem's 0.85, to ALIEN_ACCEL, or to R here) and the clamp rotates the
+        // steer vector toward the world diagonal and spills ~15 u/s^2 of either
+        // sign onto u — small against the -92 measured, but it would quietly
+        // stop being true that the whisker is the ONLY thing this reads.
+        expect(Math.abs(R - CFG.ALIEN_SPEED * 0.85) * 2.2 < CFG.ALIEN_ACCEL,
+          `steer() clamps at this R (${R} vs golem cruise ${(CFG.ALIEN_SPEED * 0.85).toFixed(0)}, `
+          + `accel ${CFG.ALIEN_ACCEL}) — its residual would land on u and pollute the reading`);
+        // The wake list avoidWorlds walks was built by the step above, from the
+        // ship's position THEN. It comfortably covers the moon today, but a
+        // dormant `m` would read as a zero veer — i.e. this case would fail
+        // claiming the whisker went the wrong way when the truth is it never
+        // looked. Name that failure instead of inheriting it.
+        expect((game.bodies._awake || game.bodies).includes(m),
+          'the moon is not on the awake list — avoidWorlds never sees it, and a zero veer would misreport as a wrong one');
+
+        updateAliens(game, 1 / 60);
+        const along = al.thrustX * ux + al.thrustY * uy;
+        expect(along < -20,
+          `the veer went ${along.toFixed(0)} u/s^2 along the moon's own heading — a positive value steers the alien `
+          + `into the path of a moon moving at ${W.toFixed(0)} u/s, which is the absolute-frame whisker aiming at where the moon USED to be`);
+        return `${m.name || 'moon'} at ${W.toFixed(0)} u/s, alien ${d.toFixed(0)} out (clear ${clear.toFixed(0)}): veer ${along.toFixed(0)} u/s^2 aft`;
+      } finally {
+        if (al) al.alive = false;
+        game.aliens.length = nAliens;
+      }
+    });
+
+    // T25 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
     // window it ran in (issue #104). Everything above this line integrates
     // through game.viewR — the spawn ring and both leashes in
     // world.replenishWorld, the wake bubble, the glow field — and steers
@@ -1181,7 +1706,7 @@ export function runMechTest(game, hooks, opts = {}) {
       return `${VIEW_PIN.vw}x${VIEW_PIN.vh}, zoom=${game.cam.zoom.toFixed(4)}, viewR=${game.viewR.toFixed(1)}`;
     });
 
-    // T25 — the suite's own drama must not have shredded the sky
+    // T26 — the suite's own drama must not have shredded the sky
     t('sky intact after suite', () => {
       const now = census(game);
       expect((now.planet || 0) === (skyBefore.planet || 0),
@@ -1195,8 +1720,10 @@ export function runMechTest(game, hooks, opts = {}) {
     game.viewPin = wasViewPin;
     game.autoUpgrade = wasAuto;
     game.paused = wasPaused;
-    setSfxVolume(game.sfxVol);
-    game.godMode = false;
+    hushAudio(game.sfxVol);
+    // RESTORE, never force — see the capture note above.
+    game.godMode = wasGod;
+    game.started = wasStarted;
     input.mouseX = wasMouseX; input.mouseY = wasMouseY;
     input.keys.clear();
     for (const k of wasKeys) input.keys.add(k);

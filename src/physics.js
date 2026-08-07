@@ -1,5 +1,5 @@
 import {
-  CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR,
+  CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR, dockHostOk,
   burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
 } from './config.js';
 import {
@@ -1068,6 +1068,19 @@ export function shatter(game, body, credit = null) {
     addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 20, '#d8b8ff', 190, 1.3, 4);
     game.coreFound = true;
   }
+  // GEODE MOON: the cored-rock economy promoted one size class. Killing the
+  // moon (a PLAYER kill — the earnsScrap gate is the same "salvage is earned"
+  // rule the cored rocks ride) frees its crystal heart: one dense `core` body,
+  // fatter than any belt core, that plugs into the existing core want/scrap
+  // paths (world.js barge want, scrapValue 3.5x). Ambient traffic that happens
+  // to kill a geode moon mints nothing, exactly like an ambient cored-rock pop.
+  if (body.type === 'moon' && body.moonType === 'geode' && earnsScrap(credit)) {
+    const cm = clamp(body.mass * 0.5, 2500, 9000);
+    const core = spawnAsteroid(game.bodies, body.x, body.y, body.vx * 0.5, body.vy * 0.5, cm);
+    core.core = true; core.color = '#b98cff';
+    addParticles(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 30, '#d8b8ff', 230, 1.5, 5);
+    game.coreFound = true;
+  }
   // SALVAGE CACHE: bursts into scrap + ice ammo pellets when you crack it
   if (body.cache && earnsScrap(credit)) {
     dropScrap(game, body.x, body.y, body.vx * 0.3, body.vy * 0.3, 120, body.fieldRock);
@@ -1180,9 +1193,19 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     }
     return;
   }
-  // ROCKWALL (hauler): rocks serving in the orbit shield are hardened — the
-  // wall survives the intercepts it exists to make. Loose rocks are untouched.
-  if (body.heldBy === 'orbit' && game.st.rockwall > 0) dmg *= 1 - 0.1 * game.st.rockwall;
+  // ROCKWALL (hauler): rocks serving in the orbit ring are hardened — the wall
+  // survives the hits it exists to take. Loose rocks are untouched.
+  // SUPER-LINEAR IN RANK, and DIVIDING not scaling (user call, 2026-08: the top
+  // end should be "twice as strong as they are now"). Effective HP multiplier is
+  // 1 + 0.111*r^2 — 1.11x at rank 1, exactly what the old `1 - 0.1*r` gave, and
+  // 5.0x at rank 6 against the old 2.5x. Two properties worth keeping: dividing
+  // by a rising number can never reach zero damage however the channel is
+  // stacked (the old subtractive form hit 0x at rank 10 and went NEGATIVE past
+  // it, healing the rock), and the quadratic puts the doubling at the capstone
+  // where it was asked for instead of spreading it across the early ranks.
+  if (body.heldBy === 'orbit' && game.st.rockwall > 0) {
+    dmg /= 1 + 0.111 * game.st.rockwall * game.st.rockwall;
+  }
   // SULFUR MOONS: a hard PLAYER smash (earnsScrap credit — ambient traffic
   // can't trigger it) vents the crust: a queued chain of surface pops that
   // fountain loose sling rock (the world.js hazard loop pops them). Not on
@@ -1193,6 +1216,23 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
     body.sulfurPops = 3 + Math.floor(Math.random() * 3);
     body.sulfurPopT = 0.2;
     game.sulfurWarn = true;
+  }
+  // HUSK MOONS: a hard PLAYER smash rings the wreck-plating like a dinner
+  // bell — a wreckwright descends on the moon (ai.js consumes game.huskWake;
+  // the same caps as its ambient descent, so this can never stack wrights).
+  // The sulfur gates exactly: earned credit only, not the killing blow, and a
+  // long cooldown ticked in world.js's always-running pre-pass — risk-priced
+  // mining, not a wright faucet.
+  if (body.type === 'moon' && body.moonType === 'husk' && earnsScrap(credit) &&
+      dmg > 8 && !(body.huskCd > 0) && body.hp - dmg > 0) {
+    body.huskCd = 60;
+    game.huskWake = body;
+    game.huskWarn = true;
+  }
+  // PUMICE MOONS: the first earned hit teaches the material (message only —
+  // the mechanics are the restitution and wear hooks below/in collideBodies).
+  if (body.type === 'moon' && body.moonType === 'pumice' && earnsScrap(credit) && dmg > 4) {
+    game.pumiceWarn = true;
   }
   // CRYSTAL WORLDS: a hard PLAYER smash rings a facet loose — one dense core
   // shard (the cored-rock salvage economy: fat beam catch, 3.5x scrap) pops
@@ -1238,8 +1278,23 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // OR hp fraction) exists because mass dominance throttles planet hits to a
   // few points — see the CHUNK_* rationale in config.js. Corona heat's
   // per-call drip (~0.1% of maxHp) can never clear even the half gates.
-  const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas';
-  const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS;
+  // An OCEAN world wears nothing: the sea closes over every wound, so hits
+  // show as WAVES (p.seaHits -> render.drawSeaRipples) instead of craters —
+  // the gas-giant convention (damage reads as weather) applied to water.
+  const isOcean = body.type === 'planet' && body.ptype === 'ocean';
+  if (isOcean && hx !== undefined && dmg > 1) {
+    const hits = (body.seaHits ||= []);
+    hits.push({ a: Math.atan2(hy - body.y, hx - body.x) - body.rot, t: game.time,
+      s: Math.min(1, 0.3 + dmg / 90) });
+    if (hits.length > 8) hits.shift();
+  }
+  const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas' && !isOcean;
+  // PUMICE is world-class by SIZE, not mass: mMul 0.45 puts most pumice moons
+  // under the 3500 mass gate, but the gate is a proxy for "moons and up" and a
+  // pumice moon is one of the biggest drawn discs in a family — a huge moon
+  // that never sheds a chunk would contradict its whole crumbly-material job.
+  const bigEnough = body.mass >= CFG.CHUNK_MIN_MASS ||
+    (body.type === 'moon' && body.moonType === 'pumice');
   const isWorldBody = body.type === 'planet' || body.type === 'moon' || body.type === 'rogue';
   // Small rocks scar too — wear is universal, only the SPRAY needs the mass
   // gate. Their maxHp is tiny so the gate is fractional (a real bite of the
@@ -1259,9 +1314,14 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   if (canWear && scarHit) {
     // severity 0..1 blends both gates: frac carries moons, raw damage carries
     // planets (whose maxHp dwarfs any single hit)
-    const sev = clamp(frac * 8 + dmg / 60, 0.15, 1);
+    // PUMICE CRUMBLES AT DOUBLE RATE: the soft factor widens the `hard` gate
+    // and deepens sev, so the same hit takes a bigger bite and calves more —
+    // hp loss is untouched (a moon keeps its durability class, invariant 9);
+    // what doubles is how visibly the crust comes apart on the way down.
+    const soft = body.type === 'moon' && body.moonType === 'pumice' ? 2 : 1;
+    const sev = clamp((frac * 8 + dmg / 60) * soft, 0.15, 1);
     const ia = (hx !== undefined) ? Math.atan2(hy - body.y, hx - body.x) : Math.random() * TAU;
-    const hard = bigEnough && (dmg >= CFG.CHUNK_DMG_MIN || frac >= CFG.CHUNK_DMG_FRAC);
+    const hard = bigEnough && (dmg * soft >= CFG.CHUNK_DMG_MIN || frac * soft >= CFG.CHUNK_DMG_FRAC);
     // THE CRUMBLE. A WORLD calves real pieces of itself that STAY — they pop
     // out of the crater, tumble, and settle into a rubble halo hanging over
     // the wound (calveCrust / updateCrust). Every wounding hit sheds at both
@@ -1476,7 +1536,11 @@ function vaporize(game, body) {
   sfx.sfxBoom(1.5, sfx.distVol(game, body.x, body.y));
 }
 
-export function killAlien(game, alien) {
+// `earned` = the player caused this death. Ambient ends — flying into a moon,
+// a star, or the corona — pay NO scrap (user call, 2026-08): the beads are a
+// bounty on a kill, and an alien that pancaked itself into a world it failed
+// to steer around was handing out free salvage for nothing.
+export function killAlien(game, alien, earned = true) {
   if (!alien.alive) return;
   alien.alive = false;
   if (alien.target && alien.target.heldBy === alien) {
@@ -1484,8 +1548,10 @@ export function killAlien(game, alien) {
     alien.target.extAx = 0; alien.target.extAy = 0;
   }
   // Wrights refund everything they've eaten; golems are MADE of scrap
-  dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3,
-    CFG.ALIEN_SCRAP + (alien.hoard || 0));
+  if (earned) {
+    dropScrap(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3,
+      CFG.ALIEN_SCRAP + (alien.hoard || 0));
+  }
   addParticles(game, alien.x, alien.y, alien.vx * 0.3, alien.vy * 0.3, 30, '#8aff6a', 200, 1.2, 4);
   addShake(game, 6);
   sfx.sfxBoom(2, sfx.distVol(game, alien.x, alien.y));
@@ -1495,34 +1561,88 @@ export function killAlien(game, alien) {
   else if (alien.kind === 'lurker') bump(game, 'kLurker');
 }
 
-export function damageShip(game, dmg, cause, hitAng) {
+// `fxDmg` (default: dmg) is what the >= 1 fx/ledger gate below reads. A caller
+// applying a MULTIPLIER to continuous per-substep damage (the hostile-surface
+// skid venom) passes the unmultiplied tick here: sear ×3.5 pushes a fast
+// molten skid's single substep over 1.0 (vT ≈ 290 on a DT_COARSE machine),
+// and gating fx on the multiplied value would fire the hit sfx/shake at
+// substep rate and count grinding ticks as real "blows" in the achievement
+// ledger — exactly what the gate exists to prevent. The DAMAGE always stays
+// on `dmg` and always routes through here, so the god/dock/invuln early-outs
+// and the shield keep covering it.
+export function damageShip(game, dmg, cause, hitAng, fxDmg = dmg) {
   const s = game.ship;
   // godMode is the window.god() dev/test hook — every ship-damage path funnels
   // through here, so this one early-out is the whole feature.
   //
-  // A FINISHED DOCK IS A SAFE HARBOUR (dockReady): its shield dome covers the
-  // berth and nothing gets through, which is what the ten seconds of building
-  // it while exposed bought. Gated on READY, never on merely being berthed —
-  // the build is meant to be the risky part, and a station that protected you
-  // while it was still going up would make its own cost free. It rides here
-  // rather than on s.invuln so that nothing else (a respawn, a dash) can be
-  // confused with it, and so every damage path in the game is covered by the
-  // one test.
-  if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return;
+  if (!s.alive || s.invuln > 0 || game.godMode) return;
+  // GAME MODE damage scale (config.MODES `dmgMul`; 1 in classic and peaceful,
+  // 1/8 in exploration). It rides HERE, on the one funnel every damage path in
+  // the game already goes through, so nothing else has to know modes exist —
+  // heat, gas crush, rock, turret bolts and alien contact all scale together.
+  //
+  // AHEAD of the dome and the ship shield, deliberately: it is the incoming BLOW
+  // that the mode makes smaller, so every absorber downstream sees the same
+  // reduced number and a soft sky drains a dome at the same rate it drains a
+  // hull. Scaling after the dome would leave the two shields on different rules
+  // — the ship's soaking eight times its rating while the station's still burnt
+  // through at full price in a mode whose whole promise is that nothing bites.
+  //
+  // `fxDmg` is deliberately NOT scaled: it is the caller's own statement of how
+  // big a BLOW this was, and it gates the hit sfx and the achievement ledger at
+  // >= 1. Scaling it would silence and stop counting every hit under 8 damage,
+  // which is most of them — a soft mode must still feel and count like being
+  // hit. (It leaves the dome's `fxDmg -= eaten` below subtracting a scaled
+  // figure from an unscaled one, which cannot matter: a dome that covers the
+  // whole blow returns before the fx gate is ever reached, and a partial absorb
+  // is a hit that genuinely landed.)
+  dmg *= game.rules ? game.rules.dmgMul : 1;
+  // A FINISHED DOCK IS A SHIELDED HARBOUR — AND THE SHIELD IS FINITE.
+  //
+  // This used to be a fourth term in the early-out above: berthed at a ready
+  // station meant TOTAL immunity, which made a dock the one place in the game
+  // nothing could ever reach you. It is a POOL now (CFG.DOCK_SHIELD, carried on
+  // the station as `d.hp` and never refilled by anything) — so a harbour is
+  // something you can spend, and eventually lose, rather than a safe room.
+  //
+  // WHEN IT BREAKS, THE DOCK BREAKS: the dome IS the station's survival, so
+  // there is no such thing as a standing station with a dead shield, and the
+  // whole structure goes through the same breakDock the collapse uses.
+  //
+  // NO FREE FRAME, the same rule the ram runs on (spendRam): whatever the pool
+  // could not cover reaches the hull on THIS call. Protection is total, then it
+  // is over, and there is no cliff in between.
+  //
+  // Gated on READY, never on merely being berthed — the build is meant to be
+  // the risky part, and a station that protected you while it was still going
+  // up would make its own cost free.
+  const dk = game.dock;
+  if (dockReady(dk) && dk.hp > 0) {
+    const eaten = Math.min(dk.hp, dmg);
+    dmg -= eaten;
+    fxDmg -= eaten;
+    game.domeHitT = 0.3;                            // render: the rim flares
+    game.domeHitA = hitAng ?? s.angle;
+    spendDome(game, dk, eaten);
+    if (dmg <= 0) return;
+  }
   game.lastDamage = game.time;
   // The shield eats damage first; only the overflow bites the hull. Coverage
-  // is spec DNA (st.shieldArc, config.shipStats): BRAWLER's War Plating wraps
-  // only the FRONT arc, so a directional hit (hitAng = world angle from ship
-  // to impact) landing outside it skips the shield entirely — the tail is
-  // bare.
+  // is `st.shieldArc` (config.shipStats), the half-angle around the nose: a
+  // directional hit (hitAng = world angle from ship to impact) landing outside
+  // it skips the shield entirely. SCOUT's Phase Screen is the only shield in
+  // the catalog and it is a FULL WRAP, so this reduces to "the shield soaks
+  // first" today — the arc is kept because it is the whole expression of a
+  // directional shield, and devtest T6 holds it to that against an explicit
+  // wedge. (BRAWLER's front-arc War Plating was the partial case; it is
+  // deleted — the brawler's protection is hull plus the War Rack prow.)
   // DIRECTIONLESS damage (heat, gas crush, Oort grinding — no hitAng) has no
   // angle to test, so it can't be shrugged off by facing the right way. It
   // bathes the WHOLE hull, and a partial shield only covers part of that hull:
-  // it soaks its COVERAGE SHARE (arc / PI — half, for the brawler's PI/2
-  // plating) and the rest goes straight through. Half a shield stops half of
-  // an all-over effect; it used to soak all of it, which quietly made the
-  // front-arc drawback free in exactly the places it should hurt most. A
-  // full-wrap shield (SCOUT's Phase Screen) is unaffected — its share is 1.
+  // it soaks its COVERAGE SHARE (arc / PI) and the rest goes straight through.
+  // Half a shield stops half of an all-over effect; it used to soak all of it,
+  // which quietly made a front-arc drawback free in exactly the places it
+  // should hurt most. A full wrap is unaffected — its share is 1.
   const arc = game.st.shieldArc ?? Math.PI;
   const fullWrap = arc > Math.PI - 0.01;
   const covered = hitAng === undefined || fullWrap ||
@@ -1537,7 +1657,7 @@ export function damageShip(game, dmg, cause, hitAng) {
   }
   const hadShield = s.shield > 0 || game.st.shieldMax > 0;
   s.hull -= rem;
-  if (dmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
+  if (fxDmg >= 1) {   // continuous grinding (Oort cloud) shouldn't spam fx
     // ACHIEVEMENTS: count real BLOWS, not grinding ticks — the same >= 1 gate
     // the fx use, so "50 hits" means fifty things actually hit you.
     bump(game, 'hits');
@@ -1628,11 +1748,27 @@ function gravityAt(attractors, x, y, starMul = 1, heavyMul = 1) {
     const d = Math.sqrt(d2);
     // LONG ARMS (see CFG.SHIP_WELL_*): only the SHIP passes heavyMul != 1,
     // so this far-field boost never touches aliens, debris, or thrown rocks.
-    // Inside SHIP_WELL_START radii f <= 1 and nothing changes — same
-    // close-range gravity, longer reach. predictPaths mirrors this exactly.
+    // Beyond SHIP_WELL_START radii the pull falls as 1/r instead of 1/r²
+    // (capped at SHIP_WELL_MAX); inside that knee SURFACE WEIGHT takes over
+    // below. predictPaths mirrors this exactly.
     if (heavy && heavyMul !== 1) {
       const f = d / (b.radius * CFG.SHIP_WELL_START);
       if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+      // SURFACE WEIGHT (see CFG.SHIP_SURF_*): inside SHIP_SURF_END radii the
+      // pull ramps toward the surface by up to radius/SHIP_SURF_REF — big
+      // worlds are hard to launch straight up from, moons and small worlds
+      // (peak <= 1) are untouched. Ends exactly where LONG ARMS begins, so
+      // past 2.5 radii nothing changes. Ship-only; predictPaths mirrors this.
+      // t is clamped BOTH ways: without the lower clamp, tuning SHIP_SURF_END
+      // below SHIP_WELL_START would leave a band where t < 0 UNDER-weights
+      // gravity instead of leaving it alone.
+      else {
+        const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
+        if (peak > 1) {
+          const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
+          w *= 1 + (peak - 1) * t;
+        }
+      }
       // GAS DIVE: inside a gas giant the ship feels enclosed-mass gravity
       // (uniform-density: x d³/R³ of the point value) — without this, the
       // point-mass interior pull (~380 at half depth) makes every dive
@@ -1783,6 +1919,17 @@ function surfRadius(body, ang) {
     const sh = (body.cjag ||= crystalShards(body.id));
     return body.radius * crystalRadiusAt(sh, ang - body.rot);
   }
+  // AN OCEAN WORLD'S COLLIDER IS ITS SEABED (CFG.OCEAN_CORE x radius): water
+  // is not a surface, so contact resolves against the bedrock under it and the
+  // water column above is the drag volume step() runs (user design call —
+  // "you sink a bit but then you hit the hard planet"). The drawn radius stays
+  // the sea; the felt radius is the core, everywhere at once — ship, rock,
+  // alien and both predictPaths mirrors — or the sink depth would depend on
+  // who was falling in. Ocean worlds never scar (canWear), so this branch and
+  // the scars branch below cannot both claim one body.
+  if (body.ptype === 'ocean' && body.type === 'planet') {
+    return body.radius * CFG.OCEAN_CORE;
+  }
   // BIG ROCK collides as the slab / wedge / shard / cleft / lump it is DRAWN as
   // (rockshape.rockShapeOf — render.traceAsteroid reads the identical shape), WITH its
   // impact craters taken out of it exactly like a moon or a planet. Landmark
@@ -1843,8 +1990,13 @@ function surfRadius(body, ang) {
 // reach past its nominal radius, so dropping to the disc off-view would make
 // the collider SMALLER than the body and rock would visibly interpenetrate the
 // moment it woke.
+// Ocean worlds are NOT gated on nearShip, for the crystal reason inverted:
+// their felt surface (the seabed) is SMALLER than the drawn disc, so dropping
+// to the disc off-view would grow the collider around anything resting on the
+// bedrock and eject it through the sea surface the moment the ship left.
 function shaped(body) {
   return body.ptype === 'crystal' || body.bigShape === true
+    || (body.type === 'planet' && body.ptype === 'ocean')
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
 // A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
@@ -1856,9 +2008,18 @@ function shaped(body) {
 // is the crumble law narrowing in the one case nobody is looking at, which is
 // exactly where a regression survives. The circle-vs-outline query is only
 // valid when the other party really has no profile of its own.
+// The scar clause MIRRORS surfRadius's own predicate, `type !== 'asteroid'`,
+// and must keep mirroring it. An asteroid is a circle TO THE PROFILE — both
+// surfRadius and shaped decline to honour its scars — but damageBody's canWear
+// scars small rock routinely (frac >= 0.15 && radius >= 5), which in a shoal is
+// every other pebble. Rejecting those here dropped them out of the exact branch
+// into the radial fallback for a body state that is common AND permanent,
+// bringing the phantom-collider bug (issue #102) straight back: up to 1.40 body
+// radii of daylight on a 300-unit landmark.
 function roundParty(body) {
   return body.ptype !== 'crystal' && body.bigShape !== true
-    && !(body.scars && body.scars.length > 0);
+    && !(body.type === 'planet' && body.ptype === 'ocean')
+    && !(body.type !== 'asteroid' && body.scars && body.scars.length > 0);
 }
 // Spawn-clearance reach: anything born off a body's surface (chunks, shards)
 // must clear the TALLEST feature, not the mean disc — a chunk born inside a
@@ -2258,10 +2419,23 @@ function collideBodies(game, a, b) {
   // That is the exact outcome the rationale above exists to prevent, by the one
   // route it did not cover. A THROWN moon is derailed, so "a thrown moon goes
   // in" is untouched, and above DMG_THRESH a real crunch still swallows.
+  // INSTALLATIONS RIDE THE SAME PASS-THROUGH. The installation-lane sweep in
+  // world.js separates a station from its OWN parent's moons, but a station's
+  // reach from its host and a NEIGHBOUR lane's moon family deliberately
+  // overlap by tens of thousands of units (the same measured overlap the moon
+  // families themselves run on), and no radial nudge can separate two
+  // different parents' bands. Measured on seed 987654321 after the moon-floor
+  // change re-laid the slots: the relay station met a foreign 146-radius moon
+  // at ~48 u/s closing — far under DMG_THRESH — and the contact knocked the
+  // moon off its rail into its own planet, a world lost to scenery crossing
+  // scenery. Consequence must trace to a player choice: a railed installation
+  // and a railed celestial glide through each other exactly as two railed
+  // moons do; a THROWN body still hits (thrownTimer), and a real crunch above
+  // DMG_THRESH still lands.
   if (a.onRails && b.onRails && closing < CFG.DMG_THRESH &&
       a.thrownTimer <= 0 && b.thrownTimer <= 0 &&
-      (a.type === 'planet' || a.type === 'moon') &&
-      (b.type === 'planet' || b.type === 'moon')) return;
+      (a.type === 'planet' || a.type === 'moon' || a.type === 'station' || a.type === 'nest') &&
+      (b.type === 'planet' || b.type === 'moon' || b.type === 'station' || b.type === 'nest')) return;
 
   // A GAS GIANT SWALLOWS (CFG.GAS_* — "it swallows"). There is no surface to
   // bounce off, so loose rock reaching the cloud tops sinks and is gone. This
@@ -2364,7 +2538,7 @@ function collideBodies(game, a, b) {
         if (rk.thrownBy === 'player' && rk.thrownTimer > 0) {
           dropScrap(game, rk.x, rk.y, pl.vx * 0.6, pl.vy * 0.6, 150);
         }
-        game.emberCleansedName = pl.name;
+        game.emberCleansedName = placeName(pl);
       }
     }
   }
@@ -2375,20 +2549,11 @@ function collideBodies(game, a, b) {
        (b.heldBy === 'orbit' && a.thrownBy === 'alien' && a.thrownTimer > 0))) {
     addXp(game, PROG.XP_BLOCK);
     bump(game, 'blocks');
-    // AEGIS REFLECTOR (hauler): don't just block — hurl the enemy rock straight
-    // back out as YOUR shot (marked player-thrown, so it can smash the alien).
-    // Once reflected it's no longer 'alien', so this can't re-fire on it.
-    if (game.st.aegis > 0) {
-      const rock = a.thrownBy === 'alien' ? a : b;
-      const sh = game.ship;
-      const rdx = rock.x - sh.x, rdy = rock.y - sh.y, rd = Math.hypot(rdx, rdy) || 1;
-      const spd = 320 + 65 * game.st.aegis;
-      rock.vx = sh.vx + (rdx / rd) * spd; rock.vy = sh.vy + (rdy / rd) * spd;
-      rock.thrownBy = 'player'; rock.thrownTimer = 3;
-      rock.throwX = rock.x; rock.throwY = rock.y;
-      derail(rock);
-      bump(game, 'aegisBack');
-    }
+    // AEGIS REFLECTOR USED TO FIRE HERE and is deleted (see the ABILITIES
+    // catalog for why). Do not re-add a reflect on this line: it hurled the
+    // blocked rock radially outward from the ship at a flat speed under the
+    // hauler's own fling, which is why it never reached anything. A block is now
+    // just a block — the XP above and whatever damage the collision itself did.
   }
 
   // No surface-hugging: a small body drifting gently onto a much bigger one
@@ -2484,6 +2649,25 @@ function collideBodies(game, a, b) {
     // still left equal-mass hits at ~0.74 — thuds, not caroms). Kept under 1:
     // e >= 1 ADDS energy on every hit and a pocket this size boils itself apart.
     if (a.fieldRock && b.fieldRock) e = CFG.FIELD_BOUNCE;
+    // PUMICE BURIES WHAT HITS IT. The dominance scaling above is exactly wrong
+    // for a froth moon — a light rock on a heavy body is the LIVELIEST case
+    // (~0.75), and pumice's whole material read is that throws thud in and
+    // stay. Near-zero, not zero: a true 0 leaves bodies kissing the surface
+    // with no separating velocity at all and the contact re-resolves forever.
+    // ONLY when the pumice moon is the surface being hit, though: a pumice
+    // moon at 1,350-4,950 mass against its ≥15x host planet is the LIGHT
+    // partner, and deadening ITS rebound leaves a knocked-loose moon thudding
+    // along the host inside the closing<70 absorption window instead of being
+    // flung clear at the lopsided ~0.75 every other moon gets — a quiet
+    // census-eater (physics review, 2026-08).
+    {
+      const pum = a.type === 'moon' && a.moonType === 'pumice' ? a
+        : b.type === 'moon' && b.moonType === 'pumice' ? b : null;
+      if (pum) {
+        const other = pum === a ? b : a;
+        if (other.mass <= pum.mass * 15) e = 0.06;
+      }
+    }
     const invA = aMoves ? 1 / a.mass : 0;
     const invB = bMoves ? 1 / b.mass : 0;
     let j = ((1 + e) * closing) / (invA + invB || 1);
@@ -2558,6 +2742,14 @@ function collideBodies(game, a, b) {
     const thrown = a.thrownTimer > 0 || b.thrownTimer > 0;
     const eff = Math.max(0, closing - (thrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
     const mult = thrown ? CFG.DMG_THROWN_MULT : 1;
+    // RECOVERY TETHER: mark that a tethered rock has CONNECTED, and restart its
+    // QUIET clock. Set here, at the point a collision is known to be real,
+    // rather than on any proximity: a near miss is a miss. The quiet clock is
+    // what keeps a rampaging shot out in the field — every fresh contact resets
+    // it, so a flung moon ploughing through a whole moon family never qualifies
+    // as spent while it is still connecting. See tractor.updateTethers.
+    if (a.tether) { a.tetherHit = true; a.tetherQuiet = 0; }
+    if (b.tether) { b.tetherHit = true; b.tetherQuiet = 0; }
     // Mass dominance decides who hurts whom: the heavier side deals up to
     // ~2x its base damage while taking almost none from the lighter side.
     // Equal masses keep the old numbers (both factors are 1 at 50/50).
@@ -2767,10 +2959,26 @@ function ramFill(game) {
 function spendRam(game, dmg, hitAng) {
   const s = game.ship;
   if (!(s.ram > 0) || !(dmg > 0)) return dmg;
+  // THE RAM IS BEHIND THE SAME DOOR THE HULL IS. damageShip early-outs on dead
+  // / invulnerable / godMode, and a live dome eats the hit before the hull ever
+  // sees it; a blow that cannot touch the hull must not quietly eat the ram
+  // either, or a berth costs a brawler its whole pack to a rock that drifts
+  // onto the bow while it sits on its own pad. `dockReady` is the right test
+  // for the dome too — a station whose charge runs out is REMOVED (breakDock),
+  // so a ready dock always has a live dome behind it.
+  if (!s.alive || s.invuln > 0 || game.godMode || dockReady(game.dock)) return dmg;
   const t0 = ramTier(game.st, s.ram);
   const canEat = s.ram / CFG.RAM_ABSORB;     // hull points this much mass is worth
   const eaten = Math.min(dmg, canEat);
-  s.ram = Math.max(0, s.ram - eaten * CFG.RAM_ABSORB);
+  // SNAP, don't subtract, when the hit finishes the pack. `s.ram - (s.ram /
+  // K) * K` is not exactly 0 in floats — measured, ~2.9% of values leave a
+  // positive residue like 3.6e-12. That residue is a PHANTOM RAM: `s.ram <= 0`
+  // stays false so no "RAM SHATTERED" ever fires, ramTier still reads 1 so the
+  // tier-drop spall is skipped, and hasRam keeps the front contact radius at
+  // ~2.2x the hull — the ship bounces off things two hull-radii early with
+  // nothing on screen.
+  if (eaten >= canEat) s.ram = 0;
+  else s.ram = Math.max(0, s.ram - eaten * CFG.RAM_ABSORB);
   s.ramHitT = 0.25;                          // render: the impact slam
   s.ramHitAng = hitAng ?? s.angle;           // render: where the mattress ripple starts
   const t1 = ramTier(game.st, s.ram);
@@ -2780,7 +2988,12 @@ function spendRam(game, dmg, hitAng) {
     const face = ramFace(game.st, Math.max(1, s.ram));
     const ox = s.x + Math.cos(s.angle) * face * 0.85;
     const oy = s.y + Math.sin(s.angle) * face * 0.85;
-    const n = 2 + (t0 >= 4 ? 1 : 0);         // a big pack sheds a little more
+    // A big pack sheds a little more. HALVED against the old six-band ladder:
+    // config.RAM_TIERS is twelve now, so a downward crossing happens twice as
+    // often and 2-3 pebbles a crossing would double a brawl's spall against one
+    // debris budget (invariant 7). 1-2 a crossing keeps the TOTAL where it was
+    // while every crossing still visibly sheds something.
+    const n = 1 + (t0 >= 8 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const a = s.angle + (Math.random() - 0.5) * 2.4;
       const sp = 90 + Math.random() * 120;
@@ -2798,6 +3011,52 @@ function spendRam(game, dmg, hitAng) {
   return dmg - eaten;
 }
 
+// THE RAM'S PER-BODY SCRATCH. collideShipBody runs for every awake, non-dormant
+// body every substep — thousands in a shoal, at 120 Hz — so nothing inside it
+// may allocate (CLAUDE.md, and the sweep side-table below exists for the same
+// reason). The arc test used to build a fresh `onArc` closure for EVERY spec,
+// call ramFace/ramArc up to four times (each one a fresh ramPlate object
+// literal), and run an atan2, per body: ~500k allocations/s on a loaded
+// brawler.
+//
+// These are a pure function of (st, s.ram, s.angle), so they are cached — but
+// as a MEMO ON THOSE INPUTS, not a stamp at the top of the substep. spendRam
+// changes s.ram from inside this very loop, and a rock that empties the pack
+// must leave the next rock in the same substep facing a bare hull. A stamp
+// would hand it a phantom slab.
+//
+// DO NOT EXPECT A WALL-CLOCK WIN FROM THIS, and do not "restore" the closure
+// because a profile failed to show one. Measured by INTERLEAVED A/B against the
+// same tree (the only method this machine supports — a saved baseline drifts
+// enough to invent a 40% swing that survives eight consecutive re-runs and is
+// still an artefact): main vs this, 8 rounds on `perf debris-heavy`, medians
+// 1.789 vs 1.871 ms, mine slower in 5 of 8. That is a WASH — main's own spread
+// on identical code was 1.766-2.220, wider than the gap between the branches.
+// The justification here is the allocation rate itself, plus roundParty's fix
+// below deliberately spending MORE time (a scarred pebble goes back through the
+// exact collider), which is a correctness trade this loop happily pays.
+let _ramSt = null, _ramRam = -1, _ramAng = NaN;
+let _ramHas = false, _ramFaceR = 0, _ramArcCos = 1, _ramCa = 1, _ramSa = 0;
+function ramScratch(game, s) {
+  if (game.st === _ramSt && s.ram === _ramRam && s.angle === _ramAng) return;
+  _ramSt = game.st; _ramRam = s.ram; _ramAng = s.angle;
+  _ramHas = !!(game.st.frontRam && s.ram > 0);
+  _ramFaceR = _ramHas ? ramFace(game.st, s.ram) : s.radius;
+  // The COSINE of the half-angle, so the bearing test is a dot product against
+  // the nose vector instead of atan2 + angDiff. Exact, not an approximation:
+  // both |angDiff| and the arc live in [0, pi] where cos is monotone, so
+  // `|angDiff| <= arc` and `cos(angDiff) >= cos(arc)` are the same test.
+  _ramArcCos = _ramHas ? Math.cos(ramArc(game.st, s.ram)) : 1;
+  _ramCa = Math.cos(s.angle); _ramSa = Math.sin(s.angle);
+}
+// Is (px, py) inside the slab's covered arc? Caller must have run ramScratch.
+function ramOnArc(s, px, py) {
+  const ax = px - s.x, ay = py - s.y;
+  const l2 = ax * ax + ay * ay;
+  if (l2 <= 0) return true;             // dead centre is inside the ram by any reading
+  return (ax * _ramCa + ay * _ramSa) >= _ramArcCos * Math.sqrt(l2);
+}
+
 function collideShipBody(game, s, b, dt) {
   if (b.sinkT > 0) return;   // already under the cloud tops
   let dx = b.x - s.x, dy = b.y - s.y;
@@ -2807,12 +3066,9 @@ function collideShipBody(game, s, b, dt) {
   // sim waited for the hull buried behind was the "collision doesn't match"
   // bug. Every contact path below (swept, shaped, plain) measures against the
   // same effective radius.
-  const hasRam = game.st.frontRam && s.ram > 0;
-  const rArc = hasRam ? ramArc(game.st, s.ram) : 0;
-  const onArc = (px, py) =>
-    Math.abs(angDiff(Math.atan2(py - s.y, px - s.x), s.angle)) <= rArc;
+  ramScratch(game, s);
   let sR = s.radius;
-  if (hasRam && onArc(b.x, b.y)) sR = ramFace(game.st, s.ram);
+  if (_ramHas && ramOnArc(s, b.x, b.y)) sR = _ramFaceR;
   let rr = sR + b.radius;
   let d2 = dx * dx + dy * dy;
   if (d2 > rr * rr && !shaped(b)) {
@@ -2823,26 +3079,26 @@ function collideShipBody(game, s, b, dt) {
     // sailing through the slab it visibly hit (review finding on PR #134).
     // So when the end position missed the arc, sweep at RAM size first and
     // re-test the arc at the actual touch point: on the bow, the ram takes it
-    // (position stands, sR upgrades); off the bow, the rock is restored and
-    // falls through to the honest hull-sized sweep. A hull hit is a subset of
-    // the ram-sized swept volume, so a failed ram sweep needs no second try.
-    if (hasRam && sR !== ramFace(game.st, s.ram)) {
+    // (position stands, sR upgrades); off the bow, the rock is restored.
+    //
+    // AND THEN THE HULL SWEEP ALWAYS GETS ITS TURN. The ram-sized sweep is NOT
+    // a superset of the hull-sized one: sweptContact early-outs on
+    // `seg2 <= rr*rr`, and rr is ~3x larger at ram size, so a rock whose
+    // relative displacement lands between hullRR and ramRR makes the ram sweep
+    // return false — and skipping the hull try there dropped exactly the class
+    // the pre-test exists to catch (tier 0: a ~1,800 u/s shot, seg 15, past
+    // hullRR 10 but short of ramRR 18.8). The capsule geometry is a superset;
+    // the early-out is not.
+    let hit = false;
+    if (_ramHas && sR !== _ramFaceR) {
       const bx0 = b.x, by0 = b.y;
-      const rFace = ramFace(game.st, s.ram);
-      if (sweptContact(s.x, s.y, rFace, b, dt)) {
-        if (onArc(b.x, b.y)) {
-          sR = rFace;
-          dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
-        } else {
-          b.x = bx0; b.y = by0;
-          if (sweptContact(s.x, s.y, sR, b, dt)) {
-            dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
-          }
-        }
+      if (sweptContact(s.x, s.y, _ramFaceR, b, dt)) {
+        if (ramOnArc(s, b.x, b.y)) { sR = _ramFaceR; hit = true; }
+        else { b.x = bx0; b.y = by0; }
       }
-    } else if (sweptContact(s.x, s.y, sR, b, dt)) {
-      dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy;
     }
+    if (!hit && sweptContact(s.x, s.y, sR, b, dt)) hit = true;
+    if (hit) { dx = b.x - s.x; dy = b.y - s.y; d2 = dx * dx + dy * dy; }
     rr = sR + b.radius;   // sR may have upgraded inside the sweep
   }
   // The ship lands on (and skims along) the real surface — a crystal world's
@@ -2987,16 +3243,35 @@ function collideShipBody(game, s, b, dt) {
     const tvx = rvx + closing * nx, tvy = rvy + closing * ny;   // tangential slide
     const vT = Math.hypot(tvx, tvy);
     if (vT > CFG.SKIM_SPEED && s.invuln <= 0) {
-      const grind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
-      damageShip(game, grind, `Ground apart skimming ${b.name || 'a ' + b.type}.`, hitAng);
+      const baseGrind = (vT - CFG.SKIM_SPEED) * CFG.SKIM_DPS_K * dt;
+      // HOSTILE SURFACES: a sulfur crust POISONS a skidding hull, a molten
+      // crust SEARS it — the same grind, multiplied. XP stays on the
+      // UNmultiplied grind below: skim XP is priced per hull point ground on
+      // an ORDINARY surface, and paying the multiplier out as XP would make
+      // the poison moon the best skate park in the sky, which is backwards —
+      // a hostile surface is a worse skate, not a richer one.
+      // (Applies to a PROMOTED landmark that rolled sulfur/molten too — the
+      // Forge Moon searing a skid is thematically coherent, unlike the coma /
+      // verdant-garden cases, so no volcanic/shepherd guard here on purpose.)
+      const sulfurSkid = b.type === 'moon' && b.moonType === 'sulfur';
+      const moltenSkid = b.type === 'moon' && b.moonType === 'molten';
+      const venom = sulfurSkid ? 2.5 : moltenSkid ? 3.5 : 1;
+      // fxDmg = the UNmultiplied tick: the venom must not let a single fast
+      // substep clear damageShip's >= 1 fx/ledger gate — see its signature note.
+      damageShip(game, baseGrind * venom,
+        sulfurSkid ? `Poisoned skidding across ${placeName(b, 'a brimstone moon')}.`
+          : moltenSkid ? `Seared skidding across ${placeName(b, 'a molten moon')}.`
+            : `Ground apart skimming ${placeName(b, 'a ' + b.type)}.`, hitAng, baseGrind);
       // Skating a surface is risky XP — and BANDED MOONS are the skate park:
       // same grind, same hull cost, triple the payout. DESERT WORLDS' dune
       // seas pay double, same law (bonus XP, hull cost never discounted).
       const banded = b.type === 'moon' && b.moonType === 'banded';
       const dune = b.type === 'planet' && b.ptype === 'desert';
-      addXp(game, grind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : dune ? PROG.XP_SKIM_DUNE : 1));
+      addXp(game, baseGrind * PROG.XP_SKIM * (banded ? PROG.XP_SKIM_BANDED : dune ? PROG.XP_SKIM_DUNE : 1));
       if (banded && !game.tut.banded) game.bandedWarn = true;
       if (dune && !game.tut.dune) game.duneWarn = true;
+      if (sulfurSkid && !game.tut.sulfurSkid) game.sulfurSkidWarn = true;
+      if (moltenSkid && !game.tut.moltenSkid) game.moltenSkidWarn = true;
 
       game.scrapeT = 0.18;                                       // render: contact glow
       game.scrapeX = s.x + nx * s.radius; game.scrapeY = s.y + ny * s.radius;
@@ -3032,25 +3307,52 @@ function collideShipBody(game, s, b, dt) {
     const f = 1 - Math.exp(-CFG.SURF_FRICTION * dt);
     s.vx += (sv.vx - s.vx) * f;
     s.vy += (sv.vy - s.vy) * f;
-    // …and the three docking gates, read in the one place that knows the hull
-    // is actually touching something. `landing` accumulates across the
-    // substeps and updateDock (end of step) resolves it — the reset has to
-    // live there, because a per-body collider cannot see "no contact at all".
-    landing.touch = b;
-    // ROCKETS DOWN: the nose within DOCK_ARC of straight UP off the surface.
-    // `dx/dy` runs ship -> body, so the outward bearing is its reverse. On a
-    // shaped world this is deliberately the RADIAL up and not surfNormal's
-    // face normal: the player is lining the ship up against a horizon they can
-    // see, not against a crater wall's local slope.
-    const up = Math.atan2(-dy, -dx);
-    const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
-    const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
-    if (level && still) landing.settle = b;
-    // WHICH GATE IS REFUSING, for the approach guidance. Attitude first: it is
-    // the one a player will not work out on their own, and it is also the one
-    // they can fix instantly. A landing that silently declines to latch is the
-    // single worst failure mode this feature has.
-    else landing.gate = !level ? 'level' : 'fast';
+    // NO BERTH ON OPEN SEA (user design call): an ocean world's contact is the
+    // SEABED (surfRadius), and a hull resting on bedrock under a mile of water
+    // is not a landing. Friction still applies — the seabed is ground — and
+    // the bounce below still fires; only the docking gates never open, so no
+    // guide, no latch, no dock. The predicate is the SAME compound every other
+    // ocean test uses (surfRadius/shaped/roundParty/the drag passes): a skip
+    // that fired on ptype alone would make a hypothetical ocean MOON — which
+    // gets no seabed physics — silently undockable, the exact failure the
+    // dock guide exists to prevent.
+    if (!(b.type === 'planet' && b.ptype === 'ocean')) {
+      // …and the three docking gates, read in the one place that knows the hull
+      // is actually touching something. `landing` accumulates across the
+      // substeps and updateDock (end of step) resolves it — the reset has to
+      // live there, because a per-body collider cannot see "no contact at all".
+      landing.touch = b;
+      // ROCKETS DOWN: the nose within DOCK_ARC of straight UP off the surface.
+      // `dx/dy` runs ship -> body, so the outward bearing is its reverse. On a
+      // shaped world this is deliberately the RADIAL up and not surfNormal's
+      // face normal: the player is lining the ship up against a horizon they can
+      // see, not against a crater wall's local slope.
+      const up = Math.atan2(-dy, -dx);
+      const level = Math.abs(angDiff(s.angle, up)) <= CFG.DOCK_ARC;
+      const still = Math.hypot(s.vx - sv.vx, s.vy - sv.vy) < CFG.DOCK_SPEED;
+      // NO DOCK IN A WOUND (CFG.DOCK_CRATER_MAX). Cratered ground refuses the
+      // berth outright: a pad is pinned at a fraction of the body's NOMINAL
+      // radius (util.padPos), so a station laid down inside a crater stands on
+      // the phantom surface — floating across the mouth of the hole the player
+      // can see. Same profile the collider and silhouette read
+      // (util.scarSurfaceAt, surface-local so the bearing loses b.rot), and the
+      // same line updateDock collapses a standing station at, so a berth can
+      // never form on ground a station couldn't survive.
+      const wound = b.scars.length > 0 &&
+        1 - scarSurfaceAt(b.scars, b.radius, up - b.rot) > CFG.DOCK_CRATER_MAX;
+      // A PORT NEEDS A WORLD THAT CAN CARRY IT (config.dockHostOk): a body too
+      // small for the current ship class offers no anchorage at all.
+      const small = !dockHostOk(game.st, b.radius);
+      if (!wound && !small && level && still) landing.settle = b;
+      // WHICH GATE IS REFUSING, for the approach guidance. The unfixable ones
+      // first — 'small' and 'crater' are refusals no amount of levelling off
+      // or settling can clear; their instruction is "go elsewhere", not "fly
+      // better". Then attitude: it is the one a player will not work out on
+      // their own, and it is also the one they can fix instantly. A landing
+      // that silently declines to latch is the single worst failure mode this
+      // feature has.
+      else landing.gate = small ? 'small' : wound ? 'crater' : !level ? 'level' : 'fast';
+    }
   }
 
   if (closing > 0) {
@@ -3193,21 +3495,34 @@ function collideShipBody(game, s, b, dt) {
     // reaches the hull on that same frame, so there is no free frame and no
     // cliff — protection is total, then it is over, and rebuilding it means
     // going and finding more rock.
-    // Front arc ONLY, the same bargain War Plating makes: the ram is welded to
-    // the bow and does nothing for a hit that comes in past the shoulders.
+    // Front arc ONLY: the ram is welded to the bow and does nothing for a hit
+    // that comes in past the shoulders. That bargain is now the brawler's ONLY
+    // layer in front of the hull — War Plating, which used to make the same
+    // trade with a regenerating plate, is deleted — so the arc is what keeps
+    // "point at the thing hurting you" a real demand on the spec.
+    //
+    // THE RAM ONLY PAYS FOR DAMAGE THAT WOULD OTHERWISE LAND. The ambient
+    // gates come FIRST: invariant 3 says a contact under the closing-speed
+    // floor does no damage at all, so it must cost the ram nothing. Spending
+    // it on the sub-threshold hits instead drained ~6,900 mass/s at 120 Hz
+    // from merely leaning on a rock — and ramKeep suppresses the bounce that
+    // would end the contact, so the drain fed itself until the pack was gone.
+    // That matters MORE now the ram is the only layer there is.
     let hullDmg = dmg;
-    if (dmg > 0 && s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
-      hullDmg = spendRam(game, dmg, hitAng);
-    }
-    if (hullDmg > 1.5 && closing > 25) {
-      // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
-      // the damage lands, checked after, because that's the only moment both
-      // facts are true at once.
-      const own = b.thrownBy === 'player' && b.thrownTimer > 0;
-      damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
-        thrown > 1 ? 'Hit by an alien-thrown rock.' :
-        `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
-      if (own && !s.alive) bump(game, 'ownGoal');
+    if (dmg > 1.5 && closing > 25) {
+      if (s.ram > 0 && Math.abs(angDiff(hitAng, s.angle)) <= ramArc(game.st, s.ram)) {
+        hullDmg = spendRam(game, dmg, hitAng);
+      }
+      if (hullDmg > 1.5) {
+        // ACHIEVEMENTS: was this YOUR shot coming back to meet you? Read before
+        // the damage lands, checked after, because that's the only moment both
+        // facts are true at once.
+        const own = b.thrownBy === 'player' && b.thrownTimer > 0;
+        damageShip(game, hullDmg, b.type === 'rogue' ? 'Flattened by a rogue planet.' :
+          thrown > 1 ? 'Hit by an alien-thrown rock.' :
+          `Collided with ${b.type === 'asteroid' ? 'an' : 'a'} ${b.type}.`, hitAng);
+        if (own && !s.alive) bump(game, 'ownGoal');
+      }
     }
   }
 }
@@ -3240,38 +3555,173 @@ function collideShipBody(game, s, b, dt) {
 // per-body collider can observe. Module-level rather than on `game` for the
 // same reason `shipContacts` is: it is scratch between two functions in this
 // file and means nothing to a save, a soak or the HUD.
-const landing = { touch: null, settle: null, gate: '', b: null, t: 0 };
+// `lock` is the EVICTION: the body a station just collapsed under the ship on,
+// which refuses a fresh build site until the hull is genuinely off the ground
+// again (set in removeDock, cleared below — the reasoning is on both). `off` is
+// the seconds it has been clear of any surface, which is what "genuinely" means
+// there.
+const landing = { touch: null, settle: null, gate: '', b: null, t: 0, lock: null, off: 0 };
 
 // Is this station finished? The ONE test for "does this dock actually work" —
 // the shield, the repair and the pad's built look all read it, so a station can
 // never be protective in one system and a building site in another.
 export function dockReady(d) { return !!d && d.t >= CFG.DOCK_BUILD; }
 
+// Is this station's footing blasted out from under it? The ONE crater test for
+// a STANDING pad — updateDock's collapse sweep and the autoland's engage scan
+// both read it, so the autoland can never fly an approach to a pad the very
+// same substep's sweep is about to collapse. Same CFG.DOCK_CRATER_MAX line the
+// landing gate refuses fresh berths across; q.ang is already surface-local, so
+// no b.rot correction here (the landing gate converts, this does not — see the
+// bearing-frame note where scars are stored).
+function padUndermined(q) {
+  return q.b.scars.length > 0 &&
+    1 - scarSurfaceAt(q.b.scars, q.b.radius, q.ang) > CFG.DOCK_CRATER_MAX;
+}
+
+// TAKE A STATION OFF THE BOARD. The bookkeeping half only — every way a dock
+// stops existing (its world dies, its ground goes, its dome fails, the ship
+// outgrows it) comes through here so none of them can forget a reference.
+// `game.dock` and `game.home` are references INTO game.docks, so a splice that
+// left either pointing at a retired record would keep clamping the ship to a
+// station that is no longer drawn. Returns whether it was the home port, since
+// every caller words that case differently.
+function removeDock(game, d) {
+  const i = game.docks.indexOf(d);
+  if (i >= 0) game.docks.splice(i, 1);
+  if (game.dock === d) {
+    game.dock = null;
+    game.launch = null;      // a release sequence cannot outlive its pad
+    // THE BERTH DIES WITH THE STATION — AND THE SITE IS EVICTED.
+    //
+    // The landing latch is module scratch that OUTLIVES the station it filled.
+    // Left full, updateDock's build branch lays a fresh site on the same spot
+    // on the very NEXT substep, with a brand-new CFG.DOCK_SHIELD pool, without
+    // the ship ever leaving the ground — so a dome collapsing under you cost
+    // one substep instead of a station, which is the exact opposite of "a place
+    // you can lose, rather than a safe room" (CFG.DOCK_SHIELD's own note).
+    //
+    // Clearing the latch ALONE does not fix that: the hull is still settled on
+    // the surface with every gate held, so it re-earns the berth in DOCK_TIME
+    // (0.5s) and rebuilds anyway. So the SITE is locked until the hull is
+    // actually off the ground. Rebuilding here after leaving and coming back
+    // stays legal — that is the sanctioned way to get a new pool, and it still
+    // costs the full DOCK_BUILD exposed.
+    //
+    // updateLaunch runs the same latch clear for the same "re-earned from zero"
+    // reason; this is the collapse's half of it.
+    landing.t = 0; landing.b = null;
+    landing.lock = d.b; landing.off = 0;
+  }
+  if (game.autoland === d) game.autoland = null;
+  const wasHome = game.home === d;
+  if (wasHome) game.home = null;
+  return wasHome;
+}
+
+// ...AND THE BANG. A station that is DESTROYED (rather than quietly retired)
+// goes with debris, shake and a named message — a structure the player spent
+// ten exposed seconds building must never just be missing from the dial.
+// `how` picks the wording; the home-port variant is alarm-grade because where a
+// death puts you back has just changed, and that must never be discovered by
+// dying.
+function breakDock(game, d, how) {
+  const pp = padPos(d, _padScratch);
+  const wasHome = removeDock(game, d);
+  addParticles(game, pp.x, pp.y, d.b.vx, d.b.vy, 20, '#cfe4ff', 170, 0.85, 3);
+  addShake(game, 4);
+  sfx.sfxBoom(0.6, 0.7);
+  const name = placeName(d.b, wasHome ? 'your home world' : 'a distant world');
+  if (how === 'shield') {
+    if (wasHome) game.homeShieldLostName = name; else game.dockShieldLostName = name;
+  } else if (wasHome) game.homeDockLostName = name;
+  else game.dockLostName = name;
+}
+
+// SPEND THE DOME — the ONE place the charge pool is ever debited, so the two
+// things that drain it (damage aimed at the ship, and rock thrown off the rim)
+// cannot disagree about when it warns or when it dies. Nothing anywhere credits
+// it: CFG.DOCK_SHIELD is issued once at the build site and that is the whole
+// supply.
+function spendDome(game, d, cost) {
+  d.hp -= cost;
+  if (d.hp <= 0) { breakDock(game, d, 'shield'); return; }
+  // Failing, announced ONCE on the crossing — a dome two hits from death at a
+  // home port is exactly the thing a player must not discover by losing it.
+  if (!d.warned && d.hp <= CFG.DOCK_SHIELD * CFG.DOCK_SHIELD_WARN) {
+    d.warned = true;
+    game.dockShieldLowName = placeName(d.b);
+  }
+}
+
 // Cleared on a world REGEN as well as a run reset — the bodies these point at
 // are about to be thrown away, exactly like a chart route's stops.
 export function clearDocks(game) {
   game.dock = null; game.home = null; game.launch = null;
+  game.autoland = null; game.autolandCd = 0;
   if (game.docks) game.docks.length = 0; else game.docks = [];
   landing.touch = null; landing.settle = null; landing.b = null;
-  landing.gate = ''; landing.t = 0;
+  landing.gate = ''; landing.t = 0; landing.lock = null; landing.off = 0;
   game.dockT = 0; game.dockCand = null; game.dockGate = '';
 }
 
 function updateDock(game, dt) {
   const s = game.ship;
   const docks = game.docks;
-  // A STATION DIES WITH ITS WORLD. Swept every substep — it is a walk of at
-  // most CFG.DOCK_MAX entries, and the world in question is usually the one
-  // being shot at when it matters.
+  // A STATION DIES WITH ITS WORLD — AND WITH ITS GROUND. Swept every substep —
+  // it is a walk of at most CFG.DOCK_MAX entries, and the world in question is
+  // usually the one being shot at when it matters. Two ways to die:
+  //   - the body itself is gone (alive false), or
+  //   - the crust under the pad is cratered past CFG.DOCK_CRATER_MAX — the
+  //     same line the landing gate refuses to berth across. Before this, a
+  //     station whose footing was blasted away FLOATED on its build-time
+  //     standoff over a hole the player could fly into: the pad is pinned at a
+  //     fraction of the NOMINAL radius (util.padPos) and knows nothing about
+  //     scars. A structure should not survive its foundations; it breaks.
+  // The scar walk only runs for a wounded body (scars.length gates it), so the
+  // steady-state cost is the alive check it always was.
   for (let i = docks.length - 1; i >= 0; i--) {
-    if (docks[i].b.alive) continue;
-    const dead = docks.splice(i, 1)[0];
-    if (game.dock === dead) game.dock = null;
-    if (game.home === dead) {
-      game.homeLostName = dead.b.name || 'your home world';
-      game.home = null;
+    const q = docks[i];
+    const undermined = q.b.alive && padUndermined(q);
+    // A PORT THE SHIP OUTGREW DECOMMISSIONS. The station's art and berth refit
+    // to the CURRENT tier (dockTier reads game.st), so a tier-up can leave a
+    // standing station on a world that can no longer carry its class — the
+    // same dockHostOk line the landing gate refuses new berths across. Retired
+    // quietly with a message, never a bang: nothing destroyed it, the ship
+    // simply grew past what the world can hold.
+    const outgrown = q.b.alive && !undermined && !dockHostOk(game.st, q.b.radius);
+    if (q.b.alive && !undermined && !outgrown) continue;
+    // THE COLLAPSE IS AN EVENT (breakDock): debris off the pad point and a
+    // named message, never a station silently missing from the dial. A world
+    // that DIED takes its station quietly by comparison — the world's own
+    // destruction is the event, and homeLostName carries the consequence.
+    if (undermined) { breakDock(game, q, 'undermined'); continue; }
+    const wasHome = removeDock(game, q);
+    if (outgrown) {
+      if (wasHome) game.homeOutgrownName = placeName(q.b, 'your home world');
+      else game.dockOutgrownName = placeName(q.b, 'a distant world');
+    } else if (wasHome) {
+      game.homeLostName = placeName(q.b, 'your home world');
     }
   }
+
+  // LIFTING CLEAR LIFTS THE EVICTION (removeDock) — ON THE BERTH'S OWN GRACE,
+  // NEVER ON ONE SUBSTEP. A single frame off the surface is not a departure,
+  // and in the only scenario a dome ever dies in it is the COMMON case: the
+  // ground and the hull are under fire, so a bounce off the debris breakDock
+  // just spawned, a nudge from the next hit or a scar opening under the pad all
+  // break contact for a frame while the ship has plainly gone nowhere. Read as
+  // "the ship left", 8ms of air handed the rebuild straight back.
+  //
+  // CFG.DOCK_DRAIN already prices exactly this question for the BERTH: contact
+  // holds a berth, and losing it spends the latch at DOCK_DRAIN, so a berth
+  // survives DOCK_TIME / DOCK_DRAIN (~0.17s) of no contact — its note calls
+  // that "a bump across a ridge". Leaving means the same thing to both, so the
+  // eviction reads the same clock rather than inventing a second answer.
+  // Capped: this counts up for the whole time the ship is in open space.
+  if (landing.touch) landing.off = 0;
+  else landing.off = Math.min(1, landing.off + dt);
+  if (landing.lock && landing.off >= CFG.DOCK_TIME / CFG.DOCK_DRAIN) landing.lock = null;
 
   // The latch timer fills only while all three gates hold and drains
   // DOCK_DRAIN times faster off the surface — see CFG.DOCK_DRAIN for why
@@ -3345,7 +3795,15 @@ function updateDock(game, dt) {
       const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
       if (d2 < best) { best = d2; d = q; }
     }
-    if (!d) {
+    // NO REBUILD IN THE RUBBLE — the site is evicted until the ship leaves it
+    // (removeDock). It NAMES ITSELF: a latch that fills and then quietly
+    // declines to lay a station is this feature's worst failure mode, so the
+    // refusal goes through the same gate channel every other one does, and
+    // drawDockGuide's instruction for it is "lift clear".
+    const evicted = !d && landing.lock === b;
+    if (evicted) {
+      landing.gate = 'rubble';
+    } else if (!d) {
       // A FRESH BUILD SITE.
       d = {
         b,
@@ -3353,6 +3811,12 @@ function updateDock(game, dt) {
         ang: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
         rf: dist / Math.max(1, b.radius),
         t: 0,
+        // THE DOME'S CHARGE, spent forever (CFG.DOCK_SHIELD). Issued at the
+        // build site rather than at completion so it is one number for the
+        // station's whole life — nothing anywhere refills it, and a station
+        // that is rebuilt on the same spot is a NEW record with a new pool,
+        // which is the honest reading of having built it again.
+        hp: CFG.DOCK_SHIELD,
       };
       docks.push(d);
       // The bound, not a balance number (CFG.DOCK_MAX). Retire the OLDEST
@@ -3363,7 +3827,10 @@ function updateDock(game, dt) {
         const i = docks.findIndex((q) => q !== game.home && q !== d);
         if (i >= 0) {
           const gone = docks.splice(i, 1)[0];
-          game.dockRetiredName = placeName(gone.b);
+          // Site-specific fallback: the RETIRED dock is by definition not the
+          // one you are standing on, so the generic 'this world' would name the
+          // wrong place.
+          game.dockRetiredName = placeName(gone.b, 'a distant world');
         }
       }
       game.dockBuildName = placeName(b);
@@ -3380,16 +3847,18 @@ function updateDock(game, dt) {
       game.dockedName = placeName(b);
       game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
     }
-    game.dock = d;
-    // THE CLAMPS TAKE THE SHIP, SO THE BEAM STANDS DOWN. A dock is a place you
-    // stop working: the beam, the ring, the tethers and the shotgun are all
-    // inert while berthed (main.js skips their updates and refuses their
-    // inputs), so anything still held has to be let go HERE — at the berth,
-    // which is before the station finishes building. Rocks left welded to a
-    // parked ship would orbit a structure they also phase through, with no
-    // input able to clear them. A gentle drop, never a volley (tractor.dropOrbit).
-    standDown(game);
-    sfx.sfxOrbitCapture();     // the clamps biting — a mechanical catch, not a chime
+    if (!evicted) {
+      game.dock = d;
+      // THE CLAMPS TAKE THE SHIP, SO THE BEAM STANDS DOWN. A dock is a place
+      // you stop working: the beam, the ring, the tethers and the shotgun are
+      // all inert while berthed (main.js skips their updates and refuses their
+      // inputs), so anything still held has to be let go HERE — at the berth,
+      // which is before the station finishes building. Rocks left welded to a
+      // parked ship would orbit a structure they also phase through, with no
+      // input able to clear them. A gentle drop, never a volley (tractor.dropOrbit).
+      standDown(game);
+      sfx.sfxOrbitCapture();   // the clamps biting — a mechanical catch, not a chime
+    }
   }
 
   // Published for the approach guidance (render.drawDockGuide) — the player has
@@ -3399,6 +3868,209 @@ function updateDock(game, dt) {
   game.dockCand = landing.b;
   game.dockGate = landing.gate;
   landing.touch = null; landing.settle = null; landing.gate = '';
+}
+
+// RESPAWN ARRIVES BERTHED. A death with a live home port hands the ship back
+// IN the clamps — launch-ready, shield and repair already running — rather
+// than hovering over its own pad to re-earn a berth it already owns.
+// Exported for main.js's respawn path; it lives HERE because the landing
+// latch is module scratch in this file, and a dock set without seeding it is
+// cleared by updateDock on the very next substep (landing.t <= 0 reads as
+// "flew off").
+export function berthAt(game, d) {
+  const s = game.ship;
+  const b = d.b;
+  const upA = d.ang + b.rot;
+  // RE-SEAT THE PAD TO THIS HULL — the same rule every re-berth runs (the ship
+  // grows across the tiers, and the clamps pin it to exactly this height).
+  // Seated a sliver INTO contact, not at the boundary: gravity and the
+  // resolver then keep the touch gate fed every substep, where an exact-
+  // boundary seat makes contact a floating-point coin flip and the latch
+  // drains (the seating lesson devtest.js's setDown documents).
+  d.rf = (surfRadius(b, upA) + s.radius * 0.92) / Math.max(1, b.radius);
+  const pp = padPos(d, _padScratch);
+  s.x = pp.x; s.y = pp.y;
+  // Riding the ground under it, exactly like a home respawn always has — a
+  // world orbiting at 700 u/s must not receive a ship standing still.
+  const sv = surfaceVel(b, s.x, s.y);
+  s.vx = sv.vx; s.vy = sv.vy;
+  s.angle = upA;               // rockets down, exactly as it was parked
+  game.dock = d;
+  landing.b = b; landing.t = CFG.DOCK_TIME;
+  game.dockT = 1; game.dockCand = b; game.dockGate = '';
+  game.launch = null; game.autoland = null;
+}
+
+// IS THE WAY IN CLEAR? A segment-vs-disc test from the hull to the pad over
+// every celestial that could be in the way. The autoland flies a STRAIGHT
+// approach — it is a docking aid, not a pathfinder — so engaging it with a
+// world across the path would drive the ship into that world, which is the
+// game doing the exact thing the pilot is trusting it not to.
+//
+// THE PAD'S OWN HOST IS TESTED TOO, and that is the elegant half: the pad sits
+// ON that surface, so a segment ending there only crosses the interior when
+// the ship is OVER THE HORIZON from it. Testing the host at 0.995 of its
+// radius therefore answers "can this berth actually be seen from here?" with
+// the same arithmetic — no special case, no separate far-side test.
+//
+// Walks reg.nonField (~380 bodies, never the ~15,000 shoal rocks) and only
+// after the cheap distance/velocity gates have already picked a candidate, so
+// this runs at most once per substep and only while hands-off beside a pad.
+function padPathClear(game, sx, sy, px, py, host) {
+  const dx = px - sx, dy = py - sy;
+  const L2 = dx * dx + dy * dy;
+  for (const b of frameReg(game).nonField) {
+    if (!b.alive) continue;
+    if (b.type !== 'planet' && b.type !== 'moon' && b.type !== 'star') continue;
+    // The host is what the approach ENDS on: shave it so touching its surface
+    // is not "blocked", while the far side still is.
+    const r = b === host ? b.radius * 0.995 : b.radius;
+    // Closest point on the segment to the body's centre.
+    let t = L2 > 0 ? ((b.x - sx) * dx + (b.y - sy) * dy) / L2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = sx + dx * t - b.x, qy = sy + dy * t - b.y;
+    if (qx * qx + qy * qy < r * r) return false;
+  }
+  return true;
+}
+
+// AUTOLAND — A STANDING STATION LANDS YOU ITSELF (CFG.AUTOLAND_*). Close and
+// slow with the throttle released, and the nearest pad takes the ship: eases
+// it down the approach, stands the nose up, matches the ground, and lets the
+// ordinary three-gate latch do the rest. Returning to a dock you already
+// built is never a piloting test twice; the FIRST landing on bare ground is
+// still flown by hand, because there is no station there to fly it for you.
+//
+// HANDS-OFF IS THE CONTRACT, both ways. It never engages with the throttle up
+// or against a ship that is plainly leaving (receding faster than a drift),
+// and any thrust mid-approach cancels it and stands it down for AUTOLAND_CD —
+// the same cooldown a LAUNCH sets, so the pad that just threw you off cannot
+// reel you straight back in.
+//
+// DELIBERATELY NOT MIRRORED IN predictPaths, unlike the rubber band and the
+// long arms: those are always-on forces a forecast must integrate or it draws
+// the wrong curve everywhere. This is an autopilot that only exists hands-off
+// inside one pad's approach cone and terminates at the berth — the moments it
+// is steering are the moments nobody is aiming a throw off the forecast.
+function updateAutoland(game, dt) {
+  if (game.autolandCd > 0) game.autolandCd -= dt;
+  const s = game.ship;
+  const c = game.controls;
+  const handsOn = (c.f || 0) > 0 || (c.b || 0) > 0 || game.burnerOn;
+  // …AND A SHIP CARRYING A LOAD IS WORKING, NOT COMING HOME. The throttle is
+  // the only thing `handsOn` can see, but the beam, the winch and the ring are
+  // all MOUSE-driven — so mining the world your own station is on, from inside
+  // AUTOLAND_R, is bit-for-bit the hands-off, slow, non-receding state the scan
+  // is looking for. The berth then calls tractor.standDown, which empties the
+  // ring, drops both held rocks and cancels the winch, earning nothing: the
+  // design law prices that as the cost of a landing the player CHOSE, never of
+  // one the pad chose for them. Without this, working next to your own dock
+  // means tapping thrust every AUTOLAND_CD seconds to stay uncaptured.
+  //
+  // THE HELD-BUTTON WORK VERBS COUNT TOO, and one of them is a whole spec's
+  // entire loop: a BRAWLER works by holding right mouse and sweeping rock into
+  // the ram (main.js's ramEating), which never touches held/held2/latch and
+  // cannot touch the ring at all (shipStats pins its maxOrbiters to 0) — so
+  // without game.ramEating a brawler mining beside its own pad is invisible
+  // here, and worse, the berth's dockBlocking then disarms the button it is
+  // still holding. game.stowEating is the hauler's mirror of it, and the ring
+  // term only covers that sweep from the first rock it seats onward. Neither
+  // can stick: main.js clears both on right-mouse-up and again every frame at
+  // a berth.
+  //
+  // game.volleyCharging is deliberately NOT in here: main.js arms it only off
+  // game.orbit.length and clears it the moment the ring empties, so the ring
+  // term already covers every frame it can be true in.
+  const working = !!(game.held || game.held2 || game.orbit.length || game.latch
+    || game.ramEating || game.stowEating);
+  const A = game.autoland;
+  if (A) {
+    // Done (the latch took it), dead, or the station itself is gone.
+    if (!s.alive || game.dock || !A.b.alive || !game.docks.includes(A)) {
+      game.autoland = null;
+      return;
+    }
+    // MANUAL OVERRIDE: any throttle hands the ship straight back — and so does
+    // picking work back up mid-approach, which is the same statement made with
+    // the mouse and would otherwise reach the berth's standDown by the back
+    // door. Both spend the cooldown, for the reason on the engage gate below.
+    if (handsOn || working) {
+      game.autoland = null;
+      game.autolandCd = CFG.AUTOLAND_CD;
+      return;
+    }
+    const b = A.b;
+    const p = padPos(A, _padScratch);
+    const dx = p.x - s.x, dy = p.y - s.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (dist > CFG.AUTOLAND_R * 1.5) { game.autoland = null; return; }   // drifted clear
+    // The approach vector: toward the pad at a speed that falls with distance,
+    // floored at the touch speed — under DOCK_SPEED by design, so the
+    // stillness gate is already satisfied when contact arrives. Velocity is
+    // EASED, never set: gravity and the contact resolver keep their say, and
+    // the hand-back on override is seamless because the ship always owns its
+    // own velocity.
+    const sv = surfaceVel(b, s.x, s.y);
+    const speed = clamp(dist * 1.2, CFG.AUTOLAND_TOUCH, CFG.AUTOLAND_SPEED);
+    const k = 1 - Math.exp(-CFG.AUTOLAND_K * dt);
+    s.vx += (sv.vx + (dx / dist) * speed - s.vx) * k;
+    s.vy += (sv.vy + (dy / dist) * speed - s.vy) * k;
+    // Rockets down: the radial up, the same bearing the landing gate reads.
+    const up = Math.atan2(s.y - b.y, s.x - b.x);
+    s.angle += angDiff(s.angle, up) * (1 - Math.exp(-CFG.AUTOLAND_TURN * dt));
+    return;
+  }
+  // ---- Engage scan: the nearest standing pad inside the capture radius ----
+  // DELIBERATELY NOT gated on dockReady: a half-built site autolands too. The
+  // finished harbour's PAYBACKS (shield, repair, vista, the respawn berth)
+  // all gate on dockReady, but the autoland is a convenience of re-landing at
+  // a pad you already own — and coming back to RESUME A BUILD is exactly the
+  // repeat approach it exists to remove.
+  // WORKING STANDS THE PAD DOWN, exactly as a LAUNCH does, and it is refreshed
+  // every substep the ship is carrying something — a bare refusal is not
+  // enough. Mining is a cycle, and the gaps in it are fractions of a second:
+  // in a 0.3s gap between a release and the next grab the pad would engage,
+  // swing most of the way to rockets-down (AUTOLAND_TURN 5) and drag the
+  // approach vector on (AUTOLAND_K 3.5) before the next grab cancelled it —
+  // over and over, with the guide's dashed line and "PAD HAS THE HELM" ring
+  // blinking each time. A pad that repeatedly tugs at a working ship and never
+  // finishes is a worse failure than the capture this gate was added to stop.
+  // The price is the launch's price: AUTOLAND_CD of drifting after the last
+  // rock leaves your hands before the pad may take you.
+  // Ordered: the disqualifiers that make the stand-down meaningless first (a
+  // berth has already stood the beam down; a dead ship is not working), then
+  // the refresh, which has to run BEFORE the cooldown's own return or a
+  // cooldown already ticking would never be topped up.
+  if (!s.alive || game.dock || game.launch) return;
+  if (working) { game.autolandCd = CFG.AUTOLAND_CD; return; }
+  if (game.autolandCd > 0 || handsOn) return;
+  let pick = null, best = CFG.AUTOLAND_R * CFG.AUTOLAND_R;
+  for (const d of game.docks) {
+    // The same doomed-pad tests updateDock sweeps on, because this runs BEFORE
+    // the sweep in the step tail: without them, on the exact substep a pad is
+    // undermined or outgrown the autoland could engage it — and announce a pad
+    // that collapses before the frame's messages even drain.
+    if (!d.b.alive || padUndermined(d) || !dockHostOk(game.st, d.b.radius)) continue;
+    const p = padPos(d, _padScratch);
+    const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
+    if (d2 < best) { best = d2; pick = d; }
+  }
+  if (!pick) return;
+  const b = pick.b;
+  const sv = surfaceVel(b, s.x, s.y);
+  const rvx = s.vx - sv.vx, rvy = s.vy - sv.vy;
+  if (Math.hypot(rvx, rvy) >= CFG.AUTOLAND_VMAX) return;   // a flyby is a flyby
+  const p = padPos(pick, _padScratch);
+  const dx = p.x - s.x, dy = p.y - s.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  // Not plainly LEAVING: a ship receding faster than a drift keeps the helm.
+  if ((rvx * dx + rvy * dy) / dist < -40) return;
+  // LAST, because it is the only expensive gate: the approach is a straight
+  // line, so it must actually BE one. Covers the far side of the pad's own
+  // world as well as a moon parked across the way — see padPathClear.
+  if (!padPathClear(game, s.x, s.y, p.x, p.y, b)) return;
+  game.autoland = pick;
+  game.autolandName = placeName(b);
 }
 
 // THE DOME PUSHES BACK. Damage immunity alone is only half a shield: without
@@ -3425,6 +4097,11 @@ function updateDomeShield(game, live) {
   const cy = b0.y + Math.sin(up) * b0.radius;
   const dr = dockDomeR(game.st, b0.radius, b0.radius * (d.rf - 1));
   const push = (o, r) => {
+    // THE FIELD CAN DIE MID-PASS. A repel below can empty the pool and take the
+    // whole station with it, and everything from that instant on — cx/cy/dr and
+    // the pool itself — belongs to a dock that no longer exists. One test at the
+    // top of the only entry point stands the rest of the sweep down.
+    if (game.dock !== d) return false;
     const dx = o.x - cx, dy = o.y - cy;
     if (dx > dr + r || dx < -(dr + r) || dy > dr + r || dy < -(dr + r)) return false;
     const dd = Math.hypot(dx, dy);
@@ -3436,12 +4113,40 @@ function updateDomeShield(game, live) {
     const nx = dx / dd, ny = dy / dd;
     if (nx * Math.cos(up) + ny * Math.sin(up) < -0.25) return false;
     o.x = cx + nx * need; o.y = cy + ny * need;
-    const vn = o.vx * nx + o.vy * ny;
-    if (vn < 0) { o.vx -= 2 * vn * nx; o.vy -= 2 * vn * ny; }   // reflect off the field
+    // EVERY VELOCITY HERE IS MEASURED IN THE DOCK'S OWN FRAME (util.surfaceVel
+    // — the same expression surface friction and the docking stillness gate
+    // read, for the same reason). The dome rides a world that ORBITS, at up to
+    // ~700 u/s, so an absolute-frame reading calls a rock merely drifting
+    // alongside a 700 u/s impact — and, worse, satisfies the separation floor
+    // below without the rock ever separating from a dome that is travelling
+    // just as fast, so the same contact is re-solved every substep at 120 Hz.
+    // Harmless while the field only pushed; the moment a repel started COSTING
+    // CHARGE it emptied a 2400-point pool in about a second off one drifting
+    // rock. Reported as "the dock shield went almost completely away on one
+    // small asteroid hit".
+    const sv = surfaceVel(b0, o.x, o.y);
+    const vn = (o.vx - sv.vx) * nx + (o.vy - sv.vy) * ny;
+    // THROWING SOMETHING OFF COSTS CHARGE (CFG.DOCK_REPEL_COST). Damage is the
+    // dome's main drain, but the most VISIBLE thing the field does is bounce a
+    // hurled rock, and a bounce that cost nothing would read as the shield
+    // still being invulnerable in exactly the moment the player is watching.
+    // INBOUND CLOSING speed only, on the same saturating mass knee as collision
+    // damage, and under a per-bite CEILING: a shoal leaning on the rim pays ~0
+    // (it must never bleed the pool by drift), a rock hurled hard pays a few
+    // points, and nothing can ever take a big bite out of the pool in one
+    // frame — the pool is meant to be spent over an assault, not lost to an
+    // event.
+    if (vn < 0) {
+      const m = o.mass || 200;
+      spendDome(game, d, Math.min(CFG.DOCK_REPEL_MAX,
+        CFG.DOCK_REPEL_COST * (m / (m + 1500)) * -vn));
+      o.vx -= 2 * vn * nx; o.vy -= 2 * vn * ny;                 // reflect off the field
+    }
     // …and make sure it actually LEAVES. A pure reflection lets a slow drifter
     // sit on the boundary being re-solved every substep; the floor turns the
-    // dome from a wall into something that throws.
-    const out = o.vx * nx + o.vy * ny;
+    // dome from a wall into something that throws. Relative, like everything
+    // above it: separation is separation FROM THE DOME, not speed through space.
+    const out = (o.vx - sv.vx) * nx + (o.vy - sv.vy) * ny;
     if (out < CFG.DOCK_REPEL_MIN) {
       o.vx += (CFG.DOCK_REPEL_MIN - out) * nx;
       o.vy += (CFG.DOCK_REPEL_MIN - out) * ny;
@@ -3501,6 +4206,9 @@ function updateLaunch(game, dt) {
   s.vy += Math.sin(up) * CFG.LAUNCH_KICK;
   game.launch = null;
   game.dock = null;
+  // The pad that just threw you off must not reel you straight back in — the
+  // autoland stands down while the launch clears the capture radius.
+  game.autolandCd = CFG.AUTOLAND_CD;
   // The berth has to be re-earned from zero, or the drain's grace window would
   // hand it straight back while the ship is still inside the pad's contact.
   landing.t = 0; landing.b = null;
@@ -3713,6 +4421,9 @@ function collideAlienBody(game, al, b, dt) {
       dx = b.x - al.x; dy = b.y - al.y; d2 = dx * dx + dy * dy;
     }
   }
+  // The exact outline normal, when the contact is against a landmark. Held
+  // here because rockshape's query returns a shared scratch object.
+  let exOn = false, exNx = 0, exNy = 0;
   if (shaped(b)) {   // aliens bounce off the real surface too, craters included
     const bound = al.radius + surfReach(b);
     if (d2 > bound * bound) return;
@@ -3722,12 +4433,25 @@ function collideAlienBody(game, al, b, dt) {
       // replaces reported the FAR wall on the 17 shapes that are not radial
       // functions (see rockshape.rockCircleQuery), which parked an alien
       // bouncing off nothing in a visible notch. Only the DEPTH is taken from
-      // it: the separation and bounce below stay on the centre-line normal
-      // aliens have always used, deliberately — the face normal is scoped to
-      // the ship and to landmark pairs, where the contact geometry is what the
-      // player is reading.
-      const pen = al.radius - rockCircleQuery(b, al.x, al.y).d;
+      // it: the BOUNCE below stays on the centre-line normal aliens have always
+      // used, deliberately — the face normal is scoped to the ship and to
+      // landmark pairs, where the contact geometry is what the player is
+      // reading.
+      //
+      // THE SEPARATION, THOUGH, HAS TO RIDE THE AXIS THE DEPTH WAS MEASURED ON.
+      // Depth along the outline normal and a push along the centre line are two
+      // different axes, and mixing them does not merely under-separate by
+      // 1/cos — where the outward normal points back across the centre line the
+      // factor flips SIGN and the push drives the alien INTO the far wall of a
+      // bite. Measured over the baked library: 19 of the 68 shapes have such a
+      // band, worst dot -0.853 (s0_14), covering ~10.5% of the band on s2_34.
+      // `pen` then grows every substep, so the alien grinds or tunnels instead
+      // of converging. Before the exact query, depth and direction were both
+      // radial — self-consistent even where they were wrong.
+      const q = rockCircleQuery(b, al.x, al.y);
+      const pen = al.radius - q.d;
       if (pen <= 0) return;
+      exOn = true; exNx = q.nx; exNy = q.ny;
       rr = Math.sqrt(d2) + pen;   // so `rr - d` below is that exact depth
     } else {
       rr = al.radius + surfRadius(b, Math.atan2(dy, dx) + Math.PI);
@@ -3736,7 +4460,7 @@ function collideAlienBody(game, al, b, dt) {
   if (d2 > rr * rr) return;
   const d = Math.sqrt(d2) || 0.001;
 
-  if (b.type === 'star') { killAlien(game, al); return; }
+  if (b.type === 'star') { killAlien(game, al, false); return; }   // flew into a sun — no bounty
 
   // SHOAL LURKER BODY-CHECK. The lurker is the dense field's native predator
   // and fights like a brawler ramming: ambient rock contact does it NO harm
@@ -3752,7 +4476,9 @@ function collideAlienBody(game, al, b, dt) {
       !(b.thrownTimer > 0 && b.thrownBy === 'player')) {
     const nx0 = dx / d, ny0 = dy / d;
     const overlap0 = rr - d;   // the narrow phase's reach, never the raw radii
-    al.x -= nx0 * overlap0; al.y -= ny0 * overlap0;
+    // Exact outline normal where we have one — see the bigShape branch above.
+    if (exOn) { al.x += exNx * overlap0; al.y += exNy * overlap0; }
+    else { al.x -= nx0 * overlap0; al.y -= ny0 * overlap0; }
     const sh = game.ship;
     // ONLY a committed charge throws. At shoal density (~88u between rocks)
     // a lurker brushes rocks constantly just manoeuvring, and letting those
@@ -3802,7 +4528,10 @@ function collideAlienBody(game, al, b, dt) {
   const nx = dx / d, ny = dy / d;
   const closing = -((b.vx - al.vx) * nx + (b.vy - al.vy) * ny);
   const overlap = rr - d;   // shaped surfaces: eject to the surface, not the disc
-  al.x -= nx * overlap; al.y -= ny * overlap;
+  // Exact outline normal where we have one — see the bigShape branch above.
+  // The bounce below stays on the centre line; only the push moves.
+  if (exOn) { al.x += exNx * overlap; al.y += exNy * overlap; }
+  else { al.x -= nx * overlap; al.y -= ny * overlap; }
   if (closing > 0) {
     const mEffA = Math.min(b.mass, 4e5);
     const kickA = Math.min(380, closing * 1.2 * (mEffA / (mEffA + 500)));
@@ -3828,7 +4557,13 @@ function collideAlienBody(game, al, b, dt) {
       al.hp -= dmg;
       addParticles(game, al.x, al.y, 0, 0, 6, '#8aff6a', 100, 0.5);
       if (al.hp <= 0) {
-        killAlien(game, al);
+        // Scrap only when the PLAYER's rock ended it — an alien that crashed
+        // itself into a moon or got clipped by ambient rock pays nothing.
+        // "The player's rock" includes one currently HELD or riding the orbit
+        // ring / Guard Sling wall (heldBy === 'player', no thrownTimer): the
+        // rock wall is the hauler's sanctioned defence, and an alien dying
+        // against it is a kill the wall earned.
+        killAlien(game, al, playerRock || b.heldBy === 'player');
         if (playerRock) {   // alien kills count as smashes too
           addXp(game, PROG.XP_SMASH);
           game.prog.smashes++;
@@ -3919,7 +4654,7 @@ let nanWarned = false;   // the NaN tripwire below warns once per session
 // ---------------------------------------------------------------------------
 function newReg() {
   return {
-    stars: [], planets: [], terrans: [], ironMoons: [], stations: [], locals: [],
+    stars: [], planets: [], terrans: [], oceans: [], ironMoons: [], stations: [], locals: [],
     forts: [],
     // EVERY body that is not shoal rock (~380 of ~15,600 at doubled scale).
     // The renderer's landmark passes — approach plates, the planet colour
@@ -3956,6 +4691,7 @@ function regPush(reg, b) {
     case 'planet':
       reg.planets.push(b);
       if (b.ptype === 'terran') reg.terrans.push(b);
+      else if (b.ptype === 'ocean') reg.oceans.push(b);
       else if (b.ptype === 'shroud') reg.cloakers.push(b);
       break;
     case 'moon':
@@ -4144,6 +4880,7 @@ export function updateFieldLOD(game, dt) {
   awake.length = 0;
   const reg = game.reg || (game.reg = newReg());
   reg.stars.length = 0; reg.planets.length = 0; reg.terrans.length = 0;
+  reg.oceans.length = 0;
   reg.ironMoons.length = 0; reg.stations.length = 0; reg.locals.length = 0;
   reg.decay.length = 0; reg.forts.length = 0; reg.cloakers.length = 0;
   reg.nonField.length = 0; reg.crust.length = 0;
@@ -4547,6 +5284,25 @@ export function promoteGravel(game, i) {
   b.inertT = gravel.inertT[i];        // a fresh fragment stays inert across the change
   if (gravel.flags[i] & gravel.FLAG_ICE) b.ice = true;
   if (gravel.flags[i] & gravel.FLAG_CORED) b.cored = true;
+  // CARRY THE POCKET, TOO. A promoted grain that lost `fieldRock`/`field`
+  // walked straight out of config.fieldXp — no flat damp, and no charge against
+  // the pocket's FIELD_XP_BUDGET — so shoal gravel paid UNDAMPED XP forever
+  // while the shoal rock beside it was budgeted, and a hard hit sprays ~60
+  // fresh grains. The field XP gate is meant to be double (per-rock multiplier
+  // AND per-field budget); this was the hole under both.
+  //
+  // Recovered from POSITION rather than stored: the gravel SoA is four typed
+  // arrays chosen for cache behaviour and a shared worker mirror, and a grain
+  // is only ever promoted at the moment the beam reaches it — once, in the
+  // player's hands, never in a hot loop. fieldFrac is the same pocket footprint
+  // ai.js and the LOD use, so "in the shoal" means one thing everywhere.
+  // Deliberately NOT world.markFieldRock: that also applies the field HP
+  // multiplier, and this grain's hp came across from the SoA already.
+  if (game.fields) {
+    for (let fi = 0; fi < game.fields.length; fi++) {
+      if (fieldFrac(game.fields[fi], b.x, b.y) <= 1) { b.fieldRock = true; b.field = fi; break; }
+    }
+  }
   b.attractor = false;                // debris is never an attractor, at any mass
   gravel.kill(i);
   return b;
@@ -4960,7 +5716,11 @@ export function step(game, dt) {
       const d = game.dock;
       const up = Math.atan2(s.y - d.b.y, s.x - d.b.x);
       s.angle += angDiff(s.angle, up) * (1 - Math.exp(-CFG.DOCK_UPRIGHT * dt));
-    } else {
+    } else if (!game.autoland) {
+      // AUTOLAND OWNS THE NOSE while it flies the approach (updateAutoland
+      // eases it to rockets-down) — mouse steering re-asserting here every
+      // substep would win the fight and the pad could never stand the ship
+      // up. Aiming is unaffected, exactly as at a berth.
       const aimAng = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
       s.angle += clamp(angDiff(s.angle, aimAng), -CFG.SHIP_TURN * dt, CFG.SHIP_TURN * dt);
     }
@@ -5241,17 +6001,63 @@ export function step(game, dt) {
           }
         }
       }
+      const wasInSea = game.shipInSea;
+      let inSeaNow = false;
       for (const b of attractors) {
-        if (b.ptype !== 'lava') continue;
-        const lz = b.radius * CFG.LAVA_HEAT_ZONE;
-        const dl = Math.hypot(s.x - b.x, s.y - b.y);
-        if (dl < lz) {
-          const t = Math.min(1, (lz - dl) / (lz - b.radius));
-          if (t * 0.6 > game.heatT) game.heatT = t * 0.6;   // less prominent glow
-          if (s.invuln <= 0) damageShip(game, t * t * CFG.LAVA_HEAT_DPS * dt, `Melted over ${b.name || 'a lava world'}.`);
-          if (!game.tut.heat) game.heatWarn = true;
+        if (b.ptype === 'lava') {
+          const lz = b.radius * CFG.LAVA_HEAT_ZONE;
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < lz) {
+            const t = Math.min(1, (lz - dl) / (lz - b.radius));
+            if (t * 0.6 > game.heatT) game.heatT = t * 0.6;   // less prominent glow
+            if (s.invuln <= 0) damageShip(game, t * t * CFG.LAVA_HEAT_DPS * dt, `Melted over ${b.name || 'a lava world'}.`);
+            if (!game.tut.heat) game.heatWarn = true;
+          }
+        } else if (b.ptype === 'terran' && b.type === 'planet') {
+          // THE BURN DECK BITES THE SHIP TOO (user design call) — flat dps x
+          // the same band profile the rock burn runs, so the hull chars in the
+          // deck and flies clean above AND beneath it. Environmental
+          // convention: flat, never hull-scaled, under the gas tops' 9 dps.
+          const az = b.radius * CFG.ATMO_ZONE, lo = b.radius * CFG.ATMO_IN;
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < az && dl > lo) {
+            const u = (dl - lo) / (az - lo);
+            const q = 4 * u * (1 - u);
+            if (q * 0.55 > game.heatT) game.heatT = q * 0.55;
+            if (s.invuln <= 0) damageShip(game, q * CFG.ATMO_SHIP_DPS * dt, `Burned up over ${b.name || 'a living world'}.`);
+            if (!game.tut.atmoShip && q > 0.3) game.atmoShipWarn = true;
+          }
+        } else if (b.ptype === 'ocean' && b.type === 'planet') {
+          // OPEN SEA: inside the drawn radius the hull is IN THE WATER —
+          // damped toward the water's own frame (depth-ramped, so the
+          // waterline is not a hard edge; divided by ship mass so a heavy
+          // hull ploughs). The seabed at OCEAN_CORE is the collider; docking
+          // is refused at the landing gates, so the sea takes your speed and
+          // gives you nothing to berth on.
+          const dl = Math.hypot(s.x - b.x, s.y - b.y);
+          if (dl < b.radius) {
+            inSeaNow = true;
+            const sv = surfaceVel(b, s.x, s.y);
+            if (!wasInSea) {
+              const rel = Math.hypot(s.vx - sv.vx, s.vy - sv.vy);
+              if (rel > 60) {
+                const hits = (b.seaHits ||= []);
+                hits.push({ a: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
+                  t: game.time, s: Math.min(1, 0.3 + rel / 700) });
+                if (hits.length > 8) hits.shift();
+                addParticles(game, s.x, s.y, sv.vx, sv.vy, 10, '#cfe8ff', 130, 0.7, 2.5);
+              }
+              if (!game.tut.sea) game.seaWarn = true;
+            }
+            const core = b.radius * CFG.OCEAN_CORE;
+            const depth = Math.min(1, (b.radius - dl) / (b.radius - core));
+            const k = 1 - Math.exp(-CFG.OCEAN_DRAG * depth * dt / (1 + s.mass / CFG.OCEAN_DRAG_MASS));
+            s.vx += (sv.vx - s.vx) * k;
+            s.vy += (sv.vy - s.vy) * k;
+          }
         }
       }
+      game.shipInSea = inSeaNow;
     }
   }
 
@@ -5467,10 +6273,28 @@ export function step(game, dt) {
     const flow = orbitalFlow(game, s.x, s.y);
     const rvx = s.vx - flow.vx, rvy = s.vy - flow.vy;   // velocity relative to the flow
     const rsp = Math.hypot(rvx, rvy);
-    if (rsp > cap) {
-      const brake = (rsp - cap) * CFG.SPEED_BLEED * dt;
+    // GRAVITY SLING CREDIT (CFG.SLING_*): WORLD gravity doing positive work
+    // on the flow-relative deviation banks extra allowance — the whole
+    // rationale lives on the constants. shipGx/Gy is this substep's stash
+    // (worlds only, sun excluded), so the credit accrues at exactly the rate
+    // gravity is adding speed along the current deviation. Deliberately NO
+    // over-cap gate: a slingshot builds its speed on the plunge, BELOW the
+    // ceiling (at periapsis gravity runs perpendicular to the track and
+    // accrues nothing), so gating on rsp > cap starves the whip and the
+    // bleed clamps it at the cap — measured 294 vs 465 u/s peak on the same
+    // flyby. Climbing out banks nothing (gravity work turns negative), and
+    // the bound + decay keep a banked dive from becoming a standing
+    // afterburner.
+    if (rsp > 1e-6) {
+      const gdot = (game.shipGx * rvx + game.shipGy * rvy) / rsp;
+      if (gdot > 0) s.slingSpd = Math.min(cap * CFG.SLING_MAX, s.slingSpd + gdot * dt);
+    }
+    s.slingSpd *= Math.exp(-CFG.SLING_DECAY * dt);   // the slow falloff — always ticking
+    const capEff = cap + s.slingSpd;
+    if (rsp > capEff) {
+      const brake = (rsp - capEff) * CFG.SPEED_BLEED * dt;
       let f = Math.max(0, (rsp - brake) / rsp);
-      const hard = cap * CFG.SPEED_HARD;
+      const hard = capEff * CFG.SPEED_HARD;
       if (rsp * f > hard) f = hard / rsp;
       s.vx = flow.vx + rvx * f; s.vy = flow.vy + rvy * f;
     }
@@ -5480,9 +6304,11 @@ export function step(game, dt) {
     // brakes on. Direction matters: drifting sideways or backwards at speed
     // must not read as "hitting max" (a bounce or fling recoil isn't cruise).
     // Post-bleed, so a clean burn can kiss >1 briefly; floored at 0 when the
-    // deviation points behind the nose.
+    // deviation points behind the nose. Over capEff, not cap: a banked sling
+    // IS the current legal ceiling, and dividing by the bare cap would pin
+    // the speed voice at 1.2 for the whole ride down the credit.
     game.speedFrac = Math.min(1.2, Math.max(0,
-      ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / cap));
+      ((s.vx - flow.vx) * Math.cos(s.angle) + (s.vy - flow.vy) * Math.sin(s.angle)) / capEff));
     // ...and for the HUD's SHIP DATA readout: the flow-relative speed itself
     // (full magnitude, post-bleed) — the number the ceiling actually governs.
     // Sky-frame speed is the WRONG readout against TOP SPEED: near the sun the
@@ -5647,6 +6473,7 @@ export function step(game, dt) {
   // and never inside it: this is the only point in the substep where "the hull
   // touched nothing" is a knowable fact. The launch sequence follows it, so a
   // release always acts on a berth this substep has already confirmed.
+  updateAutoland(game, dt);
   updateDock(game, dt);
   updateDomeShield(game, live);
   updateLaunch(game, dt);
@@ -5782,7 +6609,7 @@ export function step(game, dt) {
         if (d >= hz) continue;
         const t = Math.min(1, (hz - d) / (hz - sun2.radius));
         al.hp -= t * t * 25 * dt;
-        if (al.hp <= 0) killAlien(game, al);
+        if (al.hp <= 0) killAlien(game, al, false);   // cooked by the corona — no bounty
       }
     }
   }
@@ -5814,16 +6641,26 @@ export function step(game, dt) {
             b.mass > CFG.ATMO_MAX_MASS || b.core || b.cache || b.pod ||
             b.carved || b.visitor || b.wreck || b.junk || b.parryFrozen) continue;
         for (const p of terrans) {
+          // Registry contract: a per-frame snapshot, so consumers check alive
+          // — a dead world's sky must not keep burning rocks.
+          if (!p.alive) continue;
           const az = p.radius * CFG.ATMO_ZONE;
           const dx = b.x - p.x, dy = b.y - p.y;
           if (dx > az || dx < -az || dy > az || dy < -az) continue;
           const d = Math.hypot(dx, dy);
           if (d >= az) continue;
-          const t = Math.min(1, (az - d) / (az - p.radius));
+          // THE BURN DECK: the band between ATMO_IN and ATMO_ZONE. Beneath it
+          // the air is calm — a rock that punches through stops burning (user
+          // design call), so what reaches the deck's floor lands whole.
+          const lo = p.radius * CFG.ATMO_IN;
+          if (d <= lo) continue;
+          // 4u(1-u): zero at BOTH edges, peak mid-deck — the burn fades in at
+          // 1.5r and back out at the deck floor (no hard edges in-world).
+          const u = (d - lo) / (az - lo);
+          const t = 4 * u * (1 - u);
           // The fire trails opposite the motion THROUGH the air (planet-
           // relative) — render draws the streak while reentryT holds, scaled
-          // by DEPTH (reentryK) so the burn fades in across the shell instead
-          // of switching on at the exact 1.5r boundary (no hard edges in-world).
+          // by the band profile (reentryK).
           b.reentryT = 0.22;
           b.reentryK = t;
           b.reentryAng = Math.atan2(b.vy - p.vy, b.vx - p.vx);
@@ -5840,6 +6677,61 @@ export function step(game, dt) {
           }
           break;
         }
+      }
+    }
+  }
+
+  // OCEAN WATER: the drag volume over the seabed collider (see CFG.OCEAN_*).
+  // Same walk shape as the terran burn above — the ocean list comes from the
+  // registry, candidates from the awake list (a dormant rock is off-view, and
+  // a splashdown is a thing you watch happen). Exemptions mirror the gas
+  // swallow's: railed bodies (an ocean's own junk satellites never touch the
+  // sea), held rocks (the beam dives on purpose), parry-frozen, and anything
+  // already sinking into a giant. NO damage here — the water only takes speed;
+  // the hard hit is the seabed, through the ordinary contact pass.
+  {
+    const oceans = reg.oceans.length ? reg.oceans : null;
+    if (oceans) {
+      for (const b of live) {
+        if (!b.alive || b === s || b.onRails || b.heldBy || b.parryFrozen ||
+            b.sinkT > 0 || b.type === 'planet' || b.type === 'star') {
+          if (b.inSea) b.inSea = false;   // grabbed out of the water: undim
+          continue;
+        }
+        let inSea = false;
+        for (const p of oceans) {
+          // Registry contract: a per-frame snapshot, so consumers check alive
+          // — a sea that shattered mid-frame must not keep dragging.
+          if (!p.alive) continue;
+          const dx = b.x - p.x, dy = b.y - p.y;
+          const pr = p.radius;
+          if (dx > pr || dx < -pr || dy > pr || dy < -pr) continue;
+          const d = Math.hypot(dx, dy);
+          if (d >= pr) continue;
+          inSea = true;
+          const sv = surfaceVel(p, b.x, b.y);
+          if (!b.inSea) {
+            // SPLASHDOWN — stamp a wave on the world (render runs it across
+            // the face) and throw spray. Only a real arrival ripples; a rock
+            // drifting over the waterline at walking pace does not.
+            const rel = Math.hypot(b.vx - sv.vx, b.vy - sv.vy);
+            if (rel > 60) {
+              const hits = (p.seaHits ||= []);
+              hits.push({ a: Math.atan2(dy, dx) - p.rot, t: game.time,
+                s: Math.min(1, 0.22 + b.mass / 6000 + rel / 900) });
+              if (hits.length > 8) hits.shift();
+              addParticles(game, b.x, b.y, sv.vx, sv.vy,
+                Math.min(14, 4 + Math.round(b.mass / 400)), '#cfe8ff', 140, 0.8, 2.5);
+            }
+          }
+          const core = pr * CFG.OCEAN_CORE;
+          const depth = Math.min(1, (pr - d) / (pr - core));
+          const k = 1 - Math.exp(-CFG.OCEAN_DRAG * depth * dt / (1 + b.mass / CFG.OCEAN_DRAG_MASS));
+          b.vx += (sv.vx - b.vx) * k;
+          b.vy += (sv.vy - b.vy) * k;
+          break;
+        }
+        b.inSea = inSea;
       }
     }
   }
@@ -5913,11 +6805,21 @@ export function predictPaths(game) {
       atr.push({
         x: b.x, y: b.y, vx: b.vx, vy: b.vy, mass: b.mass, radius: b.radius,
         star: b.type === 'star',
-        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue' || b.majorComet,
-        // rubber-band eligible: real worlds only (majorComet is weighted for
-        // gravity but the capture assist doesn't apply near a comet)
+        // MIRROR LAW: this predicate must equal gravityAt's `heavy` exactly —
+        // planet/moon/rogue, NO majorComet. It used to include majorComet
+        // ("weighted for gravity"), but the sim never weighted comets, so near
+        // Vesper the drawn path felt PLANET_GRAV_SHIP × LONG ARMS pull the
+        // flown path didn't — a lie that doubled when the mul went 6 → 12
+        // (2026-08). The sim is the truth; the forecast comes down to match.
+        weighted: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
+        // rubber-band eligible: real worlds only (the capture assist doesn't
+        // apply near a comet)
         rb: b.type === 'planet' || b.type === 'moon' || b.type === 'rogue',
         gas: b.ptype === 'gas',   // ship path enters these; hit = the core
+        // Ocean ghosts hit at the SEABED, exactly as the collider does — a
+        // forecast ending at the drawn sea would call a landing where the sim
+        // sinks you another 0.14r (the ✕ and the hull must agree on the floor).
+        ocean: b.type === 'planet' && b.ptype === 'ocean',
         // crystal ghosts hit-test against the shard polygon at the CURRENT
         // rot (spin drift over the horizon is smaller than the marker dot)
         crystal: b.ptype === 'crystal', rot: b.rot,
@@ -6035,6 +6937,18 @@ export function predictPaths(game) {
       if (b.weighted && heavyMul !== 1) {
         const f = d / (b.radius * CFG.SHIP_WELL_START);
         if (f > 1) w *= Math.min(CFG.SHIP_WELL_MAX, f);
+        // Mirror of gravityAt's SURFACE WEIGHT near-surface ramp — the
+        // forecast must steepen at a big world's surface exactly like the
+        // real pull, or the drawn launch/descent path lies. t clamped both
+        // ways, same as the sim (the lower clamp guards a SHIP_SURF_END
+        // tuned below SHIP_WELL_START from under-weighting the gap).
+        else {
+          const peak = Math.min(CFG.SHIP_SURF_MAX, b.radius / CFG.SHIP_SURF_REF);
+          if (peak > 1) {
+            const t = Math.max(0, Math.min(1, (CFG.SHIP_SURF_END - d / b.radius) / (CFG.SHIP_SURF_END - 1)));
+            w *= 1 + (peak - 1) * t;
+          }
+        }
         if (b.gas && d < b.radius) {   // enclosed-mass interior, like gravityAt
           const q = d / b.radius;
           w *= q * q * q;
@@ -6185,8 +7099,12 @@ export function predictPaths(game) {
       }
       ship.vx += ax * dt; ship.vy += ay * dt;
       // Mirror the speed governor (relative to the orbital flow) so the path
-      // stays honest — same flow-relative clamp the real ship gets
-      const pcap = game.st.maxSpeed;
+      // stays honest — same flow-relative clamp the real ship gets. The
+      // SLING CREDIT rides in FROZEN at its current value: simulating its
+      // accrual/decay along the path would need the whole credit machine per
+      // step, and at SLING_DECAY 0.12/s it moves too slowly over a forecast
+      // horizon to bend the drawn path visibly.
+      const pcap = game.st.maxSpeed + (game.ship ? game.ship.slingSpd : 0);
       const pflow = orbitalFlow(game, ship.x, ship.y);
       const prvx = ship.vx - pflow.vx, prvy = ship.vy - pflow.vy;
       const prsp = Math.hypot(prvx, prvy);
@@ -6210,7 +7128,7 @@ export function predictPaths(game) {
       if (!shipEnd) for (const b of hitAtr) {
         // Gas giants have no ship surface — the meaningful "hit" is the core.
         // Crystal worlds hit at the shard polygon (bounding test first).
-        let hr = (b.gas ? b.radius * CFG.GAS_CORE : b.radius) + ship.r;
+        let hr = (b.gas ? b.radius * CFG.GAS_CORE : b.ocean ? b.radius * CFG.OCEAN_CORE : b.radius) + ship.r;
         const hd2 = (b.x - ship.x) ** 2 + (b.y - ship.y) ** 2;
         if (b.crystal) {
           const bnd = b.radius * CRYSTAL_REACH + ship.r;
@@ -6245,7 +7163,7 @@ export function predictPaths(game) {
       held.x += held.vx * dt; held.y += held.vy * dt;
       if (i % 2 === 0) heldPts.push({ x: held.x, y: held.y });
       for (const b of atr) {
-        let hr = b.radius + held.r;
+        let hr = (b.ocean ? b.radius * CFG.OCEAN_CORE : b.radius) + held.r;
         const hd2 = (b.x - held.x) ** 2 + (b.y - held.y) ** 2;
         if (b.crystal) {   // thrown-rock ✕ lands on the shard polygon
           const bnd = b.radius * CRYSTAL_REACH + held.r;

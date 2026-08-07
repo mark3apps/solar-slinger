@@ -1,17 +1,23 @@
 import {
   CFG, PROG, TIERS, burnCap, burnThrust, xpForPick, abilityRankCost, abilityById, ABILITIES, SPECS,
+  MODES, modeRules,
 } from './config.js';
 import { ACHIEVEMENTS, CATEGORIES, ACH_TOTAL, ACH_MAX_POINTS, isSecret } from './achievements.js';
 import {
   chart, contactLabel, contactClass, contactLevel, waypointLabel, waypointPos,
   pointLabel, MAX_WAYPOINTS,
 } from './starmap.js';
-import { mulberry32 } from './util.js';
+import { mulberry32, defaultSystemName } from './util.js';
 import { drawStatIcon } from './render.js';
+// The ONE "is this station finished" test — the dome's push, its draw and the
+// DOCK gauge below all read it. physics.js imports nothing from here, so this
+// closes no cycle.
+import { dockReady } from './physics.js';
 
 const el = {};
 let msgTimer = null;
 let prevHull = Infinity, prevShield = Infinity;
+let prevDockHp = Infinity;   // dock dome charge last frame — the bar flashes on a bite
 let dispHull = -1, dispShield = -1;   // eased readout values — numbers COUNT, not snap
 let prevXpFrac = 0;        // XP-bar fill fraction last frame — pulse on gain
 let prevCombo = 0;         // combo stamp retriggers its pop on every increment
@@ -22,7 +28,8 @@ let iconSig = '';          // acquired-upgrade chip signature — rebuild on cha
 let abilBars = [];         // cached { fill, row, id, cost } per learned ability — the per-frame XP fills
 let spPrev = null;         // SHIP SYSTEMS panel's last drawn strings — null until a run is live,
                            // so the first fill of a run never fires the stat-up flash
-let spSlots = -1;          // stow pips drawn (slot count) — rebuilt only when it moves
+let spSlots = -1;          // stow SOCKETS drawn (= slots owned) — structure rebuilt only when it moves
+let spFilled = -1;         // stow pips currently LIT (= rocks in the ring) — classes retoggled only on change
 // The dial's pointer degrees, EASED IN JS (never a CSS transition — see the
 // note on .spdial in style.css for why: transitioning a registered <angle>
 // custom property is measurably broken in this engine, both as the source
@@ -75,6 +82,7 @@ export function initHud(game) {
   for (const id of ['hud', 'fx', 'combo',
     'hullFill', 'shieldFill', 'hullNum', 'shieldNum', 'hullBar', 'shieldBar',
     'burnBar', 'burnFill', 'burnNum',
+    'dockBar', 'dockFill', 'dockNum',
     'msg', 'speedBadge', 'perfBadge', 'deathScreen', 'deathCause', 'deathLives', 'gameoverScreen', 'gameoverCause',
     // SHIP SYSTEMS cluster (bottom right): dial, throw gauge, sprite rows
     'shipPanel', 'spVel', 'spThrN', 'velDial', 'spVelRated',
@@ -91,10 +99,15 @@ export function initHud(game) {
     // Achievements: the run scoreboard, its panel, and the toast rail
     'achievementsScreen', 'achList', 'achFilters', 'achOut', 'achScore', 'achCount', 'achPct',
     'achRail', 'scoreChip', 'gameoverScore',
+    // Saved solar systems: the library panel and the game-over save form
+    'systemsScreen', 'sysSaveRow', 'sysName', 'btnSysSave', 'sysHint', 'sysList',
+    'btnSystemsBack', 'btnSplashSystems', 'btnPauseSystems', 'goName', 'btnGoSave',
     // The system chart: its bezel tab, the panel, and the chrome hud.js fills
     'mapBtn', 'mapScreen', 'starmap', 'mapCharted', 'mapContacts', 'mapZoom',
     'mapRoutePanel', 'mapRouteN', 'mapRouteList', 'mapOut', 'mapMeta',
     'btnMapClear', 'btnMapCentre', 'btnMapBack',
+    // Game modes: the title screen's two steps, their chrome, and the pause readout
+    'modeList', 'pauseMode', 'stepMode', 'stepSource', 'splashMode', 'sourceHint', 'btnModeBack',
     'btnStart', 'btnSplashSettings', 'btnSplashControls', 'btnSplashCredits', 'btnSplashExit',
     'btnResume', 'btnPauseSettings', 'btnPauseControls', 'btnPauseAch', 'btnMainMenu', 'btnPauseExit',
     'btnSettingsBack', 'btnControlsBack', 'btnCreditsBack', 'btnAchBack', 'btnGameOverAch']) {
@@ -119,7 +132,67 @@ export function initHud(game) {
     const box = e.target.closest('.up');
     if (box) box.classList.remove('up');
   });
+  buildModes(game);
   initAchPanel(game);
+}
+
+// ---- Game modes -------------------------------------------------------------
+// The title screen's mode cards, built ONCE at init straight off config.MODES.
+// Built rather than authored in index.html because the catalog already IS the
+// rules — a mode whose card had to be hand-copied into the markup could ship
+// with a blurb that quietly disagrees with what the sim does. Built once and
+// never again (it is innerHTML, and the offer/journey/library rule applies:
+// rebuilding it under the cursor would throw away the card between the
+// mousedown and the click trying to pick it); only refreshModes moves after
+// this, and it touches classes and aria only.
+function buildModes(game) {
+  if (!el.modeList) return;
+  // The card shows the NAME and the one-line rule and nothing else — the full
+  // sentence rides `title` (hover) and `aria-label` (screen readers), so it is
+  // available without putting a paragraph per mode on the title screen.
+  // NOTHING IS PRESELECTED and no card carries a persistent chosen state: the
+  // click IS the choice and it advances to step 2, so a lit "current" card
+  // would be claiming the flow had already moved when it hadn't.
+  el.modeList.innerHTML = MODES.map((m) => `
+    <button class="moderow md-${m.id}" data-mode="${m.id}"
+            title="${m.desc}" aria-label="${m.name} — ${m.desc}">
+      <span class="modeicon">${m.icon}</span>
+      <span class="modename">${m.name}</span>
+      <span class="modetag">${m.tag}</span>
+      <i class="modemark"></i>
+    </button>`).join('');
+  refreshModes(game);
+}
+
+// Write the live mode into its two READOUTS — step 2's chip and the pause
+// menu's. Guarded on the id, so the usual case is a Map lookup and nothing else.
+function refreshModes(game) {
+  const cur = modeRules(game.mode);
+  for (const node of [el.splashMode, el.pauseMode]) {
+    if (!node || lastText.get(node) === cur.id) continue;
+    lastText.set(node, cur.id);
+    node.className = `modechip md-${cur.id}`;
+    node.innerHTML = `<span class="modechipicon">${cur.icon}</span><span>${cur.name}</span>`;
+  }
+}
+
+// Which step of the title screen is showing (main.js owns game.splashStep).
+// Also the one place that knows SAVED SYSTEM has nothing to offer yet: the
+// button is disabled AND says why, because a dead button with no explanation
+// reads as a bug rather than as an empty library.
+function refreshSplashStep(game) {
+  const source = game.splashStep === 'source';
+  if (el.stepMode) el.stepMode.classList.toggle('hidden', source);
+  if (el.stepSource) el.stepSource.classList.toggle('hidden', !source);
+  if (!source) return;
+  refreshModes(game);
+  const n = game.systems.length;
+  if (el.btnSplashSystems) el.btnSplashSystems.disabled = n === 0;
+  if (el.sourceHint) {
+    setText(el.sourceHint, n === 0
+      ? 'No saved systems yet — keep one from the pause menu while you fly.'
+      : `${n} saved system${n === 1 ? '' : 's'} in your library.`);
+  }
 }
 
 export function message(text, dur = 3.5) {
@@ -175,6 +248,16 @@ export function initMenus(handlers) {
       if (row) handlers.onUpgradePick(+row.dataset.i);
     });
   }
+  // The mode cards. DELEGATED like the journey rail and the pick offer — the
+  // row is built by buildModes, so binding per card would tie the listener to
+  // markup this file generates rather than to the container that owns it.
+  if (el.modeList) {
+    el.modeList.addEventListener('click', (e) => {
+      const row = e.target.closest('.moderow');
+      if (row) handlers.onPickMode(row.dataset.mode);
+    });
+  }
+  bind('btnModeBack', handlers.onModeBack);
   bind('btnMainMenu', handlers.onMainMenu);
   bind('btnSplashExit', handlers.onExit);
   bind('btnPauseExit', handlers.onExit);
@@ -185,6 +268,46 @@ export function initMenus(handlers) {
   bind('btnSplashCredits', handlers.onOpenCredits);
   bind('btnPauseAch', handlers.onOpenAchievements);
   bind('btnGameOverAch', handlers.onOpenAchievements);
+  // The saved-solar-systems library: one panel, opened from the splash (to fly
+  // one) and from the pause menu (to save the world you are in).
+  bind('btnSplashSystems', handlers.onOpenSystems);
+  bind('btnPauseSystems', handlers.onOpenSystems);
+  bind('btnSystemsBack', handlers.onCloseShell);
+  // The panel's save form. Enter commits like every other text field here; the
+  // field clears on save so the row appearing at the top of the list IS the
+  // confirmation, with an empty form ready behind it.
+  if (el.btnSysSave) {
+    el.btnSysSave.addEventListener('click', () => {
+      handlers.onSaveSystem(el.sysName.value);
+      el.sysName.value = '';
+    });
+  }
+  if (el.sysName && el.btnSysSave) el.sysName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnSysSave.click(); });
+  // The library rows are DELEGATED like the journey rail — they are rebuilt on
+  // every save/delete, so a listener bound per row would die with its row.
+  // The ✕ is a separate button beside the row (never nested inside it): a
+  // delete must not also be a click on the thing it deletes.
+  if (el.sysList) {
+    el.sysList.addEventListener('click', (e) => {
+      const del = e.target.closest('.sysdel');
+      if (del) { handlers.onDeleteSystem(+del.dataset.i); return; }
+      const go = e.target.closest('.sysgo');
+      if (go) handlers.onPlaySystem(+go.dataset.i);
+    });
+  }
+  // The game-over save form. One shot per game over: the button disarms after
+  // saving (re-saving would only rename the same seed) and setGameOverVisible
+  // re-arms it for the next run's end.
+  if (el.btnGoSave) {
+    el.btnGoSave.addEventListener('click', () => {
+      if (el.btnGoSave.disabled) return;
+      handlers.onSaveSystem(el.goName.value);
+      el.btnGoSave.disabled = true;
+      el.goName.disabled = true;
+      el.btnGoSave.textContent = 'SYSTEM SAVED ✓';
+    });
+  }
+  if (el.goName && el.btnGoSave) el.goName.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.btnGoSave.click(); });
   // Every shell panel backs out the same way (main.closeShellPanel)
   bind('btnSettingsBack', handlers.onCloseShell);
   bind('btnControlsBack', handlers.onCloseShell);
@@ -299,12 +422,27 @@ function scrambleTitle() {
 
 // Replay the power-on. The class is stripped and re-added (with a reflow between)
 // so the CSS animations retrigger on every return to the splash, not just load.
+let bootTimer = null;
+// The cascade's last delay (the tray's 1.09s) plus that animation's own 0.4s,
+// rounded up. Anything shorter strips .boot mid-flight and SNAPS the last few
+// tray items to their end state — re-derive this if the delays in the
+// `.boot .menutray > *` block move.
+const BOOT_MS = 1500;
 function playBoot() {
   if (!el.splashScreen) return;
   el.splashScreen.classList.remove('boot');
   void el.splashScreen.offsetWidth;
   el.splashScreen.classList.add('boot');
   scrambleTitle();
+  // .boot MEANS "booting right now", and it is lifted when the sequence ends.
+  // It used to simply stay on until the next replay, which was harmless while
+  // the panel's contents were one static column — but the splash is two STEPS
+  // now, and a step is hidden with display:none. Re-showing an element restarts
+  // every CSS animation on it, so a stale .boot made backing out of step 2
+  // replay the whole staggered power-on for a console that never powered off,
+  // with the mode cards invisible for the first two thirds of a second.
+  clearTimeout(bootTimer);
+  bootTimer = setTimeout(() => el.splashScreen.classList.remove('boot'), BOOT_MS);
 }
 
 // ---- The control schematic's readout ---------------------------------------
@@ -479,11 +617,12 @@ function initAchPanel(game) {
 }
 
 // ---- Achievement toasts ----------------------------------------------------
-// A landed achievement announces itself on its own rail. Lifetime is driven in
-// JS rather than by a fixed CSS animation delay for one reason: HOVERING PAUSES
-// IT. A notification you have to read in four seconds is a notification you
-// miss, so pointing at a toast holds it open and reveals its full description;
-// the clock only restarts once the pointer leaves.
+// A landed achievement announces itself on its own rail, description shown up
+// front — no hover needed to find out what you just did. Lifetime is still
+// driven in JS rather than by a fixed CSS animation delay for one reason:
+// HOVERING PAUSES IT. A notification you have to read in a few seconds is a
+// notification you miss, so pointing at a toast holds it open; the clock only
+// restarts once the pointer leaves.
 //
 // HOVER WITHOUT POINTER-EVENTS. The rail sits in the middle of the play area
 // (right of the canvas, under the radar), so the toasts stay
@@ -492,7 +631,7 @@ function initAchPanel(game) {
 // toast swallow the mousedown that starts a tractor grab — the canvas listener
 // would simply never fire, and a rock you reached for would be missed because a
 // notification happened to be in the way.
-const TOAST_DWELL = 4200;       // ms on screen when never pointed at
+const TOAST_DWELL = 5200;       // ms on screen when never pointed at — longer than before, since there's now a description to read up front
 const TOAST_LINGER = 1400;      // ms of grace once the pointer leaves
 const TOAST_OUT_MS = 460;       // must match the toastOut animation in style.css
 const TOAST_MAX = 4;            // a burst drops the oldest rather than growing off-screen
@@ -716,8 +855,9 @@ function syncMenus(game) {
   const controls = !!game.controlsOpen;
   const credits = !!game.creditsOpen;
   const achieve = !!game.achievementsOpen;
+  const systems = !!game.systemsOpen;
   const mapOpen = !!game.mapOpen;
-  const modal = settings || controls || credits || achieve || mapOpen;
+  const modal = settings || controls || credits || achieve || systems || mapOpen;
   const splash = !game.started && !modal;
   const pause = game.started && game.paused && !modal;
   const menuBtn = game.started && !game.paused && !modal &&
@@ -728,7 +868,12 @@ function syncMenus(game) {
   // pick card or a shell modal.
   hudLive = menuBtn;
   if (!hudLive) abilHide();
-  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+mapOpen}${+menuBtn}${+game.started}`;
+  // The splash's own step joins the signature: it changes what the panel shows
+  // without changing WHICH panel shows, so the guard would never notice it.
+  // game.systems.length is in there for the same reason — the SAVED SYSTEM
+  // button's disabled state and its hint are derived from it, and saving the
+  // first system of a run has to un-dead that button by the time you get back.
+  const sig = `${+splash}${+pause}${+settings}${+controls}${+credits}${+achieve}${+systems}${+mapOpen}${+menuBtn}${+game.started}|${game.splashStep}|${game.systems.length}`;
   if (sig !== menuSig) {
     menuSig = sig;
     el.splashScreen.classList.toggle('hidden', !splash);
@@ -737,6 +882,7 @@ function syncMenus(game) {
     el.controlsScreen.classList.toggle('hidden', !controls);
     el.creditsScreen.classList.toggle('hidden', !credits);
     el.achievementsScreen.classList.toggle('hidden', !achieve);
+    el.systemsScreen.classList.toggle('hidden', !systems);
     el.mapScreen.classList.toggle('hidden', !mapOpen);
     // THE COCKPIT GOES AWAY UNDER THE CHART. The other shell panels are centred
     // boxes with the flight HUD showing around them, which is right — you are
@@ -754,6 +900,15 @@ function syncMenus(game) {
     // Rebuilt ON OPEN and only then (see the buildAchList comment). The sig
     // guard means this runs on the transition, not every frame the panel is up.
     if (achieve) refreshAchievements(game);
+    // Same rule for the saved-systems library: rebuilt on open, and again by
+    // main.js's own save/delete handlers — never per frame (it is innerHTML).
+    // Open is also when the save field takes its preset-name prefill.
+    if (systems) refreshSystems(game, true);
+    // The splash's step (and with it the mode chip), and the pause menu's own
+    // mode readout. Both derived here rather than written by the click handler,
+    // exactly like every other panel on this screen.
+    if (splash) refreshSplashStep(game);
+    if (pause) refreshModes(game);
     // A shell modal fully REPLACES the panel it opened over (the same law that
     // makes the three shell panels mutually exclusive) — and that includes the
     // DEATH and GAME OVER panels, which are centered .panels too: without this
@@ -940,6 +1095,57 @@ function bodyMeta(game, hov) {
   }
   parts.push('CLICK TO ADD A STOP');
   return parts.join('  ·  ');
+}
+
+// ---- The saved-solar-systems library ----------------------------------------
+// Fill the SOLAR SYSTEMS panel. Called on the open transition (syncMenus) and
+// again by main.js after a save or delete — never per frame: the list is
+// innerHTML, and the sim behind the panel is frozen anyway. Which half of the
+// panel is live is DERIVED from game.started, not from which button opened it:
+// over a run the save form shows and the rows are a library; on the title
+// screen there is nothing to save and the rows are launch controls.
+export function refreshSystems(game, prefill = false) {
+  if (!el.systemsScreen) return;
+  const inRun = !!game.started;
+  el.sysSaveRow.classList.toggle('hidden', !inRun);
+  // The seed's own PRESET name (one word off each util.defaultSystemName list)
+  // is offered in the field on OPEN — type over it to name the world yourself.
+  // It doubles as the placeholder and the blank-save fallback (main.saveSystem),
+  // so what the empty field shows is exactly what a bare SAVE would store.
+  // Prefill only on the open transition: after a save the field clears, and
+  // refilling it then would dangle the just-saved name as if it hadn't taken.
+  if (inRun) {
+    el.sysName.placeholder = defaultSystemName(game.worldSeed);
+    if (prefill) el.sysName.value = defaultSystemName(game.worldSeed);
+  }
+  const list = game.systems || [];
+  setText(el.sysHint, !list.length
+    ? 'No saved systems yet — save one from the pause menu, or when a run ends.'
+    : inRun
+      ? 'Your saved systems. Fly one from the title screen.'
+      : 'Click a system to fly it.');
+  el.sysList.classList.toggle('noplay', inRun);
+  el.sysList.innerHTML = list.map((s, i) =>
+    `<li class="sysrow"><button class="sysgo" type="button" data-i="${i}"` +
+    `${inRun ? ' disabled' : ` aria-label="Fly ${esc(s.name)}"`}>` +
+    `<span class="sysname">${esc(s.name)}</span>` +
+    `<span class="sysworld">WORLD ${s.seed}</span></button>` +
+    `<button class="sysdel" type="button" data-i="${i}" title="Forget this system" ` +
+    `aria-label="Forget ${esc(s.name)}">&#10005;</button></li>`).join('');
+}
+
+// Re-arm the game-over save form for a fresh run's end. The form is one-shot
+// per game over (initMenus disarms it on save). The field arrives PREFILLED
+// with the seed's preset name (util.defaultSystemName) — accept it with one
+// click, or type over it; the placeholder and blank-save fallback are the same
+// name, so clearing the field changes nothing.
+export function armGameOverSave(worldSeed) {
+  if (!el.btnGoSave) return;
+  el.btnGoSave.disabled = false;
+  el.btnGoSave.textContent = 'SAVE THIS SOLAR SYSTEM';
+  el.goName.disabled = false;
+  el.goName.value = defaultSystemName(worldSeed);
+  el.goName.placeholder = el.goName.value;
 }
 
 export function setDeathVisible(v, cause = '', lives = 0) {
@@ -1234,6 +1440,38 @@ export function updateHud(game) {
     el.burnBar.classList.toggle('low', !game.burnerOn && fuel < 0.25);
   }
 
+  // THE HARBOUR'S SHIELD (CFG.DOCK_SHIELD). Up only while berthed at a FINISHED
+  // station — the same gate the dome itself draws on, because that is exactly
+  // when the pool is doing anything. It is the one gauge here that measures
+  // something which is NOT the ship, so it wears the dome's own pale ice rather
+  // than the ship shield's blue: the bar and the field it reports have to be
+  // recognisably the same object.
+  //
+  // It does NOT share the hull/shield points-per-pixel scale. That scale exists
+  // to make the ship's split pool comparable at a glance, and this pool is ~7
+  // hulls deep — folding it in would either flatten the ship's gauges to
+  // slivers or run this one off the side of the screen. Fixed width, no
+  // point-cells, exactly like the fuel tank, for the same reason: it is not
+  // part of the ship's hit-point pool.
+  // `dockReady`, not an inline `t >= DOCK_BUILD` — the dome's push, its draw and
+  // this gauge must all key off ONE predicate or they drift apart.
+  const dk = game.dock;
+  const dockLive = dockReady(dk);
+  el.dockBar.classList.toggle('hidden', !dockLive);
+  if (dockLive) {
+    const hp = Math.max(0, dk.hp ?? CFG.DOCK_SHIELD);
+    const frac = Math.max(0, Math.min(1, hp / CFG.DOCK_SHIELD));
+    setWidth(el.dockFill, `${frac * 100}%`);
+    setText(el.dockNum, `${Math.ceil(hp)}/${CFG.DOCK_SHIELD}`);
+    // The SAME threshold physics warns on, so the bar going red and the message
+    // saying so are one event rather than two nearly-agreeing ones.
+    el.dockBar.classList.toggle('low', frac < CFG.DOCK_SHIELD_WARN);
+    if (game.started && hp < prevDockHp - 0.4) flash(el.dockBar);
+    prevDockHp = hp;
+  } else {
+    prevDockHp = Infinity;
+  }
+
   // Combo stamp: throw-kill chains slam a multiplier onto the screen
   const comboLive = game.started && (game.combo || 0) >= 2 && game.comboT > 0;
   el.combo.classList.toggle('hidden', !comboLive);
@@ -1445,15 +1683,33 @@ export function updateHud(game) {
       if (stowed) drawStatIcon(el.stowIcon, 'class', st.orbitTier);
       drawStatIcon(el.shipIcon, 'ship', st.tier);
     }
-    // STOW exists only once an orbit ability does. Its pips are the 7-slot
-    // cap with the slots owned lit — a COUNT, so pips, never a bar. Rebuilt
-    // only when the count moves.
+    // STOW exists only once an orbit ability does. A COUNT, so pips, never a bar.
+    // THE PIPS ARE A LIVE OCCUPANCY READOUT, not a progression one (user call,
+    // 2026-08): one SOCKET per slot you own, LIT for each slot currently holding
+    // a rock. They used to draw the whole 14-slot ladder with the slots you had
+    // EARNED lit, which meant "unlit" had to carry two different meanings —
+    // empty slot, and rank you haven't bought — and two states cannot say three
+    // things. Occupancy is what you need mid-fight ("how much room is left?");
+    // the ladder is already legible on the ability bar.
+    // So the STRUCTURE is rebuilt only when your capacity moves, and the LIT
+    // state is retoggled only when the fill moves — this runs every frame, and
+    // rewriting innerHTML at 60fps to change a class would be the expensive way
+    // to do nothing.
     el.rowStow.classList.toggle('hidden', !stowed);
-    if (!stowed) spSlots = -1;
-    else if (spSlots !== st.maxOrbiters) {
-      spSlots = st.maxOrbiters;
-      el.spStowPips.innerHTML = Array.from({ length: 7 }, (_, i) =>
-        `<span class="pp${i < st.maxOrbiters ? ' on' : ''}"></span>`).join('');
+    if (!stowed) { spSlots = -1; spFilled = -1; }
+    else {
+      if (spSlots !== st.maxOrbiters) {
+        spSlots = st.maxOrbiters;
+        spFilled = -1;   // force the lit pass below — the sockets are all new
+        el.spStowPips.innerHTML = Array.from({ length: st.maxOrbiters },
+          () => '<span class="pp"></span>').join('');
+      }
+      const filled = Math.min(st.maxOrbiters, game.orbit.length);
+      if (spFilled !== filled) {
+        spFilled = filled;
+        const pips = el.spStowPips.children;
+        for (let i = 0; i < pips.length; i++) pips[i].classList.toggle('on', i < filled);
+      }
     }
     const vals = {
       spVelRated: String(st.maxSpeed),

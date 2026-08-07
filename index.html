@@ -33,6 +33,17 @@
       </span>
       <span class="stattrack"><span class="statwell"><span id="burnFill"></span></span></span>
     </div>
+    <!-- THE HARBOUR'S OWN SHIELD. Present only while berthed at a FINISHED
+         station: it is the dome over THIS berth, it never recharges, and when
+         it runs out the station goes with it. Last in the stack because it is
+         the only gauge that isn't part of the ship. -->
+    <div class="statbar hidden" id="dockBar">
+      <span class="stathead">
+        <span class="statlabel">DOCK</span>
+        <span class="statnum" id="dockNum"></span>
+      </span>
+      <span class="stattrack"><span class="statwell"><span id="dockFill"></span></span></span>
+    </div>
   </div>
   <!-- The PILOT CARD. It reads BOTTOM-UP, because that is the order the run
        happens in: the XP rail is bolted across the card's foot, the tier it
@@ -166,6 +177,15 @@
   <p id="gameoverCause"></p>
   <!-- The run's final scoreboard line. A run ends on a number, not just a cause. -->
   <div id="gameoverScore"></div>
+  <!-- Keep the SOLAR SYSTEM the run happened in: name it and it joins the saved
+       library (localStorage ss_systems), launchable from the title screen's
+       SAVED SYSTEMS panel. hud.js re-arms the form on every fresh game over. -->
+  <div class="gosave">
+    <input type="text" class="seedin sysnamein" id="goName" placeholder="name this system"
+           maxlength="24" spellcheck="false" autocomplete="off"
+           aria-label="Name this solar system to save it">
+    <button class="menubtn" id="btnGoSave">SAVE THIS SOLAR SYSTEM</button>
+  </div>
   <div class="menucol">
     <button class="menubtn" id="btnGameOverAch">VIEW ACHIEVEMENTS</button>
   </div>
@@ -192,19 +212,61 @@
     <div class="gametitle" data-text="SOLAR SLINGER">SOLAR <span>SLINGER</span></div>
     <div class="subtitle">A LIVING GRAVITY SANDBOX</div>
   </div>
-  <div class="menucol">
-    <button class="menubtn primary" id="btnStart">START GAME</button>
-    <button class="menubtn" id="btnSplashControls">CONTROLS</button>
-    <button class="menubtn" id="btnSplashSettings">SETTINGS</button>
-    <button class="menubtn" id="btnSplashCredits">CREDITS</button>
-    <button class="menubtn" id="btnSplashExit">EXIT</button>
+  <!-- GAME MODE. Three cards, built ONCE from config.MODES by hud.buildModes —
+       the catalog is the single source of truth for the rules, so it may as
+       well be the source of the labels too. Nothing here is rebuilt per frame,
+       and the cards carry no state to mirror: a click commits and advances the
+       step, so there is nothing to keep in sync afterwards. -->
+  <!-- THE TITLE SCREEN IS TWO STEPS: pick a mode, then pick a sky to fly it in.
+       main.js owns `game.splashStep` and hud.syncMenus derives which of these is
+       showing — the same owner-split every other panel here uses. -->
+  <!-- STEP 1: the modes, and nothing else. Nothing is preselected — the click
+       IS the choice, and it advances. -->
+  <div class="splashstep" id="stepMode">
+    <div class="steplabel">CHOOSE A MODE</div>
+    <!-- `group`, not `radiogroup`: nothing here holds a checked state — each card
+         is a button that commits and advances (see hud.buildModes). -->
+    <div class="modecols" id="modeList" role="group" aria-label="Game mode"></div>
+  </div>
+  <!-- STEP 2: which sky. A brand-new system or one out of your library — two
+       equal buttons, because they are the same size of decision. Saved systems
+       used to be a tray pill next to CREDITS, which made half the choice look
+       like an afterthought. -->
+  <div class="splashstep hidden" id="stepSource">
+    <div class="steplabel steprow">
+      <button class="stepback" id="btnModeBack">‹ MODE</button>
+      <span class="modechip" id="splashMode"></span>
+    </div>
+    <div class="menugo">
+      <button class="menubtn primary bigbtn" id="btnStart"><i class="gobtnglyph">✦</i>NEW SYSTEM</button>
+      <button class="menubtn bigbtn" id="btnSplashSystems"><i class="gobtnglyph">◈</i>SAVED SYSTEM</button>
+    </div>
+    <p class="small stephint" id="sourceHint"></p>
+  </div>
+  <!-- The tray: the three panels that only READ, plus the way out. Deliberately
+       a tier quieter than everything above — ghost text, no pill — so nothing
+       down here competes with the mode row or the launch pair. EXIT is set off
+       past a hairline and tinted ember: it is the only one that doesn't come
+       back, and it should never be a same-looking neighbour of CREDITS. -->
+  <div class="menutray">
+    <button class="traybtn" id="btnSplashControls">CONTROLS</button>
+    <button class="traybtn" id="btnSplashSettings">SETTINGS</button>
+    <button class="traybtn" id="btnSplashCredits">CREDITS</button>
+    <i class="traysep"></i>
+    <button class="traybtn quit" id="btnSplashExit">EXIT</button>
   </div>
 </div>
 
 <div id="pauseScreen" class="panel menu hidden">
   <h1 class="menuhdr">PAUSED</h1>
+  <!-- Which ruleset this run is being flown under. The mode is chosen on the
+       title screen and can't be changed from here (setMode refuses once a run
+       has started), so this is a READOUT, not a control — but a run whose rules
+       are invisible from the pause menu is a run you can forget you're in. -->
+  <div class="modechip" id="pauseMode"></div>
   <div class="menucol">
     <button class="menubtn primary" id="btnResume">RESUME</button>
+    <button class="menubtn" id="btnPauseSystems">SAVE SYSTEM</button>
     <button class="menubtn" id="btnPauseAch">ACHIEVEMENTS</button>
     <button class="menubtn" id="btnPauseControls">CONTROLS</button>
     <button class="menubtn" id="btnPauseSettings">SETTINGS</button>
@@ -301,9 +363,9 @@
       <div class="cphd">TRACTOR &amp; AIM</div>
       <div class="mousefig">
         <button class="mzone mleft" data-fn="GRAB &amp; FLING"
-          data-note="Hold to catch a rock in the beam, release to throw it. It flies exactly at your cursor, and the throw never shoves the ship."><span>LMB</span></button>
-        <button class="mzone mright" data-fn="ORBIT &amp; SHOTGUN"
-          data-note="Send the held rock into orbit around your ship as a shield. Hold with rocks in orbit to charge a shotgun volley."><span>RMB</span></button>
+          data-note="Hold to catch a rock in the beam, release to throw it. It flies exactly at your cursor, and the throw never shoves the ship. With Twin Grip, keep holding and sweep the cursor over a second rock to pick that one up too."><span>LMB</span></button>
+        <button class="mzone mright" data-fn="STOW"
+          data-note="Point at a rock to stow it in your orbit ring — hold and sweep the cursor to keep filling. With a rock already in the beam, it stows that one if the ring can take it, and sets it down gently if it cannot."><span>RMB</span></button>
         <button class="mzone mbody" data-fn="STEER"
           data-note="The ship always noses toward the cursor — there is no turn key."><span>MOVE</span></button>
       </div>
@@ -359,6 +421,28 @@
   </div>
   <div class="menucol">
     <button class="menubtn primary" id="btnAchBack">BACK</button>
+  </div>
+</div>
+
+<!-- SOLAR SYSTEMS: the saved-system library. A system is a NAME over a world
+     seed (the seed rebuilds the layout bit-identically), kept in
+     localStorage['ss_systems'] so it outlives the run — the one shell panel
+     whose contents survive a reset. The save block only exists while a run is
+     live (the pause-menu path); from the title screen the rows LAUNCH.
+     hud.refreshSystems fills #sysList; rows are rebuilt on open and on change,
+     never per frame. -->
+<div id="systemsScreen" class="panel menu hidden">
+  <h2>SOLAR SYSTEMS</h2>
+  <div class="sysave hidden" id="sysSaveRow">
+    <input type="text" class="seedin sysnamein" id="sysName" placeholder="name this system"
+           maxlength="24" spellcheck="false" autocomplete="off"
+           aria-label="Name this solar system to save it">
+    <button class="menubtn" id="btnSysSave">SAVE CURRENT SYSTEM</button>
+  </div>
+  <p class="syshint" id="sysHint"></p>
+  <ul class="syslist" id="sysList"></ul>
+  <div class="menucol">
+    <button class="menubtn primary" id="btnSystemsBack">BACK</button>
   </div>
 </div>
 

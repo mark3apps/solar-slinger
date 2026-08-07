@@ -34,7 +34,8 @@ A('firstSmash', 'combat', PTS.easy, 'Demolition Debut',
 
 - **No loops. No allocation. No mutation.** Anything needing a scan is computed once into the shared
   context `c` by the sweep. The one sanctioned loop is the orbit-mass sum, and only because
-  `st.maxOrbiters` caps it at seven.
+  `st.maxOrbiters` caps it — at **14** since the Orbital Sling ladder doubled; read the length from
+`config.ORBIT_SLOTS`, never a literal.
 - `s` is the ledger — every counter reads as undefined-or-number, so bare `>=` is safe without guards.
 - The measured budget is **0.02 ms per sweep across all ~385 rows** (0.1% of a 60 fps frame). Keep it.
 

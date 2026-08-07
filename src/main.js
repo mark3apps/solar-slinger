@@ -1,13 +1,13 @@
 import {
-  CFG, PROG, SPECS, newProgress, shipStats, maxLives,
+  CFG, PROG, SPECS, MODES, modeRules, newProgress, shipStats, maxLives,
   addXp, owesPick, pickIsMilestone, tierChoices,
-  consumePickCost, applyAbility, applySpec, applyTierUp, canStow, shelterR, stormClass,
+  consumePickCost, applyAbility, applySpec, applyTierUp, shelterR, stormClass,
   stormStrength,
 } from './config.js';
 import { Ship } from './entities.js';
 import { generateWorld, respawnShip, replenishWorld, spawnLifePod } from './world.js';
-import { step, updateFieldLOD, frameReg, clearDocks, dockReady } from './physics.js';
-import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, releaseHeld, addToOrbit, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
+import { step, updateFieldLOD, frameReg, clearDocks, dockReady, berthAt } from './physics.js';
+import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tryGrab, tryAutoSecond, releaseHeld, addToOrbit, stowFromCursor, absorbIntoRam, flingAllFromOrbit, retrieveFromOrbit, aimSolutions } from './tractor.js';
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
@@ -23,7 +23,7 @@ import { initInput, input, readControls, mouseWorld } from './input.js';
 import * as sfx from './sfx.js';
 import * as music from './music.js';
 import * as zone from './zone.js';
-import { lerp, shellModal, seedFrom, placeName } from './util.js';
+import { lerp, shellModal, seedFrom, placeName, defaultSystemName } from './util.js';
 
 // A run's progression record. config.newProgress builds the roguelite half;
 // the achievement ledger is bolted on HERE rather than inside it because
@@ -44,7 +44,27 @@ const game = {
   controlsOpen: false,     // the control schematic — same shell rules (util.shellModal)
   creditsOpen: false,      // the credits panel  — same shell rules
   achievementsOpen: false, // the run's achievement log — same shell rules
+  systemsOpen: false,      // the saved-solar-systems library — same shell rules
   mapOpen: false,          // the sun-centred system chart — same shell rules (starmap.js)
+  // GAME MODE (config.MODES). Chosen on the title screen and persisted, so the
+  // way you like to fly survives a restart. `rules` is the catalog ROW for that
+  // id, resolved once by setMode and read straight by the sim (physics.damageShip,
+  // ai.js, world.applyModeRules) — nothing downstream looks the id up or branches
+  // on it. NOT run state: resetRun leaves both alone, the way it leaves the
+  // saved-systems library, because a game-over restart must stay in the mode you
+  // were flying.
+  mode: 'classic',
+  rules: modeRules('classic'),
+  // Which step of the title screen is showing: 'mode' (the three cards) or
+  // 'source' (new sky vs the library). Pure shell state — main.js flips it,
+  // hud.syncMenus derives the DOM from it, and it is deliberately NOT reset by
+  // closing a shell modal: backing out of the SAVED SYSTEMS panel has to land
+  // you back on the step you opened it from, not at the top of the flow.
+  splashStep: 'mode',
+  systems: [],             // the saved SOLAR SYSTEMS library: { name, seed } rows,
+                           //   persisted to localStorage['ss_systems']. A seed
+                           //   rebuilds its layout bit-identically, so a row IS
+                           //   the system. NOT run state — resetRun leaves it.
   route: newRoute(),       // the plotted journey: an ordered list of stops the chart
                            //   sets and the radar flies you along. Run state, so
                            //   resetRun clears it; the chart's VIEW is not, and lives
@@ -94,6 +114,9 @@ const game = {
                            // threshold crossed mid-throw doesn't pop cards up mid-aim
   orbit: [],               // bodies circling the ship as a shield
   ramFx: [],               // brawler: rocks mid-crush into the ram (render only)
+  tetherT: 0,              // Recovery Tether reload — seconds until a throw may arm the tether again
+  stowEating: false,       // RMB held (hauler): the ring keeps stowing what the cursor crosses
+  stowEatCd: 0,            // seconds until the stow sweep may seat another rock
   ramEating: false,        // RMB held: the ram keeps eating what the cursor crosses
   ramTierDropT: 0,         // >0 just after the barrier lost a density tier (render shudder)
   ramEatCd: 0,             // seconds until the held-button sweep may crush again
@@ -174,7 +197,11 @@ const game = {
   domeHitA: 0,             //   (world bearing of that bite)
   dockT: 0,                // approach guidance, published per substep: latch fill 0..1,
   dockCand: null,          //   the world being landed on,
-  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast')
+  dockGate: '',            //   and which gate is refusing ('' | 'level' | 'fast' | 'crater' | 'small')
+  autoland: null,          // the station currently FLYING THE SHIP IN (physics.
+                           //   updateAutoland), or null. A reference into docks.
+  autolandCd: 0,           // seconds the autoland stays stood down after a
+                           //   manual override or a launch (CFG.AUTOLAND_CD)
   lastTier: 0,
   oortWarnT: 0,
   volleyT: 0,
@@ -209,6 +236,12 @@ function loadSettings() {
     if (typeof s.renderScale === 'number' && RENDER_STEPS.includes(s.renderScale)) game.renderScale = s.renderScale;
     if (typeof s.autoScale === 'boolean') game.autoScale = s.autoScale;
     if (typeof s.seedText === 'string') setSeedText(s.seedText);
+    // Resolved through the catalog, never trusted as an id: a mode dropped from
+    // MODES (or a hand-edited store) falls back to CLASSIC instead of leaving
+    // `rules` pointing at nothing. Like the pinned seed, this has to land BEFORE
+    // the boot regenWorld — applyModeRules runs inside generateWorld, so a mode
+    // loaded afterwards would leave the first world of the session full of nests.
+    if (typeof s.mode === 'string') { game.mode = modeRules(s.mode).id; game.rules = modeRules(game.mode); }
   } catch (e) { /* fall back to defaults */ }
 }
 function saveSettings() {
@@ -217,8 +250,64 @@ function saveSettings() {
       musicVol: game.musicVol, sfxVol: game.sfxVol, predict: game.predict,
       showFps: game.showFps, showPerf: game.showPerf, seedText: game.seedText,
       renderScale: game.renderScale, autoScale: game.autoScale,
+      mode: game.mode,
     }));
   } catch (e) { /* private mode / disabled storage — settings just won't persist */ }
+}
+
+// ---- Saved solar systems ----------------------------------------------------
+// The library the SAVED SYSTEMS panel shows: named worlds the player chose to
+// keep. Only the SEED is stored (plus the name it was given) — generateWorld
+// is seeded, so the seed alone brings the whole system back, layout, names and
+// all. Same host-agnostic localStorage idiom as ss_settings, under its own key
+// so a settings wipe and the library can never take each other out.
+const SYSTEMS_MAX = 50;   // a library, not a landfill — oldest saves fall off
+function loadSystemsLib() {
+  try {
+    const a = JSON.parse(localStorage.getItem('ss_systems') || '[]');
+    if (Array.isArray(a)) {
+      game.systems = a
+        .filter((s) => s && typeof s.name === 'string' && Number.isFinite(s.seed))
+        .map((s) => ({ name: String(s.name).slice(0, 24), seed: s.seed >>> 0 }))
+        .slice(0, SYSTEMS_MAX);
+    }
+  } catch (e) { /* corrupt store — start with an empty library */ }
+}
+function saveSystemsLib() {
+  try { localStorage.setItem('ss_systems', JSON.stringify(game.systems)); }
+  catch (e) { /* private mode / disabled storage — the library just won't persist */ }
+}
+// Save the LIVE world under a name. Blank falls back to the seed's own preset
+// name (util.defaultSystemName — the same one the forms prefill), so a quick
+// save is never refused over an empty field; re-saving a seed already in the
+// library renames it and moves it to the top instead of duplicating it.
+function saveSystem(name) {
+  const seed = game.worldSeed >>> 0;
+  const nm = String(name || '').trim().slice(0, 24) || defaultSystemName(seed);
+  const i = game.systems.findIndex((s) => s.seed === seed);
+  if (i >= 0) game.systems.splice(i, 1);
+  game.systems.unshift({ name: nm, seed });
+  if (game.systems.length > SYSTEMS_MAX) game.systems.length = SYSTEMS_MAX;
+  saveSystemsLib();
+  hud.refreshSystems(game);
+  return nm;
+}
+function deleteSystem(i) {
+  if (!game.systems[i]) return;
+  game.systems.splice(i, 1);
+  saveSystemsLib();
+  hud.refreshSystems(game);
+}
+// Fly a saved system — TITLE SCREEN ONLY. From the pause menu the rows are a
+// library to read, never a launch control: one click ending the run in
+// progress would be the costliest misclick in the game. The title path is the
+// same "build then start" pair a cold boot uses, so the run opens on the spec
+// card over the saved world exactly as it would over a fresh one.
+function playSystem(i) {
+  const s = game.systems[i];
+  if (!s || game.started) return;
+  regenWorld(s.seed);
+  startGame();
 }
 
 // ---- Adaptive render scale --------------------------------------------------
@@ -322,6 +411,7 @@ function regenWorld(seed) {
 }
 
 loadSettings();
+loadSystemsLib();     // the saved-systems library rides its own key (ss_systems)
 applyRenderScale();   // before initRender: render.js's first resize() picks it up
 game.st = shipStats(game.prog);
 regenWorld();
@@ -421,21 +511,13 @@ initInput(canvas, {
     // must not also reach in and pull a rock back out of your own shield ring.
     const did = tryGrab(game);
     if (did === 'held') {
-      // Anything that fits your orbit is captured into it automatically — but a
-      // Twin Grip SECOND grab (held2 filled) is a big rock held alongside, kept in hand.
-      const b = game.held;
-      // The brawler is deliberately excluded from auto-stow: its stow is the
-      // RAM, and the ram is built on a deliberate right-click, never as a side
-      // effect of picking something up. A left-click grab is still just a grab —
-      // you can throw it instead, which is the choice the spec is built on.
-      if (!game.st.frontRam && !game.held2 && canStow(game.st, b)
-          && game.orbit.length < game.st.maxOrbiters) {
-        addToOrbit(game);
-        if (!game.tut.orbited) {
-          game.tut.orbited = true;
-          hud.message('Captured into your orbit! It shields you. Hold RIGHT MOUSE to charge a shotgun — longer hold arms more rocks.', 5);
-        }
-      } else if (!game.tut.grabbed) {
+      // LEFT-CLICK IS THE BEAM, FULL STOP (user call, 2026-08). It used to
+      // AUTO-STOW anything that fit the ring, which made one button mean two
+      // things depending on the rock's mass — throw this pebble, silently pocket
+      // that one — and left no way to THROW a stowable rock at all. The stow is
+      // right-click now (onRmbDown), the same button and the same verb the
+      // brawler uses to feed its ram.
+      if (!game.tut.grabbed) {
         game.tut.grabbed = true;
         hud.message('Got it! RELEASE to FLING it toward the cursor. Good moves earn XP — level up to pick upgrades.', 5);
       }
@@ -503,11 +585,37 @@ initInput(canvas, {
       if (!addToOrbit(game)) releaseHeld(game, false);
       return;
     }
+    // HAULER: RIGHT-CLICK IS THE STOW (user call, 2026-08), exactly as it is the
+    // ram for the brawler — one button, one meaning: "put that in my rack". It
+    // used to happen as a SIDE EFFECT of a left-click grab (onGrab auto-stowed
+    // anything that fit), which made the left button mean two different things
+    // depending on the rock's mass: throw this pebble, but silently pocket that
+    // one. You could not choose to THROW a stowable rock at all.
+    // Pointing at a rock claims the press for the stow; pointing at nothing
+    // leaves it to the shotgun below. The choice is COMMITTED for the whole
+    // press (stowEating), so a sweep that starts on a rock and crosses empty
+    // space keeps stowing instead of arming a volley mid-drag.
+    if (!game.st.frontRam && game.st.maxOrbiters > 0 && stowFromCursor(game)) {
+      game.stowEating = true;
+      game.stowEatCd = 0.12;
+      if (!game.tut.orbited) {
+        game.tut.orbited = true;
+        // DON'T PROMISE THE SHOTGUN. `hasVolley` is false for every reachable
+        // build — Scattergun was deleted with the brawler's trailing rack and
+        // nothing feeds the volley channel — so the old copy here ("hold RIGHT
+        // MOUSE to charge a shotgun") described a move the player could never
+        // make. LEFT-click on empty space is the real way rock comes back out
+        // (main.onGrab -> retrieveFromOrbit), so that is what this says.
+        hud.message('Stowed into your orbit ring! HOLD RIGHT MOUSE and sweep over rocks to keep filling it. LEFT-CLICK empty space to pull one back out and throw it.', 6);
+      }
+      return;
+    }
     // The shotgun is an upgrade — no charge until the array is unlocked
     if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
   },
   onRmbUp: () => {
     game.ramEating = false;
+    game.stowEating = false;
     if (menuBlocking()) { game.volleyCharging = false; return; }
     // Release fires whatever the hold has armed (a tap = 1 rock). The brawler
     // never charges — its right-click is the ram absorb, and the ram cannot be
@@ -521,6 +629,12 @@ initInput(canvas, {
     if (game.gameOver) { resetRun(); return; }
     // A life was already spent at the moment of death; upgrades are KEPT.
     respawnShip(game);
+    // A HOME RESPAWN ARRIVES BERTHED — in the clamps, shield and repair live,
+    // one thrust from a launch — rather than hovering over its own pad to
+    // re-earn a berth it already owns. Called from HERE and not inside
+    // respawnShip because world.js cannot import physics (the spawnAsteroid
+    // cycle), and only physics can seed the landing latch a berth rides on.
+    if (dockReady(game.home) && game.home.b.alive) berthAt(game, game.home);
     bump(game, 'respawns');
     hud.setDeathVisible(false);
   },
@@ -547,6 +661,11 @@ initInput(canvas, {
   // cursor — a positioning twitch, not a lunge.
   onDash: (dir) => {
     if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.evasion || game.evadeT > 0) return;
+    // A dash is the pilot taking the helm, exactly like thrust — but it never
+    // touches controls.f/b, so physics.updateAutoland's hands-on test can't
+    // see it. Without this the autoland eased the dart straight back out:
+    // the game fighting the pilot, which the autoland contract forbids.
+    if (game.autoland) { game.autoland = null; game.autolandCd = CFG.AUTOLAND_CD; }
     const s = game.ship;
     const ang = s.angle + dir * Math.PI / 2;
     const burst = 380 + 35 * game.st.evasion;
@@ -560,6 +679,9 @@ initInput(canvas, {
   // SLIPSTREAM (scout): tap F -> warp a fixed distance toward the cursor.
   onWarp: () => {
     if (menuBlocking() || dockBlocking() || !game.ship.alive || !game.st.slipstream || game.warpT > 0) return;
+    // Same hands-on rule as the dash: a warp is the pilot leaving, and the
+    // 1.5x-radius drift bail alone would let a short warp get reeled back.
+    if (game.autoland) { game.autoland = null; game.autolandCd = CFG.AUTOLAND_CD; }
     const s = game.ship;
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
     const dist = game.st.warpDist;
@@ -643,17 +765,64 @@ function startGame() {
 function pauseGame() {
   if (game.started && !game.paused) { game.paused = true; bump(game, 'pauses'); sfx.sfxMenuOpen(); }
 }
+
+// GAME MODE, picked from the title screen's mode cards. TITLE SCREEN ONLY —
+// the cards only exist on the splash, and the guard below is the belt to that
+// braces: the rules a run is scored under must not move while it is being
+// played, and dropping the hostiles mid-flight would delete the nest you were
+// mid-siege on.
+//
+// It REBUILDS THE SAME SEED rather than editing the live sky. The splash
+// backdrop is a live sim and the design law behind it is that what drifts
+// behind the menu IS the system START drops you into — so a mode that changed
+// the rules without changing the backdrop would be showing you nests you were
+// never going to meet. applyModeRules only ever SUBTRACTS, so peaceful → classic
+// could not put the nests back by editing in place anyway; regenerating on the
+// pinned worldSeed gives the identical layout under the new rules.
+function setMode(id) {
+  const rules = modeRules(id);
+  if (game.started) return;
+  if (rules.id !== game.mode) {   // re-picking the live mode rebuilds nothing
+    game.mode = rules.id;
+    game.rules = rules;
+    saveSettings();
+    regenWorld(game.worldSeed);   // same seed, new rules — the backdrop stays honest
+  }
+  // AN EMPTY LIBRARY SKIPS STEP 2 AND FLIES. The second step exists to ask
+  // "which sky?", and with nothing saved there is only one answer — a screen
+  // whose whole job is a choice you don't have is a click charged for nothing.
+  // (refreshSplashStep still handles the empty case: you can reach step 2 with a
+  // full library and then delete every row out of the panel.)
+  if (!game.systems.length) { startGame(); return; }
+  game.splashStep = 'source';   // the pick IS the step — the card advances the flow
+  // The establishing shot restarts with the world it is establishing, exactly as
+  // on the way in from a run (toMainMenu): regenWorld has just moved the ship
+  // and the camera, and leaving the next driftSplash to notice would render one
+  // frame from the OLD framing first. Below the start above, since a run that is
+  // already under way has no title backdrop left to reframe.
+  game.splashT = 0;
+  splashAcc = 0;
+  frameSplash(0);
+}
+// Back to the mode cards. Only ever reachable FROM step 'source', so it needs no
+// guard of its own — the button lives inside that step.
+function splashBack() { game.splashStep = 'mode'; }
 function resumeGame() { if (game.paused) sfx.sfxMenuClose(); game.paused = false; }
-// The three shell modals are mutually exclusive — each fully REPLACES the panel
+// The shell modals are mutually exclusive — each fully REPLACES the panel
 // it was opened over, so opening one clears the others rather than stacking.
 function closeShell() {
   game.settingsOpen = false; game.controlsOpen = false;
   game.creditsOpen = false; game.achievementsOpen = false;
-  game.mapOpen = false;
+  game.systemsOpen = false; game.mapOpen = false;
 }
 function openSettings() { closeShell(); game.settingsOpen = true; bump(game, 'openSettings'); sfx.sfxMenuOpen(); }
 function openControls() { closeShell(); game.controlsOpen = true; bump(game, 'openCtrl'); sfx.sfxMenuOpen(); }
 function openCredits() { closeShell(); game.creditsOpen = true; bump(game, 'openCred'); sfx.sfxMenuOpen(); }
+// The saved-solar-systems library. Reached from the splash (SAVED SYSTEMS —
+// pick one and fly it) and from the pause menu (SAVE SYSTEM — name the world
+// you are in and keep it). One panel for both: which half is live is derived
+// from game.started (hud.refreshSystems), not from which button opened it.
+function openSystems() { closeShell(); game.systemsOpen = true; sfx.sfxMenuOpen(); }
 // The run's achievement log. Reachable from the pause menu, the game-over
 // panel, and the V key — it is a RUN readout, so unlike the other three shell
 // panels it says nothing useful before a run has started (the splash doesn't
@@ -695,6 +864,7 @@ function toMainMenu() {
   game.paused = false;
   closeShell();
   game.started = false;
+  game.splashStep = 'mode';   // a run that ended re-enters the flow at the top
   resetRun(undefined, false);
   // The dead run's last words go with it: the message slot's lifetime is
   // wall-clock, and the deferred grab tip is a pending setTimeout that would
@@ -864,7 +1034,21 @@ hud.initMenus({
   onOpenControls: ui(openControls),
   onOpenCredits: ui(openCredits),
   onOpenAchievements: ui(openAchievements),
+  onOpenSystems: ui(openSystems),
   onOpenMap: ui(openMap),
+  // The title screen's mode cards. Carries the row's id, so it does its own
+  // click sound (the ui() wrapper takes no arguments — same shape as
+  // onRenderScale, the other segmented choice in the shell).
+  onPickMode: (id) => { sfx.initAudio(); sfx.sfxUiClick(); setMode(id); },
+  onModeBack: ui(splashBack),
+  // The saved-systems rows carry an index, so these do their own click sound
+  // (the ui() wrapper takes no arguments — same shape as onRenderScale).
+  // Saving answers with the discovery chime rather than the generic tick:
+  // per the audio grammar a kept system is an opportunity banked, and the
+  // panel gives no other confirmation beyond the row appearing.
+  onSaveSystem: (name) => { sfx.initAudio(); sfx.sfxChime(); saveSystem(name); },
+  onDeleteSystem: (i) => { sfx.initAudio(); sfx.sfxUiClick(); deleteSystem(i); },
+  onPlaySystem: (i) => { sfx.initAudio(); sfx.sfxUiClick(); playSystem(i); },
   onCloseShell: ui(closeShellPanel),
   onClearRoute: ui(() => clearRoute(game)),
   onCentreChart: ui(chartReset),
@@ -1175,7 +1359,7 @@ function resetRun(seed, openCard = true) {
   game.visitor = null; game.visitorDone = false;
   game.vesperRespawnT = null; game.shepherdRespawnT = null; game.shepherdPlayerKilled = false;
   game.moonTimer = undefined;
-  game.flareTimer = undefined; game.cometTimer = undefined; game.wrightTimer = undefined;
+  game.flareTimer = undefined; game.cometTimer = undefined;
   game.alienTimer = 0; game.asteroidTimer = 10;
   game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
   game.predictRef = null; game.lock = null; game.lockTarget = null; game.tooHeavy = null;
@@ -1183,10 +1367,12 @@ function resetRun(seed, openCard = true) {
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
+  game.shipInSea = false;
   game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0; game.parryReadyT = 0;   // a parry must never survive into a fresh world
+  game.tetherT = 0;   // ...nor a Recovery Tether reload
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   // ...and so does the journey: every stop pins to a body in the world that is
@@ -1394,9 +1580,28 @@ const EVENT_MSGS = [
     first: ['DUST SHROUD — inside this halo, alien senses cannot find you. Pursuers lose their lock.', 5.5] },
   { flag: 'bandedWarn', tut: 'banded', snd: sfx.sfxChime,
     first: ["BANDED SKIMMING — grinding this moon's bands pays triple XP. Risky flying, rewarded.", 5.5] },
+  { flag: 'cometVentWarn', tut: 'cometVent', snd: sfx.sfxChime,
+    first: ['COMET MOON — at the low point of its swing it vents catchable ice. The chart knows its timetable.', 5.5] },
+  { flag: 'pumiceWarn', tut: 'pumice', snd: sfx.sfxChime,
+    first: ['PUMICE — featherweight froth rock. Throws bury instead of bouncing, and the crust crumbles fast.', 5.5] },
+  // Hostile contact, not opportunity — the one moon job that bites back.
+  { flag: 'huskWarn', tut: 'husk', snd: sfx.sfxWarnLow,
+    first: ['HUSK MOON — the wreck-plating rang out. A wreckwright is descending on this moon.', 5.5],
+    repeat: ['The husk moon is calling its wright down.', 3] },
+  // Hostile SURFACES (physics skim venom) — bad news in progress, warn low.
+  { flag: 'sulfurSkidWarn', tut: 'sulfurSkid', snd: sfx.sfxWarnLow,
+    first: ['BRIMSTONE CRUST — this surface is poisonous. Skidding here eats the hull far faster.', 5.5] },
+  { flag: 'moltenSkidWarn', tut: 'moltenSkid', snd: sfx.sfxWarnLow,
+    first: ['MOLTEN CRUST — the rock under you is barely cooled magma. Skidding here sears the hull.', 5.5] },
   // ---- planet-archetype mechanics (terran/ocean/desert/shroud/crystal) ----
   { flag: 'atmoWarn', tut: 'atmo', snd: sfx.sfxChime,
     first: ['ATMOSPHERIC BURN-UP — small rocks flash to nothing in this sky. Only a heavyweight reaches the surface.', 5.5] },
+  // The ship itself in the burn deck — an alarm, the hull is cooking NOW; the
+  // message carries the counterplay (the deck is a band, not a well).
+  { flag: 'atmoShipWarn', tut: 'atmoShip', snd: sfx.sfxAlarm,
+    first: ['ATMOSPHERIC ENTRY — the burn deck is searing the hull. Punch through: the air beneath is calm.', 5.5] },
+  { flag: 'seaWarn', tut: 'sea', snd: sfx.sfxChime,
+    first: ['OPEN SEA — the water takes your speed. Bedrock lies beneath, but there is nothing here to berth on.', 5.5] },
   { flag: 'spoutWarn', tut: 'spout', snd: sfx.sfxChime,
     first: ['WATERSPOUT — the world-sea flings brine ice into low orbit. Free shield ammo.', 5.5] },
   { flag: 'duneWarn', tut: 'dune', snd: sfx.sfxChime,
@@ -1447,6 +1652,37 @@ const EVENT_MSGS = [
     repeat: [(v) => `BERTHED AT ${v.toUpperCase()} — shielded and repairing.`, 2.5] },
   { flag: 'dockRetiredName', snd: sfx.sfxWarnLow,
     first: [(v) => `OLDEST DOCK ABANDONED — you can keep ${CFG.DOCK_MAX} standing, and the one on ${v.toUpperCase()} was the oldest.`, 5] },
+  // A station whose FOOTING was blasted away (physics.updateDock's undermined
+  // sweep). Bad news every time, not just the first — each one is a structure
+  // the player spent ten exposed seconds building.
+  { flag: 'dockLostName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK DESTROYED — the ground under your station on ${v.toUpperCase()} was blasted away.`, 5] },
+  // The home-port flavour of the same collapse: the respawn point is the news,
+  // the structure is the detail. sfxAlarm, not sfxWarnLow — where you go back
+  // to when you die just changed, which is danger-grade information.
+  { flag: 'homeDockLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `HOME PORT DESTROYED — the ground under your dock on ${v.toUpperCase()} was blasted away. You respawn at your starting orbit.`, 6] },
+  // THE DOME IS FINITE (CFG.DOCK_SHIELD) and it never refills. Two rows: the
+  // one-shot warning as it crosses DOCK_SHIELD_WARN, and the failure — which
+  // takes the whole station with it, because the dome IS the station's
+  // survival. Not tut-gated: every station has its own pool, so this is news
+  // about THIS harbour every single time.
+  { flag: 'dockShieldLowName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK SHIELD FAILING ON ${v.toUpperCase()} — it does not recharge. Leave, or lose the station.`, 5] },
+  { flag: 'dockShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `DOCK SHIELD COLLAPSED — the station on ${v.toUpperCase()} went with it.`, 5] },
+  { flag: 'homeShieldLostName', snd: sfx.sfxAlarm,
+    first: [(v) => `HOME PORT SHIELD COLLAPSED — ${v.toUpperCase()} is gone with the dock. You respawn at your starting orbit.`, 6] },
+  // A tier-up outgrowing a station's world (physics.updateDock's refit sweep).
+  // Retired, not destroyed — the wording has to carry that difference.
+  { flag: 'dockOutgrownName', snd: sfx.sfxWarnLow,
+    first: [(v) => `DOCK DECOMMISSIONED — your port class has outgrown ${v.toUpperCase()}; it cannot carry the berth any more.`, 5] },
+  { flag: 'homeOutgrownName', snd: sfx.sfxWarnLow,
+    first: [(v) => `HOME PORT DECOMMISSIONED — your port class has outgrown ${v.toUpperCase()}. You respawn at your starting orbit.`, 6] },
+  // AUTOLAND taking the ship. First time teaches the contract (hands off /
+  // thrust to override); after that the guide arc over the ship carries it.
+  { flag: 'autolandName', tut: 'autoland',
+    first: [(v) => `AUTOLAND — ${v.toUpperCase()} has the ship. Hands off; thrust to take back the helm.`, 5] },
   { flag: 'launchName', tut: 'launch',
     first: ['LAUNCH — clamps releasing. The dock stays; fly back to it whenever you want.', 4.5] },
   // Choosing a home port is the one act that moves where a death puts you back.
@@ -1583,8 +1819,16 @@ function update(dtReal) {
     if (game.rankUps.length) drainRankUps(preRankHullMax);
     // Cinematic zoom: ease toward the level-driven target instead of
     // snapping — leveling up feels like slowly zooming out of the universe
-    const zoomTarget = 1.15 / game.st.zoomOut;
-    game.zoomCur = lerp(game.zoomCur, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
+    let zoomTarget = 1.15 / game.st.zoomOut;
+    // THE BERTH VISTA (CFG.DOCK_VISTA): a FINISHED station widens the view so
+    // a berth surveys its neighbourhood. dockReady — the same gate as the
+    // shield and the repair — keeps the exposed build at flight zoom, and
+    // !game.launch hands the dive back to the normal rate the frame the spool
+    // starts, so the zoom-in overlaps the clamps releasing.
+    const vista = dockReady(game.dock) && !game.launch;
+    if (vista) zoomTarget /= CFG.DOCK_VISTA;
+    game.zoomCur = lerp(game.zoomCur, zoomTarget,
+      1 - Math.exp(-(vista ? CFG.DOCK_VISTA_K : 0.5) * dtReal));
     applyZoom();
 
     // Roguelite pick: XP crossing a threshold OFFERS a choice on the pilot card
@@ -1666,6 +1910,13 @@ function update(dtReal) {
       // the beam down; this is what keeps it down.
       if (!game.dock) {
         updateLatch(game, dt, input.mouseDown);
+        // TWIN GRIP (hauler): with a rock in the beam and the button still down,
+        // sweeping the cursor over another one picks it up as the second. This
+        // is the ability's ONLY trigger — see tractor.tryAutoSecond for why it
+        // is a sweep and not a second click. Gated on the button because the
+        // sweep is part of one continuous press: releasing throws, so a grab
+        // with nothing held down would have nothing to be the second OF.
+        if (input.mouseDown) tryAutoSecond(game);
         updateTractor(game, dt);
         updateOrbit(game, dt);
         updateTethers(game, dt);   // Recovery Tether: thrown rocks curve home (hauler)
@@ -1799,6 +2050,21 @@ function update(dtReal) {
     if (game.ramEating && game.st.frontRam && s.alive) {
       if (game.ramEatCd <= 0 && absorbIntoRam(game)) game.ramEatCd = 0.12;
     }
+    // HAULER's stow sweep — the exact mirror of the ram sweep above, on the same
+    // cadence and with the same dock disarm. Hold right mouse and drag the
+    // cursor across a debris field and the ring fills itself; filling 14 slots
+    // by 14 separate clicks is the kind of tedium that makes a doubled ladder
+    // read as a chore instead of a reward. stowFromCursor re-checks every gate
+    // per call, so the sweep can never seat anything a single click couldn't.
+    // RECOVERY TETHER's reload. Rides dtReal like the other ability cooldowns
+    // (warpT etc): it gates whether a THROW arms the tether, never anything
+    // inside the fixed step, so it has no quantized target to miss.
+    if (game.tetherT > 0) game.tetherT -= dtReal;
+    if (game.stowEatCd > 0) game.stowEatCd -= dtReal;
+    if (game.stowEating && dockBlocking()) game.stowEating = false;
+    if (game.stowEating && !game.st.frontRam && s.alive) {
+      if (game.stowEatCd <= 0 && stowFromCursor(game)) game.stowEatCd = 0.12;
+    }
     // The absorb-crush effects (render.drawShip). Cosmetic easing with no
     // quantized target, so dtReal is the right clock — and they are advanced
     // and retired HERE rather than in render, because render must stay a pure
@@ -1912,6 +2178,9 @@ function update(dtReal) {
       if (game.prog.lives <= 0) {
         game.gameOver = true;
         sfx.sfxGameOver();
+        // Fresh save form for THIS run's end — the last game over may have
+        // spent it (it disarms after one save; the placeholder names the world).
+        hud.armGameOverSave(game.worldSeed);
         hud.setGameOverVisible(true, game.deathCause, game.prog);
       } else {
         hud.setDeathVisible(true, game.deathCause, game.prog.lives);
@@ -2078,10 +2347,24 @@ function updateStorm(dtReal) {
       // no name at all, and `game.stormLeeName = ''` is falsy, so the message
       // table would drop the one message that teaches the counterplay. Same
       // fallback shape starmap.contactLabel uses for a nameless moon.
+      // Through placeName like every other place-printing flag: shelterBody
+      // takes ANY planet over STORM_SHADOW_MIN_R, and the Wanderer's Star is a
+      // planet of radius 70*PLANET_R_MUL — so its lee is real, reachable before
+      // the relay, and was naming it.
       if (game.stormShelter && !game.tut.stormLee) {
         const b = game.stormShelter;
-        game.stormLeeName = b.name
-          || (b.type === 'moon' && b.parent && b.parent.name ? `a moon of ${b.parent.name}` : 'this world');
+        const kin = b.type === 'moon' && b.parent && b.parent.name
+          ? `a moon of ${placeName(b.parent)}` : null;
+        // EVERY moon carries a name now (MOON_NAMES in world.js) — but names
+        // are EARNED (the chart ladder): an uncharted moon shelters you as
+        // kin of its host, not by a name you haven't read off it yet. Worlds
+        // keep the behavior they always had. The no-chartKey arm mirrors
+        // starmap.contactLevel's contract exactly: a runtime-spawned moon
+        // (replenishWorld mints no chartKey) earns its name by being SEEN,
+        // not by existing — `!b.chartKey` alone named it unconditionally.
+        const earned = b.type !== 'moon' ||
+          (b.chartKey ? (game.charted && game.charted[b.chartKey]) : b.seen);
+        game.stormLeeName = earned ? placeName(b, kin) : (kin || 'this moon');
       }
     }
   }
@@ -2358,6 +2641,13 @@ window.storm = (where = 'charge', cls) => {
 // bit-identical for a given seed; runtime spawns still use Math.random unless
 // window.mechTest's seeded-RNG swap is active.
 window.freshRun = (specIdx = 0, seed) => {
+  // PINNED TO CLASSIC. The mode is a persisted setting, so a dev who left the
+  // title screen on PEACEFUL would otherwise have every suite, soak and bench
+  // baseline silently run against a sky with no nests, no Bastions and no
+  // broods — and the numbers would look like a balance change nobody made.
+  // Every harness (mechTest, soak, the bench driver) enters through here.
+  game.mode = 'classic';
+  game.rules = modeRules('classic');
   resetRun(seed);
   applyPick(specIdx);   // resetRun ends on the spec card; this picks it
   game.started = true;

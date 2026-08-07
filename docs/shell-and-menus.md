@@ -6,9 +6,9 @@
 
 The game boots to a **splash screen**, not straight into play — flags on `game` gate it, and the
 sim runs only when all are clear (the `frame()` gate above): `started` (false → splash; START sets it),
-`paused` (pause menu), and the five **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
-`achievementsOpen` / `mapOpen`.
-Those five are separate flags (each is its own panel) but every gate treats them alike, so they're asked
+`paused` (pause menu), and the six **shell modals** `settingsOpen` / `controlsOpen` / `creditsOpen` /
+`achievementsOpen` / `systemsOpen` / `mapOpen`.
+Those six are separate flags (each is its own panel) but every gate treats them alike, so they're asked
 about through one leaf helper — **`util.shellModal(game)`** — which main, hud, music and render all use.
 They're mutually exclusive: each fully REPLACES the panel it opened over, so `openX` clears the others
 rather than stacking (a panel peeking out around another's edges looks broken). That replacement rule
@@ -52,12 +52,73 @@ through a card it is allowed to ignore.
   saturated and render's ±15px random jitter shook the whole sky forever; and **the camera advances
   INSIDE the substep loop**, not on `dtReal` — same phase-locking law as the in-game follow cam, because
   a live backdrop moving in quantized `CFG.DT` chunks is something a `dtReal` camera beats against.
+- **GAME MODES, and the title screen is TWO STEPS.** `config.MODES` is the catalog — **the row IS
+  the ruleset**, and every consumer reads a FIELD off `game.rules` (the resolved row) rather than
+  branching on the mode id. Two knobs today: `hostiles` (false strips the alien layer) and `dmgMul`
+  (scales every point of ship damage). CLASSIC is the game as it always was; PEACEFUL drops the
+  hostiles; EXPLORATION drops them and takes damage to ⅛ — the card says **"minimal damage"**, never
+  the fraction, because the multiplier is tuning and doesn't belong on a title screen.
+  - **The world is the SAME WORLD in every mode.** Generation is seeded, so the hostile layer is
+    REMOVED after the sky is built (`world.applyModeRules`, last thing in `generateWorld`) rather
+    than skipped while building it — skipping `addNest` / `fortify` would swallow their rng draws
+    and hand the same seed a different sky per mode. The SAVED SYSTEMS library stores nothing but a
+    seed, so a system saved in classic has to be recognisably the same system in peaceful; paying
+    every draw and then deleting is what buys that. Measured: classic and peaceful differ by exactly
+    the two nest bodies, same planets, same moons, and switching back restores them.
+  - Three sources, matching the three the design laws name: **nests leave the sky** (an inert green
+    blob you could still shoot would be a POI that lies), **a Bastion is DISARMED not deleted**
+    (`b.fort = null` — the fort is an emplacement on a real world, and the world stays where the
+    seed put it), and the shoal **broods are spent, with `cleared` PRESET** — leaving `updateFields`
+    to notice would bump the `fieldClear` achievement and raise a message for every shoal on frame
+    one. The husk-moon wreckwright is the one spawner that isn't a nest or a brood, so it carries
+    the `hostiles` gate by hand in `ai.js` (and still consumes `game.huskWake` either way).
+  - **`dmgMul` rides `physics.damageShip`**, the one funnel every damage path already goes through,
+    so heat, gas crush, rock, bolts and alien contact all scale together and nothing else has to
+    know modes exist. **`fxDmg` is deliberately NOT scaled** — it is the caller's statement of how
+    big a BLOW this was and it gates the hit sfx and the achievement ledger, so scaling it would
+    make a soft mode quietly stop counting hits as hits.
+  - **The mode is a persisted SETTING, not run state** (`ss_settings.mode`; `resetRun` leaves it, so
+    a game-over restart stays in the mode you were flying). It loads BEFORE the boot `regenWorld`
+    for the same reason a pinned seed does. It can only be chosen from the TITLE SCREEN — `setMode`
+    refuses once `game.started`, because the rules a run is scored under must not move under it.
+    **`window.freshRun` PINS CLASSIC** (and the `stability` bench suite rebuilds under it, since it
+    soaks the boot world rather than calling freshRun): a dev who left the menu on PEACEFUL would
+    otherwise have every suite, soak and baseline silently run against a sky with no nests.
+  - **The flow is: mode → source → (library).** `game.splashStep` is `'mode'` (the three cards) or
+    `'source'` (NEW SYSTEM vs SAVED SYSTEM); main.js flips it, `hud.refreshSplashStep` derives the
+    DOM, and it joins `syncMenus`'s signature because it changes what the panel shows without
+    changing WHICH panel shows (`game.systems.length` is in there too — saving the first system of a
+    run has to un-dead the SAVED SYSTEM button). Picking a card **regenerates the same seed under
+    the new rules**, so the drifting backdrop stays the honest promise it is everywhere else; it
+    cannot be done by editing in place, since `applyModeRules` only ever subtracts.
+    **Nothing is preselected and no card carries a chosen state** — the click IS the choice and it
+    advances, so a lit "current" card would claim the flow had already moved. SAVED SYSTEM opens the
+    existing `systemsOpen` panel rather than a second list, and closing that panel deliberately does
+    NOT reset the step: backing out has to land you where you opened it from.
+  - **AN EMPTY LIBRARY SKIPS STEP 2 ENTIRELY** — `setMode` calls `startGame()` and the card click
+    flies. The step's whole job is to ask "which sky?", and with nothing saved there is only one
+    answer; a screen whose only choice you don't have is a click charged for nothing. The step's
+    empty-library handling still exists as the safety net (`hud.refreshSplashStep` **disables**
+    SAVED SYSTEM and says why — the path stays visible or it can't teach that it exists), because
+    you can reach step 2 with a full library and then delete every row out of the panel.
+  - The mode is read back on the **pause menu** (`#pauseMode`) — a run whose rules are invisible from
+    the pause menu is a run you can forget you're in. Both chips take their accent from a `.md-*`
+    class and **neither `.moderow` nor `.modechip` declares its own `--acc`**: they inherit the house
+    violet from `.panel`, because a default at the same specificity ties correctness to source order
+    (`.modechip` sits below the `.md-*` block and its own default silently beat the mode accent).
 - **The title console boots, it doesn't just appear.** `.boot` on the splash (added by `hud.playBoot`)
   runs a ~1.2s power-on: scan sweep → wordmark resolving out of a glyph scramble (`scrambleTitle`, a
   same-length substitution so the centered title never reflows) → subtitle tracking closing → buttons
   staggering in. Every entry animation needs `backwards` fill or the stagger does nothing. It replays on
   every fresh showing of the splash but NOT when a shell modal closes back onto it — the console is
   already booted, and re-running it there reads as a glitch (`prevSplash` / `prevModal` in `syncMenus`).
+  **`.boot` MEANS "booting right now"** and `playBoot` lifts it on a timer when the sequence ends. It
+  used to simply stay on until the next replay, which was harmless while the panel was one static
+  column — but the splash is two STEPS now and a step hides with `display: none`, and re-showing an
+  element restarts every CSS animation on it. A stale `.boot` therefore replayed the whole staggered
+  power-on every time you backed out of step 2, with the mode cards invisible for the first two
+  thirds of a second. Step 2 has its own short entrance (`.splashstep` / `stepIn`) — it is a screen
+  change, not a power-on.
 - **CONTROLS is a schematic, not a table** — real key caps in their true WASD geometry plus a drawn mouse,
   with a readout strip that answers "what does this do?" when you point at one. Each cap carries its own
   `data-fn` / `data-note` and `hud.initControlMap` delegates hover/focus to mirror them into the readout,
@@ -67,7 +128,9 @@ through a card it is allowed to ignore.
 - **Settings** (Music/SFX volume sliders, Trajectory prediction, Render scale, Auto quality,
   FPS counter, Performance metrics, World seed) persist to
   `localStorage['ss_settings']` — host-agnostic, so it works identically under serve.py and Electron.
-  `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed has to reach the very
+  The chosen GAME MODE rides the same blob, though its control is the title screen's card row rather
+  than a settings row. `loadSettings()` runs BEFORE the boot `regenWorld()` on purpose: a pinned seed
+  — and the mode, which `applyModeRules` needs inside `generateWorld` — has to reach the very
   first world, and loading after it would make every boot world random regardless of the setting.
   There are NO audio toggles — a slider at zero IS the mute (music at zero pauses its streams
   entirely, not just silences them). The Web Audio context must still first be created *inside* a
@@ -152,7 +215,39 @@ through a card it is allowed to ignore.
   while `timeScale !== 1` (fast-forward burns a sim budget, not a pixel one) and for the first
   seconds after boot. Defeatable via **Auto quality**, because a 100% setting silently running at 50%
   reads as a broken setting rather than as a ceiling.
-- **THE SYSTEM CHART** (`mapOpen`, **M** or the ◎ tab on the radar bezel) is the fifth shell modal and
+- **SAVED SOLAR SYSTEMS** (`systemsOpen`, the sixth shell modal) is the library of named worlds the
+  player chose to keep — `game.systems`, an array of `{ name, seed }` rows persisted to
+  `localStorage['ss_systems']` (its own key, so a settings wipe and the library can't take each
+  other out; capped at 50, oldest saves fall off). **The seed IS the system**: `generateWorld` is
+  seeded, so a row rebuilds its layout bit-identically — nothing else needs storing. Three ways in,
+  one panel: the title screen's **step 2**, where **NEW SYSTEM** and **SAVED SYSTEM** sit as two
+  equal buttons under the mode you just picked (they are the same size of decision — saved systems
+  spent a while as a tray pill next to CREDITS, which made half the choice look like an
+  afterthought), the pause menu's **SAVE SYSTEM**, and an inline name-and-save form on the
+  game-over panel. Which half of the panel is live is DERIVED from `game.started`
+  (`hud.refreshSystems`), never from which button opened it: over a run the save form shows and the
+  rows are a library to read; on the title screen the form is gone and **clicking a row FLIES that
+  system** (`main.playSystem` — `regenWorld(seed)` + `startGame()`, so it opens on the spec card
+  exactly like a cold boot, **and under whatever mode step 1 chose** — `regenWorld` runs
+  `applyModeRules`, so the library needs no notion of modes at all). **Launching is title-screen only** — from the pause menu a row click is
+  refused (belt and braces: the buttons are `disabled` AND the handler checks `game.started`),
+  because one click ending the run in progress would be the costliest misclick in the game.
+  Details that guard real traps:
+  - **Every save form arrives PREFILLED with the seed's preset name** — `util.defaultSystemName`,
+    one word off each of two lists (24×24), picked off a private mulberry32 XOR-offset from the
+    world seed, so the same world proposes the same name on every surface. The placeholder and the
+    blank-field fallback are that same name, so an empty field saves exactly what it shows.
+  - **Re-saving a seed already in the library renames it and moves it to the top** — never a
+    duplicate row; the seed is the identity, the name is a label.
+  - **The game-over form is one-shot** (the button disarms to "SYSTEM SAVED ✓") and
+    `hud.armGameOverSave` re-arms it on the next game over — it is called from the death branch in
+    `update()`, so an idle soak (which sets no `deathCause`) never touches it.
+  - The rows are rebuilt on the open transition and by main's save/delete handlers, **never per
+    frame** (innerHTML — same law as the journey rail), and the ✕ is a **separate button beside
+    the row, never nested inside it**: a delete must not also be a click on the thing it deletes.
+  - `game.systems` is deliberately **NOT run state** — `resetRun` leaves it alone; only the
+    explicit delete (or the 50-row cap) removes an entry.
+- **THE SYSTEM CHART** (`mapOpen`, **M** or the ◎ tab on the radar bezel) is a shell modal and
   the only one that is **full-bleed** rather than a centred `.panel`: it IS the screen while it is up,
   because the sky it draws needs every pixel (a 440px octagon would make picking one moon out of a
   family impossible). Three consequences follow from being full-bleed, and each was a real fix:

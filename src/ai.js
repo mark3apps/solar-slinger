@@ -35,6 +35,89 @@ function avoidStars(game, al) {
   return false;
 }
 
+// Veer around planets and moons instead of ploughing into them (user call,
+// 2026-08: grabbers chasing the ship around a nest's own planet kept pancaking
+// into its moons). Same additive-thrust idiom as avoidStars, but a WHISKER,
+// not a wall: a hard radial push only right at the surface, plus a look-ahead
+// along the CLOSING velocity — if the path grazes a world inside the next
+// ~1.6s, steer perpendicular around it, weighted by how dead-on and how soon
+// the graze is. NOT applied to lurkers: their habitat is field rock (no
+// worlds in a pocket) and their containment steering is tuned separately.
+function avoidWorlds(game, al) {
+  const s = game.ship;
+  const nearShip = s.alive && Math.hypot(s.x - al.x, s.y - al.y) < 700;
+  // Awake list: aliens hunt inside the wake bubble, and a dormant world's
+  // whole pocket is off-view by definition.
+  for (const b of (game.bodies._awake || game.bodies)) {
+    if (!b.alive || (b.type !== 'planet' && b.type !== 'moon')) continue;
+    const dx = b.x - al.x, dy = b.y - al.y;
+    const clear = b.radius + al.radius + 90;
+    // THE FINAL ATTACK RUN IS EXEMPT: when the SHIP itself is hugging this
+    // body (landed, berthing, skimming) and the alien is already in knife
+    // range, the surface push would otherwise beat steer()'s clamped thrust
+    // and hold every rammer at a polite hover just above the pad — a landed
+    // ship could never be reached again. A dive at a grounded player is an
+    // attack, not bad pathfinding.
+    if (nearShip && Math.hypot(b.x - s.x, b.y - s.y) < clear + s.radius + 120) continue;
+    // THE WHISKER IS CAST IN THE WORLD'S OWN FRAME, never the absolute one —
+    // the same law as util.surfaceVel's, and for the same reason: WORLDS ORBIT.
+    // Moons carry 33-95 u/s and planets 41-130, so over the 1.6s horizon below
+    // a world slides 50-200 units out from under a ray aimed at where it is
+    // NOW — comparable to `clear` itself for a moon (~230 at the median). Cast
+    // absolutely, the whisker therefore called dead-on approaches clean misses
+    // and, worse, could veer to the LEADING side, steering the alien into the
+    // path of the world it was dodging: exactly the moon-pancaking this
+    // function was written to stop. A co-orbiting alien loitering by its own
+    // nest world got the mirror bug — near-zero closing speed reads as a
+    // full-speed collision course, and it was shoved sideways all day.
+    const rvx = al.vx - b.vx, rvy = al.vy - b.vy;
+    // Cheap reject: can't touch it this beat and isn't near it now. PER AXIS on
+    // the relative speed (|dx| can only close by |rvx| a second), because the
+    // old shared `sp * 1.6` bound is not conservative once the ray is relative:
+    // a world closing head-on adds its own speed to rsp, up to 1.6 x 130 = 208
+    // units of extra reach against the 120 the flat pad allows.
+    //
+    // THIS BOX IS WIDER THAN THE ONE IT REPLACES, and it has to be — |rvx| runs
+    // past |al.vx| by the world's own speed, so strictly more pairs survive the
+    // reject and reach the whisker. That is the CORRECT direction (the pairs it
+    // now admits are the ones the absolute box was wrongly dropping), and the
+    // cost is bounded by the type filter above: only planets and moons ever get
+    // this far, ~90 of them in a sky of thousands. Per axis is what keeps the
+    // widening honest — it needs no hypot to REJECT; the hypot moved onto the
+    // surviving pairs as `rsp` below, beside the `d` they already paid for.
+    const rex = Math.abs(rvx) * 1.6 + clear + 120;
+    const rey = Math.abs(rvy) * 1.6 + clear + 120;
+    if (dx > rex || dx < -rex || dy > rey || dy < -rey) continue;
+    const d = Math.hypot(dx, dy) || 1;
+    // Hard radial push in the last stretch before the surface. POSITION ONLY,
+    // so it is correctly frame-free — a separation and a radial bearing read
+    // the same from any frame, and there is no look-ahead in it to be wrong
+    // about. It stays on the absolute geometry deliberately.
+    if (d < clear + 120) {
+      const k = clamp(1 - (d - clear) / 120, 0, 1);
+      al.thrustX -= (dx / d) * CFG.ALIEN_ACCEL * 1.4 * k;
+      al.thrustY -= (dy / d) * CFG.ALIEN_ACCEL * 1.4 * k;
+    }
+    const rsp = Math.hypot(rvx, rvy);
+    if (rsp < 40) continue;
+    // Whisker: closest approach of the velocity ray within the horizon
+    const t = clamp((dx * rvx + dy * rvy) / (rsp * rsp), 0, 1.6);
+    if (t <= 0) continue;
+    const cx = al.x + rvx * t - b.x, cy = al.y + rvy * t - b.y;
+    const miss = Math.hypot(cx, cy);
+    if (miss > clear) continue;
+    // Push out along the closest-approach offset — it already points to the
+    // side the path favours. A dead-centre hit degenerates, so fall back to
+    // the velocity's own perpendicular.
+    let px, py;
+    if (miss > 1) { px = cx / miss; py = cy / miss; }
+    else { px = -rvy / rsp; py = rvx / rsp; }
+    const k = (1 - miss / clear) * (1 - t / 1.6);
+    al.thrustX += px * CFG.ALIEN_ACCEL * 1.6 * k;
+    al.thrustY += py * CFG.ALIEN_ACCEL * 1.6 * k;
+  }
+}
+
 function nearestRock(game, al) {
   let best = null, bestD2 = 3200 * 3200;
   // Awake list: the search radius is 3200u and the wake bubble is wider than
@@ -89,6 +172,11 @@ function updateWright(game, al, dt) {
     steer(al, al.x + Math.cos(away) * 600, al.y + Math.sin(away) * 600, CFG.ALIEN_SPEED);
     if (!s.alive || Math.hypot(al.x - s.x, al.y - s.y) > 6000) al.alive = false;
   }
+  // Avoidance only while FLEEING: a wright's whole job is to park ON a debris
+  // point, and the husk summon anchors that point at the husk moon itself —
+  // the surface push would shove it off its own destination forever and the
+  // approach -> build handoff (< 140 of the anchor) could never fire.
+  if (al.state === 'flee') avoidWorlds(game, al);
   avoidStars(game, al);
 }
 
@@ -254,6 +342,7 @@ function updateAlien(game, al, dt) {
     } else if (s.alive && al.lastSeenX !== undefined) {
       steer(al, al.lastSeenX, al.lastSeenY, CFG.ALIEN_SPEED * 0.45);
     }
+    avoidWorlds(game, al);
     avoidStars(game, al);
     return;
   }
@@ -261,9 +350,16 @@ function updateAlien(game, al, dt) {
   // TERRITORIAL: an alien belongs to its nest and never abandons that turf.
   // If it has strayed past the territory, or the player has fled the nest's
   // region, it drops everything and returns home to patrol until the player
-  // comes back. (A destroyed nest leaves orphans that hunt freely 'til dead.)
-  const home = (al.nest && al.nest.alive) ? al.nest : null;
+  // comes back. A DESTROYED nest still anchors its survivors (user call,
+  // 2026-08: aliens live only where the nests are) — orphans defend the dead
+  // nest's last position instead of hunting freely across the system, so
+  // clearing a nest region and flying on actually leaves it behind.
+  const home = al.nest || null;
   const homeDist = home ? Math.hypot(home.x - al.x, home.y - al.y) : 0;
+  // Grabbers fly at half the sheet speed (CFG.GRABBER_SPEED) — every steer in
+  // the grabber mind runs off this, so patrol, chase and hauls all slow
+  // together. Lurkers/wrights/golems keep their own tuned speeds.
+  const gsp = CFG.ALIEN_SPEED * CFG.GRABBER_SPEED;
   // DUST SHROUD: a cloaked ship reads as "player left the territory" — the
   // return-home branch below is the battle-tested lose-lock path (drops the
   // carried rock, resets state), so disengagement reuses it wholesale.
@@ -277,20 +373,22 @@ function updateAlien(game, al, dt) {
     }
     al.target = null;
     if (homeDist > 700) {
-      steer(al, home.x, home.y, CFG.ALIEN_SPEED);        // race back to the nest
+      steer(al, home.x, home.y, gsp);                    // head back to the nest
     } else {                                             // patrol the nest yard
       const around = Math.atan2(al.y - home.y, al.x - home.x) + 0.7;
       steer(al, home.x + Math.cos(around) * 480, home.y + Math.sin(around) * 480,
-        CFG.ALIEN_SPEED * 0.55);
+        gsp * 0.55);
     }
     al.state = 'seek';   // ready to re-engage the instant the player returns
+    avoidWorlds(game, al);
     avoidStars(game, al);
     return;
   }
 
-  // ORPHAN grabbers (nest destroyed) never take the home branch above — route
-  // a cloaked player straight to the cooldown strafe, or they'd deadlock
-  // chasing a target they can't see.
+  // NESTLESS grabbers (none spawn today — orphans keep their dead nest as
+  // home above) would never take the home branch — route a cloaked player
+  // straight to the cooldown strafe, or they'd deadlock chasing a target
+  // they can't see. Kept as the safety net for any future nest-free spawn.
   if (senseBlind(game) && al.state !== 'cooldown') {
     if (al.target && al.target.heldBy === al) {
       al.target.heldBy = null; al.target.extAx = 0; al.target.extAy = 0;
@@ -303,7 +401,7 @@ function updateAlien(game, al, dt) {
   switch (al.state) {
     case 'seek': {
       // Drift toward the player, then look for ammo
-      steer(al, s.x, s.y, CFG.ALIEN_SPEED * 0.8);
+      steer(al, s.x, s.y, gsp * 0.8);
       if (distShip < 2600) {
         const rock = nearestRock(game, al);
         if (rock) { al.target = rock; al.state = 'fetch'; }
@@ -319,7 +417,7 @@ function updateAlien(game, al, dt) {
         al.fetchT = 0; al.target = null; al.state = 'seek'; break;
       }
       // Intercept lead: aim ahead of the moving rock
-      steer(al, r.x + r.vx * 0.4, r.y + r.vy * 0.4, CFG.ALIEN_SPEED);
+      steer(al, r.x + r.vx * 0.4, r.y + r.vy * 0.4, gsp);
       if (Math.hypot(r.x - al.x, r.y - al.y) < al.radius + r.radius + 55) {
         r.heldBy = al;
         derail(r);
@@ -356,8 +454,10 @@ function updateAlien(game, al, dt) {
 
       // Close to throwing range, lead the target, and throw. (No throw while
       // the player is dust-cloaked — you can't lead a target you can't see.)
-      steer(al, s.x, s.y, CFG.ALIEN_SPEED);
-      if (distShip < 950 && !senseBlind(game)) {
+      // The range is CFG.ALIEN_THROW_R — a grabber has to get properly close
+      // before it launches, so the wind-up is something you can watch coming.
+      steer(al, s.x, s.y, gsp);
+      if (distShip < CFG.ALIEN_THROW_R && !senseBlind(game)) {
         const t = distShip / CFG.ALIEN_THROW;
         const px = s.x + s.vx * t, py = s.y + s.vy * t;
         const ang = Math.atan2(py - r.y, px - r.x);
@@ -374,7 +474,7 @@ function updateAlien(game, al, dt) {
     }
     case 'harass': {
       // No ammo around: dive at the player
-      steer(al, s.x + s.vx * 0.4, s.y + s.vy * 0.4, CFG.ALIEN_SPEED * 1.2);
+      steer(al, s.x + s.vx * 0.4, s.y + s.vy * 0.4, gsp * 1.2);
       if (Math.random() < dt * 0.3) al.state = 'seek';
       break;
     }
@@ -382,11 +482,12 @@ function updateAlien(game, al, dt) {
       // Strafe away sideways while the next plan forms
       al.cool -= dt;
       const away = Math.atan2(al.y - s.y, al.x - s.x) + 0.9;
-      steer(al, al.x + Math.cos(away) * 400, al.y + Math.sin(away) * 400, CFG.ALIEN_SPEED * 0.9);
+      steer(al, al.x + Math.cos(away) * 400, al.y + Math.sin(away) * 400, gsp * 0.9);
       if (al.cool <= 0) al.state = 'seek';
       break;
     }
   }
+  avoidWorlds(game, al);
   avoidStars(game, al);
 }
 
@@ -582,35 +683,36 @@ export function updateAliens(game, dt) {
   for (const al of game.aliens) if (al.alive) updateAlien(game, al, dt);
   updateForts(game, dt);
 
-  // WRECKWRIGHTS lurk beyond your battles and descend on rich debris fields.
-  // Collect your scrap or lose it to a golem.
-  game.wrightTimer = (game.wrightTimer ?? 40) - dt;
-  if (game.wrightTimer <= 0) {
-    game.wrightTimer = 25;
-    const s2 = game.ship;
-    const wrightAlive = game.aliens.some((a) => a.alive && a.kind === 'wright');
-    const golems = game.aliens.reduce((n, a) => n + (a.alive && a.kind === 'golem' ? 1 : 0), 0);
-    if (game.time > 90 && s2.alive && !wrightAlive && golems < 2) {
-      let best = null;
-      for (const d of game.debris) {
-        if (Math.hypot(d.x - s2.x, d.y - s2.y) > 7000) continue;
-        if (!best || d.value > best.value) best = d;
-      }
-      if (best) {
-        let field = 0;
-        for (const d of game.debris) {
-          if (Math.hypot(d.x - best.x, d.y - best.y) < 1200) field += d.value;
-        }
-        if (field >= 60) {
-          const th = Math.random() * TAU;
-          const w = new Alien(s2.x + Math.cos(th) * 3800, s2.y + Math.sin(th) * 3800, 'wright');
-          w.anchor = { x: best.x, y: best.y };
-          game.aliens.push(w);
-          game.wrightWarn = true;
-        }
-      }
+  // HUSK MOONS call their own wright: a hard player smash on the wreck-plating
+  // (physics.damageBody sets game.huskWake, cooled per-moon) summons a
+  // wreckwright DOWN ON THE MOON — prompt, not on the ambient timer below, but
+  // under the ambient descent's exact caps (one wright, golems < 2), so mining
+  // a husk can never stack scavengers the timer wouldn't have allowed.
+  if (game.huskWake) {
+    const hm = game.huskWake;
+    game.huskWake = null;
+    const busy = game.aliens.some((a) => a.alive && a.kind === 'wright') ||
+      game.aliens.reduce((n, a) => n + (a.alive && a.kind === 'golem' ? 1 : 0), 0) >= 2;
+    // GAME MODE: the husk summon is the last spawner that isn't a nest or a
+    // brood, so it needs the `hostiles` gate by hand — the other two are
+    // already empty by construction in a no-enemy world (world.applyModeRules
+    // deletes the nests and spends the broods). The flag is still consumed
+    // above whatever the mode, or a smash landed in peaceful would sit pending
+    // and summon a wright the moment anything else set it.
+    if (game.rules.hostiles && hm.alive && game.ship.alive && !busy) {
+      const th = Math.random() * TAU;
+      const w = new Alien(hm.x + Math.cos(th) * 3400, hm.y + Math.sin(th) * 3400, 'wright');
+      w.anchor = { x: hm.x, y: hm.y };
+      game.aliens.push(w);
+      game.wrightWarn = true;
     }
   }
+
+  // (The AMBIENT wreckwright — the timer that sent one down on any rich debris
+  // field near the player — is REMOVED, user call 2026-08: aliens live only
+  // where the nests are, and a scavenger materialising in open space was the
+  // last free-roaming spawn. The husk-moon summon above is the one wright
+  // source left: player-triggered, on a marked moon, under the same caps.)
 
   // NESTS are the alien homeland: each living nest sustains a local patrol
   // while the player is in its region. No nest nearby = peaceful space, and
@@ -618,7 +720,11 @@ export function updateAliens(game, dt) {
   if (game.time < CFG.ALIEN_FIRST_WAVE) return;
   game.alienTimer -= dt;
   if (game.alienTimer > 0) return;
-  game.alienTimer = 12;   // seconds between eruptions
+  // Idle poll, NOT the regroup clock: open space re-checks every few seconds
+  // so flying into a fresh nest's territory still means prompt contact. The
+  // slow CFG.ALIEN_REGROUP only arms once a nest is actually in range (below)
+  // — it prices the REFILL after you thin a garrison, never the first hello.
+  game.alienTimer = 3;
 
   const s = game.ship;
   if (!s.alive) return;
@@ -629,6 +735,10 @@ export function updateAliens(game, dt) {
   for (const nest of game.bodies) {
     if (!nest.alive || nest.type !== 'nest') continue;
     if (Math.hypot(nest.x - s.x, nest.y - s.y) > 5500) continue;
+    // In a nest's region the garrison regroups on the SLOW clock (see the
+    // ALIEN_REGROUP config note) — whether or not this cycle spawns anything,
+    // so camping the yard can't farm a quick refill.
+    game.alienTimer = CFG.ALIEN_REGROUP;
     const local = game.aliens.reduce((n, a) => n + (a.alive && a.nest === nest ? 1 : 0), 0);
     const burst = Math.min(CFG.ALIEN_BURST, cap - local);
     if (burst <= 0) continue;

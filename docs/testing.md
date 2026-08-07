@@ -24,9 +24,16 @@ of main.js; ship-damage god mode and the NaN tally hook into physics.js):
   gating, NaN containment, the three docking gates and what a berth makes inert, the solar-wave
   classes, the aimed riposte, the pilot card's keydown/click/paused-guard answer paths, and that a
   landmark's collider agrees with the polygon render draws it as).
-  **Bit-repeatable** — the world seed is fixed and `Math.random` is swapped
-  for a seeded RNG for the duration — so same code ⇒ identical report. Two things had to be true for
-  that to actually hold, and neither was until issue #96: nothing outside the sim may draw from the
+  **Bit-repeatable is the GOAL, and it is not yet reached** — the world seed is fixed and
+  `Math.random` is swapped for a seeded RNG for the duration, but two back-to-back runs in one page
+  session still diverge. **Measured 2026-08-05 on a clean tree: 14 of 31 rows differ between run 1
+  and run 2**, starting from a ONE-draw gap that snowballs (far enough, by the pilot-card case, to
+  pick a different ability). All 31 still PASS either way — the divergence moves `draws` and detail
+  strings, not verdicts. Closing the harness cursor hole (issue #144) cut it to 11 rows; the
+  remaining source is unidentified and is NOT any of the three causes listed below, all of which are
+  genuinely fixed. **So: trust pass/fail, and treat a moved `draws` column as a lead rather than
+  proof.** Two things had to be true for repeatability to hold at all, and neither was until issue
+  #96: nothing outside the sim may draw from the
   swapped stream (sfx/music/hud now own private ones), and nothing seeded off a body id may outlive
   its world (`generateWorld` resets the id counter). A third, **the window may not reach the sim**
   (issue #104), is held STRUCTURALLY rather than because it was ever observed to break: `game.viewR`

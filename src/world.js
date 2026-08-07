@@ -1,10 +1,10 @@
 import {
   CFG, PROG, addXp, maxLives, fieldFrac, fieldLobe, worldDebris, crustMass,
-  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent,
+  FIELD_LOBE_MAX, stormClass, stormStrength, stormSpent, modeRules,
 } from './config.js';
 import { Body, railBody, railEllipse, makeChunk, chunkHaloW, resetBodyIds } from './entities.js';
-import { seedGlowPockets } from './glow.js';
-import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel } from './util.js';
+import { seedGlowPockets, seedMoonGlow } from './glow.js';
+import { TAU, mulberry32, rand, pick, CRYSTAL_REACH, padPos, surfaceVel, placeName } from './util.js';
 import { pickShapeId, reachAt, shapeReach, rockOverlap, rockReach } from './rockshape.js';
 import * as gravel from './gravel.js';
 import { sfxPing } from './sfx.js';
@@ -106,13 +106,35 @@ const GAS_KIND_COLORS = {
   azure:  ['#5a9dc9', '#4f93c4', '#7bd9c9'],
   violet: ['#b05ac9', '#a04fc0', '#c06ad4'],
 };
-// The name pool. Must be at least as long as the MOST worlds buildLayout can
-// mint (15 anchors + 2 extras + 1 co-orbital = 18) or nameIdx wraps and the
-// sky gets two worlds with one name (the old 14-name list shipped duplicate
-// Khepri/Vantor, which made chart messages and window.goto ambiguous). 19
-// covers it. generateWorld SHUFFLES this pool with the world rng, so which
-// world wears which name is the seed's choice — the list itself is just the
-// vocabulary.
+// THE NAME POOLS — one per archetype (user call, 2026-08), so a name carries
+// its world's flavour and different seeds wear genuinely different names
+// instead of one 19-name deck re-dealt. Rules that keep this safe:
+//  - Pools are DISJOINT and each is 10 deep against a worst per-type count of
+//    ~4 (exactly three gas giants is structural; the duplicated archetypes cap
+//    around there), so no run can wrap a pool — a wrap is two worlds with one
+//    name, which makes chart messages and window.goto ambiguous (the old
+//    14-name list actually shipped that bug).
+//  - Names come off a PRIVATE stream forked from the run seed (nameRng in
+//    generateWorld), NEVER the world rng — and the old shared-pool shuffle is
+//    still burned and discarded there, so every existing seed's layout is
+//    bit-identical and only the nameplates changed ("kept and discarded",
+//    the retrograde-lane rule).
+//  - The legacy 19 names live on, each filed under the archetype it read
+//    best on, so long-running players still meet familiar worlds.
+const PLANET_NAME_POOLS = {
+  lava:    ['Vantor', 'Cindral', 'Pyrris', 'Scoria', 'Brasque', 'Ashvel', 'Kilnor', 'Fervel', 'Charwyn', 'Emberis'],
+  rocky:   ['Sable', 'Wold', 'Tantal', 'Drex', 'Cairnos', 'Gravon', 'Torvel', 'Rhud', 'Manthe', 'Ferrow'],
+  gas:     ['Ymir', 'Ferren', 'Naiad', 'Boreth', 'Vashtar', 'Ondrel', 'Maelgor', 'Threx', 'Ullur', 'Grandis'],
+  ice:     ['Brune', 'Pell', 'Ison', 'Rimhel', 'Frael', 'Vintra', 'Skade', 'Halvor', 'Nivelle', 'Tundrel'],
+  terran:  ['Corve', 'Calyx', 'Quorra', 'Verdane', 'Sylva', 'Loamis', 'Talem', 'Rilla', 'Everin', 'Arbore'],
+  ocean:   ['Halcyon', 'Maris', 'Thalos', 'Brinn', 'Undine', 'Delmar', 'Sirene', 'Fathom', 'Swale', 'Lagune'],
+  desert:  ['Khepri', 'Dunreth', 'Sirocco', 'Ochra', 'Zephris', 'Barchan', 'Mesarra', 'Harmat', 'Aridas', 'Sabkha'],
+  shroud:  ['Nerev', 'Velmar', 'Pallis', 'Obscura', 'Mistrel', 'Duskren', 'Gauzel', 'Murken', 'Shrivane', 'Cirralis'],
+  crystal: ['Ossia', 'Aster', 'Prisme', 'Lucent', 'Beryl', 'Quarzen', 'Selen', 'Kyrast', 'Virell', 'Faceze'],
+};
+// The legacy shared pool. STILL LOAD-BEARING twice over: generateWorld burns
+// its shuffle on the world rng (removing those draws would re-jitter every
+// seeded sky), and addPlanet's no-name fallback still picks from it.
 const PLANET_NAMES = ['Khepri', 'Vantor', 'Ossia', 'Brune', 'Calyx', 'Nerev', 'Tantal', 'Ymir', 'Quorra', 'Pell', 'Sable', 'Ison', 'Halcyon', 'Drex', 'Ferren', 'Wold', 'Corve', 'Naiad', 'Aster'];
 
 // Moon archetypes — like planets, each kind has its own palette and a distinct
@@ -126,12 +148,91 @@ const MOON_TYPES = [
   { type: 'dust',   w: 2, colors: ['#6a655f', '#5f5a55', '#746d65'], mMul: 0.9,  rMul: 1.02 },
   { type: 'sulfur', w: 1, colors: ['#c9a24b', '#b5763a', '#d4b45a'], mMul: 1.0,  rMul: 0.94 },
   { type: 'banded', w: 1, colors: ['#a99a86', '#93a0b2', '#b0a58f'], mMul: 1.1,  rMul: 1.06 },
+  // The 2026-08 variety pass — six more jobs, one mechanic each (see the
+  // "moons with jobs" ledger in docs/world-content.md):
+  //   lodestar — impossibly dense micro-moon: gravity as terrain, the longest
+  //     winch in the sky. The "every moon shelters" law (STORM_SHADOW_MIN_R
+  //     24) is guaranteed by spawnMoon's 26-unit radius clamp — lodestar's
+  //     low tail is the only roll that ever touches it.
+  //   geode  — a player kill frees a dense mineral core (physics.shatter).
+  //   verdant— hosts a slowly-regrowing glow pocket in low orbit (glow.js).
+  //   comet  — rides the most eccentric ellipse its slot allows and vents its
+  //     geysers only near periapsis (the hazard loop below).
+  //   husk   — wreck-plated; a hard player smash calls a wreckwright down on it
+  //     (physics.damageBody -> ai.js), and the moon itself is richer salvage.
+  //   pumice — featherweight for its size: impacts bury instead of bouncing and
+  //     the crust crumbles at double rate (physics.js, both).
+  // mMul 4.5 tops the roll out at 49,500 — DELIBERATELY 1% under the 5e4
+  // rail-disturber threshold (see crustMass's ceiling note). Bumping it past
+  // 4.54 silently makes every big lodestar a planet-class disturber.
+  { type: 'lodestar', w: 1, colors: ['#5a5661', '#4e4a57', '#66626f'], mMul: 4.5,  rMul: 0.5 },
+  { type: 'geode',    w: 1, colors: ['#8d8494', '#978c9c', '#7f7787'], mMul: 1.15, rMul: 0.98 },
+  { type: 'verdant',  w: 1, colors: ['#7fae8d', '#6da184', '#8fbf9a'], mMul: 0.95, rMul: 1.08 },
+  { type: 'comet',    w: 1, colors: ['#cde8ea', '#bfdfe6', '#d8ecf2'], mMul: 0.7,  rMul: 0.9 },
+  { type: 'husk',     w: 1, colors: ['#8f7f72', '#7d7a80', '#997f66'], mMul: 1.2,  rMul: 0.96 },
+  // Chalk-pale on purpose — a 2026-08 user call ("Shale and Curd look too
+  // similar") split pumice off the rock moon: colder, brighter ground, and
+  // the renderer draws vesicle stipple ONLY, never the shared crater set.
+  { type: 'pumice',   w: 2, colors: ['#d8d3c6', '#cfc9ba', '#e0dbd0'], mMul: 0.45, rMul: 1.28 },
+  //   molten — a cooled black crust over live magma (2026-08 user call):
+  //     mostly dark, ember cracks throughout (render), and SEARING to skid
+  //     on (physics.js skim venom, alongside sulfur's poison).
+  { type: 'molten',   w: 1, colors: ['#2e2428', '#282025', '#362a2b'], mMul: 1.1,  rMul: 0.92 },
 ];
 const MOON_TYPE_TOTAL = MOON_TYPES.reduce((s, m) => s + m.w, 0);
 function pickMoonType(rng) {
   let r = rng() * MOON_TYPE_TOTAL;
   for (const mt of MOON_TYPES) { if ((r -= mt.w) < 0) return mt; }
   return MOON_TYPES[0];
+}
+
+// EVERY MOON CARRIES A NAME now, drawn from its type's own pool — the pools are
+// the vocabulary, the seed decides who wears what (same contract as
+// PLANET_NAMES). The chart still draws moons as icons, never labels
+// (render.labelsItself keys off type): a name is READOUT knowledge, earned by
+// charting, and it feeds the storm-lee message and the journey rail.
+const MOON_NAMES = {
+  rock:     ['Cairn', 'Tor', 'Scarp', 'Fell', 'Crag', 'Shale', 'Combe', 'Karst', 'Gault', 'Whin', 'Dolm', 'Stane'],
+  ice:      ['Rime', 'Firn', 'Floe', 'Serac', 'Hoar', 'Nilas', 'Verglas', 'Brume', 'Frazil', 'Graupel', 'Sleet', 'Thaw'],
+  iron:     ['Anvil', 'Ingot', 'Rivet', 'Girder', 'Pyrite', 'Taconite', 'Ferrule', 'Hematite', 'Lode', 'Smelt', 'Wootz'],
+  dust:     ['Pall', 'Murk', 'Hush', 'Soot', 'Gloam', 'Dun', 'Ash', 'Smirch', 'Haze', 'Sift', 'Silt'],
+  sulfur:   ['Brimstone', 'Fume', 'Reek', 'Ochre', 'Saffron', 'Vitriol', 'Tarnish', 'Mordant', 'Gall', 'Sallow'],
+  banded:   ['Strata', 'Vein', 'Warp', 'Weft', 'Loom', 'Twill', 'Chine', 'Lamina', 'Plait', 'Marl'],
+  lodestar: ['Plumb', 'Ballast', 'Fathom', 'Keel', 'Sinker', 'Gnomon', 'Heft', 'Burden', 'Fulcrum', 'Dram'],
+  geode:    ['Druse', 'Vug', 'Agate', 'Seam', 'Kernel', 'Pith', 'Locket', 'Casket', 'Cameo', 'Bezel'],
+  verdant:  ['Moss', 'Sward', 'Lichen', 'Fern', 'Verdure', 'Sylva', 'Bower', 'Bracken', 'Clover', 'Loam'],
+  comet:    ['Wisp', 'Veil', 'Skein', 'Plume', 'Banner', 'Pennant', 'Streamer', 'Tress', 'Gossamer', 'Sillage'],
+  husk:     ['Hulk', 'Wrack', 'Gantry', 'Spar', 'Bulwark', 'Derrick', 'Keelson', 'Scuttle', 'Jetsam', 'Flotsam'],
+  pumice:   ['Tuff', 'Scoria', 'Froth', 'Spume', 'Barm', 'Lather', 'Crumb', 'Chalk', 'Curd', 'Wafer'],
+  molten:   ['Cinder', 'Ember', 'Char', 'Scald', 'Basalt', 'Gutter', 'Smolder', 'Furnace', 'Kindle', 'Brazier'],
+};
+// Per-run naming state. Reset by generateWorld off a FORKED stream, never the
+// main world rng: names are assigned mid-spawn (spawnMoon), and drawing the
+// main rng there would violate the append-only rule on the seeded stream (see
+// the EXPEDITION LAYER note in generateWorld) and reshuffle the whole sky.
+let moonNamePools = null;
+function resetMoonNames(seed) {
+  const nrng = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  moonNamePools = {};
+  for (const k in MOON_NAMES) {
+    const pool = MOON_NAMES[k].slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(nrng() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    moonNamePools[k] = { pool, next: 0 };
+  }
+}
+// Pools wrap with a numeral rather than duplicating: two moons with one name
+// is the exact ambiguity the 19-name planet pool exists to prevent.
+const ROMAN = ['II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+function moonName(type) {
+  const st = moonNamePools && moonNamePools[type];
+  if (!st) return null;
+  const n = st.next++;
+  const base = st.pool[n % st.pool.length];
+  const round = Math.floor(n / st.pool.length);
+  return round ? `${base} ${ROMAN[round - 1] || round + 1}` : base;
 }
 
 // Circular-orbit velocity around a parent at distance r, plus the parent's own
@@ -162,8 +263,18 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // refill clearance) is sized for the TOP of this spread, jitter included.
   // Mass is untouched; see the WORLD SCALE note on CFG.MOON_R_MUL for why
   // size and mass part ways.
-  const radius = ((18 + t * 16) * mt.rMul + rand(rng, -2, 2)) * CFG.MOON_R_MUL
-    * rand(rng, 0.8, 1.2);
+  // 2026-08 "more size variety" pass: BOTH spread terms widened x1.3 around
+  // their unchanged means (base 26±10.4, was ±8; seeded jitter ±26%, was
+  // ±20%) — the sky's min-to-max moon range grows ~30%. The top of the
+  // spread grew ~253 -> ~306 (pumice rMul 1.28, jitter included), and every
+  // clearance solved against the old top moved with it: addPlanet's 180 slot
+  // floor -> 220, its 80x shared-edge margin -> 100, replenishWorld's 110x
+  // refill clearance -> 130. The FLOOR is clamped at 26 world units: under
+  // STORM_SHADOW_MIN_R (24) a moon casts no lee and "every moon shelters" is
+  // a law — only a lodestar's (rMul 0.5) low tail ever touches the clamp.
+  const radius = Math.max(26,
+    ((15.6 + t * 20.8) * mt.rMul + rand(rng, -2, 2)) * CFG.MOON_R_MUL
+    * rand(rng, 0.74, 1.26));
   // Moons run the gamut now — some are proper little worlds, and at these
   // masses they're real attractors. (The old sub-ATTRACT_MIN test-particle
   // rule predates rails: it only ever mattered for LIVE moons, and rails
@@ -178,6 +289,8 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
     mass, radius, color: pick(rng, mt.colors), parent: planet,
   });
   m.moonType = mt.type;
+  // Off the forked naming stream (see resetMoonNames) — zero main-rng draws.
+  m.name = moonName(mt.type);
   bodies.push(m);
   // ~55% of moons ride an ELLIPSE (railEllipse), the rest circular. mr is the
   // semi-major axis; e is capped so periapsis always clears the planet. Tight
@@ -199,8 +312,15 @@ function spawnMoon(bodies, rng, planet, mr, exCap = Infinity) {
   // apoapsis a family can reach, and the boundary clamp there is only correct
   // while the two agree.
   const eCap = Math.min(CFG.MOON_E_MAX, 1 - (planet.radius + radius + 60) / mr);
-  if (eCap > 0.08 && rng() < 0.55) {
-    const e = Math.max(0, Math.min(rand(rng, 0.1, eCap), exCap / mr));
+  // A COMET MOON takes the ellipse branch whenever its slot allows one at all,
+  // and rides the WIDEST swing the slot permits — periapsis is where it vents,
+  // so the orbit IS the mechanic. The rng() branch draw stays first in the ||
+  // so it is drawn (and discarded) for a comet too — the retrograde-lane idiom:
+  // never buy a constant with the seeded stream — and `e` is still drawn
+  // before the override, so the ellipse branch's draw count is unchanged.
+  if (eCap > 0.08 && (rng() < 0.55 || mt.type === 'comet')) {
+    let e = Math.max(0, Math.min(rand(rng, 0.1, eCap), exCap / mr));
+    if (mt.type === 'comet') e = Math.max(0, Math.min(eCap, exCap / mr));
     railEllipse(m, planet, mr, e, rng() * TAU, rng() * TAU, dir);
   } else {
     const mth = rng() * TAU;
@@ -237,8 +357,21 @@ function moonZone(star, planet, orbitR) {
   // The inner clearance rides MOON_R_MUL because that is what it is FOR: 90
   // comfortably cleared a 42-radius moon, and a doubled moon parked on the old
   // floor would hang 84 units into a planet that also grew underneath it.
+  // ...AND THE FLOOR IS PROPORTIONAL NOW TOO (user call, 2026-08: moons —
+  // "especially" the gas giants' — orbited visibly inside their own world's
+  // drawn kit). The absolute term covers small worlds; the proportional term
+  // covers what each archetype DRAWS around itself: a ring's outer band
+  // reaches ~2.2r (render.drawRing at 2.14r + half its stroke), the terran
+  // burn deck 1.58r, a crystal's spikes 1.32r — so a ringed world's family
+  // starts clear of its rings and a terran's clear of its sky. The ring-gap
+  // SHEPHERD is spawned pinned to its lane by its own path (spawnShepherd)
+  // and never consults this zone; a tighter zone degrades to FEWER moons via
+  // spawnMoon's count clamp, never to a crossing pair.
+  const propFloor = planet.ring ? 2.5
+    : planet.ptype === 'terran' ? 1.75
+    : planet.ptype === 'crystal' ? 1.6 : 1.45;
   return {
-    minR: planet.radius + 90 * CFG.MOON_R_MUL,
+    minR: Math.max(planet.radius + 90 * CFG.MOON_R_MUL, planet.radius * propFloor),
     maxR: Math.min(hill * CFG.MOON_ZONE_MUL, room),
   };
 }
@@ -299,18 +432,18 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   // the pre-fix worldgen — moons are attractors, so needlessly moving them
   // perturbs every free-flyer's path and re-rolls the whole sky's fate.
   // THE COUNT IS CLAMPED TO WHAT THE ZONE CAN SLOT. Moon counts are a seeded
-  // draw now (up to 1.5x the authored base) and moon radii span up to ~253
-  // units at the top of spawnMoon's jitter, so a small world's zone can be
-  // asked for more family than it can hold apart. A slot floor of
-  // 180*MOON_R_MUL (900 at 5) is sized so the tightened placement draw below
+  // draw now (up to 1.5x the authored base) and moon radii span up to ~306
+  // units at the top of spawnMoon's widened jitter, so a small world's zone
+  // can be asked for more family than it can hold apart. A slot floor of
+  // 220*MOON_R_MUL (1100 at 5) is sized so the tightened placement draw below
   // keeps even two top-of-jitter siblings clear: min adjacent separation is
-  // 0.6 slotW (the 0.3-0.7 draw), i.e. >=540, against ~506 for two max moons.
+  // 0.6 slotW (the 0.3-0.7 draw), i.e. >=660, against ~612 for two max moons.
   // Chunk-shell clearance on top of that is seedDebrisBelts' own job — it
   // measures real slack per moon and shrinks or skips the shell.
   // An over-draw therefore degrades to FEWER moons, never to a crossing pair.
   const { minR, maxR } = moonZone(star, p, orbitR);
   const count = Math.min(opts.moons || 0,
-    Math.floor((maxR - minR) / (180 * CFG.MOON_R_MUL)));
+    Math.floor((maxR - minR) / (220 * CFG.MOON_R_MUL)));
   if (count > 0) {
     if (maxR > minR + 50) {
       const slotW = (maxR - minR) / count;
@@ -324,11 +457,12 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
         const lo = minR + slotW * i;
         const dLo = i > 0 ? mr - lo : Infinity;
         const dHi = i < count - 1 ? lo + slotW - mr : Infinity;
-        // 80*MOON_R_MUL of shared-edge margin (was 45): sized to cover two
-        // top-of-jitter moon radii (~506) PLUS both their chunk shells
-        // (seedDebrisBelts hangs rubble out to 1.5x a moon's radius), so an
-        // elliptical excursion can never reach a sibling's shell.
-        spawnMoon(bodies, rng, p, mr, Math.min(dLo, dHi) - 80 * CFG.MOON_R_MUL);
+        // 100*MOON_R_MUL of shared-edge margin (was 45, then 80): sized to
+        // cover two top-of-jitter moon radii (~612 since the widened spread)
+        // PLUS both their chunk shells (seedDebrisBelts hangs rubble out to
+        // 1.5x a moon's radius), so an elliptical excursion can never reach a
+        // sibling's shell.
+        spawnMoon(bodies, rng, p, mr, Math.min(dLo, dHi) - 100 * CFG.MOON_R_MUL);
       }
     }
   }
@@ -743,6 +877,19 @@ function buildLayout(rng, graveyardR) {
   return rows;
 }
 
+// CHART ZONE — the nameplate/approach radius that reading a body's name (the
+// old planets-only survey, generalized to every chartKey carrier) charts it
+// from. Shared between the live scan (replenishWorld) and the spawn-clearance
+// search below it must agree with: a spawn point cleared by one definition
+// and charted by another is the bug this split would reintroduce.
+export function chartZoneR(b, recon = 0) {
+  return (b.type === 'planet' ? b.radius * 5 + 600
+    : b.shepherd || b.volcanic || b.carved ? 900
+      : b.type === 'station' || b.majorComet ? 1400
+        : b.type === 'moon' ? b.radius * 5 + 300 : 900)
+    + recon * (b.type === 'planet' ? 1300 : 650);
+}
+
 export function generateWorld(game, seed = 20260721) {
   const rng = mulberry32(seed);
   const bodies = game.bodies;
@@ -789,6 +936,9 @@ export function generateWorld(game, seed = 20260721) {
   // generateWorld are a pure function of the seed — check this ordering again if Ship ever gains
   // an id. See the note on NEXT_ID in entities.js.
   resetBodyIds();
+  // ...and the moon-name pools, seventh of the family — seeded off a FORK of
+  // the world seed so spawnMoon can assign names without drawing the main rng.
+  resetMoonNames(seed);
 
   // ONE sun, vast and dangerous, with the whole map as its system.
   // SKY SPEED (orbital cruise): every sun-anchored orbit's speed is
@@ -899,17 +1049,35 @@ export function generateWorld(game, seed = 20260721) {
       it.radius = got[i];
     });
   }
-  // Names are a seeded SHUFFLE of the pool now — which world wears which name
-  // varies per seed, and the pool comfortably covers the layout's fixed 15
-  // named worlds (the binary companion takes "<name> B" and the Wanderer's
-  // Star names itself; a co-orbital pairing rearranges those 15, never adds).
-  const names = shuffle(rng, PLANET_NAMES.slice());
+  // Names come off the PER-ARCHETYPE pools now (PLANET_NAME_POOLS), drawn
+  // from a PRIVATE stream forked off the run seed — never the world rng. The
+  // legacy shuffle below is KEPT AND DISCARDED: it burns the exact world-rng
+  // draws it always did, so every existing seed's layout, jitter and moon
+  // census are bit-identical; only the nameplates changed. (The binary
+  // companion takes "<name> B" and the Wanderer's Star names itself.)
+  shuffle(rng, PLANET_NAMES.slice());
+  // The seed is MIXED (an avalanche step, the ghostOff idiom), and each pool
+  // shuffles off its OWN stream — a plain `seed ^ K` fed one sequential
+  // stream, and its early draws were biased enough that three unrelated seeds
+  // all dealt the lava pool the same first name (measured: 'Cindral' on
+  // 20260721, 555000111 AND 42).
+  const nameSeed = (Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) ^ (seed >>> 13)) >>> 0;
+  const namePools = {}, nameIdxByType = {};
+  let nameTi = 0;
+  for (const k in PLANET_NAME_POOLS) {
+    const tSeed = (nameSeed + Math.imul(++nameTi, 0x9E3779B9)) >>> 0;
+    namePools[k] = shuffle(mulberry32(tSeed), PLANET_NAME_POOLS[k].slice());
+  }
+  const nextName = (pt) => {
+    const pool = namePools[pt] || namePools.rocky;
+    const i = nameIdxByType[pt] = (nameIdxByType[pt] || 0) + 1;
+    return pool[(i - 1) % pool.length];   // % is belt-and-braces; 10 deep never wraps
+  };
   const planets = [];
-  let nameIdx = 0;
   for (const item of layout) {
     if (item.belt) { addBelt(bodies, rng, sun, item.r, item.spread, item.count); continue; }
     if (item.vacant) continue;   // the co-orbital pairing's freed lane — no world here
-    item.name = names[nameIdx++ % names.length];
+    item.name = nextName(item.ptype);
     const p = addPlanet(bodies, rng, sun, item.r, item.mass, item.radius, item);
     item.p = p;
     planets.push(p);
@@ -952,7 +1120,7 @@ export function generateWorld(game, seed = 20260721) {
     // have carried on its own lane.
     if (item.partner) {
       const pt = item.partner;
-      pt.name = names[nameIdx++ % names.length];
+      pt.name = nextName(pt.ptype);
       pt.ang = Math.atan2(p.y - sun.y, p.x - sun.x) + pt.dth;
       const q = addPlanet(bodies, rng, sun, item.r, pt.mass, pt.radius, pt);
       pt.p = q;
@@ -1160,11 +1328,14 @@ export function generateWorld(game, seed = 20260721) {
   };
   fortify(roleHost('fort'), 260, 3);
   // (volcanic/shepherd moons are discovery content — never fortified — and a
-  // fort on a DUST moon would contradict its stealth-haven job)
+  // fort on a DUST moon would contradict its stealth-haven job; same rule for
+  // a VERDANT moon — a Bastion camped on the healing spring blocks its job —
+  // and a HUSK moon, which is the wrights' turf, not the Bastions')
   // (the size floor rides MOON_R_MUL — unscaled it would pass EVERY moon and
   // the "big moon" fort would land on whichever one happens to be first)
   const bigMoons = bodies.filter((b) => b.type === 'moon' && b.radius >= 28 * CFG.MOON_R_MUL &&
-    !b.volcanic && !b.shepherd && b.moonType !== 'dust').slice(0, 1);
+    !b.volcanic && !b.shepherd && b.moonType !== 'dust' &&
+    b.moonType !== 'verdant' && b.moonType !== 'husk').slice(0, 1);
   for (const m of bigMoons) fortify(m, 150, 2);
 
   // THE EMBERKIN: living plasma already blooming on the innermost lava world.
@@ -1185,20 +1356,13 @@ export function generateWorld(game, seed = 20260721) {
   // disturber list) so the concept can return if it ever earns its keep —
   // nothing spawns one.
 
-  // Player starts in a stable orbit inside the inner asteroid belt.
-  // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
-  // from the rocks around it.
-  const sr = spawnBeltR;   // the inner belt's generated lane, wherever this seed put it
-  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
-  game.spawn = { x: sun.x, y: sun.y - sr, vx: sv, vy: 0 };
-  game.homeStar = sun;
-  game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   // CHART EVERYTHING: every world, moon, and station is chartable (b.chartKey;
   // named landmarks set their own keys at their spawn sites so respawns keep
   // them). game.charted records KEYS, not bodies. Worldgen bodies only —
   // replenish-spawned moons get no key, so the chart total never inflates
   // mid-run. Pure flagging, no rng draws: the seeded stream and the mechTest
-  // world checksum are untouched.
+  // world checksum are untouched. Done BEFORE the spawn point below, which
+  // needs every chartKey already assigned to check itself against them.
   {
     let pi = 0, mi = 0, si = 0;
     for (const b of bodies) {
@@ -1210,14 +1374,70 @@ export function generateWorld(game, seed = 20260721) {
   }
   game.charted = {};
   game.surveyTotal = 0;   // recomputed live by the chart scan (replenishWorld)
+
+  // Player starts in a stable orbit inside the inner asteroid belt.
+  // The ship feels SHIP_GRAV-amplified gravity, so its circular speed differs
+  // from the rocks around it.
+  const sr = spawnBeltR;   // the inner belt's generated lane, wherever this seed put it
+  const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
+  // NEVER SPAWN PRE-CHARTED. The north point (th = -PI/2) is the traditional
+  // spot and clears on the vast majority of seeds, but a layout can put a
+  // planet's lane — or a fast-orbiting moon sweeping past it — close enough
+  // that the fixed north point already sits inside a chartable body's own
+  // nameplate zone (chartZoneR). That handed "You Are Here" for free before
+  // the player had done anything, the exact frame-one freebie the achievement
+  // sweep exists to catch (docs/progression.md, "Watch for freebies"). Walked
+  // in fixed steps around the SAME belt radius, never with a new rng draw —
+  // pulling from the seeded stream here would shift every pool downstream of
+  // it and break the mechTest world checksum. CHART_CLEAR_MARGIN pads every
+  // zone so a second of orbital drift before the player can react can't
+  // close the gap either. When the north point already clears (true for
+  // ~93% of seeds, empirically), this is a no-op: i=0 IS the north point, so
+  // the ship's spawn is byte-identical to before the fix on every seed that
+  // didn't need one.
+  const CHART_CLEAR_MARGIN = 1200;
+  const CHART_ANGLE_STEPS = 72;
+  let spawnTh = -Math.PI / 2;
+  for (let i = 0; i < CHART_ANGLE_STEPS; i++) {
+    const th = -Math.PI / 2 + i * (TAU / CHART_ANGLE_STEPS);
+    const px = sun.x + Math.cos(th) * sr, py = sun.y + Math.sin(th) * sr;
+    const clear = bodies.every((b) => {
+      if (!b.alive || !b.chartKey || b.hidden) return true;
+      return Math.hypot(b.x - px, b.y - py) >= chartZoneR(b) + CHART_CLEAR_MARGIN;
+    });
+    if (clear) { spawnTh = th; break; }
+  }
+  const spawnX = sun.x + Math.cos(spawnTh) * sr, spawnY = sun.y + Math.sin(spawnTh) * sr;
+  game.spawn = {
+    x: spawnX, y: spawnY,
+    vx: -sv * Math.sin(spawnTh), vy: sv * Math.cos(spawnTh),
+  };
+  game.homeStar = sun;
+  game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   // Roguelite life pods: one seeded near the starting belt so the +1-life
-  // mechanic is discoverable; replenishWorld/main.js trickle in more.
+  // mechanic is discoverable; replenishWorld/main.js trickle in more. The
+  // offset is rotated WITH the spawn point (not pinned to the old north-only
+  // math) so it stays a short hop from wherever the ship actually starts;
+  // at the default angle the rotation is identity and the pod lands exactly
+  // where it always did.
   game.pickups = [];
   game.lifeTimer = PROG.LIFE_RESPAWN;
-  spawnLifePod(game, sun.x + 2400, sun.y - sr - 1100);
+  {
+    const dTh = spawnTh - (-Math.PI / 2), cd = Math.cos(dTh), sd = Math.sin(dTh);
+    const ox = 2400, oy = -1100;   // the original fixed offset, at the original north angle
+    spawnLifePod(game, spawnX + (ox * cd - oy * sd), spawnY + (ox * sd + oy * cd));
+  }
   // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
   // they reset with the world). Seeded off the same world rng — see glow.js.
   seedGlowPockets(game, rng);
+  // VERDANT MOONS each host one anchored pocket in low orbit. Off the forked
+  // naming stream, NOT the main rng — a cosmetic mote layout must not shift
+  // the seeded sky (the append-only rule below), and moon count varies per
+  // seed so the draw count here varies too.
+  seedMoonGlow(game, mulberry32((seed ^ 0x51f15e) >>> 0));
+  // A stale husk-wake reference must not survive into a fresh sky (the
+  // tinkerWant precedent): physics sets it, ai.js consumes it.
+  game.huskWake = null;
   // ---- EXPEDITION LAYER (seeded). Everything below draws rng AFTER
   // seedGlowPockets ON PURPOSE: the whole sky above stays bit-identical to
   // the pre-expedition worldgen (and the mechTest T1 checksum with it). Any
@@ -1321,7 +1541,43 @@ export function generateWorld(game, seed = 20260721) {
   fieldRs.push({ name: 'The Farshoal', r: SR(44300) });
   seedDenseFields(game, sun, rng, fieldRs);
   seedDebrisBelts(bodies, planets, rng);
+  // GAME MODE, applied LAST and by SUBTRACTION (see applyModeRules). Everything
+  // above has already drawn its rng, so a peaceful sky is the classic sky minus
+  // its hostiles — same seed, same layout, same names.
+  applyModeRules(game);
   respawnShip(game);
+}
+
+// Strip the hostile layer for the no-enemy modes (config.MODES: `hostiles`).
+//
+// THIS RUNS AFTER GENERATION, NOT INSTEAD OF IT, and that is the whole design:
+// world generation is seeded, and skipping addNest / fortify would swallow
+// their rng draws and hand the same seed a completely different sky per mode.
+// The SAVED SYSTEMS library stores nothing but a seed, so a system saved in
+// classic has to be recognisably the same system in peaceful. Paying every draw
+// and then deleting what the mode doesn't want is what buys that.
+//
+// Three sources, matching the three the design laws name (nests and shoal
+// broods are the only alien spawners; a Bastion is a fortified world):
+//   - NESTS leave the sky entirely. They are a body, and a live nest is the
+//     grabber wave's whole supply (ai.js) — an inert green blob you could still
+//     shoot would be a POI that lies about what it does.
+//   - A BASTION is DISARMED, not deleted: the fort is an emplacement bolted to
+//     a real world, so nulling it leaves the planet exactly where the seed put
+//     it, minus its shield and turrets.
+//   - The shoal BROODS are spent before the run starts. `cleared` is preset
+//     rather than left for updateFields to notice on frame one: noticing bumps
+//     the fieldClear achievement and raises a message, so every shoal in the
+//     system would announce itself as cleared the instant the run began.
+export function applyModeRules(game) {
+  if (modeRules(game.mode).hostiles) return;
+  const bodies = game.bodies;
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const b = bodies[i];
+    if (b.type === 'nest') { bodies.splice(i, 1); continue; }
+    if (b.fort) b.fort = null;
+  }
+  for (const f of (game.fields || [])) { f.brood = 0; f.cleared = true; }
 }
 
 // PLANETARY DEBRIS BELTS — every world wears a shell of its own rubble.
@@ -2640,6 +2896,28 @@ function seedDenseFields(game, sun, rng, fieldRs) {
       // substep if it is deep, and sits visibly interpenetrated if it is not,
       // and being railed field rock nothing ever separates it. Dropping the rock
       // costs one pebble out of hundreds; keeping it costs a bug.
+      //
+      // THIS MOVED THE SEEDED STREAM, DELIBERATELY, AND THE SHIFT IS DECLARED
+      // HERE (issue #149). Until the gravel-clearance escape hatch was closed,
+      // a pebble that failed `gravelClear` on the LAST of 8 tries fell through
+      // and SPAWNED, drawing the 2% cache test plus fieldMass's two draws and
+      // maybeCore's mass-gated one. Dropping it instead draws none of those, so
+      // every draw after this point in seedDenseFields — and seedDebrisBelts,
+      // which runs after it — lands differently: measured on seed 20260721 the
+      // Farshoal's heart moves from (-26202,-51284) to (52454,23774), a whole
+      // shoal on a different bearing.
+      //
+      // NOT re-aligned by drawing-and-discarding here, though that is the
+      // project's usual rule. This `!sited` exit is reached by TWO paths — the
+      // landmark `clash` path, which already dropped silently and drew nothing
+      // before the change, and the gravel-clearance path, which is the only one
+      // that used to spawn. Draining draws on both would invent a THIRD stream
+      // that matches neither, and draining only the second means reconstructing
+      // the old bug's exact conditions (run the `bigs` clash loop after a
+      // clearance failure purely to decide how many draws to throw away) —
+      // encoding a deleted bug's draw pattern into the code forever. The layout
+      // for a given seed is therefore different from before this fix, on
+      // purpose. `?seed=` is still reproducible; it just reproduces a new sky.
       if (!sited) continue;
       const v = orbitVel(sun, x, y, 1);
       // The mass ladder is drawn against where the rock LANDED, not where it
@@ -2900,12 +3178,12 @@ export function replenishWorld(game, dt) {
           // pair eventually collides (see spawnMoon's exCap rationale). Gap
           // is measured to each railed sibling's radial range, and the
           // clearance rides MOON_R_MUL because it is sized to cover BOTH
-          // bodies' radii — at 110x it covers two top-of-jitter moons (~506)
-          // plus their chunk shells (1.5x radius each), the same arithmetic
-          // as spawnMoon's 80x shared-edge margin with the refill's own
-          // radius still unrolled. A blocked draw just retries; a fully
-          // missed cycle only delays the refill by 60s.
-          const clear = 110 * CFG.MOON_R_MUL;
+          // bodies' radii — at 130x it covers two top-of-jitter moons (~612
+          // since the widened spread) plus their chunk shells (1.5x radius
+          // each), the same arithmetic as spawnMoon's 100x shared-edge margin
+          // with the refill's own radius still unrolled. A blocked draw just
+          // retries; a fully missed cycle only delays the refill by 60s.
+          const clear = 130 * CFG.MOON_R_MUL;
           for (let tries = 0; tries < 4; tries++) {
             const mr = minR + (maxR - minR) * rng();
             let gap = Infinity;
@@ -3278,7 +3556,7 @@ export function replenishWorld(game, dt) {
         // the front is shredding, and an aurora over a world a dying squall
         // merely drifted across is a promise the sky does not keep.
         if (wave.k > 0.35 && !(p.auroraT > 0)
-            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = p.name;
+            && Math.hypot(p.x - s.x, p.y - s.y) < 5200) game.auroraName = placeName(p);
         if (wave.k > 0.35) p.auroraT = 7;
       }
     }
@@ -3304,7 +3582,7 @@ export function replenishWorld(game, dt) {
         const qr = Math.hypot(q.x, q.y);
         if (qr > pr && qr - pr < bd) { bd = qr - pr; next = q; }
       }
-      if (next) { next.ember = 0.08; game.emberSeededName = next.name; }
+      if (next) { next.ember = 0.08; game.emberSeededName = placeName(next); }
     }
   }
 
@@ -3317,9 +3595,11 @@ export function replenishWorld(game, dt) {
     if (p.eclipseT > 0) p.eclipseT -= dt;
     if (p.sulfurCd > 0) p.sulfurCd -= dt;
     if (p.shardCd > 0) p.shardCd -= dt;   // crystal-world facet chip (physics.damageBody)
+    if (p.huskCd > 0) p.huskCd -= dt;     // husk-moon wright call (physics.damageBody)
     const iceMoon = p.type === 'moon' && p.moonType === 'ice';
+    const cometMoon = p.type === 'moon' && p.moonType === 'comet';
     const sulfurVenting = p.type === 'moon' && p.moonType === 'sulfur' && p.sulfurPops > 0;
-    if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon && !sulfurVenting)) continue;
+    if (!s.alive || (p.type !== 'planet' && !p.volcanic && !iceMoon && !cometMoon && !sulfurVenting)) continue;
     const d = Math.hypot(s.x - p.x, s.y - p.y);
     if (d > 4200) { continue; }
     if (p.volcanic) {
@@ -3429,6 +3709,49 @@ export function replenishWorld(game, dt) {
           game.geyserWarn = true;
         }
       }
+    } else if (cometMoon) {
+      // COMET MOONS vent on a TIMETABLE: same pellet economy as the ice
+      // geysers (iceOf caps, rails, catchable ammo), but only near PERIAPSIS —
+      // spawnMoon put it on the widest ellipse its slot allows, and the chart's
+      // orbit lanes are how you read when the next close pass comes. A comet
+      // moon that lost its rail (grabbed, knocked loose) vents on the plain ice
+      // cadence instead: derailed there IS no periapsis, and a moon that never
+      // vents again after one grab would quietly delete its own mechanic.
+      if (p.heldBy) continue;
+      const rail = p.rail;
+      // THE FAST CADENCE IS PAID FOR BY THE WINDOW, so it only exists where a
+      // window does. `near` is d < peri * 1.35, which is ALWAYS true below
+      // e ≈ 0.149 ((1+e) < (1-e)·1.35) — and the off-view re-rail scan puts a
+      // disturbed moon back on a CIRCULAR rail (no e at all). So a low-e roll
+      // or one grab-and-release would turn "burst at periapsis" into the
+      // fastest permanent geyser in the sky (~1.5x the ice moon it is modeled
+      // on, uncapped by fieldXp — measured, progression audit 2026-08). Only a
+      // rail with a real timetable (e ≥ 0.15) earns the burst; everything else
+      // vents on the plain ice-moon cadence.
+      const timetabled = !!(rail && rail.parent && rail.e >= 0.15);
+      const near = !timetabled ||
+        Math.hypot(p.x - rail.parent.x, p.y - rail.parent.y) < rail.a * (1 - rail.e) * 1.35;
+      p.hazT = (p.hazT ?? 4) - dt;
+      if (p.hazT <= 0 && near) {
+        // Faster than the ice-moon cadence while a real window is open — the
+        // close pass is short, and the burst is the event.
+        p.hazT = timetabled ? 6 + rng() * 5 : 9 + rng() * 8;
+        let n = 0;
+        for (const b of game.bodies) {
+          if (b.alive && b.iceOf === p && !b.heldBy &&
+              Math.hypot(b.x - p.x, b.y - p.y) < p.radius + 260) n++;
+        }
+        if (n < 4) {
+          const a = rng() * TAU;
+          const cr = p.radius + 40 + rng() * 90;
+          const x = p.x + Math.cos(a) * cr, y = p.y + Math.sin(a) * cr;
+          const v = orbitVel(p, x, y, 1);
+          const c = spawnAsteroid(game.bodies, x, y, v.vx, v.vy, 110 + rng() * 220);
+          c.color = '#d8ecf2'; c.ice = true; c.iceOf = p;
+          railBody(c, p);
+          game.cometVentWarn = true;
+        }
+      }
     } else if (sulfurVenting) {
       // SULFUR MOONS: the pop chain a player smash queued (physics.damageBody
       // sets sulfurPops). Each pop fountains one loose ballistic rock — the
@@ -3518,12 +3841,9 @@ export function replenishWorld(game, dt) {
         // Chart zone = the nameplate zone (drawApproach): planets keep their
         // wide ring, named POIs their 900/1400 POI zones, plain moons a
         // tighter ring of their own — reading the nameplate IS the chart.
-        const zone = (b.type === 'planet' ? b.radius * 5 + 600
-          : b.shepherd || b.volcanic || b.carved ? 900
-            : b.type === 'station' || b.majorComet ? 1400
-              : b.type === 'moon' ? b.radius * 5 + 300 : 900)
-          + recon * (b.type === 'planet' ? 1300 : 650);
-        if (d < zone) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
+        // chartZoneR is shared with generateWorld's spawn-clearance search,
+        // which must agree with this exact definition of "in range".
+        if (d < chartZoneR(b, recon)) { game.charted[b.chartKey] = true; game.prog.surveyed++; justCharted = b; }
         else uncharted++;
       }
       game.surveyTotal = game.prog.surveyed + uncharted;
@@ -3787,6 +4107,16 @@ export function replenishWorld(game, dt) {
     game.wearT = step;
     for (const p of (game.reg ? game.reg.planets : [])) {
       if (!p.alive || p.nearShip || p.fort) continue;   // present player, or a shielded siege
+      // A gas giant doesn't pit — damageBody's canWear already excludes gas
+      // (its damage reads as WEATHER, never craters), and a scar minted here
+      // would notch the cloud tops in BOTH render.worldSil and physics.surfRadius.
+      // The hp drip is skipped too: the wear floor (0.5) sits past drawGasWound's
+      // 0.4 glow gate, so ambient wear alone would eventually open a glowing
+      // hole in every giant's cloud deck with nothing having hit it.
+      if (p.ptype === 'gas') continue;
+      // ...and neither does an OCEAN world: the sea closes over every wound —
+      // no pitting, no scars (hits read as waves; see the OCEAN_* notes).
+      if (p.ptype === 'ocean') continue;
       const floor = p.maxHp * CFG.PLANET_WEAR_FLOOR;
       if (p.hp <= floor) continue;
       // Rate hashed off the id, never drawn from the world rng — a draw here

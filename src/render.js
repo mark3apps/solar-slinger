@@ -1,8 +1,9 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
+  ramRows, ramPerRow, shipVis,
 } from './config.js';
-import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive } from './physics.js';
+import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive, dockReady } from './physics.js';
 import * as gravel from './gravel.js';
 import {
   chart, chartScale, CHART_R, isContact, plottable, contactLevel, contactPos, contactLabel,
@@ -1136,7 +1137,7 @@ export function rockCacheStats() {
 // All three are a handful of bodies against a shoal's ~1900, so keeping them
 // on the old path costs nothing and removes a whole class of z-order bug.
 function rockNeedsOverlay(b) {
-  return b.cored || !!b.heldBy ||
+  return b.cored || !!b.heldBy || b.inSea ||
     (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length)));
 }
 
@@ -1191,8 +1192,11 @@ function blitRock(game, b) {
 function blitChunk(game, b) {
   if (b.cored || b.heldBy) return false;   // glint / hold rings draw ON TOP (see rockNeedsOverlay)
   // A rock going under a gas giant fades out on ctx.globalAlpha, and an
-  // instance carries no alpha of its own — it would stay solid all the way down.
-  if (b.sinkT > 0) return false;
+  // instance carries no alpha of its own — it would stay solid all the way
+  // down. A rock UNDER AN OCEAN dims on the same ambient alpha (b.inSea), and
+  // the instanced sheet also composites after the body loop, so it would draw
+  // solid ON TOP of the sea — both stay on the 2D path.
+  if (b.sinkT > 0 || b.inSea) return false;
   const bk = shardBucket(b.radius);
   if (bk < 0) return false;                // slab: unique silhouette + the R>14 layers
   // A WOUNDED CHUNK KEEPS THE VECTOR SPRITE. The GL layer composites after the
@@ -1628,6 +1632,517 @@ function drawRing(game, b, near) {
   ctx.globalAlpha = 1;
 }
 
+// ===========================================================================
+// THE SUN — a place you fly to, not a light source painted on the backdrop
+// ===========================================================================
+// The star is 4,800 units across. It fills the screen from a lane away and
+// keeps filling it all the way in, so the ONE question every pass here answers
+// is: WHAT RESOLVES WHEN YOU GET CLOSER? A cream disc with four soft blobs on
+// it reads as a flat sticker at every distance — the size never lands, because
+// nothing on the surface has a size of its own for the eye to measure against.
+//
+// So the surface carries detail at THREE scales, each fading in at its own zoom:
+//
+//   SUPERGRANULES  live radial-gradient cells ~1,000 units across, in both
+//                  signs — the churn you can see from outside the corona. These
+//                  carry the COARSE scale on purpose: they are non-repeating and
+//                  they evolve, and a tiled texture at that size reads as
+//                  wallpaper.
+//   GRANULATION    baked convection tiles drawn as PATTERNS at three world
+//                  scales (cells ~129 / 43 / 14 units). Two fills per octave, no
+//                  per-cell cost, and each octave fades out below ~8 screen
+//                  pixels so a distant sun never dissolves into aliased hiss.
+//   CHROMOSPHERE   the boiling fringe on the limb, ~50 units deep — about ten
+//                  hull widths. This is the pass that actually SELLS the scale,
+//                  because it is the only feature small enough to compare
+//                  yourself to, which is exactly why it is worth its cost.
+//
+// NO SUNSPOTS. A full anatomy was built here — bipolar groups, irregular umbra,
+// filamented penumbra, facular plage — and cut on sight: at this size a spot is
+// a large dark object sitting ON a surface that is otherwise all light and
+// motion, and it read as damage rather than as weather no matter how the tones
+// were graded. The star is better off as a body that is uniformly, enormously
+// alive. Don't re-add them without solving that read first.
+//
+// GRANULATION MUST BOIL, AND IT MUST NOT TILE. A pattern gets both wrong for
+// free, and both were caught on sight: rigidly rotating one tile at ~1°/s is a
+// STATIC texture, and a tile 1,500 units wide repeats three times across the
+// disc, which the eye reads as wallpaper rather than as surface. So the tiles
+// are (a) SMALL enough that repetition reads as grain instead of as pattern,
+// and (b) THREE different bakes that each octave CROSS-FADES between on its own
+// clock — cells dissolve where they were and appear where they weren't, which
+// is what convection actually looks like. The octaves also shear over each
+// other at different rates, so no two frames line up twice.
+//
+// COST IS BOUNDED BY THE SCREEN, NEVER BY THE SUN. The pattern fills clip to
+// the photosphere and the canvas does the rest; the limb passes walk only the
+// bearing window the camera can actually see, solved as a circle-circle
+// intersection (`limbWindow`) rather than the storm wave's approximation —
+// the camera can sit INSIDE this body, where an asin window is meaningless.
+//
+// THE SURFACE TURNS, and slowly: SUN_SPIN is a ~6-minute rotation, which puts
+// the limb moving at ~85 units/s — a fraction of cruising speed, so you overtake
+// it and it reads as a huge thing turning rather than a spinning top. Every
+// surface feature is placed in that ROTATING FRAME, or the granulation would
+// stream past stationary spots and the whole illusion would come apart.
+const SUN_SPIN = 0.0175;         // rad/s — a full turn in ~6 minutes
+const GRAN_PX = 256;             // baked tile resolution
+const GRAN_CELLS = 7;            // cells per tile side
+// Octave world spans. `span` is how wide one tile lands in world units, so a
+// cell is span/GRAN_CELLS across; the rot offsets and the differing spin rates
+// are what stop three copies of one tile from reading as three copies of one
+// tile — they shear over each other, which also makes the surface look like it
+// is boiling without a single per-frame cell.
+// `boil` is seconds per cross-fade step — the smaller the cell, the shorter it
+// lives, same as the real thing.
+const GRAN_OCT = [
+  { span: 900, alpha: 0.40, spin: 1.00, rot: 0.0, boil: 17, ph: 0.0 },
+  { span: 300, alpha: 0.32, spin: 1.35, rot: 0.9, boil: 9, ph: 0.37 },
+  { span: 100, alpha: 0.24, spin: 1.80, rot: 2.1, boil: 5, ph: 0.71 },
+];
+const GRAN_BAKES = 3;
+const granTiles = [];
+const granPats = [];
+let granDead = false;
+// Prominence ribbon bands: [width multiplier, colour]. Widest and coolest
+// first — see the fill loop for why there are six of them and not one.
+const PROM_BANDS = [
+  [1.55, 'rgba(255, 104, 30, 0.032)'],
+  [1.24, 'rgba(255, 120, 38, 0.036)'],
+  [0.96, 'rgba(255, 142, 52, 0.040)'],
+  [0.70, 'rgba(255, 166, 72, 0.044)'],
+  [0.46, 'rgba(255, 194, 104, 0.048)'],
+  [0.24, 'rgba(255, 226, 152, 0.055)'],
+];
+
+// Bake the convection tile once: a dark intergranular bed, cells ERASED out of
+// it (so the lanes are what is left, the way granulation actually reads), then
+// a faint bright kiss in each cell centre. Seamless — every cell is stamped at
+// all nine wrap offsets, so the tile repeats without a seam.
+function bakeGranTiles() {
+  if (granTiles.length || granDead) return granTiles;
+  try {
+    for (let n = 0; n < GRAN_BAKES; n++) granTiles.push(bakeOneGranTile(9137 + n * 4271));
+  } catch (e) {
+    // Tiles we cannot bake cost the sun its granulation, nothing else — the
+    // disc, the supergranules, the prominences and the limb all draw without it
+    // (capability rule).
+    granDead = true;
+    granTiles.length = 0;
+  }
+  return granTiles;
+}
+
+function bakeOneGranTile(seed) {
+  {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = GRAN_PX;
+    const c = cv.getContext('2d');
+    if (!c) throw new Error('no 2d context');
+    const rng = mulberry32(seed);
+    const N = GRAN_CELLS, sp = GRAN_PX / N;
+    const cells = [];
+    for (let iy = 0; iy < N; iy++) for (let ix = 0; ix < N; ix++) {
+      cells.push({
+        x: (ix + 0.5 + (rng() - 0.5) * 0.78) * sp,
+        y: (iy + 0.5 + (rng() - 0.5) * 0.78) * sp,
+        r: sp * (0.40 + rng() * 0.48),
+        k: 0.45 + rng() * 0.55,
+      });
+    }
+    const stamp = (fn) => {
+      for (const cl of cells) for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+        const x = cl.x + ox * GRAN_PX, y = cl.y + oy * GRAN_PX;
+        if (x + cl.r < 0 || x - cl.r > GRAN_PX || y + cl.r < 0 || y - cl.r > GRAN_PX) continue;
+        fn(x, y, cl);
+      }
+    };
+    // The lane bed is AMBER, not brown. Real intergranular lanes are only a
+    // fraction darker than the granules; taken too dark and too saturated the
+    // whole star stops reading as white-hot and comes out looking like coral.
+    c.fillStyle = 'rgba(158, 74, 16, 0.46)';
+    c.fillRect(0, 0, GRAN_PX, GRAN_PX);
+    c.globalCompositeOperation = 'destination-out';
+    stamp((x, y, cl) => {
+      const g = c.createRadialGradient(x, y, 0, x, y, cl.r);
+      g.addColorStop(0, 'rgba(0,0,0,1)');
+      g.addColorStop(0.58, 'rgba(0,0,0,0.95)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, cl.r, 0, TAU); c.fill();
+    });
+    c.globalCompositeOperation = 'source-over';
+    stamp((x, y, cl) => {
+      const g = c.createRadialGradient(x, y, 0, x, y, cl.r * 0.86);
+      g.addColorStop(0, `rgba(255, 248, 220, ${0.20 * cl.k})`);
+      g.addColorStop(0.55, `rgba(255, 226, 160, ${0.09 * cl.k})`);
+      g.addColorStop(1, 'rgba(255, 226, 160, 0)');
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, cl.r * 0.86, 0, TAU); c.fill();
+    });
+    return cv;
+  }
+}
+
+// The bearing window of a body's LIMB that the view can see, as a half-angle
+// about the bearing from the body to the camera. Returns 0 when no part of the
+// limb is on screen — which includes the camera being deep INSIDE the star, the
+// case an asin(viewR/d) window gets wrong.
+function limbWindow(bx, by, R) {
+  const dx = view.cx - bx, dy = view.cy - by;
+  const d = Math.hypot(dx, dy);
+  const vr = view.r;
+  if (d + vr < R || d - vr > R) return 0;     // view wholly inside, or wholly beyond
+  if (d < 1e-6) return Math.PI;
+  const c = (d * d + R * R - vr * vr) / (2 * d * R);
+  if (c <= -1) return Math.PI;
+  if (c >= 1) return 0;
+  return Math.min(Math.PI, Math.acos(c) + 0.05);
+}
+
+// Deterministic 0..1 hash — spicules and streamers must be stable frame to
+// frame or the limb strobes.
+function sunHash(n) {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function drawStar(game, b) {
+  const R = b.radius, t = game.time, px = game.cam.zoom;
+  const rot = t * SUN_SPIN;
+  const limbPx = R * px;
+
+  // ---- CORONA. Many stops, not four: the old four-stop ramp printed visible
+  // concentric BANDS across a body this large, which is a hard edge in world by
+  // any other name. The falloff below is roughly exponential and reads smooth.
+  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * 3.6);
+  cg.addColorStop(0, b.color);
+  cg.addColorStop(0.14, b.color + 'ee');
+  cg.addColorStop(0.24, b.color + 'b0');
+  cg.addColorStop(0.33, b.color + '76');
+  cg.addColorStop(0.43, b.color + '4c');
+  cg.addColorStop(0.55, b.color + '30');
+  cg.addColorStop(0.68, b.color + '1c');
+  cg.addColorStop(0.82, b.color + '0e');
+  cg.addColorStop(1, 'transparent');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * 3.6, 0, TAU); ctx.fill();
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // ---- CORONAL STRUCTURE. The corona is not a fog, it is a SHAPE — it reaches
+  // further where the field is open and hugs the limb where it is closed. Built
+  // as a union of SOFT LOBES seated around the limb at varying reach, so the
+  // halo comes out ragged and directional with nothing anywhere that is a
+  // straight edge. Two shapes were tried before this and both broke that rule:
+  // wedge streamers (a fan filled through a radial gradient) read as
+  // searchlights, and a single lumpy ENVELOPE PATH printed its own outline —
+  // the gradient still has alpha wherever the envelope dips inside its own
+  // maximum, so the path boundary shows. A lobe that feathers to zero on its
+  // own can't do either. They drift far slower than the surface, because the
+  // field is anchored deep and the outer atmosphere visibly lagging the body it
+  // belongs to is itself a scale cue.
+  for (let i = 0; i < 15; i++) {
+    const h = sunHash(i * 3.9 + b.id), h2 = sunHash(i * 8.1 + 3);
+    const a = (i / 15) * TAU + h * 0.42 + rot * (0.18 + h2 * 0.12);
+    const d = R * (0.95 + 0.55 * h2 + 0.12 * Math.sin(t * 0.06 + i));
+    const br = R * (0.55 + 0.85 * h);
+    const cx = b.x + Math.cos(a) * d, cy = b.y + Math.sin(a) * d;
+    // The tail has to fall off SMOOTHLY or the lobe prints its own circle: a
+    // gradient that runs linearly to zero has a kink at its outer stop, and
+    // where several overlap that kink reads as an arc drawn in the corona.
+    const a0 = 0.040 + 0.040 * h;
+    const eg = ctx.createRadialGradient(cx, cy, 0, cx, cy, br);
+    eg.addColorStop(0, `rgba(255, 224, 162, ${a0})`);
+    eg.addColorStop(0.30, `rgba(255, 214, 146, ${a0 * 0.55})`);
+    eg.addColorStop(0.55, `rgba(255, 202, 122, ${a0 * 0.25})`);
+    eg.addColorStop(0.76, `rgba(255, 190, 104, ${a0 * 0.09})`);
+    eg.addColorStop(0.90, `rgba(255, 182, 94, ${a0 * 0.025})`);
+    eg.addColorStop(1, 'rgba(255, 178, 88, 0)');
+    ctx.fillStyle = eg;
+    ctx.beginPath(); ctx.arc(cx, cy, br, 0, TAU); ctx.fill();
+  }
+
+  // ---- PROMINENCE LOOPS: plasma arcs that rise off the surface and dive BACK
+  // IN — closed magnetic loops, the way real suns wear their fire. Each loop is
+  // a TAPERED RIBBON, fat through the crown and pinched into the surface at both
+  // footpoints, because a constant-width bright wire read as an antenna glued to
+  // the limb — that is what made the old sun look like a cartoon rather than a
+  // body. They are rooted in the ROTATING FRAME, so a loop belongs to a patch of
+  // surface and travels with it.
+  //
+  // FILLED, never stroked segment by segment. A tapered stroke has to be walked
+  // as N short strokes, and under 'lighter' every round cap overlaps its
+  // neighbour and blends twice — at close range a loop came out as a visible
+  // CHAIN OF DISCS. One closed polygon per band has no seams to print.
+  const SEG = 14, NPROM = 11;
+  for (let i = 0; i < NPROM; i++) {
+    const hp = sunHash(i * 2.7 + b.id);
+    const a0 = (i / NPROM) * TAU + b.id + rot + hp * 0.4 + Math.sin(t * 0.03 + i * 2.1) * 0.1;
+    const span = 0.10 + 0.13 * hp + 0.06 * (0.5 + 0.5 * Math.sin(i * 1.9 + t * 0.045));
+    const a1 = a0 + span;
+    // Reach is deliberately SHORT and varied. Uniform tall loops read as a set
+    // of handles glued to the limb; a ragged low fringe with the odd tall arch
+    // reads as fire standing off a surface.
+    const h = R * (0.03 + 0.15 * hp) * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * (0.06 + (i % 3) * 0.025) + i * 2.6)));
+    const R0 = R * 0.93;
+    const x0 = b.x + Math.cos(a0) * R0, y0 = b.y + Math.sin(a0) * R0;
+    const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
+    const am = a0 + span / 2;
+    const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
+    const at = (k) => {   // point on the quadratic at parameter k
+      const m = 1 - k;
+      return [m * m * x0 + 2 * m * k * cxp + k * k * x1, m * m * y0 + 2 * m * k * cyp + k * k * y1];
+    };
+    // SIX nested bands, not three, and each one faint. A filled ribbon has a
+    // crisp boundary, and one wide band at a readable alpha prints that boundary
+    // straight across the screen when you are close enough to fly through the
+    // loop — the in-world hard edge again. Stacking thin bands additively is how
+    // a fill gets a soft shoulder: the sum ramps up toward the core instead of
+    // stepping there. The SHEATH still carries the read and the core is only the
+    // hint inside it; the old draw inverted that, and a bright constant-width
+    // wire on a limb this long is an antenna, not plasma.
+    for (const [wMul, col] of PROM_BANDS) {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      // out along one side of the ribbon, back along the other
+      for (let s = 0; s <= SEG * 2 + 1; s++) {
+        const back = s > SEG;
+        const si = back ? SEG * 2 + 1 - s : s;
+        const k = si / SEG, p = at(k);
+        const d = at(Math.min(1, k + 0.02)), e = at(Math.max(0, k - 0.02));
+        let nx = -(d[1] - e[1]), ny = d[0] - e[0];
+        const m = Math.hypot(nx, ny) || 1; nx /= m; ny /= m;
+        // sqrt taper: fat through the crown, pinched at both footpoints
+        const w = (R * 0.05 * wMul * Math.sqrt(Math.sin(Math.PI * k)) + R * 0.002) * (back ? -1 : 1);
+        const x = p[0] + nx * w, y = p[1] + ny * w;
+        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- PHOTOSPHERE. NOT a perfect circle — a slow magma swell, three faint
+  // radial harmonics breathing at different rates (subtle: <2% of radius)
+  const surf = (th) => R * 0.94 * (1
+    + 0.016 * Math.sin(th * 5 + t * 0.18)
+    + 0.011 * Math.sin(th * 9 - t * 0.28)
+    + 0.007 * Math.sin(th * 13 + t * 0.42));
+  const tracePhotosphere = () => {
+    ctx.beginPath();
+    const N = 96;
+    for (let i2 = 0; i2 <= N; i2++) {
+      const th = (i2 / N) * TAU;
+      const rr2 = surf(th);
+      const px2 = b.x + Math.cos(th) * rr2, py2 = b.y + Math.sin(th) * rr2;
+      if (i2 === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+    }
+    ctx.closePath();
+  };
+  // The disc's own body is LIMB-DARKENED from the start — hot white at the
+  // centre falling to a deep amber at the edge. This is the single cheapest
+  // thing that makes a flat disc read as an enormous ball, and everything
+  // painted on top of it inherits the shading for free.
+  const bg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, R * 0.94);
+  bg.addColorStop(0, '#fffdf4');
+  bg.addColorStop(0.42, '#fff6da');
+  bg.addColorStop(0.70, '#ffe9ae');
+  bg.addColorStop(0.88, '#ffcf74');
+  bg.addColorStop(1, '#f6ab3c');
+  ctx.fillStyle = bg;
+  tracePhotosphere(); ctx.fill();
+
+  ctx.save();
+  tracePhotosphere(); ctx.clip();
+
+  // ---- GRANULATION. One baked tile, three world scales. Each octave fades out
+  // below ~6 screen pixels per cell: past that it is not detail any more, it is
+  // aliasing, and a distant star should be a clean disc.
+  const tiles = bakeGranTiles();
+  if (tiles.length) {
+    if (!granPats.length) for (const tl of tiles) granPats.push(ctx.createPattern(tl, 'repeat'));
+    for (let i = 0; i < GRAN_OCT.length; i++) {
+      const o = GRAN_OCT[i];
+      // Fade in SLOWLY with drawn cell size. Granulation that reaches full
+      // strength at a few pixels per cell turns the whole disc into an even
+      // speckle — orange peel — and an even speckle flattens a sphere just as
+      // hard as no texture at all. Under ~8px the live supergranules carry the
+      // surface on their own, which is the read that belongs at that distance.
+      const cellPx = (o.span / GRAN_CELLS) * px;
+      const k = clamp((cellPx - 8) / 14, 0, 1);
+      if (k <= 0.02) continue;
+      const s = o.span / GRAN_PX;
+      const q = R / s + GRAN_PX;
+      // THE BOIL: walk the bakes on this octave's own clock and cross-fade the
+      // pair either side of the walk. `f` is smoothstepped so a cell dissolves
+      // instead of switching, and the two alphas sum to one so the octave's
+      // overall weight never pulses.
+      const phase = t / o.boil + o.ph;
+      const idx = Math.floor(phase);
+      const fr = phase - idx;
+      const f = fr * fr * (3 - 2 * fr);
+      for (let n = 0; n < 2; n++) {
+        const pat = granPats[(idx + n) % granPats.length];
+        if (!pat) continue;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        // Each bake also gets its own bearing, so a cross-fade is never two
+        // layouts sitting on the same spot fading into one another.
+        ctx.rotate(rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09);
+        ctx.scale(s, s);
+        ctx.globalAlpha = o.alpha * k * (n ? f : 1 - f);
+        ctx.fillStyle = pat;
+        ctx.fillRect(-q, -q, q * 2, q * 2);
+        ctx.restore();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- SUPERGRANULES: the coarsest churn, and the pass that carries the whole
+  // surface at any distance where a granule is under a few pixels. Live, so it
+  // never repeats and never stops moving.
+  //
+  // BOTH SIGNS. They were additive-only at first, which meant the disc could
+  // only ever get brighter in patches — mottling needs the dark half or the
+  // surface reads as a clean sphere with lamps on it. The dark set is bigger,
+  // slower and fainter than the bright set, the way a convective floor sits
+  // under the cells rather than beside them.
+  const cellCount = 13;
+  for (let pass = 0; pass < 2; pass++) {
+    const dark = pass === 0;
+    ctx.globalCompositeOperation = dark ? 'source-over' : 'lighter';
+    for (let i = 0; i < cellCount; i++) {
+      const h = sunHash(i * 3.1 + b.id + (dark ? 41 : 0));
+      const h2 = sunHash(i * 6.7 + (dark ? 17 : 5));
+      const a = rot * (dark ? 0.82 : 1.0) + i * 2.39 + b.id + h * 1.7;
+      const rr = R * (0.10 + 0.76 * h);
+      // Each cell wanders on its own slow epicycle — the churn is the point
+      const wob = Math.sin(t * (0.018 + h2 * 0.02) + i) * (dark ? 0.10 : 0.07);
+      const bx = b.x + Math.cos(a + wob) * rr, by = b.y + Math.sin(a + wob) * rr;
+      const swell = 0.5 + 0.5 * Math.sin(t * (0.03 + h2 * 0.03) + i * 2.1);
+      const br = R * (dark ? 0.22 + 0.20 * h2 : 0.14 + 0.13 * h2) * (0.75 + 0.35 * swell);
+      const al = (dark ? 0.13 : 0.26) * (0.45 + 0.55 * swell);
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      g.addColorStop(0, dark ? `rgba(196, 96, 22, ${al})` : `rgba(255, 250, 226, ${al})`);
+      g.addColorStop(0.5, dark ? `rgba(204, 108, 30, ${al * 0.5})` : `rgba(255, 208, 128, ${al * 0.5})`);
+      g.addColorStop(0.78, dark ? `rgba(210, 118, 38, ${al * 0.16})` : `rgba(255, 196, 110, ${al * 0.16})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU); ctx.fill();
+    }
+  }
+  // Back to source-over EXPLICITLY, and this line is load-bearing: the pass
+  // below is the only one on the face that has to SUBTRACT light. Left on the
+  // 'lighter' the supergranule loop ends in, it silently inverts into a warm
+  // bloom over the outer disc — which still looks plausible, and is exactly why
+  // that bug survived a playtest. Never let this be inherited from whatever
+  // pass happened to run last.
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- The limb-darkening pass proper, over everything painted on the face.
+  // The base gradient shades the disc; this one shades the DETAIL, so a granule
+  // near the edge dims with the surface it sits on instead of floating on it.
+  const ld = ctx.createRadialGradient(b.x, b.y, R * 0.40, b.x, b.y, R * 0.95);
+  ld.addColorStop(0, 'rgba(180, 70, 12, 0)');
+  ld.addColorStop(0.55, 'rgba(184, 76, 14, 0.07)');
+  ld.addColorStop(0.82, 'rgba(168, 62, 10, 0.17)');
+  ld.addColorStop(1, 'rgba(140, 46, 6, 0.30)');
+  ctx.fillStyle = ld;
+  ctx.fillRect(view.x0, view.y0, view.x1 - view.x0, view.y1 - view.y0);
+  ctx.restore();
+
+  // ---- THE LIMB. Everything past here is the edge of the star, and it only
+  // walks the arc the camera can actually see — from a thousand units out that
+  // is a few degrees of a body this size, so the fringe costs the same whether
+  // you are outside the corona or skimming the surface.
+  const halfA = limbWindow(b.x, b.y, R * 0.94);
+  if (halfA > 0) {
+    const midA = Math.atan2(view.cy - b.y, view.cx - b.x);
+    // THE SMEAR — the pass that stops the biggest curve in the game from being a
+    // drawn line, and the pass that makes the near-limb approach feel like the
+    // sun instead of like a lit ball. The photosphere is a FILLED PATH, so
+    // however softly it is shaded inside, it ENDS: a solid amber disc butts
+    // straight against the corona behind it and the step between them reads as a
+    // stroke the whole way round. Nothing painted on the face can fix that,
+    // because the clip is exactly what makes it.
+    //
+    // So the disc's own limb colour is smeared OUTWARD past where the fill stops,
+    // source-over and fading over ~0.14R, which puts photosphere colour on both
+    // sides of the boundary and leaves nothing for the eye to lock onto.
+    //
+    // IT IS DELIBERATELY WIDE. A tight feather that hugged the outline was tried
+    // and it does dissolve the seam more cheaply — but flying the limb then reads
+    // as skimming a big warm object, and this is a STAR: at a few hundred units
+    // off the surface the whole view should be drowning in its light. That is the
+    // effect, not a side effect, so the width stays. Additive is still wrong
+    // here: adding light AT the edge brightens the seam, which is the opposite
+    // of dissolving it.
+    const sm = ctx.createRadialGradient(b.x, b.y, R * 0.88, b.x, b.y, R * 1.10);
+    sm.addColorStop(0, 'rgba(246, 171, 60, 0)');
+    sm.addColorStop(0.28, 'rgba(246, 171, 60, 0.55)');
+    sm.addColorStop(0.52, 'rgba(240, 148, 48, 0.34)');
+    sm.addColorStop(0.76, 'rgba(226, 122, 40, 0.14)');
+    sm.addColorStop(1, 'rgba(214, 104, 34, 0)');
+    ctx.fillStyle = sm;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.10, 0, TAU); ctx.fill();
+
+    ctx.globalCompositeOperation = 'lighter';
+    // …then the hot chromospheric line the star actually ends on, kept faint and
+    // wide, riding on top of the smear rather than replacing it.
+    const ch = ctx.createRadialGradient(b.x, b.y, R * 0.84, b.x, b.y, R * 1.08);
+    ch.addColorStop(0, 'rgba(255, 110, 40, 0)');
+    ch.addColorStop(0.45, 'rgba(255, 128, 46, 0.07)');
+    ch.addColorStop(0.70, 'rgba(255, 152, 60, 0.10)');
+    ch.addColorStop(0.88, 'rgba(255, 180, 88, 0.05)');
+    ch.addColorStop(1, 'rgba(255, 150, 60, 0)');
+    ctx.fillStyle = ch;
+    ctx.beginPath(); ctx.arc(b.x, b.y, R * 1.08, 0, TAU); ctx.fill();
+
+    // THE BOIL ON THE EDGE. Up close the limb has to be doing something, or the
+    // largest curve in the game is a smooth arc with a glow behind it. What it
+    // must NOT be is strands: individual jets were drawn here first and every
+    // one of them read as a HAIR — a stiff, separable, slightly comic fringe
+    // that made the star look furry rather than molten.
+    //
+    // So the fringe is CELLS, not strands: soft blobs seated on the surface,
+    // each feathering to nothing on its own, each swelling and subsiding on its
+    // own clock. Overlapping at this density they merge into one ragged hot edge
+    // that churns — no strand to pick out, and no boundary anywhere, which is
+    // also what keeps the biggest edge in the game off the hard-edge list.
+    if (limbPx > 90) {
+      const arc = halfA * 2;
+      // Density comes off the DRAWN arc, not the bearing window: how many cells
+      // fit along an edge is a screen fact.
+      const n = Math.min(220, Math.max(18, Math.round(arc * limbPx / 15)));
+      for (let i = 0; i < n; i++) {
+        const h = sunHash(i * 1.7 + b.id * 5);
+        const h2 = sunHash(i * 4.3 + 11);
+        const a = midA - halfA + (i + h * 0.9) / n * arc;
+        const life = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * (0.45 + h2 * 0.7) + i * 2.7));
+        const cr = R * (0.010 + 0.022 * h2) * (0.55 + 0.45 * life);
+        if (cr * px < 2) continue;
+        // STRADDLING the surface, never sitting above it. Cells set on a common
+        // standoff put every feather at the same height and the fringe grows a
+        // second edge of its own; scattered across the boundary they leave the
+        // limb ragged instead, so there is no depth anyone could read off it.
+        const rr = surf(a) + cr * (h - 0.62) * 0.9;
+        const cx = b.x + Math.cos(a) * rr, cy = b.y + Math.sin(a) * rr;
+        const al = (0.09 + 0.15 * life) * (0.6 + 0.4 * h);
+        const cg2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+        cg2.addColorStop(0, `rgba(255, ${(178 + 46 * h) | 0}, ${(96 + 46 * h2) | 0}, ${al})`);
+        cg2.addColorStop(0.45, `rgba(255, ${(140 + 40 * h) | 0}, 58, ${al * 0.5})`);
+        cg2.addColorStop(1, 'rgba(255, 120, 44, 0)');
+        ctx.fillStyle = cg2;
+        ctx.beginPath(); ctx.arc(cx, cy, cr, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
 function drawBody(game, b) {
   let pitsDone = false;   // set by drawRock — see the pit pass further down
   // Moons announce themselves: a whisper-faint orbit circle around their
@@ -1661,99 +2176,7 @@ function drawBody(game, b) {
     ctx.stroke();
   }
 
-  if (b.type === 'star') {
-    // Intense layered corona — the glow itself warns of the heat zone
-    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.2, b.x, b.y, b.radius * 3.6);
-    g.addColorStop(0, b.color);
-    g.addColorStop(0.24, b.color + 'dd');
-    g.addColorStop(0.4, b.color + '44');
-    g.addColorStop(1, 'transparent');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 3.6, 0, TAU); ctx.fill();
-    // PROMINENCE LOOPS: plasma arcs that rise off the surface and dive
-    // BACK IN — closed magnetic loops, the way real suns wear their fire.
-    // Each loop breathes slowly on its own rhythm (see "way slower" note).
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.lineCap = 'round';
-    for (let i = 0; i < 7; i++) {
-      const a0 = (i / 7) * TAU + b.id + Math.sin(game.time * 0.03 + i * 2.1) * 0.1;
-      const span = 0.12 + 0.1 * (0.5 + 0.5 * Math.sin(i * 1.9 + game.time * 0.045));
-      const a1 = a0 + span;
-      const h = b.radius * (0.08 + 0.24 * (0.5 + 0.5 * Math.sin(game.time * (0.06 + (i % 3) * 0.025) + i * 2.6)));
-      const R0 = b.radius * 0.93;
-      const x0 = b.x + Math.cos(a0) * R0, y0 = b.y + Math.sin(a0) * R0;
-      const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
-      const am = a0 + span / 2;
-      const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
-      // soft wide halo of the arc, then the bright filament inside it
-      ctx.strokeStyle = 'rgba(255, 150, 60, 0.2)';
-      ctx.lineWidth = b.radius * 0.045;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cxp, cyp, x1, y1); ctx.stroke();
-      ctx.strokeStyle = 'rgba(255, 220, 140, 0.38)';
-      ctx.lineWidth = b.radius * 0.016;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cxp, cyp, x1, y1); ctx.stroke();
-    }
-    ctx.lineCap = 'butt';
-    ctx.globalCompositeOperation = 'source-over';
-
-    // Photosphere: NOT a perfect circle — a slow magma swell, three faint
-    // radial harmonics breathing at different rates (subtle: <2% of radius)
-    const surf = (th) => b.radius * 0.94 * (1
-      + 0.016 * Math.sin(th * 5 + game.time * 0.18)
-      + 0.011 * Math.sin(th * 9 - game.time * 0.28)
-      + 0.007 * Math.sin(th * 13 + game.time * 0.42));
-    const tracePhotosphere = () => {
-      ctx.beginPath();
-      const N = 64;
-      for (let i2 = 0; i2 <= N; i2++) {
-        const th = (i2 / N) * TAU;
-        const rr2 = surf(th);
-        const px2 = b.x + Math.cos(th) * rr2, py2 = b.y + Math.sin(th) * rr2;
-        if (i2 === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
-      }
-      ctx.closePath();
-    };
-    // Feathered rim: a screen-space shadow glow softens the surface edge
-    // into the corona instead of a hard vector cut (reset immediately)
-    ctx.shadowColor = '#fff3d0';
-    ctx.shadowBlur = 16;
-    ctx.fillStyle = '#fff3d0';
-    tracePhotosphere(); ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.save();
-    tracePhotosphere(); ctx.clip();
-    // LAVA-LAMP convection: bright cells churning slowly across the face —
-    // each drifts on its own slow epicycle, swelling and shrinking
-    ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < 7; i++) {
-      const a = game.time * (0.016 + (i % 3) * 0.008) + i * 2.39 + b.id;
-      const rr = b.radius * (0.18 + 0.5 * (0.5 + 0.5 * Math.sin(game.time * 0.022 + i * 1.7)));
-      const bx = b.x + Math.cos(a) * rr, by = b.y + Math.sin(a * 0.83 + i) * rr;
-      const br = b.radius * (0.24 + 0.1 * Math.sin(game.time * 0.035 + i * 2.1));
-      const cg = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-      cg.addColorStop(0, 'rgba(255, 246, 214, 0.5)');
-      cg.addColorStop(0.6, 'rgba(255, 196, 110, 0.26)');
-      cg.addColorStop(1, 'transparent');
-      ctx.fillStyle = cg;
-      ctx.beginPath(); ctx.arc(bx, by, br, 0, TAU); ctx.fill();
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    // Sunspots: dark blemishes wandering the photosphere
-    for (let j = 0; j < 4; j++) {
-      const a = game.time * (0.01 + j * 0.0035) + j * 1.83 + b.id * 3;
-      const rr = b.radius * (0.25 + 0.45 * (0.5 + 0.5 * Math.sin(j * 2.7 + game.time * 0.016)));
-      const px = b.x + Math.cos(a) * rr, py = b.y + Math.sin(a * 1.13 + j * 0.9) * rr;
-      const sr = b.radius * (0.1 + 0.09 * (j % 3));
-      const sg = ctx.createRadialGradient(px, py, 0, px, py, sr);
-      sg.addColorStop(0, 'rgba(120, 55, 20, 0.5)');
-      sg.addColorStop(0.55, 'rgba(160, 80, 30, 0.28)');
-      sg.addColorStop(1, 'transparent');
-      ctx.fillStyle = sg;
-      ctx.beginPath(); ctx.arc(px, py, sr, 0, TAU); ctx.fill();
-    }
-    ctx.restore();
-    return;
-  }
+  if (b.type === 'star') { drawStar(game, b); return; }
 
   if (b.ring) drawRing(game, b, false);   // FAR half — the near half goes on
                                           // after the disc, see below
@@ -1767,15 +2190,23 @@ function drawBody(game, b) {
     ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 2.2, 0, TAU); ctx.fill();
   }
 
-  // Terran worlds carry a thin sunlit atmosphere — a calm, steady blue rim
-  // (real object state → solid gradient, no motion; same idiom as lava's glow)
+  // Terran worlds wear a VISIBLE atmosphere — the BURN DECK the sim charges
+  // for (CFG.ATMO_IN..ATMO_ZONE), drawn as a band peaking mid-deck with clear
+  // air legible beneath it. The gradient reaches a little past both mechanic
+  // edges (fading from the 1.0r surface under the 1.14 floor, and out to
+  // 1.58r over the 1.5 ceiling), so anywhere that looks clear IS clear — the
+  // dust-halo rule for hazards.
+  // Calm, steady, no motion: real object state (the burn itself shows on
+  // whatever is burning — reentry streaks, the hull heat glow).
   if (b.ptype === 'terran') {
-    const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.85, b.x, b.y, b.radius * 1.45);
+    const g = ctx.createRadialGradient(b.x, b.y, b.radius, b.x, b.y, b.radius * 1.58);
     g.addColorStop(0, 'rgba(120, 190, 255, 0)');
-    g.addColorStop(0.25, 'rgba(120, 190, 255, 0.25)');
+    g.addColorStop(0.17, 'rgba(140, 200, 255, 0.08)');
+    g.addColorStop(0.52, 'rgba(165, 215, 255, 0.30)');
+    g.addColorStop(0.83, 'rgba(120, 190, 255, 0.10)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.45, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 1.58, 0, TAU); ctx.fill();
   }
 
   // Comets stream an icy tail behind them. Comet Vesper instead grows a
@@ -1872,8 +2303,9 @@ function drawBody(game, b) {
 
   // DUST MOONS trail their concealing halo — a soft brown gradient with slow
   // drifting specks seeded off the id. Drawn WIDER than the stealth radius
-  // (2.9 vs CFG.DUST_HALO 2.4) so the gradient IS the boundary read: no ring
-  // stroke at the exact mechanic radius, no hard edges in-world.
+  // (5.0 vs CFG.DUST_HALO 4.15 — same ~1.2 overreach the original 2.9-vs-2.4
+  // pair had) so the gradient IS the boundary read: no ring stroke at the
+  // exact mechanic radius, no hard edges in-world.
   // SHROUD PLANETS trail their concealing cloud haze — the dust-moon read at
   // planet scale: the gradient reaches 2.1x, WIDER than the cloak mechanic
   // (CFG.SHROUD_HALO 1.7), so the fade IS the boundary; no ring at the edge.
@@ -1888,19 +2320,24 @@ function drawBody(game, b) {
   }
 
   if (b.type === 'moon' && b.moonType === 'dust') {
-    const R = b.radius * 2.9;
+    const R = b.radius * 5.0;
     const g = ctx.createRadialGradient(b.x, b.y, b.radius * 0.8, b.x, b.y, R);
     g.addColorStop(0, 'rgba(116, 109, 101, 0.16)');
     g.addColorStop(0.6, 'rgba(116, 109, 101, 0.10)');
     g.addColorStop(1, 'transparent');
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.fill();
+    // Many FINE grains over the tripled area — dust, not gravel: the specks
+    // ran radius*0.05 (5+ world units on a big moon) and read as orbiting
+    // ROCKS (2026-08 user call). A third the size, 2.5x the count, two size
+    // classes so the field has texture without any one grain reading as a body.
     ctx.fillStyle = 'rgba(150, 140, 128, 0.35)';
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 30; i++) {
       const a = b.id * 1.7 + i * 2.399 + game.time * (0.05 + (i % 3) * 0.02);
-      const rr = b.radius * (1.3 + (((b.id + i * 13) % 10) / 10) * 1.3);
+      const rr = b.radius * (1.2 + (((b.id + i * 13) % 20) / 20) * 3.3);
+      const sz = Math.max(0.5, b.radius * (i % 2 ? 0.012 : 0.018));
       ctx.beginPath();
-      ctx.arc(b.x + Math.cos(a) * rr, b.y + Math.sin(a) * rr, Math.max(0.8, b.radius * 0.05), 0, TAU);
+      ctx.arc(b.x + Math.cos(a) * rr, b.y + Math.sin(a) * rr, sz, 0, TAU);
       ctx.fill();
     }
   }
@@ -1961,7 +2398,8 @@ function drawBody(game, b) {
   }
   if (sinking) { ctx.restore(); return; }   // nothing else applies to a rock going under
 
-  if (b.type === 'planet' && b.ptype) drawPlanetDetail(b);
+  if (b.type === 'planet' && b.ptype) drawPlanetDetail(game, b);
+  if (b.type === 'planet' && b.ptype === 'ocean' && b.seaHits) drawSeaRipples(game, b);
   if (b.molten > 0) drawMoltenCrust(game, b);
   if (b.landmark === 'geysers') drawGeyserPlumes(game, b);
   if (b.ember > 0.01) drawEmberReef(game, b);
@@ -2064,6 +2502,28 @@ function drawBody(game, b) {
     ctx.restore();
   }
 
+  // OCEAN SPECULAR: the world-sea catches the sun as a soft sheen pooling on
+  // the sunward limb — water answering light, the same slot in the pass the
+  // crystal limb uses. Solid gradient, additive, clipped to the silhouette;
+  // steady state, no motion (motion is for events).
+  if (b.type === 'planet' && b.ptype === 'ocean' && st) {
+    const sunA = Math.atan2(st.y - b.y, st.x - b.x);
+    ctx.save();
+    traceSurface(b);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    const lx = b.x + Math.cos(sunA) * b.radius * 0.82;
+    const ly = b.y + Math.sin(sunA) * b.radius * 0.82;
+    const sg = ctx.createRadialGradient(lx, ly, 0, lx, ly, b.radius * 0.9);
+    sg.addColorStop(0, 'rgba(210, 240, 255, 0.3)');
+    sg.addColorStop(0.4, 'rgba(140, 200, 255, 0.12)');
+    sg.addColorStop(1, 'transparent');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(lx, ly, b.radius * 0.9, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+
   // MOONSHADOW eclipse: the world dims under its moon's shadow, with a warm
   // rim so it reads as an eclipse rather than damage
   // THE CRUMBLE: through traceSurface, never a full-radius arc. A raw arc at
@@ -2141,13 +2601,325 @@ function drawBody(game, b) {
   }
 }
 
+// ——— The planet face ————————————————————————————————————————————————————
+//
+// A lobed organic patch: two low radial harmonics over an ellipse, sampled
+// once at build time. A bare ellipse reads as the primitive it is at any size
+// (the rock law's lesson, applied to paint) — a couple of harmonics is enough
+// to read as a landform, a cloud mass or a lava plate instead.
+function mkBlob(rng, wob) {
+  const n = 16, pts = new Float32Array(n);
+  const p1 = 2 + ((rng() * 2) | 0), p2 = 4 + ((rng() * 3) | 0);
+  const f1 = rng() * TAU, f2 = rng() * TAU;
+  const a1 = wob * (0.45 + rng() * 0.35), a2 = wob * (0.15 + rng() * 0.2);
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * TAU;
+    pts[i] = Math.max(0.25, 1 + a1 * Math.sin(p1 * t + f1) + a2 * Math.sin(p2 * t + f2));
+  }
+  return pts;
+}
+// Trace a blob as a smooth closed path (quadratics through sample midpoints —
+// 16 straight segments read as a polygon on a disc most of the screen wide).
+// Module scratch, no per-frame allocation.
+const _blx = new Float32Array(16), _bly = new Float32Array(16);
+function blobPath(cx, cy, rx, ry, rot, pts) {
+  const n = pts.length, cs = Math.cos(rot), sn = Math.sin(rot);
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * TAU, k = pts[i];
+    const ex = Math.cos(t) * rx * k, ey = Math.sin(t) * ry * k;
+    _blx[i] = cx + ex * cs - ey * sn;
+    _bly[i] = cy + ex * sn + ey * cs;
+  }
+  ctx.beginPath();
+  ctx.moveTo((_blx[n - 1] + _blx[0]) / 2, (_bly[n - 1] + _bly[0]) / 2);
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    ctx.quadraticCurveTo(_blx[i], _bly[i], (_blx[i] + _blx[j]) / 2, (_bly[i] + _bly[j]) / 2);
+  }
+  ctx.closePath();
+}
+// One wavy-edged latitude band, traced in the tilted band frame. Both edges
+// carry their own low-frequency shear wave so the stripes read as weather
+// rather than as ruled fills — the hard fillRect edges were invisible at 250
+// units and unmissable at 1500. Geometry in fractions of R.
+function bandTrace(bd, R) {
+  const S = 18;
+  ctx.beginPath();
+  for (let i = 0; i <= S; i++) {
+    const x = -1.04 + (2.08 * i) / S;
+    const y = bd.y0 + Math.sin(x * bd.e0.f + bd.e0.p) * bd.e0.a;
+    if (i === 0) ctx.moveTo(x * R, y * R); else ctx.lineTo(x * R, y * R);
+  }
+  for (let i = S; i >= 0; i--) {
+    const x = -1.04 + (2.08 * i) / S;
+    ctx.lineTo(x * R, (bd.y1 + Math.sin(x * bd.e1.f + bd.e1.p) * bd.e1.a) * R);
+  }
+  ctx.closePath();
+}
+
+// The face geometry, built ONCE per body (seeded off b.id — no Math.random,
+// stable frame to frame) and drawn every frame as FRACTIONS of the live
+// radius, so a world chipped smaller keeps its face and simply wears it
+// smaller. The key catches the one legal ptype change — a stripped gas giant
+// BECOMES its core in place — and rebuilds the face for the rock it now is.
+// Feature COUNTS scale with the built radius (den): at PLANET_R_MUL 3 a world
+// is most of the screen, and the four ellipses that dressed a 250-unit disc
+// read as empty at 1500. Feature SIZES stay fractions — a continent is a
+// fraction of its world; it is DAMAGE detail that clamps to DETAIL_R
+// (drawBodyDamage), never the face.
+function planetDetail(b) {
+  // NOTE: completeGasStrip clears gasKind but leaves b.landmark, so a stripped
+  // storm-landmark giant carries a stale 'storm' tag into its rocky rebuild.
+  // Harmless today — the rocky branch only reads 'crater' — but if a landmark
+  // ever grows a cross-archetype draw, gate it on ptype too.
+  const key = b.ptype + '|' + (b.gasKind || '') + '|' + (b.landmark || '');
+  if (b._pd && b._pd.key === key) return b._pd;
+  const rng = mulberry32((b.id * 7349 + 401) >>> 0);
+  const den = clamp(b.radius / DETAIL_R, 1, 5);
+  const c = { key, den };
+  const wave = (amp) => ({ a: amp * (0.6 + rng() * 0.8), f: 2 + rng() * 3.5, p: rng() * TAU });
+  const scatter = (spread) => {
+    const a = rng() * TAU, r = Math.sqrt(rng()) * spread;
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+  };
+  if (b.ptype === 'gas') {
+    const kind = c.kind = b.gasKind || 'amber';
+    c.tilt = b.id % 2 ? 0.32 : -0.26;
+    // A GIANT'S DETAIL SHRINKS AS THE WORLD GROWS (user call: "because they
+    // are so incredibly big, the details need to be smaller"). fs divides
+    // band heights, eddy sizes and wave amplitudes, so a 2,000-unit giant
+    // wears many fine stripes and small storms instead of the same six bands
+    // a 300-unit world wears — the landmark Great Eye alone stays big (it is
+    // steered by). Counts already grow with den; fs is the size half.
+    const fs = c.fs = Math.sqrt(c.den);
+    const bands = c.bands = [], eddies = c.eddies = [];
+    if (kind === 'azure') {
+      // Ice giant: few wide soft bands under a bright polar hood — the calm,
+      // near-featureless methane haze KEEPS its wide bands (calm is its
+      // identity); only the cirrus and the storm fleck scale down.
+      const n = 3 + (b.id % 2), h = 2 / n;
+      for (let i = 0; i < n; i++) {
+        bands.push({ y0: -1 + i * h, y1: -1 + i * h + h * 0.9, e0: wave(0.015), e1: wave(0.015),
+          col: i % 2 ? 'rgba(255,255,255,0.08)' : 'rgba(0,10,40,0.13)' });
+      }
+      c.streaks = [];
+      for (let i = 0; i < Math.round(2 + 2 * fs); i++) {
+        c.streaks.push({ x: -0.55 + rng() * 0.7, y: -0.6 + rng() * 1.2, l: (0.45 + rng() * 0.5) / fs,
+          w: (0.014 + rng() * 0.016) / fs, bow: (rng() - 0.5) * 0.16 / fs });
+      }
+      for (let i = 0; i < 1 + (b.id % 2); i++) {
+        eddies.push({ x: -0.45 + rng() * 0.9, y: -0.55 + rng() * 1.1, rx: (0.09 + rng() * 0.09) / fs,
+          t: (rng() - 0.5) * 0.5, dark: true });
+      }
+    } else if (kind === 'violet') {
+      // Exotic giant: irregular thin/thick stacking with harder shear, curl
+      // hooks and eddy flecks — turbulent, alien
+      let y = -1, i = 0;
+      while (y < 1) {
+        const h = (0.13 + rng() * 0.2) / fs;
+        bands.push({ y0: y, y1: y + h * 0.82, e0: wave(0.045 / fs), e1: wave(0.055 / fs),
+          col: i % 2 ? 'rgba(255,255,255,0.14)' : 'rgba(25,0,45,0.2)' });
+        y += h; i++;
+      }
+      c.swirls = [];
+      for (let j = 0; j < Math.round(2 + c.den); j++) {
+        c.swirls.push({ x: -0.6 + rng() * 1.2, y: -0.65 + rng() * 1.3, r: (0.05 + rng() * 0.08) / fs,
+          dir: rng() < 0.5 ? 1 : -1, ph: rng() * TAU });
+      }
+      for (let j = 0; j < Math.round(2.2 * c.den); j++) {
+        eddies.push({ x: -0.75 + rng() * 1.5, y: -0.8 + rng() * 1.6, rx: (0.045 + rng() * 0.06) / fs,
+          t: (rng() - 0.5) * 0.7, dark: rng() < 0.5 });
+      }
+    } else {
+      // Amber giant: the busy classic — many sheared stripes in warm tones, a
+      // rust lane every few rows, eddy trains riding the shear boundaries
+      const n = Math.round((6 + (b.id % 3)) * fs), h = 2 / n;
+      for (let i = 0; i < n; i++) {
+        bands.push({ y0: -1 + i * h, y1: -1 + i * h + h * 0.8, e0: wave(0.025 / fs), e1: wave(0.03 / fs),
+          col: i % 4 === 2 ? 'rgba(170,75,30,0.15)' : i % 2 ? 'rgba(255,242,208,0.13)' : 'rgba(64,30,10,0.17)' });
+      }
+      for (let j = 0; j < Math.round(2.6 * c.den); j++) {
+        const bd = bands[(rng() * bands.length) | 0];
+        eddies.push({ x: -0.8 + rng() * 1.6, y: bd.y1 + (rng() - 0.5) * 0.06, rx: (0.04 + rng() * 0.06) / fs,
+          t: (rng() - 0.5) * 0.35, dark: rng() < 0.45 });
+      }
+    }
+  } else if (b.ptype === 'lava') {
+    // Cooled crust plates floating on the glow: the base colour IS the magma,
+    // so the plates are cut dark and every gap between them reads lit.
+    c.plates = [];
+    const np = Math.round(5 + 4 * Math.sqrt(c.den));
+    for (let i = 0; i < np; i++) {
+      const p = scatter(0.8);
+      c.plates.push({ x: p.x, y: p.y, rx: 0.15 + rng() * 0.2, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.32), a: 0.3 + rng() * 0.18 });
+    }
+    c.rivers = [];
+    const nr = Math.round(4 + 2.5 * c.den);
+    for (let i = 0; i < nr; i++) {
+      c.rivers.push({ a: rng() * TAU, r0: 0.1 + rng() * 0.3, drift: 0.5 + rng() * 0.7,
+        reach: 0.75 + rng() * 0.22, w: 0.016 + rng() * 0.02 });
+    }
+    c.pools = [];
+    for (let i = 0; i < 3 + (b.id % 3); i++) {
+      const p = scatter(0.75);
+      c.pools.push({ x: p.x, y: p.y, r: 0.06 + rng() * 0.09 });
+    }
+  } else if (b.ptype === 'ice') {
+    c.plains = [];
+    for (let i = 0; i < 4 + Math.round(c.den * 0.8); i++) {
+      const p = scatter(0.7);
+      c.plains.push({ x: p.x, y: p.y, rx: 0.16 + rng() * 0.16, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.35) });
+    }
+    // Linea: long fracture lanes crossing the whole face — rust where brine
+    // froze into the crack, blue-white where a ridge caught the light
+    c.linea = [];
+    for (let i = 0; i < Math.round(5 + 2.5 * c.den); i++) {
+      const a0 = rng() * TAU;
+      c.linea.push({ a0, a1: a0 + 1.2 + rng() * 2.6, bow: (rng() - 0.5) * 0.55,
+        w: 0.007 + rng() * 0.011, rust: rng() < 0.45 });
+    }
+    c.cap = mkBlob(rng, 0.14);
+    c.cap2 = mkBlob(rng, 0.14);
+  } else if (b.ptype === 'terran') {
+    c.conts = [];
+    for (let i = 0; i < 3 + Math.round(c.den * 0.6); i++) {
+      const p = scatter(0.6);
+      c.conts.push({ x: p.x, y: p.y, rx: 0.18 + rng() * 0.16, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.5),
+        hx: (rng() - 0.5) * 0.5, hy: (rng() - 0.5) * 0.5, sandy: rng() < 0.35 });
+    }
+    c.isles = [];
+    for (let i = 0; i < 2 + (b.id % 3); i++) {
+      const p = scatter(0.75);
+      c.isles.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 3 + ((rng() * 3) | 0),
+        step: 0.05 + rng() * 0.03, r: 0.016 + rng() * 0.02 });
+    }
+    c.clouds = [];
+    for (let i = 0; i < Math.round(5 + 1.6 * c.den); i++) {
+      const p = scatter(0.8);
+      c.clouds.push({ x: p.x, y: p.y, rx: 0.14 + rng() * 0.2, k: 0.25 + rng() * 0.25,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.55) });
+    }
+    const cy = scatter(0.55);
+    c.cyc = { x: cy.x, y: cy.y, r: 0.14 + rng() * 0.08, dir: rng() < 0.5 ? 1 : -1 };
+    c.cap = mkBlob(rng, 0.18);
+    c.cap2 = mkBlob(rng, 0.18);
+  } else if (b.ptype === 'ocean') {
+    c.deeps = [];
+    for (let i = 0; i < 3 + (b.id % 2); i++) {
+      const p = scatter(0.65);
+      c.deeps.push({ x: p.x, y: p.y, rx: 0.22 + rng() * 0.2, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.4) });
+    }
+    c.cur = [];
+    const ncu = Math.round(5 + 1.8 * c.den);
+    for (let i = 0; i < ncu; i++) {
+      c.cur.push({ y: -0.8 + (i + 0.5) * (1.6 / ncu) + (rng() - 0.5) * 0.08, e: wave(0.1),
+        w: 0.012 + rng() * 0.02, deep: rng() < 0.4 });
+    }
+    c.gyres = [];
+    for (let i = 0; i < 1 + (b.id % 2); i++) {
+      const p = scatter(0.55);
+      c.gyres.push({ x: p.x, y: p.y, r: 0.12 + rng() * 0.1, dir: rng() < 0.5 ? 1 : -1,
+        turns: 1.6 + rng() * 0.9, ph: rng() * TAU });
+    }
+    c.arcs = [];
+    for (let i = 0; i < 2 + (b.id % 2); i++) {
+      const p = scatter(0.7);
+      c.arcs.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 4 + ((rng() * 4) | 0),
+        step: 0.05 + rng() * 0.025, r: 0.014 + rng() * 0.016, bend: (rng() - 0.5) * 0.5 });
+    }
+  } else if (b.ptype === 'desert') {
+    c.ergs = [];
+    for (let i = 0; i < 3; i++) {
+      const p = scatter(0.7);
+      c.ergs.push({ x: p.x, y: p.y, rx: 0.26 + rng() * 0.2, k: 0.6 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.4), light: i % 2 === 0 });
+    }
+    c.dunes = [];
+    for (let i = 0; i < Math.round(4 + 1.6 * c.den); i++) {
+      const p = scatter(0.72);
+      c.dunes.push({ x: p.x, y: p.y, ang: rng() * TAU, n: 4 + ((rng() * 3) | 0),
+        len: 0.18 + rng() * 0.16, gap: 0.032 + rng() * 0.02, bow: 0.03 + rng() * 0.04 });
+    }
+    // A canyon: one meandering seeded walk — the desert's long scar
+    c.canyon = [];
+    let cx2 = -0.7 + rng() * 0.3, cy2 = (rng() - 0.5) * 0.8, ca2 = (rng() - 0.5) * 0.8;
+    for (let i = 0; i < 7; i++) {
+      c.canyon.push({ x: cx2, y: cy2 });
+      ca2 += (rng() - 0.5) * 0.9; cx2 += Math.cos(ca2) * 0.18; cy2 += Math.sin(ca2) * 0.18;
+    }
+    c.mesas = [];
+    for (let i = 0; i < 3; i++) {
+      const p = scatter(0.68);
+      c.mesas.push({ x: p.x, y: p.y, rx: 0.1 + rng() * 0.08, k: 0.5 + rng() * 0.3,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.3) });
+    }
+    c.storms = [];
+    for (let i = 0; i < 1 + (b.id % 2); i++) {
+      const p = scatter(0.5);
+      c.storms.push({ x: p.x, y: p.y, rx: 0.24 + rng() * 0.14, rot: rng() * TAU });
+    }
+  } else if (b.ptype === 'shroud') {
+    c.decks = [];
+    const nd = 6 + (b.id % 2);
+    for (let i = 0; i < nd; i++) {
+      c.decks.push({ rate: 0.45 + i * 0.24 + rng() * 0.12, ph: rng() * TAU,
+        r: 0.2 + (i / nd) * 0.68 + rng() * 0.05, w: 0.1 + rng() * 0.1, span: 3.2 + rng() * 1.8,
+        tone: i % 3 === 2 ? 'rgba(255,232,160,0.14)' : i % 2 ? 'rgba(255,250,220,0.2)' : 'rgba(120,100,40,0.18)' });
+    }
+    c.chevY = -0.18 - rng() * 0.15;
+  } else if (b.ptype === 'crystal') {
+    // The lattice itself derives LIVE from b.cjag (the same table the
+    // silhouette is traced from); only the seeded dressing is cached here
+    c.rings = [0.38 + rng() * 0.06, 0.62 + rng() * 0.06, 0.83 + rng() * 0.05];
+    c.glints = [];
+    for (let i = 0; i < 5 + Math.round(c.den); i++) {
+      c.glints.push({ a: rng() * TAU, r: 0.25 + rng() * 0.55, s: 0.02 + rng() * 0.025 });
+    }
+  } else {  // rocky
+    c.maria = [];
+    for (let i = 0; i < 4 + Math.round(c.den * 0.8); i++) {
+      const p = scatter(0.68);
+      c.maria.push({ x: p.x, y: p.y, rx: 0.16 + rng() * 0.18, k: 0.55 + rng() * 0.35,
+        rot: rng() * TAU, pts: mkBlob(rng, 0.45), light: rng() < 0.3 });
+    }
+    c.craters = [];
+    for (let i = 0; i < Math.round(4 * c.den); i++) {
+      const p = scatter(0.85);
+      c.craters.push({ x: p.x, y: p.y, r: 0.025 + rng() * 0.05 });
+    }
+    c.ridges = [];
+    for (let i = 0; i < 2 + (b.id % 2); i++) {
+      const p = scatter(0.6);
+      const n = 5 + ((rng() * 3) | 0), off = new Float32Array(n);
+      // irregular per-vertex offsets — a strict zigzag reads as a drawn glyph
+      for (let j = 0; j < n; j++) off[j] = (rng() - 0.5) * 0.07;
+      c.ridges.push({ x: p.x, y: p.y, ang: rng() * TAU, n, off,
+        step: 0.06 + rng() * 0.03 });
+    }
+  }
+  b._pd = c;
+  return c;
+}
+
 // Per-archetype surface detail, drawn clipped to the planet disc. This is
 // what makes the planet TYPES readable: bands = gas (three gasKind looks),
-// cracks+glow = lava, caps = ice, continents = rocky, seas+clouds = terran,
-// currents = ocean, dunes = desert, sheared decks = shroud, facets = crystal.
+// plates+glow = lava, caps+linea = ice, maria+craters = rocky, seas+clouds =
+// terran, currents+gyres = ocean, dunes+canyon = desert, sheared decks =
+// shroud, facet lattice = crystal.
 // All geometry is seeded off b.id (stable frame to frame — no Math.random),
 // and every ambient drift rides multiples of b.rot, never wall-clock time.
-function drawPlanetDetail(b) {
+// Built in two registers: the big features that carry the zoomed-out read
+// (bands, caps, continents, plates), and a mid-frequency layer (eddies,
+// linea, ripples, craters) gated behind `fine` — at a dozen screen pixels the
+// big reads are the whole story and the small ones are subpixel noise.
+function drawPlanetDetail(game, b) {
+  const c = planetDetail(b);
+  const R = b.radius;
+  const fine = R * game.cam.zoom > 24;
   ctx.save();
   // Clipped to the real silhouette: facet detail fills a crystal world's
   // spikes, and surface detail stops dead at the edge of a crater.
@@ -2161,246 +2933,490 @@ function drawPlanetDetail(b) {
   if (b.ptype !== 'ice' && b.ptype !== 'terran') ctx.rotate(b.rot);
 
   if (b.ptype === 'gas') {
-    ctx.rotate(b.id % 2 ? 0.32 : -0.26);
-    const kind = b.gasKind || 'amber';
+    ctx.rotate(c.tilt);
+    const kind = c.kind;
+    for (const bd of c.bands) { bandTrace(bd, R); ctx.fillStyle = bd.col; ctx.fill(); }
     if (kind === 'azure') {
-      // Ice giant: few wide soft bands under a bright polar hood — the calm,
-      // featureless read of a methane haze (vs the amber giant's busy stripes)
-      const n = 3 + (b.id % 2);
-      const bandH = (2 * b.radius) / n;
-      for (let i = 0; i < n; i++) {
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.08)' : 'rgba(0,10,40,0.13)';
-        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.85);
-      }
+      // the bright polar hood over the haze
       ctx.fillStyle = 'rgba(220, 245, 255, 0.22)';
-      ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.8, b.radius * 0.8, b.radius * 0.3, 0, 0, TAU); ctx.fill();
-    } else if (kind === 'violet') {
-      // Exotic giant: irregular thin/thick band stacking — turbulent, alien
-      let yy = -b.radius, i = 0;
-      while (yy < b.radius) {
-        const h = b.radius * (0.14 + (((b.id + i) % 4) / 4) * 0.22);
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.14)' : 'rgba(25,0,45,0.2)';
-        ctx.fillRect(-b.radius, yy, b.radius * 2, h * 0.78);
-        yy += h; i++;
+      ctx.beginPath(); ctx.ellipse(0, -R * 0.8, R * 0.8, R * 0.3, 0, 0, TAU); ctx.fill();
+      if (fine) {
+        // thin cirrus streaks riding the upper deck
+        ctx.strokeStyle = 'rgba(235, 250, 255, 0.2)';
+        ctx.lineCap = 'round';
+        for (const s of c.streaks) {
+          ctx.lineWidth = Math.max(1, s.w * R);
+          ctx.beginPath();
+          ctx.moveTo(s.x * R, s.y * R);
+          ctx.quadraticCurveTo((s.x + s.l * 0.5) * R, (s.y + s.bow) * R, (s.x + s.l) * R, s.y * R);
+          ctx.stroke();
+        }
+        ctx.lineCap = 'butt';
       }
-    } else {
-      const n = 5 + (b.id % 3);
-      const bandH = (2 * b.radius) / n;
-      for (let i = 0; i < n; i++) {
-        ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.17)';
-        ctx.fillRect(-b.radius, -b.radius + i * bandH, b.radius * 2, bandH * 0.72);
+    }
+    if (fine) {
+      // Eddy trains: elongated oval storms with a bright sheared rim on the
+      // upwind side. The dark tone follows the giant's own palette — a violet
+      // smudge on a warm amber world reads as a bruise, not weather.
+      const darkTone = kind === 'amber' ? 'rgba(70, 32, 10, 0.26)'
+        : kind === 'azure' ? 'rgba(8, 18, 45, 0.3)' : 'rgba(30, 12, 45, 0.24)';
+      for (const e of c.eddies) {
+        ctx.fillStyle = e.dark ? darkTone : 'rgba(255, 248, 225, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(e.x * R, e.y * R, e.rx * R, e.rx * 0.45 * R, e.t, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 250, 230, 0.16)';
+        ctx.lineWidth = Math.max(1, e.rx * R * 0.16);
+        ctx.beginPath();
+        ctx.ellipse(e.x * R, e.y * R, e.rx * R * 1.15, e.rx * 0.5 * R, e.t, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
       }
+    }
+    if (c.swirls && fine) {
+      // Curl hooks: tight one-armed spirals where the violet bands roll up
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineCap = 'round';
+      for (const s of c.swirls) {
+        ctx.lineWidth = Math.max(1, s.r * R * 0.22);
+        ctx.beginPath();
+        for (let i = 0; i <= 14; i++) {
+          const t = i / 14, a = s.ph + s.dir * t * 4.6, rr = s.r * R * (1 - 0.8 * t);
+          const px = s.x * R + Math.cos(a) * rr, py = s.y * R + Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
     }
     if (b.landmark === 'storm') {
       // THE GREAT EYE — the system's landmark storm, big enough to steer by
       ctx.fillStyle = 'rgba(200, 60, 40, 0.5)';
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.28, b.radius * 0.2, b.radius * 0.44, b.radius * 0.21, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.28, R * 0.2, R * 0.44, R * 0.21, 0.25, 0, TAU);
       ctx.fill();
       ctx.strokeStyle = 'rgba(255, 235, 215, 0.45)';
-      ctx.lineWidth = Math.max(1.5, b.radius * 0.025);
+      ctx.lineWidth = Math.max(1.5, R * 0.025);
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.28, b.radius * 0.2, b.radius * 0.5, b.radius * 0.26, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.28, R * 0.2, R * 0.5, R * 0.26, 0.25, 0, TAU);
       ctx.stroke();
       ctx.fillStyle = 'rgba(255, 190, 160, 0.5)';
       ctx.beginPath();
-      ctx.ellipse(-b.radius * 0.24, b.radius * 0.18, b.radius * 0.17, b.radius * 0.08, 0.25, 0, TAU);
+      ctx.ellipse(-R * 0.24, R * 0.18, R * 0.17, R * 0.08, 0.25, 0, TAU);
       ctx.fill();
     } else {
       // A great storm spot — dark on the hazy azure giant, bright elsewhere
+      // (scaled down with the rest of the detail; only the landmark Eye is big)
       ctx.fillStyle = kind === 'azure' ? 'rgba(10, 25, 60, 0.4)' : 'rgba(255,255,255,0.22)';
       ctx.beginPath();
-      ctx.ellipse(b.radius * 0.34, b.radius * 0.3, b.radius * 0.2, b.radius * 0.1, 0.3, 0, TAU);
+      ctx.ellipse(R * 0.34, R * 0.3, R * 0.2 / c.fs, R * 0.1 / c.fs, 0.3, 0, TAU);
       ctx.fill();
     }
   } else if (b.ptype === 'lava') {
-    ctx.strokeStyle = 'rgba(255, 150, 50, 0.75)';
-    ctx.lineWidth = Math.max(1.5, b.radius * 0.05);
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 2.3 + i * 1.7;
+    // Cooled crust plates over the magma-coloured base — the glow BETWEEN the
+    // plates is the body colour itself, so every gap reads as a lit channel
+    for (const p of c.plates) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = `rgba(26, 10, 6, ${p.a})`;
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    if (fine) {
+      // thin magma seams tracing every plate edge
+      ctx.strokeStyle = 'rgba(255, 140, 50, 0.22)';
+      ctx.lineWidth = Math.max(1, R * 0.008);
+      for (const p of c.plates) {
+        blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+        ctx.stroke();
+      }
+    }
+    // magma rivers arcing out toward the rim — the old signature, more of them
+    ctx.strokeStyle = 'rgba(255, 165, 60, 0.72)';
+    ctx.lineCap = 'round';
+    for (const rv of c.rivers) {
+      ctx.lineWidth = Math.max(1.5, rv.w * R);
       ctx.beginPath();
-      ctx.moveTo(Math.cos(a) * b.radius * 0.15, Math.sin(a) * b.radius * 0.15);
+      ctx.moveTo(Math.cos(rv.a) * R * rv.r0, Math.sin(rv.a) * R * rv.r0);
       ctx.quadraticCurveTo(
-        Math.cos(a + 0.8) * b.radius * 0.55, Math.sin(a + 0.8) * b.radius * 0.55,
-        Math.cos(a + 0.5) * b.radius * 0.95, Math.sin(a + 0.5) * b.radius * 0.95);
+        Math.cos(rv.a + rv.drift) * R * (rv.r0 + rv.reach) * 0.55,
+        Math.sin(rv.a + rv.drift) * R * (rv.r0 + rv.reach) * 0.55,
+        Math.cos(rv.a + rv.drift * 0.6) * R * rv.reach,
+        Math.sin(rv.a + rv.drift * 0.6) * R * rv.reach);
       ctx.stroke();
     }
+    ctx.lineCap = 'butt';
+    if (fine) {
+      // caldera pools — steady glow, no boil (the world's own face is ambient
+      // state; heat that MOVES is the molten-core cooldown's job)
+      for (const p of c.pools) {
+        const g = ctx.createRadialGradient(p.x * R, p.y * R, 0, p.x * R, p.y * R, p.r * R);
+        g.addColorStop(0, 'rgba(255, 196, 108, 0.5)');
+        g.addColorStop(0.55, 'rgba(255, 110, 40, 0.25)');
+        g.addColorStop(1, 'transparent');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(p.x * R, p.y * R, p.r * R, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
   } else if (b.ptype === 'ice') {
     // Scattered blue-white plains ride the spin (so the world visibly turns)…
     ctx.save();
     ctx.rotate(b.rot);
-    ctx.fillStyle = 'rgba(180, 215, 240, 0.35)';
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 1.7 + i * 1.9;
-      const rr = b.radius * (0.22 + ((b.id + i) % 3) * 0.09);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.7, a, 0, TAU);
+    ctx.fillStyle = 'rgba(190, 220, 242, 0.32)';
+    for (const p of c.plains) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
       ctx.fill();
     }
+    // …crossed by LINEA — long fracture lanes spanning the whole face, rust
+    // where brine froze into the crack, blue-white where a ridge caught light
+    // (the Europa read: what says "ice sheet" instead of "pale rock")
+    if (fine) {
+      ctx.lineCap = 'round';
+      for (const l of c.linea) {
+        const x0 = Math.cos(l.a0) * 0.96, y0 = Math.sin(l.a0) * 0.96;
+        const x1 = Math.cos(l.a1) * 0.96, y1 = Math.sin(l.a1) * 0.96;
+        const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        ctx.strokeStyle = l.rust ? 'rgba(196, 122, 104, 0.34)' : 'rgba(160, 200, 235, 0.42)';
+        ctx.lineWidth = Math.max(1, l.w * R);
+        ctx.beginPath();
+        ctx.moveTo(x0 * R, y0 * R);
+        ctx.quadraticCurveTo((mx - (y1 - y0) * l.bow) * R, (my + (x1 - x0) * l.bow) * R, x1 * R, y1 * R);
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+    }
     ctx.restore();
-    // …but the polar caps stay pinned to the poles (spin axis is vertical)
+    // …but the polar caps stay pinned to the poles (spin axis is vertical),
+    // their edges ragged where the sheet breaks up
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.82, b.radius * 0.75, b.radius * 0.32, 0, 0, TAU); ctx.fill();
+    blobPath(0, -R * 0.84, R * 0.76, R * 0.3, 0, c.cap); ctx.fill();
+    blobPath(0, R * 0.84, R * 0.76, R * 0.3, 0, c.cap2); ctx.fill();
   } else if (b.ptype === 'terran') {
-    // Living world: green continents ride the spin…
+    // Living world: lobed continents ride the spin, each rising off its own
+    // shallow shelf so the coast reads as water getting deep…
     ctx.save();
     ctx.rotate(b.rot);
-    ctx.fillStyle = 'rgba(140, 195, 110, 0.6)';
-    const n = 4 + (b.id % 3);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 2.1 + i * 2.4;
-      const rr = b.radius * (0.2 + ((b.id + i) % 4) * 0.08);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.5, Math.sin(a) * b.radius * 0.5, rr, rr * 0.62, a, 0, TAU);
+    for (const p of c.conts) {
+      blobPath(p.x * R, p.y * R, p.rx * 1.3 * R, p.rx * p.k * 1.3 * R, p.rot, p.pts);
+      ctx.fillStyle = 'rgba(24, 58, 118, 0.45)';
       ctx.fill();
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = 'rgba(140, 195, 110, 0.62)';
+      ctx.fill();
+      if (fine) {
+        // interior relief: a highland (or a dust-dry heart) per continent
+        ctx.fillStyle = p.sandy ? 'rgba(206, 182, 116, 0.4)' : 'rgba(84, 130, 62, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse((p.x + p.hx * p.rx) * R, (p.y + p.hy * p.rx * p.k) * R,
+          p.rx * R * 0.42, p.rx * p.k * R * 0.3, p.rot, 0, TAU);
+        ctx.fill();
+      }
+    }
+    if (fine) {
+      // island chains trailing off into the sea
+      ctx.fillStyle = 'rgba(140, 195, 110, 0.55)';
+      for (const ch of c.isles) {
+        for (let i = 0; i < ch.n; i++) {
+          const px = (ch.x + Math.cos(ch.ang) * ch.step * i) * R;
+          const py = (ch.y + Math.sin(ch.ang) * ch.step * i) * R;
+          ctx.beginPath();
+          ctx.arc(px, py, ch.r * R * (1 - (i / (ch.n + 1)) * 0.5), 0, TAU);
+          ctx.fill();
+        }
+      }
     }
     ctx.restore();
-    // …under cloud decks that drift a touch FASTER than the surface (weather
+    // …under cloud masses that drift a touch FASTER than the surface (weather
     // shears past the ground — the multiple of b.rot is the drift, no clock)
     ctx.save();
     ctx.rotate(b.rot * 1.18);
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    for (let i = 0; i < 5; i++) {
-      const a = b.id * 1.3 + i * 2.7;
-      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.12);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.45, Math.sin(a) * b.radius * 0.45, rr, rr * 0.3, a + 0.5, 0, TAU);
+    for (const p of c.clouds) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
       ctx.fill();
+    }
+    if (fine) {
+      // one cyclone — a swirl with a clear eye, the weather's landmark
+      ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1.2, c.cyc.r * R * 0.2);
+      ctx.beginPath();
+      for (let i = 0; i <= 16; i++) {
+        const t = i / 16, a = c.cyc.dir * t * 5.2, rr = c.cyc.r * R * (0.25 + 0.75 * t);
+        const px = c.cyc.x * R + Math.cos(a) * rr, py = c.cyc.y * R + Math.sin(a) * rr;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.lineCap = 'butt';
     }
     ctx.restore();
-    // …with small polar caps pinned to the poles, like the ice worlds'
+    // …with small ragged polar caps pinned to the poles, like the ice worlds'
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
-    ctx.beginPath(); ctx.ellipse(0, -b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(0, b.radius * 0.86, b.radius * 0.55, b.radius * 0.2, 0, 0, TAU); ctx.fill();
+    blobPath(0, -R * 0.87, R * 0.5, R * 0.18, 0, c.cap); ctx.fill();
+    blobPath(0, R * 0.87, R * 0.5, R * 0.18, 0, c.cap2); ctx.fill();
   } else if (b.ptype === 'ocean') {
-    // World-sea: bright current bands sweep the globe…
-    ctx.strokeStyle = 'rgba(180, 220, 255, 0.28)';
-    ctx.lineWidth = Math.max(1.2, b.radius * 0.05);
-    for (let i = 0; i < 4; i++) {
-      const yy = -b.radius * 0.66 + i * b.radius * 0.44;
+    // World-sea: deep basins shade the water first…
+    ctx.fillStyle = 'rgba(8, 24, 66, 0.3)';
+    for (const p of c.deeps) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fill();
+    }
+    // …bright current systems sweep the globe…
+    ctx.lineCap = 'round';
+    for (const cu of c.cur) {
+      ctx.strokeStyle = cu.deep ? 'rgba(96, 156, 220, 0.34)' : 'rgba(180, 222, 255, 0.33)';
+      ctx.lineWidth = Math.max(1.2, cu.w * R);
       ctx.beginPath();
-      ctx.moveTo(-b.radius, yy);
-      ctx.quadraticCurveTo(0, yy + b.radius * 0.18 * (i % 2 ? 1 : -1), b.radius, yy);
+      for (let i = 0; i <= 16; i++) {
+        const x = -1.02 + (2.04 * i) / 16;
+        const y = cu.y + Math.sin(x * cu.e.f + cu.e.p) * cu.e.a;
+        if (i === 0) ctx.moveTo(x * R, y * R); else ctx.lineTo(x * R, y * R);
+      }
       ctx.stroke();
     }
-    // …around a scatter of low archipelago flecks — land is the exception here
-    ctx.fillStyle = 'rgba(120, 160, 110, 0.6)';
-    const n = 5 + (b.id % 4);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 1.7 + i * 2.4;
-      const rr = b.radius * (0.05 + ((b.id + i) % 3) * 0.03);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55, rr, rr * 0.7, a, 0, TAU);
-      ctx.fill();
+    // …spinning up into gyres where they meet…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(190, 228, 255, 0.3)';
+      for (const gy of c.gyres) {
+        ctx.lineWidth = Math.max(1.2, gy.r * R * 0.14);
+        ctx.beginPath();
+        for (let i = 0; i <= 16; i++) {
+          const t = i / 16, a = gy.ph + gy.dir * t * gy.turns * TAU * 0.8;
+          const rr = gy.r * R * (1 - 0.75 * t);
+          const px = gy.x * R + Math.cos(a) * rr, py = gy.y * R + Math.sin(a) * rr;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.lineCap = 'butt';
+    // …around low archipelago chains — land is the exception here
+    if (fine) {
+      ctx.fillStyle = 'rgba(122, 160, 108, 0.6)';
+      for (const ch of c.arcs) {
+        for (let i = 0; i < ch.n; i++) {
+          const a2 = ch.ang + (i / Math.max(1, ch.n - 1) - 0.5) * ch.bend * 2;
+          const px = (ch.x + Math.cos(a2) * ch.step * i) * R;
+          const py = (ch.y + Math.sin(a2) * ch.step * i) * R;
+          ctx.beginPath(); ctx.arc(px, py, ch.r * R, 0, TAU); ctx.fill();
+        }
+      }
     }
   } else if (b.ptype === 'desert') {
-    // Dune seas: long wind-carved bands…
-    ctx.strokeStyle = 'rgba(90, 55, 25, 0.22)';
-    ctx.lineWidth = Math.max(1.5, b.radius * 0.07);
-    for (let i = 0; i < 5; i++) {
-      const yy = -b.radius * 0.7 + i * b.radius * 0.35;
-      ctx.beginPath();
-      ctx.moveTo(-b.radius, yy);
-      ctx.quadraticCurveTo(0, yy + b.radius * 0.14 * (i % 2 ? 1 : -1), b.radius, yy + b.radius * 0.06);
-      ctx.stroke();
-    }
-    // …dark rimrock mesas…
-    ctx.fillStyle = 'rgba(0,0,0,0.14)';
-    for (let i = 0; i < 3; i++) {
-      const a = b.id * 2.3 + i * 2.1;
-      const rr = b.radius * (0.14 + ((b.id + i) % 3) * 0.06);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.6, Math.sin(a) * b.radius * 0.6, rr, rr * 0.55, a, 0, TAU);
+    // Dune seas in broad tonal sweeps…
+    for (const p of c.ergs) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = p.light ? 'rgba(255, 235, 190, 0.12)' : 'rgba(80, 45, 20, 0.1)';
       ctx.fill();
     }
-    // …and one pale standing dust storm
-    ctx.fillStyle = 'rgba(255, 235, 200, 0.3)';
-    const sa = b.id * 1.3;
-    ctx.beginPath();
-    ctx.ellipse(Math.cos(sa) * b.radius * 0.35, Math.sin(sa) * b.radius * 0.35, b.radius * 0.34, b.radius * 0.16, sa, 0, TAU);
-    ctx.fill();
+    // …combed with ripple trains, each dune field blown its own way…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(90, 55, 25, 0.25)';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1, R * 0.008);
+      for (const d of c.dunes) {
+        const ca = Math.cos(d.ang), sa = Math.sin(d.ang);
+        for (let i = 0; i < d.n; i++) {
+          const off = (i - (d.n - 1) / 2) * d.gap;
+          const cx2 = (d.x - sa * off) * R, cy2 = (d.y + ca * off) * R;
+          ctx.beginPath();
+          ctx.moveTo(cx2 - ca * d.len * R, cy2 - sa * d.len * R);
+          ctx.quadraticCurveTo(cx2 - sa * d.bow * 2 * R, cy2 + ca * d.bow * 2 * R,
+            cx2 + ca * d.len * R, cy2 + sa * d.len * R);
+          ctx.stroke();
+        }
+      }
+      ctx.lineCap = 'butt';
+    }
+    // …a canyon winding through the rimrock…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(60, 32, 14, 0.4)';
+      ctx.lineWidth = Math.max(1.2, R * 0.012);
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < c.canyon.length; i++) {
+        const p = c.canyon[i];
+        if (i === 0) ctx.moveTo(p.x * R, p.y * R); else ctx.lineTo(p.x * R, p.y * R);
+      }
+      ctx.stroke();
+      ctx.lineJoin = 'miter';
+    }
+    // …dark rimrock mesas…
+    ctx.fillStyle = 'rgba(0,0,0,0.16)';
+    for (const p of c.mesas) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fill();
+    }
+    // …and pale standing dust storms
+    ctx.fillStyle = 'rgba(255, 235, 200, 0.28)';
+    for (const s of c.storms) {
+      ctx.beginPath();
+      ctx.ellipse(s.x * R, s.y * R, s.rx * R, s.rx * 0.45 * R, s.rot, 0, TAU);
+      ctx.fill();
+    }
   } else if (b.ptype === 'shroud') {
     // Venusian shroud: total cloud cover, no surface ever visible. Each deck
     // turns at its own rate (multiples of b.rot on top of the base spin), so
     // the cover visibly shears without any wall-clock animation.
-    for (let i = 0; i < 4; i++) {
+    for (const d of c.decks) {
       ctx.save();
-      ctx.rotate(b.rot * (0.55 + i * 0.3) + b.id * 1.7 + i * 2.1);
-      ctx.strokeStyle = i % 2 ? 'rgba(255, 250, 220, 0.2)' : 'rgba(120, 100, 40, 0.18)';
-      ctx.lineWidth = b.radius * (0.16 + (i % 3) * 0.05);
+      ctx.rotate(b.rot * d.rate + d.ph);
+      ctx.strokeStyle = d.tone;
+      ctx.lineWidth = d.w * R;
       ctx.beginPath();
-      ctx.arc(0, 0, b.radius * (0.28 + i * 0.2), b.id + i, b.id + i + 4.2);
+      ctx.arc(0, 0, d.r * R, d.ph, d.ph + d.span);
       ctx.stroke();
       ctx.restore();
     }
-    // a pale chevron where the decks collide
+    // pale and dark chevrons where the decks collide — the Y-cloud read
     ctx.fillStyle = 'rgba(255, 252, 230, 0.16)';
     ctx.beginPath();
-    ctx.ellipse(b.radius * 0.1, -b.radius * 0.2, b.radius * 0.5, b.radius * 0.18, -0.4, 0, TAU);
+    ctx.ellipse(R * 0.1, c.chevY * R, R * 0.5, R * 0.17, -0.4, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(105, 88, 34, 0.14)';
+    ctx.beginPath();
+    ctx.ellipse(-R * 0.12, -c.chevY * R, R * 0.44, R * 0.15, 0.35, 0, TAU);
     ctx.fill();
   } else if (b.ptype === 'crystal') {
-    // Faceted lattice: alternating light/dark shard wedges from the core…
-    // (reach 1.4r — past the tallest ~1.32r shard tips, so the clip decides
-    // the edge)
-    for (let i = 0; i < 6; i++) {
-      const a = b.id * 1.9 + i * (TAU / 6) + ((b.id + i) % 3) * 0.3;
-      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(30, 10, 60, 0.18)';
+    // Faceted lattice, keyed to the REAL silhouette: traceSurface already
+    // built b.cjag for the fill this detail is clipped to, so a wedge fills
+    // each actual shard instead of inventing six of its own…
+    const pts = (b.cjag ||= crystalShards(b.id)).pts;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.1)' : 'rgba(30, 10, 60, 0.16)';
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * b.radius * 1.4, Math.sin(a) * b.radius * 1.4);
-      ctx.lineTo(Math.cos(a + 0.7) * b.radius * 1.4, Math.sin(a + 0.7) * b.radius * 1.4);
+      ctx.lineTo(Math.cos(p.a0) * R * p.ri, Math.sin(p.a0) * R * p.ri);
+      ctx.lineTo(Math.cos(p.tip) * R * p.ro, Math.sin(p.tip) * R * p.ro);
+      ctx.lineTo(Math.cos(q.a0) * R * q.ri, Math.sin(q.a0) * R * q.ri);
       ctx.closePath();
       ctx.fill();
     }
-    // …with bright facet seams (solid strokes — machined work, like the
-    // carved stone, never dashed)…
-    ctx.strokeStyle = 'rgba(230, 210, 255, 0.5)';
-    ctx.lineWidth = Math.max(1, b.radius * 0.035);
+    // …with faint inner echoes of the outline — depth, looking INTO the mass…
+    if (fine) {
+      ctx.strokeStyle = 'rgba(230, 215, 255, 0.16)';
+      ctx.lineWidth = Math.max(1, R * 0.012);
+      for (const s of c.rings) {
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const vx = Math.cos(p.a0) * R * p.ri * s, vy = Math.sin(p.a0) * R * p.ri * s;
+          if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+          ctx.lineTo(Math.cos(p.tip) * R * p.ro * s, Math.sin(p.tip) * R * p.ro * s);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    // …bright facet seams running core to every tip (solid strokes — machined
+    // work, like the carved stone, never dashed)…
+    ctx.strokeStyle = 'rgba(230, 210, 255, 0.45)';
+    ctx.lineWidth = Math.max(1, R * 0.018);
     ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const a = b.id * 2.3 + i * 1.26;
-      ctx.moveTo(Math.cos(a) * b.radius * 0.2, Math.sin(a) * b.radius * 0.2);
-      ctx.lineTo(Math.cos(a + 0.4) * b.radius * 1.3, Math.sin(a + 0.4) * b.radius * 1.3);
+    for (const p of pts) {
+      ctx.moveTo(Math.cos(p.tip) * R * 0.14, Math.sin(p.tip) * R * 0.14);
+      ctx.lineTo(Math.cos(p.tip) * R * p.ro * 0.97, Math.sin(p.tip) * R * p.ro * 0.97);
     }
     ctx.stroke();
-    // …and a few bright glint points where facets catch the light (seeded,
-    // static — the cored-rock glint twinkles because it marks salvage; a
-    // world's sparkle is ambient state, so it holds still)
-    ctx.fillStyle = 'rgba(240, 225, 255, 0.55)';
-    for (let i = 0; i < 4; i++) {
-      const a = b.id * 1.3 + i * 1.9;
-      const rr = b.radius * (0.3 + ((b.id + i) % 3) * 0.22);
-      ctx.beginPath();
-      ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, Math.max(1, b.radius * 0.035), 0, TAU);
-      ctx.fill();
+    // …and bright glint points where facets catch the light (seeded, static —
+    // the cored-rock glint twinkles because it marks salvage; a world's
+    // sparkle is ambient state, so it holds still)
+    if (fine) {
+      ctx.fillStyle = 'rgba(240, 225, 255, 0.55)';
+      for (const g of c.glints) {
+        ctx.beginPath();
+        ctx.arc(Math.cos(g.a) * R * g.r, Math.sin(g.a) * R * g.r, Math.max(1, g.s * R), 0, TAU);
+        ctx.fill();
+      }
     }
   } else {  // rocky: mottled continents
-    ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    const n = 4 + (b.id % 3);
-    for (let i = 0; i < n; i++) {
-      const a = b.id * 1.9 + i * 2.4;
-      const rr = b.radius * (0.25 + ((b.id + i) % 4) * 0.09);
-      ctx.beginPath();
-      ctx.ellipse(Math.cos(a) * b.radius * 0.55, Math.sin(a) * b.radius * 0.55,
-        rr, rr * 0.65, a, 0, TAU);
+    // dark maria and pale mineral highlands…
+    for (const p of c.maria) {
+      blobPath(p.x * R, p.y * R, p.rx * R, p.rx * p.k * R, p.rot, p.pts);
+      ctx.fillStyle = p.light ? 'rgba(255, 240, 215, 0.1)' : 'rgba(0,0,0,0.16)';
       ctx.fill();
+    }
+    // …pocked with rimmed craters — the world's old face, not damage (wounds
+    // belong to the crumble and drawBodyDamage)…
+    if (fine) {
+      for (const cr of c.craters) {
+        const crr = cr.r * R;
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.beginPath(); ctx.arc(cr.x * R, cr.y * R, crr, 0, TAU); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        ctx.beginPath(); ctx.arc(cr.x * R - crr * 0.28, cr.y * R - crr * 0.28, crr * 0.62, 0, TAU); ctx.fill();
+      }
+    }
+    // …and mountain chains: dark zigzag ranges crossing the highlands
+    if (fine) {
+      ctx.strokeStyle = 'rgba(30, 18, 8, 0.25)';
+      ctx.lineWidth = Math.max(1, R * 0.012);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const rg of c.ridges) {
+        const ca = Math.cos(rg.ang), sa = Math.sin(rg.ang);
+        ctx.beginPath();
+        for (let i = 0; i < rg.n; i++) {
+          const wob = rg.off[i];
+          const px = (rg.x + ca * rg.step * i - sa * wob) * R;
+          const py = (rg.y + sa * rg.step * i + ca * wob) * R;
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'miter';
     }
     if (b.landmark === 'crater') {
       // THE SCAR — a giant impact basin with bright ejecta rays
-      const cx = b.radius * 0.28, cy = -b.radius * 0.24;
+      const cx = R * 0.28, cy = -R * 0.24;
       ctx.fillStyle = 'rgba(235, 240, 250, 0.26)';
-      ctx.beginPath(); ctx.arc(cx, cy, b.radius * 0.3, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, R * 0.3, 0, TAU); ctx.fill();
       ctx.strokeStyle = 'rgba(235, 240, 250, 0.3)';
-      ctx.lineWidth = Math.max(1.2, b.radius * 0.025);
+      ctx.lineWidth = Math.max(1.2, R * 0.025);
       ctx.beginPath();
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * TAU + 0.3;
-        ctx.moveTo(cx + Math.cos(a) * b.radius * 0.32, cy + Math.sin(a) * b.radius * 0.32);
-        ctx.lineTo(cx + Math.cos(a) * b.radius * (0.6 + (i % 3) * 0.18),
-          cy + Math.sin(a) * b.radius * (0.6 + (i % 3) * 0.18));
+        ctx.moveTo(cx + Math.cos(a) * R * 0.32, cy + Math.sin(a) * R * 0.32);
+        ctx.lineTo(cx + Math.cos(a) * R * (0.6 + (i % 3) * 0.18),
+          cy + Math.sin(a) * R * (0.6 + (i % 3) * 0.18));
       }
       ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// SPLASH WAVES — an ocean world answers a hit with rings running across the
+// face (physics stamps b.seaHits on splashdowns, seabed strikes and ship
+// dives; an ocean never craters, so this is its whole damage read). Event-
+// driven motion on game.time — the aurora/eclipse convention. Solid strokes,
+// clipped to the silhouette, and surface-local (h.a + b.rot) so a wave rides
+// the spin like every other feature.
+function drawSeaRipples(game, b) {
+  const T = CFG.OCEAN_RIPPLE_T;
+  const R = b.radius;
+  let live = false;
+  for (const h of b.seaHits) if (game.time - h.t < T) { live = true; break; }
+  if (!live) return;
+  ctx.save();
+  traceSurface(b);
+  ctx.clip();
+  for (const h of b.seaHits) {
+    const age = game.time - h.t;
+    if (age < 0 || age >= T) continue;
+    const u = age / T;
+    const cx = b.x + Math.cos(h.a + b.rot) * R;
+    const cy = b.y + Math.sin(h.a + b.rot) * R;
+    const reach = R * (0.22 + 1.35 * u) * (0.55 + 0.45 * h.s);
+    const fade = (1 - u) * (1 - u) * h.s;
+    ctx.lineWidth = Math.max(1.5, R * 0.018 * (1 - u * 0.5));
+    // three fronts trailing the leading wave, each fainter
+    for (let i = 0; i < 3; i++) {
+      const rr = reach - i * R * 0.09;
+      if (rr <= 0) continue;
+      ctx.strokeStyle = `rgba(210, 238, 255, ${(0.48 - i * 0.13) * fade})`;
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, TAU); ctx.stroke();
     }
   }
   ctx.restore();
@@ -2462,12 +3478,264 @@ function drawMoonDetail(game, b) {
       ctx.fillStyle = i % 2 ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.15)';
       ctx.fillRect(-R, -R + i * R * 0.7, R * 2, R * 0.5);
     }
+  } else if (b.moonType === 'lodestar') {
+    // Impossibly dense: the surface SAGS — a deep center darkening, short
+    // compression striations at broken angles and radii, and one hard
+    // off-center glint of bare compressed metal. NEVER full concentric rings
+    // with a center pip: that's a bullseye, and target grammar belongs to the
+    // aiming UI (2026-08 user call — "looks too much like a target"). The
+    // bent trajectory forecast does the rest of the talking.
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0, 'rgba(8, 6, 16, 0.55)');
+    g.addColorStop(0.7, 'rgba(8, 6, 16, 0.22)');
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(190, 185, 215, 0.26)';
+    ctx.lineWidth = Math.max(0.8, R * 0.045);
+    for (let i = 0; i < 5; i++) {
+      const a0 = b.id * 1.9 + i * 2.63;
+      const rr = R * (0.25 + (((b.id * 7 + i * 31) % 10) / 10) * 0.55);
+      const span = 0.5 + ((b.id + i) % 4) * 0.28;
+      ctx.beginPath(); ctx.arc(0, 0, rr, a0, a0 + span); ctx.stroke();
+    }
+    const ga = b.id * 0.9;
+    ctx.fillStyle = 'rgba(240, 236, 255, 0.7)';
+    ctx.beginPath();
+    ctx.arc(Math.cos(ga) * R * 0.3, Math.sin(ga) * R * 0.3, Math.max(1.2, R * 0.06), 0, TAU);
+    ctx.fill();
+  } else if (b.moonType === 'geode') {
+    craters(2);
+    // The tell: a glinting crystal seam in the same purple the freed core
+    // wears (#b98cff) — the cored-rock glint grammar at moon scale.
+    const a0 = b.id * 2.1;
+    ctx.strokeStyle = 'rgba(185, 140, 255, 0.55)';
+    ctx.lineWidth = Math.max(1, R * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a0) * R * 0.85, Math.sin(a0) * R * 0.85);
+    ctx.quadraticCurveTo(Math.cos(a0 + 1.8) * R * 0.3, Math.sin(a0 + 1.8) * R * 0.3,
+      Math.cos(a0 + 2.9) * R * 0.8, Math.sin(a0 + 2.9) * R * 0.8);
+    ctx.stroke();
+  } else if (b.moonType === 'verdant') {
+    // Moss beds in two greens, seeded biolum motes glinting between them —
+    // the same healing green the glow pockets pop (150,255,190).
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 1.4 + i * 1.7;
+      ctx.fillStyle = i % 2 ? 'rgba(60, 130, 90, 0.35)' : 'rgba(150, 220, 170, 0.22)';
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.45, Math.sin(a) * R * 0.45, R * 0.4, R * 0.26, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(150, 255, 190, 0.8)';
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 2.3 + i * 1.256;
+      const d = (((b.id * 11 + i * 37) % 100) / 100) * 0.8;
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * R * d, Math.sin(a) * R * d, Math.max(0.8, R * 0.03), 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'comet') {
+    // Frost fields like the ice moon but sparser — the body is quiet; the
+    // coma outside the clip (below) is where this type spends its look.
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 1.9 + i * 2.4;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.45, Math.sin(a) * R * 0.45, R * 0.3, R * 0.18, a, 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'husk') {
+    craters(2);
+    // A WRECK-YARD WELDED OVER ROCK: angular hull plates with riveted seams,
+    // a snapped ring-girder, and hard little glints of bare metal — kin to
+    // the graveyard (#9fb0c2), and unmistakably CONSTRUCTED, not geology
+    // (2026-08 user call — "could be more visually interesting").
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.1 + i * 1.31;
+      const d = R * (0.15 + (((b.id * 5 + i * 17) % 10) / 10) * 0.5);
+      const w = R * (0.28 + ((b.id + i) % 3) * 0.1), h = w * 0.62;
+      ctx.save();
+      ctx.translate(Math.cos(a) * d, Math.sin(a) * d);
+      ctx.rotate(a * 1.7);
+      ctx.fillStyle = i % 2 ? 'rgba(125, 133, 146, 0.34)' : 'rgba(84, 66, 48, 0.38)';
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      // riveted seam along the plate's top edge — the "built" tell
+      ctx.fillStyle = 'rgba(200, 210, 224, 0.5)';
+      const nr = 3 + (i % 3);
+      for (let k = 0; k < nr; k++) {
+        ctx.beginPath();
+        ctx.arc(-w / 2 + (k + 0.5) * (w / nr), -h / 2 + h * 0.18, Math.max(0.6, R * 0.018), 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    // The snapped ring-girder: an arc that runs, breaks, resumes — wreckage,
+    // and deliberately NOT a closed ring (see the lodestar's bullseye note).
+    ctx.strokeStyle = 'rgba(159, 176, 194, 0.55)';
+    ctx.lineWidth = Math.max(1, R * 0.05);
+    const ha = b.id * 2.2;
+    ctx.beginPath(); ctx.arc(0, 0, R * 0.62, ha, ha + 1.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, R * 0.62, ha + 1.8, ha + 2.5); ctx.stroke();
+    // bare-metal glints
+    ctx.fillStyle = 'rgba(230, 238, 248, 0.75)';
+    for (let i = 0; i < 3; i++) {
+      const a = b.id * 3.1 + i * 2.1;
+      const d = R * (0.2 + (((b.id + i * 7) % 10) / 10) * 0.55);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a) * d, Math.sin(a) * d, Math.max(0.8, R * 0.025), 0, TAU);
+      ctx.fill();
+    }
+  } else if (b.moonType === 'pumice') {
+    // Froth rock: vesicle stipple ONLY — the shared crater set is exactly
+    // what made a pumice moon read as one more rock moon ("Shale and Curd
+    // look too similar", 2026-08). Dense, fine, low-contrast pocks over
+    // chalk-pale ground, plus two soft bright froth patches; nothing sharp,
+    // nothing shared with the rock look.
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    for (let i = 0; i < 2; i++) {
+      const a = b.id * 1.3 + i * 2.8;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * R * 0.4, Math.sin(a) * R * 0.4, R * 0.45, R * 0.3, a, 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.13)';
+    for (let i = 0; i < 34; i++) {
+      const a = b.id * 2.7 + i * 0.361;
+      const d = (((b.id * 13 + i * 41) % 100) / 100) * 0.88;
+      const rr = R * (0.022 + ((b.id + i) % 4) * 0.014);
+      ctx.beginPath(); ctx.arc(Math.cos(a) * R * d, Math.sin(a) * R * d, rr, 0, TAU); ctx.fill();
+    }
+  } else if (b.moonType === 'molten') {
+    // A COOLED BLACK CRUST OVER LIVE MAGMA — three layers (2026-08 second
+    // pass; the first cut was flat black with zigzag scribbles):
+    //   1. near-black ground with broad mottled crust plates,
+    //   2. soft magma pools GLOWING THROUGH thin crust (the drawMoltenCrust
+    //      convection cells, dimmer and fewer — heat under, not fire on top),
+    //   3. smooth CURVED fissures: a wide soft under-glow beneath a hot
+    //      hairline core, with short side-branches — cracks, not pipes.
+    // All breathing on per-crack phases (the drawMoltenCrust precedent:
+    // pulsing lava, not a blinking light). Additive passes reset after.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(70, 40, 32, 0.25)';
+    for (let i = 0; i < 5; i++) {
+      const a = b.id * 1.3 + i * 2.51;
+      const d = R * (((b.id * 3 + i * 23) % 10) / 10) * 0.6;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * d, Math.sin(a) * d, R * 0.38, R * 0.24, a * 2.1, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 4; i++) {
+      const a = b.id * 2.9 + i * 1.71;
+      const d = R * (0.15 + (((b.id + i * 11) % 10) / 10) * 0.6);
+      const sz = R * (0.16 + ((b.id + i) % 3) * 0.07);
+      const boil = 0.55 + 0.45 * Math.sin(game.time * (0.5 + (i % 3) * 0.25) + i * 1.9 + b.id);
+      const cx2 = Math.cos(a) * d, cy2 = Math.sin(a) * d;
+      const pg = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, sz);
+      pg.addColorStop(0, `rgba(255, 120, 45, ${0.18 * boil})`);
+      pg.addColorStop(1, 'transparent');
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(cx2, cy2, sz, 0, TAU); ctx.fill();
+    }
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 6; i++) {
+      const a0 = b.id * 1.7 + i * 1.047;
+      const glow = 0.5 + 0.5 * Math.sin(game.time * (0.6 + (i % 3) * 0.3) + i * 2.1 + b.id);
+      const pts = [];
+      let px = Math.cos(a0) * R * 0.95, py = Math.sin(a0) * R * 0.95;
+      let aa = a0 + Math.PI * (0.9 + Math.sin(b.id * 1.1 + i) * 0.12);
+      // A standing per-crack drift plus a big per-step wobble: the first cut
+      // wandered so gently it read as STRAIGHT lines ("too much like straight
+      // lines", 2026-08) — shorter steps, harder turns, and a constant bias
+      // so every fissure ARCS instead of shooting across the disc.
+      const drift = Math.sin(b.id * 2.7 + i * 4.3) * 0.3;
+      pts.push([px, py]);
+      for (let k = 1; k <= 11; k++) {
+        aa += drift + Math.sin(b.id * 3.3 + i * 7 + k * 2.7) * 0.85;
+        px += Math.cos(aa) * R * 0.12; py += Math.sin(aa) * R * 0.12;
+        pts.push([px, py]);
+      }
+      const trace = () => {
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length - 1; k++) {
+          const mx = (pts[k][0] + pts[k + 1][0]) / 2, my = (pts[k][1] + pts[k + 1][1]) / 2;
+          ctx.quadraticCurveTo(pts[k][0], pts[k][1], mx, my);
+        }
+        ctx.stroke();
+      };
+      ctx.strokeStyle = `rgba(255, 90, 30, ${0.10 + 0.14 * glow})`;
+      ctx.lineWidth = Math.max(1.5, R * 0.05);
+      trace();
+      ctx.strokeStyle = `rgba(255, 170, 80, ${0.35 + 0.4 * glow})`;
+      ctx.lineWidth = Math.max(0.6, R * 0.011);
+      trace();
+      ctx.strokeStyle = `rgba(255, 130, 50, ${0.2 + 0.25 * glow})`;
+      ctx.lineWidth = Math.max(0.6, R * 0.009);
+      for (let k = 2; k <= 4; k += 2) {
+        const ba = Math.atan2(pts[k][1] - pts[k - 1][1], pts[k][0] - pts[k - 1][0]) + (k % 4 ? 1 : -1) * 1.1;
+        ctx.beginPath(); ctx.moveTo(pts[k][0], pts[k][1]);
+        ctx.lineTo(pts[k][0] + Math.cos(ba) * R * 0.14, pts[k][1] + Math.sin(ba) * R * 0.14);
+        ctx.stroke();
+      }
+      // HOT SPOTS: two seeded joints per fissure run WHITE-hot — a crack is
+      // not uniformly warm, it has places where the crust is thinnest. Each
+      // node breathes on its own faster phase, out of step with its crack.
+      for (let n = 0; n < 2; n++) {
+        const k = 2 + ((b.id * 5 + i * 3 + n * 7) % (pts.length - 4));
+        const [hx2, hy2] = pts[k];
+        const hot = 0.5 + 0.5 * Math.sin(game.time * (1.1 + (n % 2) * 0.5) + i * 3.7 + n * 2.3 + b.id * 1.9);
+        const hr = R * (0.045 + 0.03 * hot);
+        const hg = ctx.createRadialGradient(hx2, hy2, 0, hx2, hy2, hr);
+        hg.addColorStop(0, `rgba(255, 235, 190, ${0.5 * hot})`);
+        hg.addColorStop(0.45, `rgba(255, 150, 60, ${0.3 * hot})`);
+        hg.addColorStop(1, 'transparent');
+        ctx.fillStyle = hg;
+        ctx.beginPath(); ctx.arc(hx2, hy2, hr, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.lineCap = 'butt';
+    ctx.globalCompositeOperation = 'source-over';
   } else {
     craters(b.moonType === 'dust' ? 5 : 3);
   }
   ctx.restore();
-  // Subtle tinted rim — dimmer than the old flat bright ring
-  ctx.strokeStyle = 'rgba(210, 224, 245, 0.35)';
+  // COMET COMA — outside the clip, in the WORLD frame: the tail points away
+  // from the sun, never with the spin. A real object, so no hard edge — one
+  // soft additive breath, brightening as the moon nears the periapsis where it
+  // vents (the same rail read world.js's vent gate uses).
+  // NOT on a promoted landmark: the Forge Moon / shepherd keep the moonType
+  // they rolled before promotion (world.js overrides name and job, not type),
+  // and a volcanic moon wearing a comet's breath misreads as the wrong hazard.
+  if (b.moonType === 'comet' && !b.volcanic && !b.shepherd && game.homeStar) {
+    // e >= 0.15 mirrors world.js's vent-timetable gate: below it the moon
+    // vents on the plain ice cadence, and a full-bright coma on a low-e comet
+    // would promise a burst event the mechanic no longer delivers.
+    let k = 0.4;
+    const rail = b.rail;
+    if (rail && rail.e >= 0.15 && rail.parent) {
+      const dp = Math.hypot(b.x - rail.parent.x, b.y - rail.parent.y);
+      const peri = rail.a * (1 - rail.e), apo = rail.a * (1 + rail.e);
+      k = 0.25 + 0.75 * clamp(1 - (dp - peri) / Math.max(1, apo - peri), 0, 1);
+    }
+    const a = Math.atan2(b.y - game.homeStar.y, b.x - game.homeStar.x);
+    const cx2 = b.x + Math.cos(a) * R, cy2 = b.y + Math.sin(a) * R;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(b.x, b.y, R * 0.8, cx2, cy2, R * 2.6);
+    g.addColorStop(0, `rgba(190, 230, 240, ${0.2 * k})`);
+    g.addColorStop(1, 'transparent');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx2, cy2, R * 2.6, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+  // Subtle tinted rim — dimmer than the old flat bright ring. A MOLTEN moon
+  // takes a faint EMBER rim instead: the pale stroke that helps a lit moon
+  // read against the sky turns into a bright outline against a near-black
+  // crust ("looks off", 2026-08) — heat at the limb is the honest edge there.
+  ctx.strokeStyle = b.moonType === 'molten'
+    ? 'rgba(255, 120, 55, 0.16)' : 'rgba(210, 224, 245, 0.35)';
   ctx.lineWidth = Math.max(0.8, 1.1 / game.cam.zoom);
   ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, TAU); ctx.stroke();
 }
@@ -3522,12 +4790,14 @@ function drawApproach(game) {
 // planet, and a structure whose girders stay 2 screen-pixels wide as you pull
 // away is a HUD element pretending to be scenery.
 //
-// TWO COLOURS, and they say two different things. A plain dock is STEEL: a
-// service you are using right now. A HOME PORT is the lives ROSE (style.css
-// #ff5c7a, the colour of the life pips) because that is precisely what it is —
-// the place a death hands the ship back. Reusing the lives hue rather than
-// inventing a marker colour is the point: the two instruments already agree
-// about what rose means.
+// TWO COLOURS, and the second one is a FLAG, not a paint job. Every station's
+// STRUCTURE is steel; a HOME PORT flies a lit spire and pennant in the lives
+// ROSE (style.css #ff5c7a, the colour of the life pips) and changes in no other
+// way, because a dock is the same building either way and repainting the whole
+// thing said "a different kind of place" when the truth is "the same place, and
+// it's yours". Reusing the lives hue rather than inventing a marker colour is
+// the point: the two instruments already agree about what rose means — and they
+// still mark home in it outright, which is their own grammar.
 const DOCK_STEEL = '207, 228, 255';
 const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (style.css)
 
@@ -3552,21 +4822,39 @@ const DOCK_HOME = '255, 92, 122';   // #ff5c7a — the life pip's own rose (styl
 // would be the exact mirror-drift trap this codebase keeps warning about. One
 // source, both readers.
 
-// A station under construction REVEALS ITSELF PIECE BY PIECE, heaviest
-// structure first, so the ten seconds read as building rather than as waiting
-// for a bar. Each element fades in over a slice of the build instead of
-// popping. Returns 0..1.
-function built(prog, at, span = 0.14) {
-  return clamp((prog - at) / span, 0, 1);
+// THE STATION IS BUILT FROM MATERIAL, NOT LIGHT. Three hull tones — near-
+// opaque fills, dark to lit — carry the structure's mass; the ink colour
+// (steel / home rose) is reserved for lit edges, markings, lamps and glass, so
+// a home port still reads at a glance without the whole building being made of
+// glow. An earlier pass drew everything as translucent ink strokes and the
+// station read as a hologram parked on the world instead of a thing standing
+// on it.
+const HULL_DK = '11, 13, 24';    // sunk mass: caissons, undersides
+const HULL_MD = '23, 28, 46';    // plating
+const HULL_LT = '40, 50, 76';    // lit plating faces
+
+// A station under construction is ASSEMBLED PIECE BY PIECE across the whole of
+// CFG.DOCK_BUILD — foundations sunk, deck plates craned in one at a time,
+// clamps unfolded, superstructure raised, then a commissioning pass that
+// paints the markings and walks the lamps on. Each stage MOVES into place
+// (slides, extends, unfolds) rather than fading in: ten seconds of opacity
+// ramps reads as waiting for a bar, ten seconds of visible work reads as
+// building. smoothstep, so pieces arrive with an ease-out instead of a pop.
+function bstage(prog, a, b) {
+  const t = clamp((prog - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 // One station. `up` is the world bearing of the surface normal under it, which
 // is also the bearing the ship parks along — so the pad is drawn in a frame
 // where +y is DOWN into the crust and the whole sprite is authored upright.
 //
-// `release` (0..1) is the launch sequence swinging the clamps open; `dome` asks
-// for the shield bubble (berthed at a finished station).
-function drawPad(game, pad, ink, home, flash, release, dome) {
+// `release` (0..1) is the launch sequence swinging the clamps open; `dome` is
+// the shield bubble's remaining CHARGE 0..1 (0 = don't draw it at all: not
+// berthed, or the station isn't finished); `building` says the build clock is
+// actually TICKING (berthed at an unfinished site) — the worksite fx gate on
+// it, because an abandoned site's clock is paused.
+function drawPad(game, pad, ink, home, flash, release, dome, building) {
   const p = padPos(pad);
   if (p.x < view.x0 - 500 || p.x > view.x1 + 500 ||
       p.y < view.y0 - 500 || p.y > view.y1 + 500) return;
@@ -3599,86 +4887,173 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
   // origin, which is what stops the structure floating over its own world.
   const groundY = pad.b.radius * (pad.rf - 1);
 
-  // DECK: a slab bridging the berth, carried on pylons that run down into the
-  // crust. The pylons are what seat it — a slab alone reads as a decal lying on
-  // the ground, and the moment there is daylight under it, it is a building.
-  const a0 = 0.35 + 0.65 * built(prog, 0);
+  // THE BUILD SCHEDULE — stage windows over the whole of CFG.DOCK_BUILD, in
+  // construction order: sink the foundations, crane the deck in plate by
+  // plate, unfold the clamps, raise the superstructure, then commission the
+  // systems. Overlapping slightly so the site never goes still, and every
+  // stage MOVES its piece into place (see bstage's note).
+  const sFound = bstage(prog, 0.02, 0.26);
+  const sDeck = bstage(prog, 0.24, 0.52);
+  const sClamp = bstage(prog, 0.50, 0.68);
+  const sSuper = bstage(prog, 0.66, 0.88);
+  const sDish = bstage(prog, 0.84, 0.94);
+  const sComm = bstage(prog, 0.90, 1.00);
+
   const deckY = R * 0.22;
-  // SUBSTRUCTURE — the body of the thing. A central block sunk into the crust
-  // with splayed legs either side of it: this is what carries the visual mass,
-  // and without it the station is a line with sticks on it. Filled dark and
-  // outlined rather than glowing, so it reads as MATERIAL against a lit deck.
+  const deckTh = R * 0.24;               // slab thickness — depth is structure
   const baseTop = deckY, baseBot = groundY + R * 0.1;
-  ctx.fillStyle = `rgba(10, 8, 20, ${0.75 * a0})`;
-  ctx.beginPath();
-  ctx.moveTo(-R * 0.46, baseTop); ctx.lineTo(R * 0.46, baseTop);
-  ctx.lineTo(R * 0.32, baseBot); ctx.lineTo(-R * 0.32, baseBot);
-  ctx.closePath(); ctx.fill();
-  ctx.strokeStyle = `rgba(${ink}, ${0.55 * a0})`;
-  ctx.lineWidth = R * 0.04;
-  ctx.stroke();
-  // Ribbing across the block — machinery, not a box.
-  ctx.lineWidth = R * 0.025;
-  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
-  for (let i = 1; i <= 2; i++) {
-    const y = baseTop + (baseBot - baseTop) * (i / 3);
-    const w = lerp(0.46, 0.32, i / 3);
-    ctx.beginPath(); ctx.moveTo(-R * w, y); ctx.lineTo(R * w, y); ctx.stroke();
-  }
-  // Splayed legs outboard of the block, planted on the crust.
-  ctx.strokeStyle = `rgba(${ink}, ${0.6 * a0})`;
-  ctx.lineWidth = R * 0.05;
-  for (const f of [-0.88, 0.88]) {
+
+  // FOUNDATION — a caisson RISING OUT OF THE CRUST, with splayed legs planted
+  // either side and a truss bracing them. This is the visual mass of the
+  // thing; without it the station is a line with sticks on it. Near-opaque
+  // hull fills (see HULL_* above): material, never hologram.
+  if (sFound > 0) {
+    const top = lerp(baseBot, baseTop, sFound);
+    ctx.fillStyle = `rgba(${HULL_DK}, 0.94)`;
     ctx.beginPath();
-    ctx.moveTo(f * R, deckY); ctx.lineTo(f * R * 0.7, baseBot);
+    ctx.moveTo(-R * 0.46, top); ctx.lineTo(R * 0.46, top);
+    ctx.lineTo(R * 0.32, baseBot); ctx.lineTo(-R * 0.32, baseBot);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = `rgba(${ink}, ${0.45 * sFound})`;
+    ctx.lineWidth = R * 0.03;
     ctx.stroke();
+    // Machinery ribs across the risen part of the block — seams, not glow.
+    ctx.lineWidth = R * 0.02;
+    ctx.strokeStyle = `rgba(${HULL_LT}, 0.9)`;
+    for (let i = 1; i <= 3; i++) {
+      const y = top + (baseBot - top) * (i / 4);
+      const w = lerp(0.45, 0.33, i / 4);
+      ctx.beginPath(); ctx.moveTo(-R * w, y); ctx.lineTo(R * w, y); ctx.stroke();
+    }
+    // A recessed service hatch on the caisson face.
+    ctx.fillStyle = `rgba(${HULL_MD}, 0.95)`;
+    ctx.fillRect(-R * 0.09, lerp(baseBot, baseTop + R * 0.08, sFound), R * 0.18, R * 0.1);
+    ctx.strokeStyle = `rgba(${ink}, ${0.3 * sFound})`;
+    ctx.lineWidth = R * 0.015;
+    ctx.strokeRect(-R * 0.09, lerp(baseBot, baseTop + R * 0.08, sFound), R * 0.18, R * 0.1);
+    // Splayed legs EXTENDING up from their footings as the stage runs, plus a
+    // cross-brace truss once they stand — daylight under the deck with real
+    // structure crossing it is most of what says "building".
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(${HULL_LT}, ${0.95 * sFound})`;
+    ctx.lineWidth = R * 0.055;
+    for (const f of [-0.88, 0.88]) {
+      const topX = f * R, topY = lerp(baseBot, deckY, sFound);
+      ctx.beginPath();
+      ctx.moveTo(f * R * 0.7, baseBot); ctx.lineTo(lerp(f * R * 0.7, topX, sFound), topY);
+      ctx.stroke();
+      // footing pad
+      ctx.fillStyle = `rgba(${HULL_DK}, 0.95)`;
+      ctx.fillRect(f * R * 0.7 - R * 0.06, baseBot - R * 0.02, R * 0.12, R * 0.05);
+    }
+    if (sFound > 0.7) {
+      const bA = (sFound - 0.7) / 0.3;
+      ctx.lineWidth = R * 0.028;
+      ctx.strokeStyle = `rgba(${HULL_LT}, ${0.8 * bA})`;
+      for (const f of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(f * R * 0.84, deckY + deckTh * 0.4);
+        ctx.lineTo(f * R * 0.44, baseBot - R * 0.04);
+        ctx.moveTo(f * R * 0.74, baseBot - R * 0.02);
+        ctx.lineTo(f * R * 0.46, deckY + deckTh * 0.6);
+        ctx.stroke();
+      }
+    }
   }
-  // The slab itself: a SOLID body with real thickness, not a line. A deck drawn
-  // as a stroke is a decal; a deck you can see the depth of is a structure, and
-  // that difference is most of whether the whole thing reads as built.
-  const deckG = ctx.createLinearGradient(0, deckY, 0, deckY + R * 0.24);
-  deckG.addColorStop(0, `rgba(${ink}, ${0.5 * a0})`);
-  deckG.addColorStop(1, `rgba(${ink}, ${0.1 * a0})`);
-  ctx.fillStyle = deckG;
-  ctx.beginPath();
-  ctx.moveTo(-R, deckY + R * 0.24); ctx.lineTo(-R * 0.97, deckY);
-  ctx.lineTo(R * 0.97, deckY); ctx.lineTo(R, deckY + R * 0.24);
-  ctx.closePath(); ctx.fill();
-  // The lit top edge — the surface the ship actually stands on.
-  ctx.strokeStyle = `rgba(${ink}, ${0.95 * a0})`;
-  ctx.lineWidth = R * 0.07;
-  ctx.beginPath();
-  ctx.moveTo(-R, deckY); ctx.lineTo(R, deckY);
-  ctx.stroke();
-  // Raised lips at each end, so the deck has a silhouette from the side.
-  ctx.lineWidth = R * 0.05;
-  for (const sx of [-1, 1]) {
+
+  // DECK — CRANED IN, PLATE BY PLATE. Five slab segments, each lowered into
+  // place across its own slice of the deck stage: a solid body with thickness
+  // and seams, not a stroke. The outermost segments carry the sloped end caps
+  // so the finished slab keeps its trapezoid silhouette.
+  const plates = 5;
+  const pw = (2 * R) / plates;
+  for (let i = 0; i < plates; i++) {
+    // Centre-out order (2,1,3,0,4 -> plate above the caisson lands first): the
+    // deck grows outward from the structure that carries it.
+    const order = [2, 1, 3, 0, 4].indexOf(i);
+    const pe = clamp(sDeck * (plates + 1.2) - order * 1.05, 0, 1);
+    if (pe <= 0) continue;
+    const e = pe * pe * (3 - 2 * pe);
+    const x0 = -R + pw * i;
+    const yo = -(1 - e) * R * 0.7;             // lowered in from above
+    const a = 0.55 + 0.45 * e;
+    ctx.fillStyle = `rgba(${HULL_MD}, ${0.96 * a})`;
     ctx.beginPath();
-    ctx.moveTo(sx * R, deckY); ctx.lineTo(sx * R * 0.99, deckY - R * 0.16);
+    if (i === 0) {
+      ctx.moveTo(x0 + pw, deckY + yo); ctx.lineTo(x0 + pw, deckY + deckTh + yo);
+      ctx.lineTo(x0 + R * 0.03, deckY + deckTh + yo); ctx.lineTo(x0 + R * 0.006, deckY + yo);
+    } else if (i === plates - 1) {
+      ctx.moveTo(x0, deckY + yo); ctx.lineTo(x0, deckY + deckTh + yo);
+      ctx.lineTo(x0 + pw - R * 0.03, deckY + deckTh + yo); ctx.lineTo(x0 + pw - R * 0.006, deckY + yo);
+    } else {
+      ctx.rect(x0, deckY + yo, pw, deckTh);
+    }
+    ctx.closePath(); ctx.fill();
+    // The lit working face — the top edge of THIS plate.
+    ctx.strokeStyle = `rgba(${ink}, ${0.9 * a})`;
+    ctx.lineWidth = R * 0.05;
+    ctx.beginPath();
+    ctx.moveTo(x0 + (i === 0 ? R * 0.006 : 0), deckY + yo);
+    ctx.lineTo(x0 + pw - (i === plates - 1 ? R * 0.006 : 0), deckY + yo);
     ctx.stroke();
+    // Seam against the previous plate, and the darker underside edge.
+    ctx.strokeStyle = `rgba(${HULL_DK}, ${0.9 * a})`;
+    ctx.lineWidth = R * 0.018;
+    if (i > 0) { ctx.beginPath(); ctx.moveTo(x0, deckY + yo + R * 0.015); ctx.lineTo(x0, deckY + deckTh + yo); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(x0, deckY + deckTh + yo); ctx.lineTo(x0 + pw, deckY + deckTh + yo); ctx.stroke();
   }
-  // TOUCHDOWN MARKINGS: a bullseye you land in the middle of, drawn on the deck
-  // and mostly framed by the parked hull rather than hidden under it.
-  ctx.lineWidth = R * 0.035;
-  ctx.strokeStyle = `rgba(${ink}, ${0.4 * a0})`;
-  ctx.beginPath(); ctx.arc(0, deckY, R * 0.34, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
-  ctx.beginPath(); ctx.arc(0, deckY, R * 0.2, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
-  // Hazard chevrons along the deck edge — the detail that makes it read as a
-  // working surface instead of a plate.
-  ctx.lineWidth = R * 0.03;
-  ctx.strokeStyle = `rgba(${ink}, ${0.3 * a0})`;
-  for (let i = -4; i <= 4; i++) {
-    const x = i * R * 0.2;
+  if (sDeck >= 1) {
+    // Raised lips at each end — the slab's side silhouette — and a conduit run
+    // along the deck face: the pipework detail that makes a surface read as
+    // serviced rather than as a plate.
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `rgba(${HULL_LT}, 0.95)`;
+    ctx.lineWidth = R * 0.05;
+    for (const sx of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(sx * R, deckY); ctx.lineTo(sx * R * 0.99, deckY - R * 0.16);
+      ctx.stroke();
+    }
+    ctx.lineWidth = R * 0.022;
+    ctx.strokeStyle = `rgba(${HULL_LT}, 0.85)`;
     ctx.beginPath();
-    ctx.moveTo(x - R * 0.05, deckY + R * 0.14); ctx.lineTo(x + R * 0.05, deckY + R * 0.05);
+    ctx.moveTo(-R * 0.92, deckY + deckTh * 0.55);
+    ctx.lineTo(R * 0.92, deckY + deckTh * 0.55);
     ctx.stroke();
+    for (const f of [-0.6, -0.15, 0.35, 0.75]) {   // pipe brackets
+      ctx.beginPath();
+      ctx.moveTo(f * R, deckY + deckTh * 0.42); ctx.lineTo(f * R, deckY + deckTh * 0.68);
+      ctx.stroke();
+    }
+  }
+  // TOUCHDOWN MARKINGS — PAINTED ON during commissioning: the bullseye and the
+  // hazard chevrons sweep in with sComm rather than fading, the one pass of
+  // the build that is brushwork instead of steelwork. Framed by the parked
+  // hull rather than hidden under it.
+  if (sComm > 0) {
+    const mA = ready ? 0.5 : 0.5 * sComm;
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = R * 0.035;
+    ctx.strokeStyle = `rgba(${ink}, ${mA})`;
+    ctx.beginPath(); ctx.arc(0, deckY, R * 0.34, Math.PI * 1.08, Math.PI * (1.08 + 0.84 * sComm)); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, deckY, R * 0.2, Math.PI * 1.12, Math.PI * (1.12 + 0.76 * sComm)); ctx.stroke();
+    ctx.lineWidth = R * 0.03;
+    ctx.strokeStyle = `rgba(${ink}, ${0.65 * mA})`;
+    const nCh = Math.round(9 * sComm);
+    for (let i = -4; i < -4 + nCh; i++) {
+      const x = i * R * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(x - R * 0.05, deckY + R * 0.14); ctx.lineTo(x + R * 0.05, deckY + R * 0.05);
+      ctx.stroke();
+    }
   }
 
   // CLAMP ARMS: struts rising OUTBOARD of the berth and leaning in over it —
   // the thing that actually holds a ship down, and what makes the silhouette
-  // read as a dock rather than as a platform. THE LAUNCH SWINGS THEM OPEN: the
-  // lean flips from inboard to outboard across `release`, which is the visible
-  // half of the release sequence and the reason it doesn't read as a pause.
+  // read as a dock rather than as a platform. THE BUILD UNFOLDS THEM from flat
+  // on the deck up over the berth (`sClamp`), and THE LAUNCH SWINGS THEM OPEN
+  // (`release`) — the same joints working in both directions, which is what
+  // makes them read as one mechanism.
   // THE DECK IS DIVIDED INTO ZONES and every tier's additions stay in theirs,
   // so a port that grows never turns into a pile: the CENTRE is the berth (the
   // ship is drawn there), the clamps are INBOARD of it, the gantry is the LEFT
@@ -3686,29 +5061,55 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
   // inside +/-1.0R, which is what lets the rings below enclose the structure at
   // every tier instead of slicing through it.
   ctx.lineCap = 'round';
-  const armA = built(prog, 0.16);
-  if (armA > 0) {
-    ctx.strokeStyle = `rgba(${ink}, ${0.8 * armA})`;
+  if (sClamp > 0) {
     for (let i = 0; i < T.pairs; i++) {
       const base = 0.5 + i * 0.22;                     // outer pairs step outward
       const h = 0.62 - i * 0.13;
-      ctx.lineWidth = R * (0.1 - i * 0.018);
+      const armW = R * (0.1 - i * 0.018);
       for (const sx of [-1, 1]) {
-        // the tip travels from leaning IN over the berth to thrown wide open
-        const tipX = sx * R * lerp(base * 0.72, base * 1.75, release);
-        const tipY = -R * lerp(h, h * 0.3, release);
-        const kx = sx * R * base * 1.12, ky = -R * (h * 0.55);
+        // Three poses, one path: STOWED flat on the deck -> CLOSED leaning in
+        // over the berth (the build, sClamp) -> OPEN thrown wide (the launch,
+        // release).
+        const cTipX = sx * R * base * 0.72, cTipY = -R * h;
+        const oTipX = sx * R * base * 1.75, oTipY = -R * h * 0.3;
+        const sTipX = sx * R * (base + 0.3), sTipY = deckY - R * 0.05;
+        let tipX = lerp(sTipX, cTipX, sClamp), tipY = lerp(sTipY, cTipY, sClamp);
+        const cKx = sx * R * base * 1.12, cKy = -R * h * 0.55;
+        let kx = lerp(sx * R * (base + 0.16), cKx, sClamp);
+        let ky = lerp(deckY - R * 0.03, cKy, sClamp);
+        if (release > 0) {
+          tipX = lerp(cTipX, oTipX, release); tipY = lerp(cTipY, oTipY, release);
+          kx = cKx; ky = cKy;
+        }
+        // Hydraulic ram from the deck to the elbow — the thin member offset
+        // behind the arm that says these joints are DRIVEN.
+        ctx.strokeStyle = `rgba(${HULL_LT}, ${0.9 * sClamp})`;
+        ctx.lineWidth = armW * 0.45;
+        ctx.beginPath();
+        ctx.moveTo(sx * R * (base + 0.14), deckY);
+        ctx.lineTo(kx, ky);
+        ctx.stroke();
+        // The arm itself, in ink — it is the working face of the whole machine.
+        ctx.strokeStyle = `rgba(${ink}, ${0.85 * sClamp})`;
+        ctx.lineWidth = armW;
         ctx.beginPath();
         ctx.moveTo(sx * R * base, deckY);
         ctx.lineTo(kx, ky);
         ctx.lineTo(tipX, tipY);
         ctx.stroke();
-        // A JOINT at the elbow and a GRIP PAD at the tip — an arm that is just
-        // a bent line is a stick; the two nodes are what make it read as a
-        // mechanism that could actually hold something down.
-        ctx.fillStyle = `rgba(${ink}, ${0.9 * armA})`;
+        // A turret base plate, a JOINT at the elbow and a GRIP PAD at the tip —
+        // an arm that is just a bent line is a stick; the nodes are what make
+        // it read as a mechanism that could actually hold something down.
+        ctx.fillStyle = `rgba(${HULL_MD}, ${0.96 * sClamp})`;
+        ctx.beginPath();
+        ctx.moveTo(sx * R * base - R * 0.09, deckY);
+        ctx.lineTo(sx * R * base + R * 0.09, deckY);
+        ctx.lineTo(sx * R * base + R * 0.06, deckY - R * 0.07);
+        ctx.lineTo(sx * R * base - R * 0.06, deckY - R * 0.07);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = `rgba(${ink}, ${0.9 * sClamp})`;
         ctx.beginPath(); ctx.arc(kx, ky, R * 0.055, 0, TAU); ctx.fill();
-        ctx.beginPath(); ctx.arc(sx * R * base, deckY, R * 0.05, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx * R * base, deckY - R * 0.03, R * 0.045, 0, TAU); ctx.fill();
         ctx.save();
         ctx.translate(tipX, tipY);
         ctx.rotate(Math.atan2(tipY - ky, tipX - kx));
@@ -3718,84 +5119,176 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
     }
   }
 
-  // GANTRY MAST + SERVICE BOOM — the left outboard end.
-  const mastA = T.mast ? built(prog, 0.42) : 0;
-  const mx = -R * 0.9, mt = deckY - R * T.mast;
-  if (mastA > 0) {
-    ctx.strokeStyle = `rgba(${ink}, ${0.72 * mastA})`;
-    ctx.lineWidth = R * 0.06;
-    ctx.beginPath(); ctx.moveTo(mx, deckY); ctx.lineTo(mx, mt); ctx.stroke();
+  // GANTRY MAST + SERVICE BOOM — the left outboard end. The mast TELESCOPES up
+  // out of the deck across its slice of the superstructure stage: a truss (two
+  // rails and a zigzag web), not a stick, because an open frame is what a
+  // gantry IS and the daylight through it is free depth.
+  const mastUp = T.mast ? sSuper : 0;
+  const mx = -R * 0.9;
+  const mt = deckY - R * T.mast * mastUp;
+  if (mastUp > 0) {
+    const ra = R * 0.045;                             // rail half-spacing
+    ctx.strokeStyle = `rgba(${HULL_LT}, ${0.95 * mastUp})`;
     ctx.lineWidth = R * 0.035;
-    for (let i = 1; i <= 3; i++) {                     // cross-bracing
-      const y = deckY + (mt - deckY) * (i / 4);
-      ctx.beginPath(); ctx.moveTo(mx, y); ctx.lineTo(mx + R * 0.13, y - R * 0.08); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mx - ra, deckY); ctx.lineTo(mx - ra, mt);
+    ctx.moveTo(mx + ra, deckY); ctx.lineTo(mx + ra, mt);
+    ctx.stroke();
+    ctx.lineWidth = R * 0.022;
+    const segs = Math.max(2, Math.round(5 * mastUp));
+    ctx.beginPath();
+    for (let i = 0; i < segs; i++) {
+      const y0 = deckY + (mt - deckY) * (i / segs);
+      const y1 = deckY + (mt - deckY) * ((i + 1) / segs);
+      ctx.moveTo(mx - ra, y0); ctx.lineTo(mx + ra, y1);
     }
+    ctx.stroke();
+    // Mast head block.
+    ctx.fillStyle = `rgba(${HULL_MD}, ${0.96 * mastUp})`;
+    ctx.fillRect(mx - R * 0.07, mt - R * 0.05, R * 0.14, R * 0.08);
+    ctx.strokeStyle = `rgba(${ink}, ${0.5 * mastUp})`;
+    ctx.lineWidth = R * 0.018;
+    ctx.strokeRect(mx - R * 0.07, mt - R * 0.05, R * 0.14, R * 0.08);
     // A SERVICE BOOM reaches back over the berth from the mast head — the piece
     // that makes a gantry look like it is doing something to the ship. It
     // withdraws with the clamps on a launch.
-    ctx.lineWidth = R * 0.05;
-    ctx.beginPath();
-    ctx.moveTo(mx, mt); ctx.lineTo(mx + R * lerp(0.5, 0.14, release), mt + R * 0.12);
-    ctx.stroke();
-  }
-  // CONTROL BLOCKS — the right outboard end. Lit windows are the one thing on
-  // this structure that says CREWED, so they only come on with the station.
-  const towerA = T.tower ? built(prog, 0.62) : 0;
-  if (towerA > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.7 * mastUp})`;
     ctx.lineWidth = R * 0.045;
-    for (let i = 0; i < T.tower; i++) {
-      const bx = R * (0.52 + i * 0.26), by = deckY;
-      const bw = R * 0.22, bh = R * (0.4 + i * 0.18);
-      ctx.fillStyle = `rgba(${ink}, ${0.26 * towerA})`;
-      ctx.strokeStyle = `rgba(${ink}, ${0.75 * towerA})`;
-      ctx.beginPath(); ctx.rect(bx, by - bh, bw, bh);
-      ctx.fill(); ctx.stroke();
-      ctx.fillStyle = `rgba(${ink}, ${(ready ? 0.85 : 0.2) * towerA})`;
-      for (let w = 0; w < 2; w++) {
-        ctx.fillRect(bx + bw * 0.24, by - bh + R * (0.08 + w * 0.14), bw * 0.22, R * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(mx, mt + R * 0.02);
+    ctx.lineTo(mx + R * lerp(0.5, 0.14, release) * mastUp, mt + R * 0.12);
+    ctx.stroke();
+    // FUEL TANKS at the mast's foot from tier 2 up — two squat cylinders with
+    // end caps, strapped down outboard. Plumbing, not glow: a working port
+    // stores something.
+    if (T.pairs > 1) {
+      for (let i = 0; i < 2; i++) {
+        const tx = mx + R * (0.16 + i * 0.2), tw = R * 0.16, th2 = R * 0.1;
+        const ty = deckY - th2;
+        ctx.fillStyle = `rgba(${HULL_MD}, ${0.96 * mastUp})`;
+        ctx.beginPath();
+        ctx.moveTo(tx + th2 * 0.5, ty);
+        ctx.lineTo(tx + tw - th2 * 0.5, ty);
+        ctx.arc(tx + tw - th2 * 0.5, ty + th2 * 0.5, th2 * 0.5, -Math.PI / 2, Math.PI / 2);
+        ctx.lineTo(tx + th2 * 0.5, ty + th2);
+        ctx.arc(tx + th2 * 0.5, ty + th2 * 0.5, th2 * 0.5, Math.PI / 2, -Math.PI / 2);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = `rgba(${HULL_LT}, ${0.9 * mastUp})`;
+        ctx.lineWidth = R * 0.02;
+        ctx.stroke();
+        // strap
+        ctx.beginPath();
+        ctx.moveTo(tx + tw * 0.5, ty - R * 0.008); ctx.lineTo(tx + tw * 0.5, ty + th2 + R * 0.008);
+        ctx.stroke();
       }
     }
   }
-  // COMMS DISH, on the mast head.
-  const dishA = T.dish ? built(prog, 0.78) : 0;
-  if (dishA > 0) {
-    ctx.strokeStyle = `rgba(${ink}, ${0.8 * dishA})`;
-    ctx.lineWidth = R * 0.045;
-    ctx.beginPath(); ctx.arc(mx, mt - R * 0.15, R * 0.17, Math.PI * 0.12, Math.PI * 0.88, true); ctx.stroke();
+  // CONTROL BLOCKS — the right outboard end, LOWERED INTO PLACE one after the
+  // other. Solid cabins with a roof lip and an aerial; the lit windows are the
+  // one thing on this structure that says CREWED, so they only come on with
+  // the station.
+  if (T.tower && sSuper > 0) {
+    for (let i = 0; i < T.tower; i++) {
+      const be = clamp(sSuper * (T.tower + 0.6) - i * 0.9, 0, 1);
+      if (be <= 0) continue;
+      const e = be * be * (3 - 2 * be);
+      const bx = R * (0.52 + i * 0.26), by = deckY;
+      const bw = R * 0.22, bh = R * (0.4 + i * 0.18);
+      const yo = -(1 - e) * R * 0.5;
+      ctx.fillStyle = `rgba(${HULL_MD}, ${0.96 * (0.6 + 0.4 * e)})`;
+      ctx.fillRect(bx, by - bh + yo, bw, bh);
+      ctx.strokeStyle = `rgba(${HULL_LT}, ${0.95 * e})`;
+      ctx.lineWidth = R * 0.025;
+      ctx.strokeRect(bx, by - bh + yo, bw, bh);
+      // roof lip + aerial on the taller block
+      ctx.strokeStyle = `rgba(${ink}, ${0.6 * e})`;
+      ctx.lineWidth = R * 0.03;
+      ctx.beginPath();
+      ctx.moveTo(bx - R * 0.015, by - bh + yo); ctx.lineTo(bx + bw + R * 0.015, by - bh + yo);
+      ctx.stroke();
+      if (i === T.tower - 1) {
+        ctx.lineWidth = R * 0.018;
+        ctx.beginPath();
+        ctx.moveTo(bx + bw * 0.75, by - bh + yo);
+        ctx.lineTo(bx + bw * 0.75, by - bh + yo - R * 0.14);
+        ctx.stroke();
+      }
+      // windows: glass slots, dark until the station is live
+      ctx.fillStyle = ready ? `rgba(${ink}, 0.85)` : `rgba(${HULL_DK}, 0.9)`;
+      for (let w = 0; w < 2; w++) {
+        ctx.fillRect(bx + bw * 0.24, by - bh + yo + R * (0.08 + w * 0.14), bw * 0.22, R * 0.06);
+      }
+    }
+  }
+  // COMMS DISH, on the mast head — UNFOLDING across its own late slice.
+  if (T.dish && sDish > 0) {
+    ctx.strokeStyle = `rgba(${ink}, ${0.8 * sDish})`;
+    ctx.lineWidth = R * 0.04;
+    const span = 0.38 * sDish;                        // the bowl opens as it deploys
+    ctx.beginPath();
+    ctx.arc(mx, mt - R * 0.15, R * 0.17, Math.PI * (0.5 - span), Math.PI * (0.5 + span), true);
+    ctx.stroke();
     ctx.beginPath(); ctx.moveTo(mx, mt); ctx.lineTo(mx, mt - R * 0.15); ctx.stroke();
+    // feed horn
+    ctx.lineWidth = R * 0.02;
+    ctx.beginPath(); ctx.moveTo(mx, mt - R * 0.15); ctx.lineTo(mx, mt - R * 0.26); ctx.stroke();
   }
 
-  // BEACONS: lamps along the deck edge, clear of where the hull sits. STEADY,
-  // never blinking — the calm rule the ship's own shield rim obeys. Motion on
-  // this structure belongs to the build, the launch and the one-shot bloom, and
-  // nowhere else. They are DARK until the station is live, which is the single
-  // clearest read of "is this thing finished".
+  // BEACONS: lamps along the deck edge, clear of where the hull sits. STEADY
+  // once the station is live, never blinking — the calm rule the ship's own
+  // shield rim obeys. The COMMISSIONING WALKS THEM ON one by one across the
+  // last stage of the build (part of the build event, which is allowed to
+  // move); from then on they hold. They are dark housings until their moment,
+  // which is the single clearest read of "is this thing finished".
   // SMALL AND CRISP — a bright core with a tight halo. An earlier pass used wide
   // soft blooms and they washed out the whole structure they were meant to be
   // lighting: at close zoom the pad was two glowing blobs with some sticks
   // between them. A runway light is a POINT.
   ctx.lineCap = 'butt';
-  const lampA = ready ? 1 : 0.18;
-  for (let i = 0; i < T.lights; i++) {
-    const f = T.lights === 1 ? 0 : (i / (T.lights - 1)) * 2 - 1;   // -1..1 across the deck
-    const lx = f * R * 0.88, ly = deckY - R * 0.06;
-    ctx.fillStyle = `rgba(${ink}, ${0.95 * lampA})`;
-    ctx.beginPath(); ctx.arc(lx, ly, R * 0.05, 0, TAU); ctx.fill();
-    ctx.globalCompositeOperation = 'lighter';
-    const rr = R * 0.2;
-    const lamp = ctx.createRadialGradient(lx, ly, 0, lx, ly, rr);
-    lamp.addColorStop(0, `rgba(${ink}, ${(home ? 0.7 : 0.5) * lampA})`);
-    lamp.addColorStop(1, `rgba(${ink}, 0)`);
-    ctx.fillStyle = lamp;
-    ctx.beginPath(); ctx.arc(lx, ly, rr, 0, TAU); ctx.fill();
-    ctx.globalCompositeOperation = 'source-over';
+  if (sDeck > 0.8) {
+    for (let i = 0; i < T.lights; i++) {
+      const f = T.lights === 1 ? 0 : (i / (T.lights - 1)) * 2 - 1;   // -1..1 across the deck
+      const lx = f * R * 0.88, ly = deckY - R * 0.06;
+      const on = ready ? 1 : clamp(sComm * (T.lights + 0.5) - i, 0, 1);
+      // The housing exists as soon as the deck does; the light is earned later.
+      ctx.fillStyle = on > 0.3 ? `rgba(${ink}, ${0.6 + 0.35 * on})` : `rgba(${HULL_LT}, 0.95)`;
+      ctx.beginPath(); ctx.arc(lx, ly, R * 0.05, 0, TAU); ctx.fill();
+      if (on > 0.3) {
+        ctx.globalCompositeOperation = 'lighter';
+        const rr = R * 0.2;
+        const lamp = ctx.createRadialGradient(lx, ly, 0, lx, ly, rr);
+        // NOT modulated by `home`. The deck lamps used to burn 40% hotter at a
+        // home port, which was compensation for the rose `ink`'s luminance back
+        // when the whole building was recoloured. With the structure always
+        // steel that is simply "the rest of the building changes when it's
+        // home" — the thing the flag rule exists to forbid. `home` now has
+        // exactly ONE reader on this pad: the flag block further down.
+        lamp.addColorStop(0, `rgba(${ink}, ${0.5 * on})`);
+        lamp.addColorStop(1, `rgba(${ink}, 0)`);
+        ctx.fillStyle = lamp;
+        ctx.beginPath(); ctx.arc(lx, ly, rr, 0, TAU); ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
   }
 
-  // UNDER CONSTRUCTION: a solid progress arc closing over the berth — the same
-  // helper-UI idiom as the winch (drawLatch) and the shotgun charge ring, solid
-  // and never dashed. Ten seconds of nothing visible is how a feature gets
-  // reported as broken.
+  // THE BUILD IS A WORKSITE, NOT A LOADING SCREEN. Two layers say "work is
+  // happening HERE, on THIS piece" for the whole of DOCK_BUILD:
+  //   - a constructor drone hovering at the active stage's anchor (bobbing on
+  //     game.time — the build is an event, so motion is sanctioned), and
+  //   - weld glints where it is working: brief bright points flickering on the
+  //     seam being joined. 'lighter' pass, tiny, reset after.
+  // The solid progress arc is drawn FIRST, under them — the same helper-UI
+  // idiom as the winch and the shotgun charge ring, and still the honest clock.
+  //
+  // GATED ON `building`, NOT on `!ready`: the build clock only ticks while
+  // BERTHED (leaving pauses it), and an unfinished site persists in game.docks
+  // — so a site abandoned at 40% must stand still, showing the arc and the
+  // dark lamp housings, not a drone welding seams that are making no progress.
+  // A paused build is not an event, and sparks over a stopped clock lie.
   if (!ready) {
+    // The progress arc — the honest clock, closing over the berth. Drawn for
+    // every unfinished site, working or paused.
     ctx.strokeStyle = `rgba(${ink}, 0.30)`;
     ctx.lineWidth = R * 0.06;
     ctx.beginPath(); ctx.arc(0, 0, R * 1.2, 0, TAU); ctx.stroke();
@@ -3804,6 +5297,54 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
     ctx.arc(0, 0, R * 1.2, -Math.PI / 2, -Math.PI / 2 + TAU * prog);
     ctx.stroke();
   }
+  if (building && !ready) {
+    // Where the work is right now, in build order.
+    let ax, ay;
+    if (prog < 0.26) { ax = Math.sin(game.time * 1.7) * R * 0.5; ay = lerp(baseBot, deckY, sFound); }
+    else if (prog < 0.52) {
+      const idx = [2, 1, 3, 0, 4][Math.min(4, Math.floor(sDeck * 5))];
+      ax = -R + pw * (idx + 0.5); ay = deckY;
+    } else if (prog < 0.68) {
+      const sx = Math.floor(game.time * 1.3) % 2 === 0 ? -1 : 1;
+      ax = sx * R * 0.56; ay = deckY - R * 0.35 * sClamp;
+    } else if (prog < 0.9) { ax = T.mast ? mx : R * 0.6; ay = T.mast ? mt : deckY - R * 0.3; }
+    else { ax = Math.sin(game.time * 2.2) * R * 0.34; ay = deckY; }
+
+    // The drone: a wedge of hull metal with a work light, riding a slow bob.
+    const bob = Math.sin(game.time * 3.1) * R * 0.05;
+    const dx2 = ax + Math.cos(game.time * 0.9) * R * 0.12;
+    const dy2 = ay - R * 0.34 + bob;
+    ctx.fillStyle = `rgba(${HULL_LT}, 0.95)`;
+    ctx.beginPath();
+    ctx.moveTo(dx2 - R * 0.055, dy2);
+    ctx.lineTo(dx2 + R * 0.055, dy2);
+    ctx.lineTo(dx2, dy2 + R * 0.07);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.beginPath(); ctx.arc(dx2, dy2 + R * 0.02, R * 0.02, 0, TAU); ctx.fill();
+
+    // Weld glints between drone and seam. Flicker off game.time; strictly an
+    // event effect, gone the frame the station is live.
+    const wk = Math.sin(game.time * 31) * Math.sin(game.time * 17.3);
+    if (wk > -0.4) {
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(ax, ay, 0, ax, ay, R * 0.14);
+      g.addColorStop(0, `rgba(255, 240, 200, ${0.55 + 0.35 * wk})`);
+      g.addColorStop(1, 'rgba(255, 240, 200, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(ax, ay, R * 0.14, 0, TAU); ctx.fill();
+      ctx.strokeStyle = `rgba(255, 246, 220, ${0.8 + 0.2 * wk})`;
+      ctx.lineWidth = R * 0.016;
+      ctx.beginPath();
+      for (let i = 0; i < 3; i++) {
+        const a = game.time * 13 + i * 2.1;
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax + Math.cos(a) * R * 0.07, ay + Math.sin(a) * R * 0.07);
+      }
+      ctx.stroke();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
 
   // A HOME PORT FLIES A BEACON, not a ring. It used to wear a full circle and
   // that was a mistake twice over: it sat concentric-ish with the shield dome
@@ -3811,23 +5352,32 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
   // a structure, and a ring says nothing about WHAT a home port is. A lit spire
   // does — it is the thing you can see from orbit, it caps the gantry at the
   // tiers that have one, and it competes with nothing.
+  // A HOME PORT IS A FLAG ON AN ORDINARY STATION (user call, 2026-08: "the only
+  // part of it that should change is a flag shows up and it's a red flag, the
+  // colour of the rest of it should not change"). The structure keeps its steel
+  // at every station, home or not — a dock is the same building either way, and
+  // repainting the whole thing said "different kind of place" when the truth is
+  // "same place, and it's yours". So the ROSE lives entirely in this block: the
+  // mast, the pennant and its glow, and nothing else on the pad ever reads it.
+  // (The two INSTRUMENTS still mark home in rose — that is their own grammar,
+  // where a colour is all a two-pixel blip has to work with.)
   if (home && ready) {
     const hx = T.mast ? mx : -R * 0.9;
     const hy = T.mast ? mt : deckY;
     const tip = hy - R * (T.mast ? 0.3 : 0.62);
-    ctx.strokeStyle = `rgba(${ink}, 0.95)`;
+    ctx.strokeStyle = `rgba(${DOCK_HOME}, 0.95)`;
     ctx.lineWidth = R * 0.05;
     ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx, tip); ctx.stroke();
     // The pennant, so the mark has a SHAPE and not just a colour.
-    ctx.fillStyle = `rgba(${ink}, 0.9)`;
+    ctx.fillStyle = `rgba(${DOCK_HOME}, 0.9)`;
     ctx.beginPath();
     ctx.moveTo(hx, tip); ctx.lineTo(hx + R * 0.34, tip + R * 0.11);
     ctx.lineTo(hx, tip + R * 0.22);
     ctx.closePath(); ctx.fill();
     ctx.globalCompositeOperation = 'lighter';
     const bg = ctx.createRadialGradient(hx, tip, 0, hx, tip, R * 0.55);
-    bg.addColorStop(0, `rgba(${ink}, 0.85)`);
-    bg.addColorStop(1, `rgba(${ink}, 0)`);
+    bg.addColorStop(0, `rgba(${DOCK_HOME}, 0.85)`);
+    bg.addColorStop(1, `rgba(${DOCK_HOME}, 0)`);
     ctx.fillStyle = bg;
     ctx.beginPath(); ctx.arc(hx, tip, R * 0.55, 0, TAU); ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
@@ -3850,7 +5400,22 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
   // Calm and steady, exactly like the ship's own shield rim: no dashes, no idle
   // motion, because a protective field that pulses reads as an alarm. The
   // detail is STRUCTURE — ribs, bands, emitter nodes — never animation.
-  if (dome) {
+  if (dome > 0) {
+    // THE DOME SHOWS WHAT IT HAS LEFT. Its charge is finite and never refills
+    // (CFG.DOCK_SHIELD), so a field down to its last fifth must not look like a
+    // fresh one — but the way to say that is INTENSITY, not motion and not
+    // size. The geometry stays exactly dockDomeR because that is the real
+    // collider (physics.updateDomeShield pushes off it): a dome drawn smaller
+    // than it pushes would be the mirror-drift trap in visual form. So the
+    // field simply gets thinner and dimmer as it is spent, keeping its calm.
+    // Floored well above zero so the last of it still reads as a shield rather
+    // than as a hairline that has already failed.
+    //
+    // The ramp is a POWER, not linear, so the eye leads the alarm: on a linear
+    // ramp CFG.DOCK_SHIELD_WARN (0.2) still looked about half strength while the
+    // cockpit bar was already red, and a warning the field contradicts is worse
+    // than no warning. At 1.5 the warn line lands near a third — visibly spent.
+    const chg = 0.3 + 0.7 * Math.pow(dome, 1.5);
     const Rc = pad.b.radius * pad.rf;            // body centre, in this frame
     // config.dockDomeR — the SAME expression physics.updateDomeShield pushes
     // things off. See the note on the table: drawn edge and pushing edge must
@@ -3866,15 +5431,15 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
 
     ctx.globalCompositeOperation = 'lighter';
     const g2 = ctx.createRadialGradient(0, groundY, dr * 0.2, 0, groundY, dr);
-    g2.addColorStop(0, 'rgba(110, 200, 255, 0.015)');
-    g2.addColorStop(0.7, 'rgba(120, 210, 255, 0.06)');
-    g2.addColorStop(0.93, 'rgba(150, 226, 255, 0.16)');
-    g2.addColorStop(1, 'rgba(190, 240, 255, 0.30)');
+    g2.addColorStop(0, `rgba(110, 200, 255, ${0.015 * chg})`);
+    g2.addColorStop(0.7, `rgba(120, 210, 255, ${0.06 * chg})`);
+    g2.addColorStop(0.93, `rgba(150, 226, 255, ${0.16 * chg})`);
+    g2.addColorStop(1, `rgba(190, 240, 255, ${0.30 * chg})`);
     ctx.fillStyle = g2;
     ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.fill();
     // RIBS + BANDS: the field is panelled, which is what makes it read as
     // engineered rather than as a blur. Static geometry, never motion.
-    ctx.strokeStyle = 'rgba(168, 232, 255, 0.13)';
+    ctx.strokeStyle = `rgba(168, 232, 255, ${0.13 * chg})`;
     ctx.lineWidth = R * 0.022;
     for (let i = 1; i < 6; i++) {
       const a = Math.PI + (i / 6) * Math.PI;
@@ -3889,11 +5454,18 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
     ctx.globalCompositeOperation = 'source-over';
     // The rim: a hard bright edge over a softer inner line, so the field has a
     // definite SURFACE. A single hairline reads as a drawn circle; two weights
-    // read as something with thickness that light is catching.
-    ctx.strokeStyle = 'rgba(120, 200, 240, 0.3)';
-    ctx.lineWidth = R * 0.1;
+    // read as something with thickness that light is catching. The OUTER weight
+    // is what thins as the charge goes — the surface stays, it just has less
+    // behind it.
+    ctx.strokeStyle = `rgba(120, 200, 240, ${0.3 * chg})`;
+    ctx.lineWidth = R * 0.1 * chg;
     ctx.beginPath(); ctx.arc(0, groundY, dr * 0.985, 0, TAU); ctx.stroke();
-    ctx.strokeStyle = 'rgba(206, 245, 255, 0.9)';
+    // The bright edge keeps its OWN floor rather than riding `chg`. Both the
+    // alpha and the outer weight thinning together left a near-empty dome
+    // resting on one 0.27-alpha hairline, which is fine over black sky and
+    // marginal over a lava world's lit limb — and this stroke is the SURFACE.
+    // The surface stays; what thins is everything behind it.
+    ctx.strokeStyle = `rgba(206, 245, 255, ${0.45 + 0.45 * dome})`;
     ctx.lineWidth = R * 0.035;
     ctx.beginPath(); ctx.arc(0, groundY, dr, 0, TAU); ctx.stroke();
     // THE BITE. Where the field just threw something off, it flares — an EVENT,
@@ -3904,7 +5476,11 @@ function drawPad(game, pad, ink, home, flash, release, dome) {
       const k = clamp(game.domeHitT / 0.3, 0, 1);
       const a = (game.domeHitA || 0) - up - Math.PI / 2;   // world bearing -> pad frame
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k})`;
+      // SCALED BY THE CHARGE, and this one matters most: the bite is the only
+      // in-world signal that the pool is draining, so a nearly-spent dome
+      // flaring exactly as bright as a fresh one reads backwards — the field
+      // looking healthiest at the moment it is being finished off.
+      ctx.strokeStyle = `rgba(220, 248, 255, ${0.75 * k * chg})`;
       ctx.lineWidth = R * 0.09 * k;
       ctx.beginPath();
       ctx.arc(0, groundY, dr, a - 0.5 * (1 - k) - 0.18, a + 0.5 * (1 - k) + 0.18);
@@ -3962,10 +5538,20 @@ function drawDocks(game) {
   for (const d of docks) {
     if (!d.b.alive) continue;
     const berthed = game.dock === d;
-    drawPad(game, d, game.home === d ? DOCK_HOME : DOCK_STEEL, game.home === d,
+    // ALWAYS STEEL. A home port is not a differently-coloured building, it is
+    // an ordinary station flying a rose flag (see drawPad's home block).
+    drawPad(game, d, DOCK_STEEL, game.home === d,
       berthed ? flash : 0,
       berthed ? release : 0,
-      berthed && d.t >= CFG.DOCK_BUILD);
+      // The dome is up only at a FINISHED station you are berthed at, and it is
+      // drawn at whatever charge is left in it (config.CFG.DOCK_SHIELD).
+      // `dockReady`, never an inline `t >= DOCK_BUILD`: that predicate is what
+      // the dome's PUSH, its draw and its cockpit gauge all key off, and a
+      // private copy in each is the mirror-drift trap that put dockDomeR in
+      // config.js in the first place.
+      berthed && dockReady(d)
+        ? clamp((d.hp ?? CFG.DOCK_SHIELD) / CFG.DOCK_SHIELD, 0, 1) : 0,
+      berthed && !dockReady(d));
   }
 }
 
@@ -3980,8 +5566,14 @@ function drawDocks(game) {
 // berth takes: from then on the pad's own art is the readout.
 function drawDockGuide(game) {
   const s = game.ship;
-  if (!s.alive || game.dock || !game.dockCand) return;
-  const b = game.dockCand;
+  if (!s.alive || game.dock) return;
+  // AUTOLAND shows its hand: while a pad is flying the ship in, the guide runs
+  // even before contact — a dashed approach line to the pad (helper/aiming UI,
+  // so dashes are the correct grammar) plus the ring naming who has the helm.
+  // A ship that starts steering itself with nothing on screen saying so reads
+  // as a stuck control, not a feature.
+  const auto = game.autoland && !game.dockCand ? game.autoland : null;
+  if (!auto && !game.dockCand) return;
   const z = Math.max(game.cam.zoom, 0.25);
   const f = clamp(game.dockT || 0, 0, 1);
   const rr = s.radius * 2.6 + 10 / z;
@@ -3989,6 +5581,14 @@ function drawDockGuide(game) {
   const col = gate ? '255, 190, 120' : '150, 230, 255';   // amber = refusing, cyan = taking
 
   ctx.save();
+  if (auto) {
+    const p = padPos(auto);
+    ctx.strokeStyle = `rgba(${col}, 0.5)`;
+    ctx.lineWidth = 1.5 / z;
+    ctx.setLineDash([7 / z, 6 / z]);
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
   ctx.lineCap = 'round';
   ctx.strokeStyle = `rgba(${col}, 0.22)`;
   ctx.lineWidth = 2.5 / z;
@@ -4002,14 +5602,23 @@ function drawDockGuide(game) {
   ctx.lineCap = 'butt';
   // One short line, above the ship so the hull never sits on it. The wording is
   // an INSTRUCTION, not a diagnosis — "LEVEL OFF" tells you what to do; "bad
-  // attitude" tells you what you did.
-  const label = gate === 'level' ? 'LEVEL OFF — ROCKETS DOWN'
+  // attitude" tells you what you did. 'crater' is the one no flying fixes, so
+  // its instruction is to MOVE.
+  const label = gate === 'small' ? 'NO ANCHORAGE — WORLD TOO SMALL FOR THIS CLASS'
+    : gate === 'crater' ? 'CRATERED GROUND — FIND CLEAR SURFACE'
+    // 'rubble': the station that stood here collapsed under the ship and the
+    // hull never left the ground (physics.removeDock's eviction). No flying
+    // fixes it either — the instruction is to LIFT, which is also the whole
+    // condition for clearing it.
+    : gate === 'rubble' ? 'STATION LOST — LIFT CLEAR TO REBUILD'
+    : gate === 'level' ? 'LEVEL OFF — ROCKETS DOWN'
     : gate === 'fast' ? 'TOO FAST — SETTLE'
+    : auto ? 'AUTOLAND — PAD HAS THE HELM'
     : 'DOCKING';
   const fs = 11 / z;
   ctx.font = `600 ${fs}px system-ui, sans-serif`;
   ctx.textAlign = 'center';
-  ctx.fillStyle = `rgba(${col}, ${gate ? 0.9 : 0.5 + 0.5 * f})`;
+  ctx.fillStyle = `rgba(${col}, ${gate ? 0.9 : auto ? 0.85 : 0.5 + 0.5 * f})`;
   ctx.fillText(label, s.x, s.y - rr - fs * 0.7);
   ctx.textAlign = 'left';
   ctx.restore();
@@ -4562,11 +6171,12 @@ function shipScars(tier, dmg) {
 // THE HULL IS SPEC DNA. Each specialization flies a visibly different ship,
 // and the difference says what that spec DOES before any HUD does:
 //   HAULER  — ring arms with orb pods. The arms ARE the orbit rock rack.
-//   SCOUT   — long thin swept wings carrying weapon hardpoints, fed by a rock
-//             intake and hopper. Grows by WINGSPAN and hardpoint count.
+//   SCOUT   — long thin swept wings, left BARE, on a needle fuselage carrying a
+//             slewing sensor gimbal. Grows by LENGTH and sensor gear.
 //   BRAWLER — a front-heavy wedge behind a ram prow and hinged deflector
-//             slabs, with a conspicuously BARE TAIL: st.shieldArc < PI covers
-//             the front arc only, so the weakness is drawn, not just tuned.
+//             slabs, with a conspicuously BARE TAIL: the spec has no shield at
+//             all and its one layer (the War Rack ram) is welded to the bow, so
+//             the weakness is drawn, not just tuned.
 // Keep the three silhouettes disjoint — ring arms are the hauler's signature
 // and reading the spec at a glance is the whole point of splitting them.
 //
@@ -4578,6 +6188,13 @@ function shipScars(tier, dmg) {
 // every tier, so the art is normalized to the FOOTPRINT (u = r / (frac ×
 // reach)), NOT to the body disc — the drawn size never moves when the
 // hitbox fraction is tuned.
+//
+// ACROSS SPECS that reach normalization is then multiplied by config.SHIP_VIS,
+// because equal REACH is not equal SIZE: a ladder whose reach comes from one
+// outlier (this scout's nose, this brawler's deflector brow) gets its whole body
+// shrunk to pay for it. The tables below are therefore the RAW art — read them
+// as shapes, not as sizes, and let SHIP_VIS do the matching. If you change one,
+// re-run render.measureShipArt(game) and re-bake SHIP_VIS from its `raw` column.
 //
 // HAULER — the original ladder:
 //   0 SKIFF       bare wedge, tail fins
@@ -4605,9 +6222,24 @@ const HAULER_TIERS = [
     spokes: [-0.55, -1.57, -2.60], collar: true, windows: true, spin: true },
 ];
 
-// SCOUT — a winged gun platform. It arms itself by swallowing rock, so the
-// silhouette reads bow to stern: intake maw -> hopper -> feed conduits out the
-// wing roots -> weapons on the wing hardpoints.
+// SCOUT — a winged SENSOR platform on a needle fuselage. The silhouette reads
+// bow to stern: gimballed sensor head -> intake maw -> hopper -> feed conduits
+// out the wing roots -> clean, bare wings.
+//
+// THE WINGS ARE BARE (2026-08 user call: "drop the guns on its wings"). The
+// pod-and-barrel hardpoints are gone, and with them `hard`, `coils` and
+// `longBarrel`. The class was already documented as escalating GUIDANCE rather
+// than armament — its kit is Nav Plotter, Lead Computer, Impact Warning and
+// Reflex Jink, and the gun count was frozen at four from tier 2 on — so the
+// hardware that actually carries the ladder (gimbal, dishes, fire-control
+// arrays, sensor booms, the crescent sail) is untouched, as is the evolving wing
+// planform that carries the silhouette.
+//
+// LOOSE END, kept visible rather than quietly papered over: the intake maw and
+// the hopper are still drawn, and they now feed NOTHING. "It arms itself by
+// swallowing rock" was this class's fiction and no longer has an endpoint. Either
+// give the swallowed rock a new destination or retire the intake — don't leave a
+// third reading where it is decoration.
 //
 // THE SCOUT GROWS LONGER, NOT WIDER (user design rule). Length runs 2.2 -> 4.4
 // while span only runs 1.6 -> 2.5, so the class sharpens into a needle instead
@@ -4616,29 +6248,22 @@ const HAULER_TIERS = [
 // grows slower than length for the same reason: the fuselage gets thinner in
 // proportion every tier.
 //
-// FOUR HARDPOINTS PER WING IS THE CEILING (user design rule). Tiers 4 and 5
-// carry the same four; T5 buys BETTER guns (longer coil barrels, wingtip
-// launchers) and better eyes, never more of them. A rack of eight read as a
-// weapon fence rather than a ship, and it left the top tier nothing to say.
-//
-// `hard` are fractions along the leading edge from root to tip. Layout inside
-// drawScoutHull is expressed in fractions of the hull's LENGTH, not in fixed
-// multiples of u, so a nose that nearly doubles across the ladder stretches the
-// fuselage instead of overrunning the gear mounted on it. `reach` is the nose
-// on every tier — the wingtip never out-reaches it, which is the rule that
-// keeps this class long.
-//   0 SPLINTER  bare wings, empty hardpoint nubs — a frame waiting to be armed
-//   1 DART      one pod per wing, rangefinder vanes, twin bells
-//   2 STILETTO  two pods per wing, spotter dish, feed conduits
-//   3 LONGSHOT  three pods, fire-control arrays, emitter posts, coil barrels
-//   4 FARSIGHT  four pods + wingtip launchers, twin hoppers, masts, triple bell
-//   5 ORACLE    same four guns, longer barrels, crescent fire-control sail
-// FOUR GUNS, TOTAL — two per wing, and that is the ceiling from tier 2 on
-// (user design rule). Everything after that is spent on the thing this class
-// actually is: TRACKING. Its kit is Nav Plotter, Lead Computer, Impact Warning
-// and Reflex Jink, so the ladder escalates GUIDANCE hardware, not armament —
-// a scout that grew by bolting on more barrels was telling you it was a
-// gunship, which is the brawler's job.
+// Layout inside drawScoutHull is expressed in fractions of the hull's LENGTH,
+// not in fixed multiples of u, so a nose that nearly doubles across the ladder
+// stretches the fuselage instead of overrunning the gear mounted on it. `reach`
+// is the nose on every tier — the wingtip never out-reaches it, which is the
+// rule that keeps this class long.
+//   0 SPLINTER  bare wings, one bell — a frame with nothing on it yet
+//   1 DART      rangefinder vanes, twin bells
+//   2 STILETTO  spotter dish, feed conduits, the gimbal appears
+//   3 LONGSHOT  fire-control arrays, emitter posts, chin, split drive
+//   4 FARSIGHT  twin hoppers, two dishes, four arrays, sensor booms, nacelles
+//   5 ORACLE    crescent fire-control sail, mast, winglets, blades
+// THE LADDER ESCALATES GUIDANCE, NOT ARMAMENT (user design rule). Its kit is Nav
+// Plotter, Lead Computer, Impact Warning and Reflex Jink, so what each rung buys
+// is a better view: a scout that grew by bolting on more barrels was telling you
+// it was a gunship, which is the brawler's job. That rule long predates the guns
+// coming off, and is the reason removing them cost the ladder nothing.
 //
 // The gimmick is the GIMBAL: a sensor head on the nose that physically slews to
 // wherever you are aiming, independent of where the hull is pointing. It is the
@@ -4652,30 +6277,29 @@ const HAULER_TIERS = [
 // raked scythe at T5. `tipChord` shrinks the whole way — the wing gets more
 // slender as it gets longer, which is what "refined" reads as.
 const SCOUT_TIERS = [
-  { bR: 0.26, nose: 1.25, rear: 0.95, span: 0.80, sweep: 0.26, hard: [],
+  { bR: 0.26, nose: 1.25, rear: 0.95, span: 0.80, sweep: 0.26,
     wing: { le: 0.52, root: 0.18, tipChord: 0.080 },
     eng: 1, core: 0, dish: 0, arrays: 0, hopper: 1, reach: 1.25 },
-  { bR: 0.28, nose: 1.50, rear: 1.05, span: 0.92, sweep: 0.27, hard: [0.62],
+  { bR: 0.28, nose: 1.50, rear: 1.05, span: 0.92, sweep: 0.27,
     wing: { le: 0.53, root: 0.19, tipChord: 0.084 },
     eng: 2, core: 1, dish: 0, arrays: 0, hopper: 1, vanes: true, reach: 1.50 },
-  { bR: 0.30, nose: 1.78, rear: 1.18, span: 1.02, sweep: 0.28, hard: [0.45, 0.80],
+  { bR: 0.30, nose: 1.78, rear: 1.18, span: 1.02, sweep: 0.28,
     wing: { le: 0.54, root: 0.20, kink: 0.55, kinkSweep: 0.05, tipChord: 0.088 },
     eng: 2, core: 1, dish: 1, arrays: 0, hopper: 1, vanes: true,
     conduit: true, gimbal: 1, reach: 1.78 },
-  { bR: 0.32, nose: 2.08, rear: 1.32, span: 1.14, sweep: 0.30, hard: [0.45, 0.80],
+  { bR: 0.32, nose: 2.08, rear: 1.32, span: 1.14, sweep: 0.30,
     wing: { le: 0.56, root: 0.22, kink: 0.50, kinkSweep: 0.07, tipChord: 0.094 },
     eng: 2, core: 2, dish: 1, arrays: 2, hopper: 1, vanes: true,
-    conduit: true, coils: 2, gimbal: 1, chin: true, split: true, reach: 2.08 },
-  { bR: 0.34, nose: 2.40, rear: 1.48, span: 1.28, sweep: 0.32, hard: [0.45, 0.80],
+    conduit: true, gimbal: 1, chin: true, split: true, reach: 2.08 },
+  { bR: 0.34, nose: 2.40, rear: 1.48, span: 1.28, sweep: 0.32,
     wing: { le: 0.58, root: 0.25, kink: 0.45, kinkSweep: 0.09, tipChord: 0.100, lerx: true },
     eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
-    conduit: true, coils: 2, gimbal: 2, chin: true, split: true,
+    conduit: true, gimbal: 2, chin: true, split: true,
     booms: true, nacelles: true, reach: 2.40 },
-  { bR: 0.36, nose: 2.75, rear: 1.65, span: 1.44, sweep: 0.34, hard: [0.45, 0.80],
+  { bR: 0.36, nose: 2.75, rear: 1.65, span: 1.44, sweep: 0.34,
     wing: { le: 0.60, root: 0.27, kink: 0.40, kinkSweep: 0.12, tipChord: 0.108, lerx: true, rake: true },
-    longBarrel: true,
     eng: 3, core: 2, dish: 2, arrays: 4, hopper: 2, vanes: true,
-    conduit: true, coils: 3, gimbal: 3, chin: true, blades: true,
+    conduit: true, gimbal: 3, chin: true, blades: true,
     sail: true, split: true, booms: true, nacelles: true,
     winglets: true, mast: true, bigSail: true, reach: 2.75 },
 ];
@@ -4684,9 +6308,9 @@ const SCOUT_TIERS = [
 // deflector slabs standing OFF the hull in front of it, and armour that thins
 // visibly toward the stern. `slabs` is the deflector count (0 at tier 0, then
 // 1/1/3/5/7) sitting on an arc of radius `slabR`, which is what sets `reach`
-// once it exists. The bare tail is drawn on EVERY tier — it mirrors
-// st.shieldArc < PI, and a fully-plated brawler would be the art lying about
-// the sim.
+// once it exists. The bare tail is drawn on EVERY tier — the spec has no
+// shield and its one layer (the ram) is welded to the bow, so a fully-plated
+// brawler would be the art lying about the sim.
 //   0 BRUISER   blunt prow, one bell, no deflector yet
 //   1 MAULER    single curved deflector plate on two hinges, twin bells
 //   2 BREAKER   toothed prow, impact ribs, kinetic sling rails
@@ -4784,14 +6408,25 @@ function shipReach(t) {
   return Math.max(t.nose, (t.armR || 0) + 0.20, t.bR + (t.fins ? 0.42 : 0.2));
 }
 
+// The size-match factor for the ladder currently being flown (config.SHIP_VIS):
+// what the reach normalization has to be multiplied by for this spec to read
+// the same SIZE as the hauler rather than merely the same outer reach. 1 on
+// the hauler, and 1 before a spec is chosen.
+function shipVisOf(game, tier) {
+  return shipVis(game.prog && game.prog.spec, tier);
+}
+
 // How far the DRAWN ship reaches from its center (world units). The shield
 // bubble and any effect that should wrap the art uses this, NOT the (smaller)
 // collision radius — a titan's bubble must clear its outer ring and nose.
 // Since the collision radius is SHIP_HIT_FRAC of the footprint, the footprint
-// is simply r / SHIP_HIT_FRAC — identical for every tier by construction.
-function shipVisualR(tier, r) {
-  void tier;
-  return r / SHIP_HIT_FRAC;
+// is r / SHIP_HIT_FRAC — identical for every TIER by construction, but no
+// longer for every SPEC: the size match scales the art past that, so the
+// scout's needle and the brawler's brow genuinely reach further out than the
+// hauler's ring does. Anything wrapping the art must ask here, not divide by
+// SHIP_HIT_FRAC itself.
+function shipVisualR(game, tier, r) {
+  return (r / SHIP_HIT_FRAC) * shipVisOf(game, tier);
 }
 
 // ---- shared hull pieces (all three specs) -----------------------------------
@@ -4869,34 +6504,161 @@ function drawShipScars(tier, dmg, cx, ex, ey, ss) {
   }
 }
 
-// Dispatch on the run's spec. Normalizes the art to the FOOTPRINT
-// (r / SHIP_HIT_FRAC), not the body disc: the collision circle covers
-// SHIP_HIT_FRAC of the drawn reach, uniformly on every tier and every spec.
+// Dispatch on the run's spec. TWO normalizations, in this order:
+//   1. to the FOOTPRINT (r / SHIP_HIT_FRAC), not the body disc — which is what
+//      keeps the collision circle a uniform fraction of the drawn reach across
+//      the six TIERS of any one ladder, so the hitbox feel never changes as you
+//      climb;
+//   2. then by config.SHIP_VIS, so the three SPECS read the same SIZE as each
+//      other and not merely the same outer reach. See the SHIP_VIS comment for
+//      why reach alone was the wrong match and what it cost the scout/brawler.
 function drawShipHull(game, tier, dmg, r) {
   const table = shipTierTable(game);
   const t = table[tier];
-  const u = r / (SHIP_HIT_FRAC * shipReach(t));
+  const u = r * shipVisOf(game, tier) / (SHIP_HIT_FRAC * shipReach(t));
+  // ONE stroke for every spec — see outlineW. `u` still differs per spec (it is
+  // that ladder's art scale and always was); the LINE WEIGHT no longer does.
+  const lw = outlineW(tier, r);
   ctx.lineJoin = 'round';
-  if (table === SCOUT_TIERS) drawScoutHull(game, t, tier, dmg, u, outlineW(game, u));
-  else if (table === BRAWLER_TIERS) drawBrawlerHull(game, t, tier, dmg, u, outlineW(game, u));
-  // The hauler keeps its original expression so its shipped art is untouched.
-  else drawHaulerHull(game, t, tier, dmg, u, Math.max(1.1, 0.07 * u));
+  if (table === SCOUT_TIERS) drawScoutHull(game, t, tier, dmg, u, lw);
+  else if (table === BRAWLER_TIERS) drawBrawlerHull(game, t, tier, dmg, u, lw);
+  else drawHaulerHull(game, t, tier, dmg, u, lw);
   ctx.lineJoin = 'miter';  // back to the canvas default other draws assume
 }
 
-// Hull outline width. The floor has to be in SCREEN PIXELS, not world units:
-// the old `max(1.1, 0.07 * u)` floored at 1.1 WORLD units, and since u shrinks
-// with the tier, that floor won the argument on every small hull — a tier-0
-// ship is ~12 world units long, so a 1.1-unit outline was most of what you
-// could see of it. Dividing the floor by the camera zoom keeps the line from
-// vanishing when zoomed out without letting it eat the ship when zoomed in.
-function outlineW(game, u) {
-  // The PROPORTIONAL term carries the weight; the screen floor only stops the
-  // line vanishing when zoomed out. Fixing the old world-unit floor, the
-  // proportional term got dropped from 0.07 to 0.055 at the same time, which
-  // overshot in the other direction and left every hull under-drawn — this
-  // sits slightly above the original weight, with the floor still in pixels.
-  return Math.max(1.0 / game.cam.zoom, 0.085 * u);
+// ONE STROKE WEIGHT, SHARED BY ALL THREE SPECS, AND IT IS THE HAULER'S (2026-08
+// user call: "the outlines of the scout and brawler seem larger than the
+// hauler, which looks good" — said twice, because the first fix did not go far
+// enough).
+//
+// The bug was never the coefficient, it was the UNIT. Every spec's stroke was
+// `k x u`, and `u` is an ART-SPACE unit — `r x vis / (SHIP_HIT_FRAC x reach)` —
+// so it means something different on each ladder: the reaches run 1.85 (hauler),
+// 2.75 (scout) and 2.56 (brawler) at tier 5, and SHIP_VIS scales two of them up
+// on top of that. Equal coefficients over unequal units are unequal strokes.
+// Dropping 0.085 -> 0.07 narrowed it and could not close it: the brawler still
+// drew 1.20-1.29x the hauler's line at tiers 3-5 and the scout 1.07-1.16x at
+// 2-4.
+//
+// So the stroke stops being derived per spec at all. It is computed ONCE off the
+// HAULER's art unit for that tier and handed to whichever hull is drawing, which
+// is both the literal reading of the note above and the only version with no
+// residual: all three hulls are matched to the same apparent size by SHIP_VIS,
+// so one line weight is the correct line weight for all of them.
+//
+// The hauler's own expression is reproduced EXACTLY, floor included, so its
+// shipped art does not move by a pixel. That 1.1 is a WORLD-unit floor and it
+// binds on the first three tiers — a known wart, kept deliberately: it is what
+// the hauler has always drawn and what the user is calling correct.
+function outlineW(tier, r) {
+  const u = r / (SHIP_HIT_FRAC * shipReach(HAULER_TIERS[tier]));
+  return Math.max(1.1, 0.07 * u);
+}
+
+// Draw one spec's hull into SOMEBODY ELSE'S context, in that context's current
+// transform, at collision radius `r`. The module owns a single `ctx` that every
+// draw helper closes over, so borrowing it means swapping it and putting it back
+// on the way out — `finally`, because a throw mid-hull would otherwise leave the
+// whole renderer pointed at a scratch canvas and the game would go black.
+// Dev-only (measureShipArt and the size-comparison sheet); the frame loop never
+// calls it. `game.prog.spec` picks the ladder, so callers set it and restore it.
+export function drawShipHullTo(target, game, tier, r, dmg = 0) {
+  const saveCanvas = canvas, saveCtx = ctx;
+  canvas = target.canvas; ctx = target;
+  try { drawShipHull(game, tier, dmg, r); }
+  finally { canvas = saveCanvas; ctx = saveCtx; }
+}
+
+// THE DERIVATION TOOL BEHIND config.SHIP_VIS. Draws all three ladders off-screen
+// at a fixed collision radius and measures the INK each hull actually lays down,
+// so the size-match constants are measured rather than felt.
+//
+// THE METRIC IS THE RADIUS OF GYRATION of the ink: the RMS distance of drawn
+// material from the hull's own ink centroid. Two simpler metrics were measured
+// and rejected against a side-by-side of all three ladders:
+//   BOUNDING BOX (geometric mean of w,h) over-inflates the brawler — the
+//     hauler's box is mostly the AIR inside its ring arms while the brawler's is
+//     solid, so matching boxes made the brawler read as the biggest ship by far.
+//   INK AREA (sqrt of painted pixels) over-stretches the scout — a needle with
+//     little ink has to grow enormously to match a ring-armed hauler's pixel
+//     count, and at T3 it came out half again as long as anything else.
+// Gyration sits between them and, tellingly, AGREES with ink area on the solid
+// brawler (1.27 vs 1.26 at T5) while refusing to blow the thin scout up. It is
+// also the principled reading of "apparent size": how far a shape's substance
+// spreads from its own centre.
+//
+// Returns per spec and tier: `size` (gyration AS CURRENTLY DRAWN), `raw` (that
+// with the live SHIP_VIS divided back out), plus the ink box and pixel count for
+// context. BAKE FROM `raw`, READ `size` TO CHECK YOUR WORK — raw is the
+// un-matched art and does not move when SHIP_VIS does, so
+// SHIP_VIS[spec][tier] = hauler.raw / spec.raw is a fixed point re-derivable from
+// any state, while `size` should come out EQUAL across specs once the table is
+// right. Dev-only — nothing in the frame loop calls it. Re-run and re-bake
+// whenever a tier table changes:
+//   copy(JSON.stringify(render.measureShipArt(game)))
+export function measureShipArt(game) {
+  const R = 100, N = 900;
+  // Fail LEGIBLY. This is driven by hand from devtools, so the two ways it can
+  // go wrong — called before the game object exists, or a browser that won't
+  // hand out another 2D context — should say which rather than surfacing as a
+  // TypeError from somewhere deep in a hull draw.
+  if (!game || !game.prog) throw new Error('measureShipArt: needs the live game object (try window.game)');
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const mctx = cv.getContext('2d', { willReadFrequently: true });
+  if (!mctx) throw new Error('measureShipArt: could not get a 2D context for the scratch canvas');
+  const spec0 = game.prog.spec;
+  const out = {};
+  try {
+    for (const spec of ['hauler', 'scout', 'brawler']) {
+      game.prog.spec = spec;
+      out[spec] = [];
+      for (let tier = 0; tier < 6; tier++) {
+        mctx.setTransform(1, 0, 0, 1, 0, 0);
+        mctx.clearRect(0, 0, N, N);
+        mctx.save();
+        mctx.translate(N / 2, N / 2);
+        // The hull draws in the ship's local frame at world scale; at r = 100 a
+        // reach of ~3 fits the 900px sheet with room to spare on every tier.
+        drawShipHullTo(mctx, game, tier, R);
+        mctx.restore();
+        const px = mctx.getImageData(0, 0, N, N).data;
+        let x0 = N, y0 = N, x1 = -1, y1 = -1, ink = 0, sx = 0, sy = 0;
+        for (let y = 0; y < N; y++) {
+          for (let x = 0; x < N; x++) {
+            // Alpha 24/255: ignore the faint outer haze of a glow so the box is
+            // the SHIP, not its bloom.
+            if (px[(y * N + x) * 4 + 3] < 24) continue;
+            ink++; sx += x; sy += y;
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }
+        }
+        // Second pass for the gyration: the centroid has to exist first, and it
+        // is the INK's centroid, not the origin — a hull whose mass sits forward
+        // of its own pivot (every brawler) would otherwise read as larger for
+        // being off-centre, which is a position, not a size.
+        const cx = sx / ink, cy = sy / ink;
+        let s2 = 0;
+        for (let y = 0; y < N; y++) {
+          for (let x = 0; x < N; x++) {
+            if (px[(y * N + x) * 4 + 3] < 24) continue;
+            s2 += (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          }
+        }
+        const size = Math.sqrt(s2 / ink);
+        out[spec].push({
+          tier, w: x1 - x0 + 1, h: y1 - y0 + 1,
+          size: +size.toFixed(2),
+          raw: +(size / shipVis(spec, tier)).toFixed(2), ink,
+          reach: +(Math.max(x1 - N / 2, N / 2 - x0, y1 - N / 2, N / 2 - y0)).toFixed(1),
+        });
+      }
+    }
+  } finally {
+    game.prog.spec = spec0;
+  }
+  return out;
 }
 
 // ---- SCOUT: winged gun platform ---------------------------------------------
@@ -4984,7 +6746,6 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
   const leX0 = at(wLE), leY0 = bR * 0.82;                // wing leading edge, root
   const leX1 = at(wLE - t.sweep), leY1 = tipY;            // ...and tip
   const teX0 = at(wLE - wRoot);                           // root trailing edge
-  const barrel = (t.longBarrel ? 0.19 : t.coils ? 0.16 : 0.12) * len;
 
   // ======================= DRIVE SECTION (trails aft) =======================
   ctx.save();
@@ -5193,9 +6954,10 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
     ctx.lineTo(teX0, m * bR * 0.95);
     ctx.closePath(); ctx.fill(); ctx.stroke();
   }
-  // Feed conduits: the rock path from hopper out to the hardpoints, drawn as
-  // a seam down each wing root. This is the ONE line that makes the intake and
-  // the guns read as one system rather than two unrelated greebles.
+  // Feed conduits: a seam down each wing root, carrying the hopper's line out
+  // into the wing. (It used to terminate at the wing guns, which is what tied
+  // the intake and the armament into one system; the guns are gone — see below —
+  // so it now reads as structural plumbing, which is all it ever drew.)
   if (t.conduit) {
     ctx.strokeStyle = 'rgba(43, 52, 68, 0.55)'; ctx.lineWidth = lw * 0.8;
     for (const m of [1, -1]) {
@@ -5206,39 +6968,19 @@ function drawScoutHull(game, t, tier, dmg, u, lw) {
     }
   }
 
-  // Wing hardpoints: a pod with a forward rail barrel. Tier 0 gets bare nubs —
-  // the empty mount is the promise that this class becomes a gun. FOUR TOTAL
-  // is the ceiling: two per wing.
-  const mounts = t.hard.length ? t.hard : [0.55];
-  for (const f of mounts) {
-    const px = lerp(leX0, leX1, f), py = lerp(leY0, leY1, f);
-    for (const m of [1, -1]) {
-      const y = m * py;
-      if (!t.hard.length) {
-        ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-        ctx.beginPath(); ctx.arc(px, y, 0.055 * u, 0, TAU); ctx.fill(); ctx.stroke();
-        continue;
-      }
-      ctx.fillStyle = SHIP_GREY; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-      ctx.beginPath();
-      ctx.moveTo(px, y - 0.038 * u); ctx.lineTo(px + barrel, y - 0.026 * u);
-      ctx.lineTo(px + barrel, y + 0.026 * u); ctx.lineTo(px, y + 0.038 * u);
-      ctx.closePath(); ctx.fill(); ctx.stroke();
-      if (t.coils) {
-        ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw * 0.9;
-        for (let i = 1; i <= t.coils; i++) {
-          const cx2 = px + barrel * (i / (t.coils + 1));
-          ctx.beginPath();
-          ctx.moveTo(cx2, y - 0.062 * u); ctx.lineTo(cx2, y + 0.062 * u);
-          ctx.stroke();
-        }
-      }
-      ctx.fillStyle = SHIP_HULL; ctx.strokeStyle = SHIP_DARK; ctx.lineWidth = lw;
-      ctx.beginPath(); ctx.arc(px, y, 0.088 * u, 0, TAU); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = SHIP_CYAN;
-      ctx.beginPath(); ctx.arc(px + barrel, y, 0.024 * u, 0, TAU); ctx.fill();
-    }
-  }
+  // THE WINGS CARRY NOTHING (2026-08 user call: "for the scout drop the guns on
+  // its wings"). There were pod-and-barrel hardpoints here — a rail barrel with
+  // coil rings, a mount pod and a lit muzzle, two per wing from tier 2, and bare
+  // nubs at tier 0 standing in as empty mounts.
+  //
+  // The class survives losing them, and arguably reads truer for it: the ladder
+  // was ALREADY documented as escalating GUIDANCE rather than armament (gimbal,
+  // dishes, fire-control arrays, sensor booms, the crescent sail), with the gun
+  // count deliberately frozen at four from tier 2 on. What changed the
+  // silhouette tier to tier was never the pods; it was the wing planform — the
+  // cranked leading edge, the root extension, the raked scythe — and all of that
+  // is untouched. The wing is now a clean aerofoil, which is what makes the
+  // sensor gear on it read.
 
   // SENSOR BOOMS: long slim spars reaching forward off the wing roots, each
   // ending in a lit pod well ahead of the leading edge. They stretch the
@@ -5600,9 +7342,9 @@ function drawBrawlerHull(game, t, tier, dmg, u, lw) {
   ctx.lineTo(pBase, pw * 0.92);
   ctx.closePath(); ctx.fill(); ctx.stroke();
 
-  // THE BARE TAIL. War Plating covers the front arc only (st.shieldArc < PI),
-  // so the stern is drawn as exposed frame on every tier — the spec's weakness
-  // is visible from the hull alone, not just in the shield's coverage wedge.
+  // THE BARE TAIL. The brawler carries no shield and its only layer — the War
+  // Rack ram — is welded to the bow, so the stern is drawn as exposed frame on
+  // every tier: the spec's weakness is visible from the hull alone.
   // The fill has to read as EXPOSED FRAME, not as a hole. At rgba(20,26,38) it
   // was within a few points of empty space, so on the small tiers — where the
   // tail is most of the ship — the stern vanished into the background and its
@@ -6059,7 +7801,8 @@ function ramFieldColor(fill) {
   // just inside the blue family the whole way.
   return '#' + h(mix(0x3d, 0x86)) + h(mix(0x8e, 0xc2)) + 'ff';
 }
-// THE SIX BARRIER TIERS, as rocklets — and the tier is DENSITY, not rank
+// THE TWELVE BARRIER TIERS (config.RAM_TIERS — TWO PER RANK), as rocklets — and
+// the tier is DENSITY, not rank
 // (config.ramTier): feed the ram and the pack visibly climbs from loose
 // rubble toward a fused wall; let hits spend it and it comes back apart. War
 // Rack's rank only caps how high the ladder goes. Same fixed-seed discipline
@@ -6073,19 +7816,48 @@ function ramFieldColor(fill) {
 // each rocklet's own. Fresh arrays on every rebuild; the rebuild jolt below
 // seeds them ringing, which is the tier-change animation in both directions.
 let ramRocksCache = null, ramRocksKey = '';
-function ramTierRocks(tier, halfW, depth) {
+function ramTierRocks(tier, halfW, depth, stone) {
   const key = tier + ':' + ((halfW * 4) | 0) + ':' + ((depth * 4) | 0);
   if (ramRocksCache && ramRocksKey === key) return ramRocksCache;
   const rng = mulberry32(0x52414d00 + tier);
   // ROWS DEEP, NOT ROCKS BIG (user design rule). A higher tier packs MORE
-  // rocks in MORE rows — one row of rubble at tiers 1-2, a double course at
-  // 3-4, a triple wall at 5-6 — with the individual stones staying modest
-  // (the 0.8 factor below trims them ~20% from the single-row sizing). Depth
-  // already grows with tier in config.ramPlate, which is what gives the extra
-  // rows room without the pack outgrowing its physics footprint.
-  const rows = tier <= 2 ? 1 : tier <= 4 ? 2 : 3;
-  const perRow = 2 + tier;                 // 3 across at tier 1 -> 8 at tier 6
-  const packK = 0.68 + tier * 0.13;        // gaps when loose -> overlap when fused
+  // rocks in MORE rows — one row of rubble at tiers 1-4, a double course at
+  // 5-8, a triple wall at 9-12. Depth already grows with tier in
+  // config.ramPlate, which is what gives the extra rows room without the pack
+  // outgrowing its physics footprint.
+  //
+  // THE STONE IS GIVEN, NOT SOLVED FOR (user design law: *a ram is smashed
+  // together, at the expense of width*). `stone` is `depth x RAM_STONE` off the
+  // plate, and config solved `halfW` so that `perRow` of them sit shoulder to
+  // shoulder at `ramPack` spacing — so the layout here only has to place them.
+  // It used to be the other way round: the radius was `min(depth/2, a slot
+  // term)` against an independently-ramped width, so on a wide slab the depth
+  // cap won, the stones came out far smaller than their slots and the pack hung
+  // apart with daylight through it. Nothing here may re-derive the size from the
+  // width again, and the ONLY per-stone freedom is the jitter below — which is
+  // deliberately bounded at +-10% and paid for by `ramPack`'s margin, so even
+  // the two smallest neighbours still touch.
+  //
+  // TWELVE BANDS, SAME ENDPOINTS (config.RAM_TIERS). Every ramp below was
+  // rewritten to reach at tier 12 exactly what it used to reach at tier 6, so a
+  // maxed ram is the wall it always was and the extra granularity is entirely in
+  // the steps between. perRow steps every OTHER band on purpose — a stone count
+  // that ticked up twelve times would put 14 across the bow; the in-between bands
+  // are read in the packing, the courses and the slab's own growth instead.
+  // The consequence worth knowing: the EVEN bands reproduce the old six-band
+  // ladder exactly (2->old 1, 4->old 2, ... 12->old 6), so every rank still tops
+  // out on the build it always did and the odd bands are pure new ground — the
+  // same course, looser packed and on a slightly smaller slab.
+  //
+  // BAND 1 IS A PAIR (2026-08 user call: "the lowest visual level should be just
+  // 2 rocks"). It is the only count the old ladder never had a rung for — the
+  // emptiest a ram can be while still being a ram — and it is what makes the
+  // bottom of the ladder read as two boulders you dragged onto the nose rather
+  // than as a thin course of something. Everything above it lands on the old
+  // rungs: the ramp is anchored at 2 and 8 over eleven steps, which puts the six
+  // even bands on exactly 3/4/5/6/7/8.
+  const rows = ramRows(tier);
+  const perRow = ramPerRow(tier);              // 2 at band 1 -> 8 at 12
   const slot = (halfW * 2) / perRow;
   const rocks = [];
   for (let row = 0; row < rows; row++) {
@@ -6098,8 +7870,7 @@ function ramTierRocks(tier, halfW, depth) {
     const inRow = perRow - (row % 2);
     for (let i = 0; i < inRow; i++) {
       const t = inRow === 1 ? 0 : (i / (inRow - 1)) * 2 - 1;   // -1..1 across
-      const r = 0.8 * Math.min(depth * 0.5,
-        slot * 0.5 * packK * (0.55 + 0.5 * (1 - Math.abs(t) * 0.55)) * (0.85 + rng() * 0.3));
+      const r = stone * (0.9 + rng() * 0.2);
       rocks.push({
         // The SLIGHT ARC (user design call): the course bows around the bow —
         // centre stones lead, the wings sweep back — so the wall reads as a
@@ -6107,7 +7878,10 @@ function ramTierRocks(tier, halfW, depth) {
         // 1.7 exponent keeps the middle flat and folds only the outer stones.
         x: rowX + (rng() - 0.5) * depth * 0.18
           - Math.pow(Math.abs(t), 1.7) * depth * 0.55,
-        y: t * (halfW - r * 0.7) + (t === 0 ? shift * 0.4 : shift * (t > 0 ? -1 : 1) * 0.4),
+        // The inset rides the BASE stone, not this stone's jittered radius —
+        // it is the same term config solved `halfW` against, and reading the
+        // jitter here would walk the seats apart by up to a tenth of a stone.
+        y: t * (halfW - stone * 0.7) + (t === 0 ? shift * 0.4 : shift * (t > 0 ? -1 : 1) * 0.4),
         r,
         rot: rng() * TAU,
         ring: rockJagRing(rng, Math.max(6, r)),
@@ -6154,12 +7928,16 @@ function drawShip(game) {
   // shield bubble, the tier-morph scale and the engine-flame anchors all need
   // them, and re-deriving a speed/thrust-dependent value per pass lets the
   // passes disagree inside a single frame.
-  const uG = r / (SHIP_HIT_FRAC * shipReach(tG));
+  // Same two normalizations drawShipHull applies, in the same order — the
+  // footprint, then the spec size match. They MUST agree: this is the scale the
+  // bubble and the flame anchors are laid out in, and drawShipHull is the scale
+  // the hull is actually drawn in.
+  const uG = r * shipVisOf(game, tier) / (SHIP_HIT_FRAC * shipReach(tG));
   const splitX = tG.split ? scoutSplit(game, (tG.nose + tG.rear) * uG).gap : 0;
   // THE BUBBLE HAS TO WRAP THE WHOLE SHIP, and on a split hull the drive
   // section is trailing outside the footprint the un-split art occupied. Add
   // the stand-off, or the drive flies naked behind its own shield.
-  const visR = shipVisualR(tier, r) + splitX;   // how far the drawn art reaches
+  const visR = shipVisualR(game, tier, r) + splitX;   // how far the drawn art reaches
 
   if (tier !== morphTierSeen) {
     // First frame ever doesn't morph; every later tier change (up OR down —
@@ -6201,9 +7979,12 @@ function drawShip(game) {
     // collision radius — on a titan those differ by almost 2x. It tracks the
     // tier-morph scale so it grows with the art instead of snapping.
     const R = visR * morphScale * 1.08 + 5 / z;
-    // BRAWLER's War Plating covers the FRONT ARC only (st.shieldArc < PI), so
-    // every shield visual — glow, recharge sweep, absorb ripple — is confined
-    // to the covered wedge and the bare tail reads at a glance.
+    // A PARTIAL shield (st.shieldArc < PI) confines every visual — glow,
+    // recharge sweep, absorb ripple — to the covered wedge, so a bare tail
+    // reads at a glance. No live ability produces one: SCOUT's Phase Screen is
+    // the only shield in the catalog and it is a full wrap, and BRAWLER's
+    // front-arc War Plating is deleted. The wedge path stays because it is the
+    // drawn half of `st.shieldArc`, which physics still honours.
     //
     // THE EDGES MUST FEATHER, NOT CUT. A single pie clip ended the glow on two
     // dead-straight radial lines, which read as a UI mask laid over the ship —
@@ -6367,8 +8148,8 @@ function drawShip(game) {
     const plate = ramPlate(game.st, s.ram);
     if (plate) {
       const z = game.cam.zoom;
-      const { back, gap, depth, halfW, fill, tier } = plate;
-      const rocksC = ramTierRocks(tier, halfW, depth);
+      const { back, gap, depth, halfW, stone, fill, tier } = plate;
+      const rocksC = ramTierRocks(tier, halfW, depth, stone);
       // ---- spring + band + mattress, one clock ----
       if (game.time !== ramSprStamp) {
         const dt = ramSprStamp < 0 ? 0 : Math.max(0, Math.min(0.1, game.time - ramSprStamp));
@@ -6474,8 +8255,10 @@ function drawShip(game) {
         const ca = Math.cos(slabAng), sa = Math.sin(slabAng);
         // 70% of the old 4 + tier count (user design pass: at gameplay scale
         // a rig per rear stone was too busy at the top tiers) — 4 rigs low,
-        // 7 at tier 6, floored so the low tiers keep a real fan.
-        const nPick = Math.max(3, Math.round((4 + tier) * 0.7));
+        // 7 at the top of the ladder, floored so the low tiers keep a real fan.
+        // Halved per band with config.RAM_TIERS at twelve, so the endpoints are
+        // the ones that were tuned.
+        const nPick = Math.max(3, Math.round((4 + tier * 0.5) * 0.7));
         const picks = bR.map((_, i) => i)
           .sort((a, b) => (bR[a].x + bP[a]) - (bR[b].x + bP[b]))
           .slice(0, Math.min(bR.length, nPick))
@@ -6548,7 +8331,7 @@ function drawShip(game) {
         ctx.arc(Math.cos(rk.shade) * rk.r * 0.75, Math.sin(rk.shade) * rk.r * 0.75,
           rk.r * 0.95, 0, TAU);
         ctx.fill();
-        if (rk.r > depth * 0.35) {
+        if (rk.r > stone) {
           ctx.fillStyle = 'rgba(0,0,0,0.28)';
           ctx.beginPath();
           ctx.arc(rk.r * 0.3, -rk.r * 0.2, rk.r * 0.3, 0, TAU);
@@ -6783,6 +8566,36 @@ function drawShip(game) {
 
   ctx.restore();
 
+  // GUARD SLING: a beam onto every orbiter currently lunging to block, so the
+  // interception reads as the SHIP slinging the rock into the path rather than
+  // the rock swimming there under its own power (user design rule, 2026-08).
+  // Drawn BEFORE the held beams so a held rock's beam lands on top — the thing
+  // in your hand is the thing you are steering, and it should own the fore-
+  // ground. Each emitter roots on the bearing to its own defender, the same way
+  // the winch roots on its target rather than on the cursor.
+  // Iterates game.orbit, never a flag on loose bodies: a rock that has left the
+  // ring is never consulted, so a stale guardBeam cannot paint a beam into
+  // empty space.
+  if (game.orbit.length) {
+    for (const b of game.orbit) {
+      if (!b.guardBeam) continue;
+      const ga = Math.atan2(b.y - s.y, b.x - s.x);
+      // GOLD, NOT CYAN (user call, 2026-08). It shipped the same cyan as the
+      // hold beam on the reasoning that it is the same tractor doing the same
+      // job — but the two fire at once (you are holding a rock exactly when the
+      // screen is working for you), and two cyan beams off one hull read as one
+      // confused effect rather than two systems. Hue is the only channel free to
+      // separate them: they share an emitter, a width band and a moment.
+      // CYAN IS WHAT YOU ARE STEERING, GOLD IS WHAT THE SHIP IS DOING FOR YOU —
+      // the same split the hover rings already make (cyan = the left button's
+      // promise, warm = the right button's).
+      // Dimmer and thinner than the hold beam still: the bite is suppressed (the
+      // rock is being shoved, not gripped for a throw) and the width runs narrow
+      // so a full ring of four defenders does not wash out the cockpit view.
+      drawBeam(game, s.x + Math.cos(ga) * bodyR, s.y + Math.sin(ga) * bodyR, b,
+        '#ffcf4d', 0.55, 0, false, 0.6);
+    }
+  }
   if (game.held || game.latch) {
     // Beams sprout from the DRAWN hull edge (bodyR), not the larger hitbox
     const ang = Math.atan2(game.aim.y - s.y, game.aim.x - s.x);
@@ -7671,7 +9484,7 @@ function drawMinimap(game) {
     // sun-centred plot, but "nothing, ever" has no instrument exceptions.
     if (!dk.b.alive || dk.b.hidden) continue;
     const isHome = game.home === dk;
-    const done = dk.t >= CFG.DOCK_BUILD;
+    const done = dockReady(dk);
     const p = padPos(dk);
     const dx = p.x - fx, dy = p.y - fy;
     const d = Math.hypot(dx, dy) || 1;
@@ -8271,10 +10084,11 @@ export function drawStarMap(game) {
       ctx.lineWidth = 1;
       ctx.strokeRect(x - rr - 2.5, y - rr - 2.5, (rr + 2.5) * 2, (rr + 2.5) * 2);
     }
-    // NAMES: worlds and landmarks only. MOONS ARE ICONS — they carry no
-    // individual names in this game, so a zoomed-in family printed the same
-    // MOON OF OSSIA four times in a ring around a disc already labelled OSSIA.
-    // Their host names them; the readout strip names them on demand.
+    // NAMES: worlds and landmarks only. MOONS ARE ICONS — they DO carry
+    // individual names now (MOON_NAMES in world.js), but a zoomed-in family printing
+    // four name labels in a ring around a disc already labelled OSSIA is the
+    // clutter this rule exists to prevent. The readout strip names them on
+    // demand (labelsItself keys off TYPE, so naming moons can't leak in here).
     if (labelsItself(game, b)) {
       ctx.font = `600 ${big ? 11 : 9.5}px system-ui, sans-serif`;
       ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(10, 4, 26, 0.9)';
@@ -8301,10 +10115,13 @@ export function drawStarMap(game) {
   // way to learn it exists.
   //
   // Rose for HOME, and deliberately against this file's "a UI construct is
-  // painted in chrome ink" note: HOME already means rose on the pad sprite and
-  // on the dial, and one meaning wearing three colours across three instruments
-  // is worse than one construct borrowing a semantic hue. Other stations get
-  // the steel ring with no label — findable, not shouting.
+  // painted in chrome ink" note: HOME already means rose on the dial, and on the
+  // pad it is the colour of the flag the station flies — one meaning wearing
+  // three colours across three instruments is worse than one construct
+  // borrowing a semantic hue. The instruments mark home in rose OUTRIGHT, unlike
+  // the pad's structure, because a two-pixel blip has only its colour to work
+  // with. Other stations get the steel ring with no label — findable, not
+  // shouting.
   if (game.docks) for (const dk of game.docks) {
     if (!dk.b.alive || dk.b.hidden) continue;   // hidden shows NOTHING, chart included
     const isHome = game.home === dk;
@@ -9191,7 +11008,18 @@ export function render(game) {
   // so walking 15,000 bodies to `continue` past the dormant ones was work the
   // LOD had already done. The dormant guard stays for the null-list fallback.
   for (const b of (game.bodies._awake || game.bodies)) {
-    if (b.alive && !b.dormant && bodyOnScreen(b)) drawBody(game, b);
+    if (b.alive && !b.dormant && bodyOnScreen(b)) {
+      // SUBMERGED bodies dim: a rock inside an ocean's water column (physics
+      // stamps b.inSea) draws at half strength, so it reads as under the sea
+      // instead of floating on a blue disc. The alpha is restored either way.
+      if (b.inSea) {
+        ctx.globalAlpha = 0.5;
+        drawBody(game, b);
+        ctx.globalAlpha = 1;
+      } else {
+        drawBody(game, b);
+      }
+    }
   }
   // GRAVEL draws into the SAME instanced batch as the rocks, right before the
   // flush. It is the whole reason the tier is affordable to LOOK at: thousands
@@ -9405,10 +11233,15 @@ export function render(game) {
       const canOrbit = canStow(st, hov) && game.orbit.length < st.maxOrbiters && !hov.fort;
       // RAM FOOD (brawler): right-click would crush this rock into the ram.
       // Its own hue — the armed-amber the game already uses for "this rock is
-      // ammunition" — because for this spec the green auto-orbit promise is
-      // never true (no ring) and cyan only promises a HOLD. Same gate the
-      // absorb itself runs (canStow + room in the ram), so the ring can't
-      // promise a crush that absorbIntoRam would refuse.
+      // ammunition" — because for this spec the green STOW promise is never true
+      // (no ring) and cyan only promises a HOLD. Same gate the absorb itself
+      // runs (canStow + room in the ram), so the ring can't promise a crush that
+      // absorbIntoRam would refuse.
+      // GREEN AND AMBER ARE NOW THE SAME BUTTON — since the stow moved to
+      // right-click (2026-08) both hues promise what RIGHT mouse does with this
+      // rock, and cyan promises what LEFT mouse does. Keep it that way: the two
+      // spec-specific hues reading as one grammar is what makes the ring
+      // legible without a legend.
       const canRam = st.frontRam && st.ramCap > 0 && game.ship.ram < st.ramCap
         && canStow(st, hov) && !hov.fort;
       const canGrab = canLift(st, hov) && !hov.fort;

@@ -9,6 +9,111 @@ entry expecting it to stick; fix the PR title or description instead.
 Releases predating this file are on the
 [Releases page](https://github.com/mark3apps/solar-slinger/releases).
 
+## [0.8.0] — 2026-08-06
+
+### Changes
+
+- **The sun is a place, not a light source** ([#172](https://github.com/mark3apps/solar-slinger/pull/172)) — @mark3apps
+  The star is radius 4,800 — it fills the screen from a lane out and keeps filling it all the way in. It was a flat cream disc wearing four soft blobs, seven wire-thin prominence…
+- **Three game modes, and a title screen that asks one thing at a time** ([#171](https://github.com/mark3apps/solar-slinger/pull/171)) — @mark3apps
+  Adds CLASSIC / PEACEFUL / EXPLORATION and restructures the main menu around them.
+- **The brawler's ram is made of rock, and rock has its own scale** ([#170](https://github.com/mark3apps/solar-slinger/pull/170)) — @mark3apps
+  Every proportion of the brawler's ram was a fraction of the hull — right at the top of the ladder, absurd at the bottom. A tier-0 brawler is 5.4 drawn units, so a full rank-1 ram…
+- **Docking overhaul: ground rules, autoland, respawn-berthed, constructed pad art** ([#168](https://github.com/mark3apps/solar-slinger/pull/168)) — @mark3apps
+  Fixes the reported docking-station bugs and reworks the station's look and build:
+- **Shift achievement distribution later; toast descriptions up front; fix frame-one survey freebie** ([#169](https://github.com/mark3apps/solar-slinger/pull/169)) — @mark3apps
+  Achievement distribution shifted later: removed 7 of the trivial/easy-tier achievements (~15% of that pool — passive discovery flags and menu-open freebies like…
+- **Alien overhaul: nest-only spawns, half-speed grabbers, close throws, slow regroup, world avoidance, no crash bounty** ([#167](https://github.com/mark3apps/solar-slinger/pull/167)) — @mark3apps
+  User-requested alien behavior overhaul — six asks, all in ai.js / config.js / physics.js (+ a dead-state cleanup in main.js, doc refresh in docs/world-content.md):
+- **Saved solar systems: name a world and fly it again** ([#166](https://github.com/mark3apps/solar-slinger/pull/166)) — @mark3apps
+  A run's world is now keepable and replayable:
+- **Give each ship spec its own per-tier name ladder** ([#164](https://github.com/mark3apps/solar-slinger/pull/164)) — @mark3apps
+  shipStats.shipName used one generic tier-name list for every spec — ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'] — which was literally the hauler's own…
+- **Slow planet and moon rotation speed by ~1/2** ([#165](https://github.com/mark3apps/solar-slinger/pull/165)) — @mark3apps
+  Planets already had one flat rotation slowdown (CFG.PLANETSPINSLOW); this halves it again — 0.5 → 0.25 — stacking on top of the existing size-based day-length falloff.
+- **Fix three stale spots in the packaging docs (post-v0.7.0 docs-keeper audit)** ([#163](https://github.com/mark3apps/solar-slinger/pull/163)) — @mark3apps
+  A docs-keeper audit after the v0.7.0 release found three pre-existing stale spots in the packaging docs (not caused by the release):
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.7.0...v0.8.0
+
+## [0.7.0] — 2026-08-06
+
+### Changes
+
+- **Deepen ship-felt planet gravity: 2× wells plus size-graded surface weight** ([#158](https://github.com/mark3apps/solar-slinger/pull/158)) — @mark3apps
+  Two gravity-feel changes to the ship's gravity path (both ship-only — rails, moon orbits, thrown rocks, aliens and damage never read them), plus one forecast bug fix found in…
+- **Planet visual overhaul: unique archetype faces, terran burn deck, ocean worlds, moon-orbit floors, per-archetype names** ([#161](https://github.com/mark3apps/solar-slinger/pull/161)) — @mark3apps
+  Worlds now run up to 3x their authored radius, and this PR makes them look and behave like it — four user-directed features plus the fixes they surfaced.
+- **Rework the HAULER: split carry from screen, fix three broken cards** ([#159](https://github.com/mark3apps/solar-slinger/pull/159)) — @mark3apps
+  The hauler's kit and pool had accumulated three abilities that were inert, unreachable, or actively harmful. This reworks the spec around one idea: the ring is a rack you fill…
+- **Add the berth vista: a finished dock zooms the camera out, launch zooms back** ([#162](https://github.com/mark3apps/solar-slinger/pull/162)) — @mark3apps
+  After landing and the base finishing its build, the camera now slowly zooms out to a much wider view of the surroundings — and the moment the launch sequence starts spooling, it…
+- **Moon variety: seven new archetypes, per-type names, hostile-surface skids, wider size spread** ([#160](https://github.com/mark3apps/solar-slinger/pull/160)) — @mark3apps
+  The moon roster grows from six archetypes to thirteen, every moon now carries a seeded name, and the sky gets ~30% more size variety. One mechanic per type, each riding an…
+- **Skip gas giants in the ambient world-wear loop** ([#157](https://github.com/mark3apps/solar-slinger/pull/157)) — @mark3apps
+  The ambient world-wear block in src/world.js (replenishWorld) iterated game.reg.planets gated only on alive / nearShip / fort — it never skipped ptype: 'gas'. An off-view gas…
+- **Ship scale: +50% top tier, per-spec size match and per-spec mass** ([#156](https://github.com/mark3apps/solar-slinger/pull/156)) — @mark3apps
+  Four related passes over ship size, weight and hull art. Every constant here is derived or measured — the reasoning for each is in the code comments and docs/design-laws.md.
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.6.0...v0.7.0
+
+## [0.6.0] — 2026-08-05
+
+### Changes
+
+- **QA: fix the 9 high and 6 medium findings from the post-merge review** ([#155](https://github.com/mark3apps/solar-slinger/pull/155)) — @mark3apps
+  Closes #137, #138, #139, #140, #141, #142, #143, #144, #145, #146, #147, #148, #149, #150, #151.
+- **The shield is SCOUT-ONLY — delete the brawler's War Plating** ([#154](https://github.com/mark3apps/solar-slinger/pull/154)) — @mark3apps
+  The BRAWLER shouldn't have a shield ability at all, so warPlating (War Plating) is deleted.
+- **Bigger sky: 2x sun, grown worlds, seeded per-run layouts** ([#136](https://github.com/mark3apps/solar-slinger/pull/136)) — @mark3apps
+  A full growth-and-variety pass on world generation, all user-directed:
+- **Add SHIP SYSTEMS instrument cluster to the cockpit HUD** ([#135](https://github.com/mark3apps/solar-slinger/pull/135)) — @mark3apps
+  Adds a bottom-right instrument cluster to the flight HUD showing the ship's live build and flight state, styled as an aircraft instrument panel rather than a plain stat table.
+- **Rework ship loadouts and rebuild the brawler around a density-tiered ram** ([#134](https://github.com/mark3apps/solar-slinger/pull/134)) — @mark3apps
+  No innate abilities. The brawler's hidden spec-DNA ram floor (ramMul 1.35 / ramArmor 0.85 in shipStats) is gone — every spec starts at the universal base and differs only by kit…
+- **fix(devtest): stage dock tests against live state, not worldgen's** ([#133](https://github.com/mark3apps/solar-slinger/pull/133)) — @mark3apps
+  window.mechTest was failing 4/31 on main since #132 — T15 "dock: three gates latch a berth" plus the three dependent dock tests.
+- **Balance: temper damage scaling sky-wide, re-price hp and throw speeds** ([#132](https://github.com/mark3apps/solar-slinger/pull/132)) — @mark3apps
+  Damage in Solar Slinger scaled linearly with impactor mass (dmg = K·(closing−thresh)²·mass·dom), and mass spans 10 → 650,000 — so damage output ran away as things got bigger and…
+- **QA fix: never name a hidden world in a dock message** ([#122](https://github.com/mark3apps/solar-slinger/pull/122)) — @mark3apps
+  Closes #106.
+- **QA fix: restore game.paused after mechTest, and make T23 clean up in a finally** ([#126](https://github.com/mark3apps/solar-slinger/pull/126)) — @mark3apps
+  Closes #110.
+- **QA fix: put the `draws` tripwire in mechTest's console table** ([#121](https://github.com/mark3apps/solar-slinger/pull/121)) — @mark3apps
+  Closes #105.
+- **QA fix: drop gravel that never found room, instead of burying it** ([#123](https://github.com/mark3apps/solar-slinger/pull/123)) — @mark3apps
+  Closes #107.
+- **QA fix: name the failure the stormStrength floor actually guards** ([#125](https://github.com/mark3apps/solar-slinger/pull/125)) — @mark3apps
+  Closes #109.
+- **QA fix: correct the hullsWorld cache comment's claim about railed rock** ([#124](https://github.com/mark3apps/solar-slinger/pull/124)) — @mark3apps
+  Closes #108.
+- **QA fix: correct the resetBodyIds rationale — the ship carries no id** ([#127](https://github.com/mark3apps/solar-slinger/pull/127)) — @mark3apps
+  Closes #111.
+- **QA fix: an automatic hull rank must not disarm "Limped In"** ([#128](https://github.com/mark3apps/solar-slinger/pull/128)) — @mark3apps
+  Closes #112.
+- **QA fix: delete FIELD_LANE_APART, a lane rule the network form retired** ([#129](https://github.com/mark3apps/solar-slinger/pull/129)) — @mark3apps
+  Closes #114.
+- **QA fix: remove the manifold's dead, always-zero per-point depth** ([#130](https://github.com/mark3apps/solar-slinger/pull/130)) — @mark3apps
+  Closes #115.
+- **QA fix: re-derive three stale ~7,600 field-rock citations in src/** ([#120](https://github.com/mark3apps/solar-slinger/pull/120)) — @mark3apps
+  Closes #113.
+- **QA fix: collide shaped rock against the outline it is drawn as (finding #102 on PR #83)** ([#119](https://github.com/mark3apps/solar-slinger/pull/119)) — @mark3apps
+  Automated fix for the day's one HIGH-severity QA finding. Draft on purpose — a human still needs to approve. This is the largest of today's three and it touches physics.js, so the…
+- **QA fix: gate the deflector's tells on one predicate (finding #103 on PR #99)** ([#118](https://github.com/mark3apps/solar-slinger/pull/118)) — @mark3apps
+  Automated fix for a QA finding. Draft on purpose — a human still needs to approve.
+- **QA fix: pin the mechTest harness view (finding #104 on PR #100)** ([#117](https://github.com/mark3apps/solar-slinger/pull/117)) — @mark3apps
+  Automated fix for a QA finding. Draft on purpose — needs a human decision, and this one is not a routine "bug fixed" PR. See the honesty note below.
+- **Give SCOUT and BRAWLER their own hull ladders** ([#101](https://github.com/mark3apps/solar-slinger/pull/101)) — @mark3apps
+  The player hull was one spec-agnostic table (SHIPTIERS), so all three specialisations flew the same ship. It's now three ladders dispatched on game.prog.spec via shipTierTable.
+- **Make mechTest genuinely bit-repeatable, cover the pilot card, and answer #85's measurement** ([#100](https://github.com/mark3apps/solar-slinger/pull/100)) — @mark3apps
+  Closes #96. Closes #85. (#91 was already fixed on main by d989c81; verified and closed separately.)
+- **QA sweep: 11 issues — dock gating, fracture hp, chart leak, duplicate achievement id, stale docs, and docking/storm/parry coverage** ([#99](https://github.com/mark3apps/solar-slinger/pull/99)) — @mark3apps
+  Closes #77, #84, #86, #87, #88, #89, #90, #92, #93, #94, #95, #97.
+- **Delete the util-side half of the old shaped-rock collider** ([#98](https://github.com/mark3apps/solar-slinger/pull/98)) — @mark3apps
+  2f5162c replaced the sampled radial collider with rockshape.js's SAT narrow phase, but the util.js half of it survived as runtime-dead code. Six exports were imported by nothing…
+
+**Full changelog:** https://github.com/mark3apps/solar-slinger/compare/v0.5.0...v0.6.0
+
 ## [0.5.0] — 2026-08-03
 
 ### Changes

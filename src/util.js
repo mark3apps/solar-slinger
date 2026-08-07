@@ -1,7 +1,8 @@
 export const TAU = Math.PI * 2;
 
-// Is a full-screen shell modal up? Settings, Controls, Credits, Achievements
-// and the system Chart each get their own flag because each is its own panel,
+// Is a full-screen shell modal up? Settings, Controls, Credits, Achievements,
+// the saved-Systems library and the system Chart each get their own flag
+// because each is its own panel,
 // but every gate in the game treats them identically — the sim freezes, player
 // input is blocked, the music ducks, the trajectory forecast hides. Kept here
 // (a leaf) so main, hud, music and render can all ask without importing each
@@ -13,7 +14,8 @@ export const TAU = Math.PI * 2;
 // open. Freezing is also what lets it be a chart at all rather than a live
 // display: the positions you click are the positions you saw.
 export const shellModal = (g) =>
-  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen || g.mapOpen);
+  !!(g.settingsOpen || g.controlsOpen || g.creditsOpen || g.achievementsOpen
+    || g.systemsOpen || g.mapOpen);
 
 // Can anything alien find the ship right now? Two unrelated causes, one
 // answer: the dust/shroud cloak (a LOCAL hiding place, computed with release
@@ -31,12 +33,22 @@ export const senseBlind = (g) => !!(g.dustCloak || g.stormBlind);
 // Wanderer IS landable on purpose, and every dock event prints the place's
 // name across the screen (main.js EVENT_MSGS), so the one instrument nobody
 // guarded would have spent the relay questline's payoff the moment you set
-// down. Kept here, a leaf, for the same reason as senseBlind: physics.js's
-// five flags and main.js's sixth must not each carry their own copy of the
-// rule. Matches render.js's dwarf-star readout wording.
-export const placeName = (b) =>
+// down. Kept here, a leaf, for the same reason as senseBlind: every flag in
+// physics.js, world.js and main.js that prints a place must not each carry its
+// own copy of the rule — the leak set was under-enumerated once already (six
+// dock/launch flags routed, five more sites left naming it: the aurora, the
+// ember seed and its cleanse, the lost home port and the skim death), and each
+// site that spells the test out by hand is another chance to miss one.
+// Matches render.js's dwarf-star readout wording.
+//
+// `fallback` is for the sites where "this world" would be a LIE about WHICH
+// world is meant: a RETIRED dock is by definition not the one you are standing
+// on, a lost home port wants naming as your home, and the skim death can be
+// against a star or a rock. The hidden rule stays in one place; only the
+// nameless-body wording is per-site.
+export const placeName = (b, fallback) =>
   (b.hidden ? 'an unresolved mass' : b.name) ||
-  (b.type === 'moon' ? 'this moon' : 'this world');
+  fallback || (b.type === 'moon' ? 'this moon' : 'this world');
 
 export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 export function lerp(a, b, t) { return a + (b - a) * t; }
@@ -92,6 +104,29 @@ export function mulberry32(seed) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+// The SUGGESTED name for a saved solar system: one word off each list, picked
+// deterministically off the world seed (XOR-offset so this stream never tracks
+// another consumer of the same seed). The same world therefore proposes the
+// same name wherever it is offered — the pause panel's save form, the game-over
+// form, and the blank-field fallback — and the player types over it freely.
+// Longest combination is 19 chars, safely inside the 24-char name fields.
+const SYS_NAME_A = [
+  'Amber', 'Ancient', 'Ashen', 'Burning', 'Copper', 'Crimson', 'Distant',
+  'Drifting', 'Frozen', 'Gilded', 'Golden', 'Hollow', 'Iron', 'Lonely',
+  'Luminous', 'Pale', 'Radiant', 'Restless', 'Sable', 'Shattered', 'Silent',
+  'Violet', 'Wandering', 'Wild',
+];
+const SYS_NAME_B = [
+  'Anchorage', 'Belt', 'Causeway', 'Cradle', 'Crown', 'Dominion', 'Drift',
+  'Expanse', 'Frontier', 'Furnace', 'Garden', 'Halo', 'Harbor', 'Haven',
+  'Meridian', 'Passage', 'Reach', 'Refuge', 'Sanctum', 'Shoal', 'Spiral',
+  'Threshold', 'Veil', 'Verge',
+];
+export function defaultSystemName(seed) {
+  const r = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  return `${SYS_NAME_A[(r() * SYS_NAME_A.length) | 0]} ${SYS_NAME_B[(r() * SYS_NAME_B.length) | 0]}`;
 }
 
 // Turn a user-typed seed into the uint32 mulberry32 wants. Plain digits stay

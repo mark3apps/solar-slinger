@@ -33,9 +33,9 @@ code "works."
     same-frame throw). `b.holdT` is **null** for anything not in the beam — the ring, the rack, a
     rock in flight — and `beamGrip` exempts those, so a volley never winds up.
 
-  **NEITHER applies to the orbit shield or the brawler's trail rack** (`tractor.updateOrbit` owns
+  **NEITHER applies to the orbit ring or the brawler's trail rack** (`tractor.updateOrbit` owns
   those, with its own caps): those are formations you have already paid for, and re-spooling every
-  rock in a seven-slot ring on every capture would make the wall sag exactly when it is being shot
+  rock in a fourteen-slot ring on every capture would make the wall sag exactly when it is being shot
   at. The grip is VISIBLE — `game.heldGrip` feeds `render.drawBeam`, which draws a fresh or heavy
   hold thin, dim and fluttering and settles it as the emitters take hold; at grip 1 it is exactly the
   beam it always was. A mechanic the player cannot see reads as the beam being broken.
@@ -74,13 +74,22 @@ code "works."
     against that LIVE length — never against the constant, or it is the instant snap again.
     Measured after the fix: worst single-substep jump **2.5 units**, reeling in at exactly 300 u/s
     from 3,000 down to the 921 limit.
-  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 4,200 across the ladder), because a rope
+  - **SHIP MASS IS PER-SPEC AS WELL AS PER-TIER** (`config.SPEC_MASS`) — brawler ×1.39, hauler ×1,
+    scout ×0.78, flat across the ladder. The tier sets how BIG the hull is; this sets how DENSE it
+    is, and the numbers are measured rather than picked: once `SHIP_VIS` matched all three to one
+    apparent size, ink as a fraction of bounding box came out **brawler 0.75 / hauler 0.54 / scout
+    0.42** — armour slab, framing-and-ring-arms, airframe. Normalized on the hauler those fills *are*
+    the multipliers, so a brawler outweighs a scout **1.78:1** at equal size for the visible reason
+    that there is far more of it. Flat, not per tier: the measured ratio drifts, but almost entirely
+    because the HAULER's own fill climbs (0.44 → 0.63 as its ring arms fill in), so a per-tier table
+    would narrow and widen the spread for a reason no player can see.
+  - **SHIP MASS IS PER-TIER** (`config.SHIP_MASS`, 10 → 11,200 across the ladder), because a rope
     resolves by mass RATIO and a constant-10 ship meant a Titan wrestled a moon exactly as badly as
-    a Scout did. Derived from the drawn footprint — `SHIP_RADIUS` grows ×1.62 a tier and mass rides
-    it at the power 2.5 (between area and volume; a ship is hull and framing, not a solid lump).
-    Measured load:ship ratios — t0 scout vs a 1,200 rock **120:1**, t2 vs a 5,000 boulder **45:1**,
-    t4 vs a 9,000 moon **7:1**, t5 titan vs a 220,000 world **52:1**. Re-derive it if `SHIP_RADIUS`
-    ever moves.
+    a Scout did. Derived from the drawn footprint — mass rides `SHIP_RADIUS` at the power 2.5
+    (between area and volume; a ship is hull and framing, not a solid lump), as the single
+    expression `10 × (SHIP_RADIUS[t] / SHIP_RADIUS[0]) ^ 2.5`. Re-derive it if `SHIP_RADIUS`
+    ever moves — and note the exponent COMPOUNDS a size change: the 2026-08 +50% top tier
+    (below) moved the run-long mass spread from ~420× to ~1,120× and the Titan alone by ×2.66.
   - **FULL POWER MUST ALWAYS LAND AFTER THE LATCH** (`CFG.WINDUP_AFTER_LATCH`, 1.2s). The winch
     seconds carry into `holdT` so the player is not billed twice — but carried in FULL they covered
     the entire wind-up ramp on the heavy rungs, so a moon or a world hit full power at the exact
@@ -138,6 +147,72 @@ code "works."
   so the effect builds into the full hold with no visual step at the hand-over. The progress ring is
   the exception — full brightness from the first instant, because it is the one element that has to
   be legible before the effect is.
+- **THE RING RIDES CLOSE — HALF-DISTANCE, EXCEPT MOONS** (user call, 2026-08). `RING_CONDENSE` 0.5
+  scales BOTH the standoff pad and the per-rock step in `tractor.orbiterRings`, which takes a full
+  14-rock ring from ~297 units of reach to ~151 (measured ratio 0.51). Halving only the steps would
+  not have done it: for the innermost rock the PAD is most of the distance, so the first shell would
+  have sat exactly where it was and only the outer shells pulled in.
+  **A MOON IS EXEMPT and the exemption is geometric, not taste** — a moon is stowable from Sling
+  Winch 4 (`liftClass` floors a moon at rung 3 however light it rolled) and its drawn radius is an
+  order of magnitude above belt rock, so condensing its standoff puts a body wider than the ship's
+  whole pad inside the hull. A moon keeps its own full clearance step; it still ends up nearer the
+  ship than before, because everything stacked INSIDE it condensed, and that is correct — pinning it
+  to its old absolute radius would leave a dead gap between the rock shells and the moon.
+  A hard floor keeps any body's INNER EDGE off the hull, applied to the accumulator rather than the
+  stored value so a body pushed out by it also pushes the ones after it.
+  **THE CONDENSE SCALES PADDING, NEVER BULK**, and that is what makes the ring safe: `orbiterRings`
+  is the ONLY thing keeping two orbiters apart, because `physics.collideBodies` early-outs on an
+  orbit/orbit pair and nothing downstream ever shoves them. Two circles at radii r and R from one
+  centre are >= |R - r| apart at ANY bearing, so a radial gap wider than the two radii makes overlap
+  impossible without any angular slot assignment — which is what lets the bearings stay loose and
+  organic. Scaling the WHOLE step by the condense shrank the bulk term too and broke that invariant
+  for any radius past ~10; it took a MOON to make it visible, but the ring was interpenetrating for
+  real belt rock as well.
+- **A SLOT IS A TARGET, NOT A RAIL — SO THE GAP MUST COVER THE HUNT.** Separation margin is
+  `0.6x` the pair's radii, never a constant. Every orbiter oscillates about its slot, and a heavy one
+  oscillates WIDE: a moon's spring authority floors at 260 u/s^2 while the approach cap let it arrive
+  at 380, so it overshot and hunted ~80 units either side — enough to put two moons with correctly
+  separated ASSIGNED radii visibly on top of each other. Two fixes together, and both are needed:
+  the margin scales with the bodies, and `maxApproach` eases down with radius (`60 / b.radius`,
+  floored at 0.4) so mass arrives at a speed it can actually stop at. Belt rock is untouched — at
+  radius 60 and under the ease is exactly the old flat 380.
+- **RIGHT-CLICK IS THE STOW, AND THE STOW IS A CHOICE** (user call, 2026-08). Pointing at a rock
+  and pressing right mouse seats it in the ring directly (`tractor.stowFromCursor`), never passing
+  through the beam — the hauler's exact mirror of the brawler's `absorbIntoRam`, one button meaning
+  "put that in my rack" for both specs. It replaced an AUTO-STOW on the left-click grab, which made
+  one button mean two things depending on the rock's mass (throw this pebble, silently pocket that
+  one) and left no way to THROW a stowable rock at all. Holding the button SWEEPS on the same 0.12s
+  cadence as the ram, because filling 14 slots with 14 separate clicks turns a doubled ladder into a
+  chore. Pointing at empty space leaves the press to the shotgun charge, and the choice is committed
+  for the whole press, so a sweep that crosses open space keeps stowing instead of arming a volley
+  mid-drag. Both stow paths funnel through one `seatInRing` — a rock seated by the sweep and a rock
+  seated from the beam must be the same kind of object, or one quietly misses the spin, the XP or
+  the `primed` clear and behaves differently in the ring forever after.
+- **AN INTERCEPT IS THE SHIP SLINGING THE ROCK, NOT THE ROCK SWIMMING** (user design rule, 2026-08).
+  Every orbiter breaking formation to block carries `b.guardBeam`, and `drawShip` paints a tether
+  onto it through the SAME `render.drawBeam` the hold uses — dimmer (grip 0.55) and narrower
+  (width ×0.6), bite suppressed, because the rock is being shoved, not gripped for a throw.
+  **GOLD, NOT THE HOLD BEAM'S CYAN** (user call, 2026-08): it shipped cyan on the reasoning that
+  it is the same tractor doing the same job, but the two fire at the same moment off the same
+  emitter at the same width, and two cyan beams read as one confused effect. Hue is the only
+  channel left. Cyan is what you are STEERING, gold is what the ship is doing FOR you — the same
+  split the hover rings make between the left button's promise and the right's. Drawn BEFORE the held beams so the rock in your hand keeps the
+  foreground. Iterated over `game.orbit` rather than off a flag on loose bodies, so a rock that has
+  left the ring can never leave a beam painted into empty space; `updateOrbit` clears the flag every
+  substep before it re-assigns, so the beam lives exactly as long as the lunge.
+- **THE STOW GAUGE IS LIVE OCCUPANCY, AND IT ZIG-ZAGS** (user calls, 2026-08). One SOCKET per slot
+  you own (`st.maxOrbiters`, itself derived from `config.ORBIT_SLOTS`), LIT for each slot currently
+  holding a rock. It used to draw the whole 14-slot ladder with the slots you had EARNED lit, which
+  made "unlit" carry two meanings at once — empty slot, and rank not yet bought — and two states
+  cannot say three things; occupancy is the reading you need mid-fight, and the ladder is already on
+  the ability bar. The pips are laid out as an alternating **zig-zag**, not a row: at a flat 6px gap
+  a full ring measured 178px and pushed the readout past the panel edge, i.e. off screen at exactly
+  the ranks that earn it. Offsetting alternate pips vertically lets the pitch drop to 2px without
+  the diamonds touching (~126px for 14). The offset is `top`, NOT a transform — `.pp` already spends
+  its transform on the 45deg diamond, and a translate stacked there resolves in the rotated frame
+  and comes out diagonal. Structure is rebuilt only when capacity moves and the lit class retoggled
+  only when the fill moves: this runs every frame, and rewriting innerHTML at 60fps to change a
+  class would be the expensive way to do nothing.
 - **PICKING UP A WORLD UNSTICKS ITS SKY.** A world's family — moons, ring chunks, probe junk, its
   rubble shell — rides RAILS anchored to it, and the rails pass reads the parent's LIVE position
   every substep. So a grabbed planet used to carry its whole system with it, **welded**: fifty bodies
@@ -329,6 +404,11 @@ code "works."
   never drawn from the world rng, or it would reshuffle the entire seeded sky. Near-ship worlds and
   fortified ones are skipped, and its craters are small and lose the "keep the worst wounds" tie to
   a real impact crater, so ambient pitting can never erase the crater a thrown moon left.
+  **Gas giants are skipped entirely**: gas cannot crater (`damageBody`'s `canWear` — its damage
+  reads as weather), so a scar minted here would cut crater bites into the cloud tops in both
+  `render.worldSil` and `physics.surfRadius`; and the hp drip alone would cross `drawGasWound`'s
+  40%-damage glow gate on the way to the 50% floor — a glowing hole in the cloud deck with nothing
+  having hit it.
 - **A ROCK IS NEVER A PERTURBED PRIMITIVE** (user design law, arrived at in two rounds: first
   *"triangles, perfect rectangles — that's not at all how that'd look"*, then, after the corners had
   been chamfered and the faces broken, *"they just look like shapes, like a kids block toy"*). The
@@ -423,6 +503,33 @@ code "works."
   A crack does not get wider or longer because the planet is bigger. Bodies at or under the
   reference are bit-identical; everything above shares one absolute look. Anchoring stays real-R
   (cracks start at the true rim, craters sit on the true limb) — only the detail's scale is clamped.
+- **THE PLANET FACE scales the other way: feature COUNT grows with the world, feature SIZE stays a
+  fraction of it** (`render.planetDetail` / `drawPlanetDetail`). A continent, a band or a lava plate
+  IS a fraction of its world — clamping those to `DETAIL_R` would shrink a giant's weather to a
+  postage stamp — but the same four ellipses that dressed a 250-unit disc read as bare at 1500, so
+  the mid-frequency layer (eddies, linea, dune trains, craters, gyres) grows in number with the
+  built radius (`den`, capped at 5). Three rules hold it together: the face is built ONCE per body
+  into `b._pd` as fractions of the radius (seeded off `b.id` — stable, no `Math.random`) and drawn
+  against the LIVE radius, so a world chipped smaller wears its face smaller with no pops; the cache
+  key is `ptype|gasKind|landmark`, which is what rebuilds the face when a stripped gas giant BECOMES
+  its rocky core in place; and the mid-frequency layer sits behind a `fine` gate
+  (`R * zoom > 24px`) because at a dozen screen pixels the archetype's big read — bands, caps,
+  continents, plates — is the whole story. Organic patches come from `mkBlob`/`blobPath` (two low
+  radial harmonics over an ellipse — the rock law's lesson applied to paint: a bare ellipse reads as
+  the primitive it is), and every ambient drift still rides multiples of `b.rot`, never wall-clock
+  time. **GAS GIANTS RUN THE OPPOSITE WAY ON SIZE TOO** (user call: "because they are so
+  incredibly big, the details need to be smaller"): `fs = sqrt(den)` DIVIDES band heights, eddy
+  sizes and wave amplitudes as the world grows, so a 2,000-unit giant wears many fine stripes and
+  small storm flecks instead of six huge bands — only the landmark Great Eye stays big (it is
+  steered by), and the azure giant keeps its few wide bands (calm IS its identity; only its cirrus
+  and storm fleck scale down). The archetype signatures are: sheared wavy bands + eddy trains = gas
+  (amber busy/warm, azure calm + polar hood + cirrus, violet turbulent + curl hooks), dark crust
+  plates over lit magma
+  seams + rivers = lava, ragged caps + Europa linea = ice, shelf-sea continents + cloud masses + a
+  cyclone = terran, deep basins + currents + gyres + archipelagos + a sunward specular = ocean, ergs
+  + dune ripple trains + a canyon = desert, sheared cloud decks + colliding chevrons = shroud, a
+  facet lattice keyed to the REAL `b.cjag` silhouette = crystal, maria + rimmed craters + crooked
+  ridges = rocky.
 - **Every planet wears a belt of its own rubble** (`world.seedDebrisBelts`, appended after
   `seedDenseFields` per the expedition-layer rng rule). Counts scale with the world's radius, the
   material comes from `config.worldDebris` — the same table `calveCrust` reads, so what already
@@ -456,7 +563,13 @@ code "works."
   identically, so they meet seamlessly — and they must never overlap: at `globalAlpha` 0.4 a
   double-stroked span blends to 0.64 and prints a bright pip at each tip. The near half goes over the
   terminator, eclipse and damage (it is in FRONT of the world); only the helper-UI rings outrank it.
-- **Hover hint ring colors:** green = auto-orbits, cyan = holdable, red = too heavy. (`render.js:1055`)
+- **Hover hint ring colors:** green = right-click STOWS it into the ring, amber = right-click
+  CRUSHES it into the ram (brawler's own hue — the green stow promise is never true for a spec with
+  no ring), cyan = left-click HOLDS it in the beam, red = too heavy. Green and amber are both the
+  RIGHT button and cyan is the LEFT — since the stow moved off the left-click grab (2026-08) the
+  hues split cleanly by button, which is what lets the ring be read without a legend. Every hue runs
+  the SAME `config.canLift`/`canStow` the click itself runs, so the ring can never promise a grab
+  the beam would refuse.
 - **The cockpit chrome is LOCALE-reactive, the instruments are not.** `zone.js` — built as the same
   machine as `music.js`, and meant to stay that way: buckets, a presence score each, ENTER/EXIT
   hysteresis, a minimum dwell, a crossfade — decides which of five places the ship is in and publishes
@@ -782,29 +895,39 @@ code "works."
 
   A `shield`-channel ability UNLOCKS the regenerating
   shield (rank 0 → `shieldFrac`/`shieldMax` 0, no SHLD bar), which absorbs first and recharges after
-  quiet time. Each spec's shield is deliberately different (`shipStats` + `st.shieldArc`):
-  - **BRAWLER (War Plating)** — a THIN, FAST-RE-FORMING FRONT PLATE (12%→26% of the pool) covering
-    **35% of bearings** (`shieldArc` = 0.35π, ±63° off the nose), with the quickest cycle in the game
-    (regen ×1.5, regenDelay ×0.35 — ~1.75s and the nose is covered again). **Its identity is the
-    CYCLE, not the capacity.** (History: it was 38%→65% of the pool, which made it simply the best
-    shield in the game — converting most of a brawler's health into a regenerating layer meant the
-    front-arc drawback never cost anything, because the pool never ran out while you faced the right
-    way. And the arc was a clean π/2, i.e. 50%, which covered everything ahead of the beam — "front
-    arc only" was barely a drawback in practice. 35% is a genuinely narrow nose plate: you have to
-    point at what is hurting you.) A directional hit from behind (`hitAng` in `physics.damageShip`)
-    skips the shield entirely — the tail is bare, so facing the threat matters. **Directionless
-    damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) can't be dodged by
-    aiming, so it is SPLIT by coverage: the shield soaks `arc / π` and the rest goes straight to hull.
-    Soaking all of it made the front-arc drawback free in exactly the places it should bite. Full-wrap
-    shields are unaffected (share 1). **Anything asserting that share must DERIVE it from
-    `st.shieldArc`** (devtest T6 does) — a hardcoded half re-breaks every time the angle is tuned.
-    Render clips every shield visual to the covered wedge — the bare tail must READ.
-  - **SCOUT (Phase Screen)** — WEAK (16%→26%, max 3 ranks) but full-wrap and snappy: scout-only
-    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. Both shields are thin now, so
-    the CYCLE is what separates them: the brawler's is smaller and returns nearly twice as fast, the
-    scout's is a touch slower back but covers every angle.
-  - **HAULER has NONE** — by design its protection is the orbit rock wall (Rockwall hardens it,
-    Reinforced Hull — id `cargoPlating` — armors the hull); never add a `shield`-channel ability to its pool.
+  quiet time. **THE SHIELD IS SCOUT-ONLY** (`shipStats`) — exactly one row in the whole catalog feeds
+  the `shield` channel, and the other two specs answer an incoming hit with mass instead:
+  - **SCOUT (Phase Screen)** — WEAK (16%→26% of the pool) but FULL-WRAP and snappy: scout-only
+    regen ×1.6 and regenDelay ×0.6 come from the spec, not an ability. A thin layer that covers every
+    angle and comes back fast is the whole of the scout's defence — it is a forgiveness mechanic for
+    a ship with no armour, and it is deliberately not enough to stand and trade with.
+  - **HAULER — none.** The orbit rock wall is its protection, and since 2026-08 that wall is a
+    THREE-row build rather than one: Orbital Sling carries the rock (up to 14 slots), Guard Sling
+    makes it break formation to block, Rockwall (5x HP at max) lets it survive the block. Reinforced
+    Hull armors what gets through. Splitting carry from screen is the point — a hauler who wants an
+    active wall has to spend a pick on one.
+  - **BRAWLER — none.** Its protection is hull plus what the fused War Rack prow eats head-on
+    (`physics.collideShipBody` → `spendRam`), which is spent by what it absorbs and rebuilt only by
+    going and finding more rock. (History: it carried **War Plating**, a thin front-arc plate at
+    12%→26% of the pool covering 35% of bearings with the fastest cycle in the game — regen ×1.5,
+    regenDelay ×0.35, before that 38%→65% of the pool at a π/2 arc. It is DELETED, ability and
+    spec-DNA recharge multipliers together. A regenerating layer is a forgiveness mechanic, and on
+    the spec that is already the tank it undid the ram's own bargain: charge in, lose the plate, back
+    off for a heartbeat, charge again. The ram only costs something if the damage it eats is damage
+    you actually keep.)
+
+  **The ARC mechanism outlives its user.** `st.shieldArc` is the plate's half-angle around the nose:
+  a directional hit (`hitAng` in `physics.damageShip`) landing outside it skips the shield entirely,
+  and **directionless damage** (heat, gas crush, Oort grinding — no `hitAng`, nothing to face) is
+  SPLIT by coverage, the shield soaking `arc / π` and the rest going straight to hull. Render feathers
+  every shield visual to the same wedge. No live ability produces a partial arc — Phase Screen is a
+  full wrap (share 1) — but the mechanism is kept as the one place a directional shield is expressed,
+  and **devtest T6 exercises it against an EXPLICIT wedge written onto `game.st`** so it cannot rot
+  unnoticed between users. **Anything asserting the split must DERIVE it from `st.shieldArc`** — a
+  hardcoded half re-breaks every time the angle moves.
+  - **HAULER has NONE** — by design its protection is the orbit rock wall (Guard Sling makes it
+    screen, Rockwall hardens it, Reinforced Hull — id `cargoPlating` — armors the hull); never add a
+    `shield`-channel ability to its pool.
   The SHLD HUD bar appears only once a shield is unlocked; below that the HULL bar stands alone.
 
 
@@ -844,10 +967,19 @@ rather than being discarded, and it only advances while you are berthed — you 
 some, because a world both ORBITS and SPINS: a coordinate pair is stale within a frame, and a bearing
 that didn't subtract `b.rot` would leave the pad sliding across the surface as the world turned. The
 radius is a FRACTION so a world chipped down under fire keeps its pad on the crust rather than
-floating where the crust used to be. `world.respawnShip` places the ship `DOCK_LIFT` hull-radii ABOVE
-the pad (materializing flush with the collider means being shoved off your own dock on frame one) and
-riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the ship back standing
-still in front of it.
+floating where the crust used to be.
+
+**A HOME RESPAWN ARRIVES BERTHED (2026-08).** A death with a live home port hands the ship back IN
+the clamps — `physics.berthAt`, called from main.js's respawn path — docked, shielded, repairing, one
+thrust from a launch, rather than hovering over its own pad to re-earn a berth it already owns. It
+lives in physics.js because the landing latch is module scratch there: a `game.dock` set without
+seeding it is cleared by `updateDock` on the very next substep. `berthAt` re-seats `rf` off
+`surfRadius` plus 0.92 of the CURRENT hull radius — a sliver INTO contact, because seated exactly at
+the boundary, contact is a floating-point coin flip and the latch drains (the seating lesson
+devtest's `setDown` documents). The `DOCK_LIFT` hover placement in `world.respawnShip` remains as the
+staging the berth overrides, and the no-home respawn still uses the run's opening orbit. Either way
+the ship arrives riding the surface velocity, so a home world orbiting at 700 u/s doesn't hand the
+ship back standing still in front of it.
 
 **A DOCK IS WHERE YOU STOP WORKING.** The beam, the orbit ring, the Recovery Tether, the shotgun and
 the mobility abilities are all inert while berthed — `main.dockBlocking` refuses their inputs and
@@ -868,6 +1000,73 @@ hull to exactly that height. Left at its build-time value, returning to an early
 parks the hull short of contact or buries it in the crust. Re-measured on every berth, which is also
 honest about what a station is: the art already refits to your current tier, and so does the berth.
 
+**THE GROUND HAS TO BE ABLE TO HOLD A DOCK (2026-08).** Two refusals the landing gates issue that no
+amount of flying can clear — their guide wording says "go elsewhere", never "fly better":
+
+- **No berth in a wound** (`CFG.DOCK_CRATER_MAX`, gate `'crater'`). A pad is pinned at a fraction of
+  the body's NOMINAL radius (`util.padPos` knows nothing about scars), so a station laid down inside
+  a crater stood on the phantom surface — floating across the mouth of the hole the player can see.
+  Ground cratered deeper than `DOCK_CRATER_MAX` of the radius (read off `util.scarSurfaceAt`, the
+  same profile the collider and the silhouette draw from) refuses the berth outright.
+- **A station whose footing is blasted away BREAKS** — the same `DOCK_CRATER_MAX` line, swept in
+  `updateDock`. Aliens (or you) cratering the crust under a standing station collapse it: debris,
+  shake, and a named message (`dockLostName`, or the alarm-grade `homeDockLostName` when it was the
+  respawn point — where a death puts you back just changed, and that must never be discovered by
+  dying). A structure does not survive its foundations, and the pre-rule behaviour — the pad
+  hovering on its build-time standoff over a hole — read as a glitch because it was one.
+- **A PORT NEEDS A WORLD THAT CAN CARRY IT** (`config.dockHostOk`, gate `'small'`). The berth is
+  sized by the SHIP (the berth floor wins over `dockPadR`'s host cap), so a high-tier port on a small
+  moon claimed most of the horizon — a megastructure the moon wore. The line is the berth floor
+  against 0.55 of the host radius, deliberately looser than the 0.42 aesthetic cap: the cap is where
+  a pad stops looking right, the gate is where it stops being plausible. It reads the same `berthR`
+  the pad does, so the gate and the structure can never disagree about how big a berth this ship
+  needs — and it therefore varies by SPEC as well as tier, which is correct: a brawler really is a
+  wider thing to park. Host radius needed, tiers 0–5: hauler 26/26/44/76/132/230, scout
+  26/39/75/116/197/321, brawler 26/37/68/130/231/384. Against the real sky (moons 41–232, planets
+  293–1998) every moon hosts tier 0, the median moon carries to ~tier 3, the biggest moon takes a
+  tier-4 hull, and a top-tier port is planet infrastructure. The same predicate runs in
+  `updateDock`'s refit sweep: the art refits to your CURRENT tier, so a tier-up that outgrows a
+  station's world DECOMMISSIONS it — retired quietly with a message (`dockOutgrownName` /
+  `homeOutgrownName`), never a bang, because nothing destroyed it; the ship simply grew past what the
+  world can hold.
+
+**THE BERTH IS SIZED BY THE HULL AS DRAWN, NOT AS COLLIDED** (`config.berthR`, 2026-08). `st.radius`
+is the collision circle and is deliberately one number for every spec — `SHIP_VIS` is what makes all
+three ladders read the same SIZE, and its own note spells out the knock-on: everything that wraps the
+ART rather than the hitbox multiplies by `vis`. A pad is as art-wrapping as anything gets, and it
+never got that multiply, so the deck was sized for a hauler and every scout and brawler overhung it:
+a tier-1 brawler's drawn hull reached 16.0 units across a deck whose half-width was 15.2 — **the ship
+was wider than its own berth** at tiers 1–4 (scout 1–2, worst 0.88×). Multiplying the ship term by
+`vis` makes the pad-to-hull ratio come out exactly the hauler's (1.43 → 1.92 as the tier widens the
+deck for what stands on it) at every tier and spec, and leaves the hauler ladder untouched by
+construction.
+
+**A STANDING STATION LANDS YOU ITSELF (2026-08).** `physics.updateAutoland`, `CFG.AUTOLAND_*`: come
+in close (`AUTOLAND_R`) and slow (`AUTOLAND_VMAX`) with the throttle released and the pad takes the
+ship — eases the velocity down an approach vector (floored at `AUTOLAND_TOUCH`, under `DOCK_SPEED`,
+so the stillness gate is satisfied at contact by design), stands the nose up, and lets the ordinary
+three-gate latch do the rest. Returning to a dock you already built is never a piloting test twice;
+the FIRST landing on bare ground is still flown by hand — the approach challenge is part of what a
+station costs, and the autoland is part of what it pays back. **Hands-off is the contract, both
+ways**: it never engages with the throttle up or against a ship that is plainly leaving, and any
+thrust mid-approach hands the helm straight back and stands it down for `AUTOLAND_CD` — the same
+cooldown a launch sets, so the pad that just threw you off cannot reel you back in. Dash and warp
+count as hands-on too: neither touches the throttle, so without an explicit cancel the autoland
+simply eased the dart back out, which is the game fighting the pilot.
+
+**IT ONLY TAKES A SHIP THAT HAS A STRAIGHT LINE IN** (`padPathClear`). The approach is a straight
+line — this is a docking aid, not a pathfinder — so engaging it with a world across the path would
+drive the ship into that world, the exact thing the pilot is trusting it not to do. A segment-vs-disc
+test over the local celestials runs LAST, after the cheap gates have picked a candidate. **The pad's
+own host is tested too**, at 0.995 of its radius, and that is the elegant half: the pad sits on that
+surface, so the segment only crosses the interior when the ship is over the horizon from it —
+"can this berth be seen from here?" falls out of the same arithmetic, with no special case. While it flies,
+the guide shows its hand (dashed approach line — helper UI, so dashes are the correct grammar — and
+the ring naming who has the helm): a ship steering itself with nothing on screen saying so reads as
+a stuck control. Deliberately NOT mirrored in `predictPaths`: unlike the rubber band and the long
+arms it only exists hands-off inside one pad's approach cone and terminates at the berth — the
+moments it is steering are the moments nobody is aiming a throw off the forecast.
+
 **THE SHIP IS HELD, AND LEAVING IS A SEQUENCE.** A berthed ship stands UPRIGHT (`DOCK_UPRIGHT`) and
 is pinned EXACTLY to its pad: the clamps own the attitude and the position, the mouse stops steering,
 and W therefore always points straight off the pad. That is what makes a berth read as *held* rather
@@ -878,15 +1077,31 @@ against them with exhaust washing sideways off the deck (it has nowhere else to 
 pinned, which is exactly what makes a held burn look held), the shake climbs, and then the pad lets
 go. It commits once started — a launch you can abort halfway is a stutter, not a moment.
 
-**HOME IS THE LIVES ROSE, on all three surfaces** — the in-world pad, the radar and the chart
-(`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker colour: rose already means
-"a life" in this cockpit, and a home port is exactly the place a life hands the ship back. Other
-stations are steel — somewhere you can go, not the place you have committed to. The home port also
-flies a **lit beacon spire with a pennant**, so the two are told apart by shape and not by hue alone.
-(It used to wear a full RING and that was wrong twice over: the ring sat concentric-ish with the
-shield dome and the two read as a lens of overlapping circles rather than as a mark on a structure,
-and a ring says nothing about what a home port *is*. A spire does — it caps the gantry at the tiers
-that have one, and it competes with nothing.)
+**A FINISHED BERTH IS A VISTA** (`CFG.DOCK_VISTA` / `DOCK_VISTA_K`, main.js's cinematic zoom). Once
+the station is built the camera eases OUT — `DOCK_VISTA`× wider — so a berth becomes a moment to
+survey the neighbourhood: the world you built on, its moons, whatever is inbound. It is gated on
+`dockReady`, the same gate as the shield and the repair, so the exposed ten-second build stays at
+flight zoom — the pull-back is part of the harbour's reward, not of the commitment. The ease rate is
+deliberately slower than the tier zoom's (an establishing shot, not a level-up), and the frame the
+launch spool starts the target snaps back to flight zoom at the normal rate, so the dive back in
+overlaps the clamps releasing instead of following the kick. `viewR` rides the zoom, so sensors and
+the wake bubble genuinely widen with the vista — safe, because a berth is the one place nothing can
+touch you.
+
+**HOME IS THE LIVES ROSE** (`render.DOCK_HOME`, matching the life pips' `#ff5c7a`). Not a new marker
+colour: rose already means "a life" in this cockpit, and a home port is exactly the place a life
+hands the ship back.
+
+**But in-world it is A FLAG, NOT A PAINT JOB** (user call, 2026-08: "the only part of it that should
+change is a flag shows up and it's a red flag, the colour of the rest of it should not change"). The
+STRUCTURE stays steel at every station, home or not — a dock is the same building either way, and
+repainting the whole thing said "a different kind of place" when the truth is "the same place, and
+it's yours". So the rose lives entirely in the **lit spire and its pennant**, which is also why the
+mark has a SHAPE: it reads as home from any distance without the structure ever changing colour. (It
+used to wear a full RING and that was wrong twice over: the ring sat concentric-ish with the shield
+dome and the two read as a lens of overlapping circles rather than as a mark on a structure, and a
+ring says nothing about what a home port *is*.) The two INSTRUMENTS still mark home in rose outright
+— that is their own grammar, where a colour is all a two-pixel blip has to work with.
 
 **THE STATION'S ART TRACKS THE SHIP'S TIER** (`config.DOCK_TIERS`, six rows read via `dockTier(st)` off `game.st.tier`,
 i.e. your CURRENT tier and not the one it was laid down at). A dock is infrastructure you keep
@@ -911,12 +1126,63 @@ for the deck lamps and they washed out the structure they were meant to be light
 is a POINT). The substructure block under the deck is what carries the visual mass — without it the
 station is a line with sticks on it.
 
+**THE STATION IS BUILT FROM MATERIAL, NOT LIGHT (2026-08).** Three near-opaque hull tones
+(the module-local `HULL_DK` / `HULL_MD` / `HULL_LT` consts above `drawPad` in render.js) carry the structure's mass — caissons, deck plates, cabins, tanks are
+FILLED bodies with seams and thickness — and the ink colour (steel / home rose) is reserved for lit
+edges, markings, lamps and glass, which is what keeps a home port readable at a glance without the
+whole building being made of glow. The pass this replaced drew everything as translucent ink strokes
+and the station read as a hologram parked on the world rather than a thing standing on it.
+
+**THE BUILD IS A WORKSITE, NOT A LOADING SCREEN (2026-08).** The ten seconds of `DOCK_BUILD` are a
+staged ASSEMBLY (`render.bstage` windows, in construction order): the caisson and legs rise out of
+the crust, the deck is craned in plate by plate (centre-out, each lowered with an ease-out), the
+clamp arms unfold from flat on the deck up over the berth — the same joints the launch later swings
+open, one mechanism working both directions — the mast telescopes, the cabins lower in, the dish
+unfolds, and a commissioning pass paints the touchdown markings on and walks the lamps up one by one.
+Every stage MOVES its piece into place: ten seconds of opacity ramps reads as waiting for a bar, ten
+seconds of visible work reads as building. A constructor drone and weld glints (both off `game.time`)
+mark where the work is right now — sanctioned motion, because the build is an event — and the solid
+progress arc stays underneath as the honest clock. All of it is strictly gated on `prog < 1`: the
+finished station is static except for its events.
+
 **THE SHIELD DOME IS A REAL FIELD, NOT A DECAL.** It repels loose rock and aliens
-(`physics.updateDomeShield`) as well as blocking damage — immunity alone is half a shield, and a hull
-sitting inside a heap of debris it happens to be invulnerable to reads as a bug rather than as
+(`physics.updateDomeShield`) as well as blocking damage — absorption alone is half a shield, and a
+hull sitting inside a heap of debris it happens to be safe from reads as a bug rather than as
 protection. That is also why the tier table lives in **config.js**: its drawn edge and its pushing
 edge must come from one expression (`dockDomeR`), never two. Where it throws something off, the rim
 flares — an EVENT, the one thing this otherwise-calm surface animates for.
+
+**AND THE FIELD IS FINITE** (user call, 2026-08: "the dock shield shouldn't be invulnerable — it
+should have a fixed amount but really high, it shouldn't recharge, and when it breaks the dock
+breaks"). A berth used to be TOTAL immunity, which made a finished dock the one place in the game
+nothing could ever reach you — a safe room rather than a fortification. It is a POOL now
+(`CFG.DOCK_SHIELD`, 2400 ≈ 7.5 top-tier hulls or ~35 full CME passes), carried on the station as
+`d.hp`, issued once at the build site and **never credited by anything** — not by time, not by
+berthing, not by a tier-up. Each station has its own, so a second port is a second pool.
+
+- **Two drains, one debit path** (`physics.spendDome`): damage that would have reached the ship, and
+  the cost of throwing something off the rim (`DOCK_REPEL_COST`, priced on the same saturating mass
+  knee as collision damage and capped per bite at `DOCK_REPEL_MAX`). Measured: a 4,267-mass rock at
+  260 u/s costs 3.8 of 2400; three minutes berthed in ambient traffic costs ~0.2.
+- **No free frame** — whatever the pool cannot cover reaches the hull on that same call, exactly the
+  rule the ram runs on. Protection is total, then it is over, with no cliff between.
+- **When it breaks, the STATION breaks** (`breakDock`) — the dome *is* the harbour's survival, so
+  there is no such thing as a standing station with a dead shield, and it goes through the same
+  collapse path a blasted-out foundation does.
+- **EVERY VELOCITY IN THE REPEL IS MEASURED IN THE DOCK'S OWN FRAME** (`util.surfaceVel`, the same
+  expression surface friction and the stillness gate read). The dome rides a world that orbits at up
+  to ~700 u/s: read absolutely, a rock merely drifting alongside bills as a 700 u/s impact, and the
+  separation floor is satisfied without the rock ever separating from a dome moving just as fast — so
+  the same contact re-bills every substep at 120 Hz. Harmless while the field only pushed; the moment
+  a repel cost charge it emptied the whole pool in about a second off one drifting rock ("the dock
+  shield went almost completely away on one small asteroid hit").
+- The dome **shows what it has left** through INTENSITY, never size or motion: the geometry stays
+  exactly `dockDomeR` because that is the real collider, and a field drawn smaller than it pushes
+  would be the mirror-drift trap in visual form. The cockpit carries the number on the **DOCK bar**
+  (top-left, under the ship's own gauges) — in the dome's own pale ice rather than the ship shield's
+  blue, because it is the one gauge there that measures something which is not the ship, and on its
+  own fixed width rather than the hull/shield points-per-pixel scale, which a pool seven hulls deep
+  would flatten.
 
 **IT STANDS ON THE GROUND**, and getting that right is the whole job of drawing it. It
 is centred on the SURFACE POINT under the pad — not the pad origin, which sits a hull-radius above
@@ -942,20 +1208,20 @@ before any HUD does, and the three silhouettes are kept deliberately disjoint �
 at a glance is the whole point of splitting them:
 
 - **HAULER** (`HAULER_TIERS`) — the original ladder, geometry untouched. Ring arms with orb pods:
-  the arms ARE the orbit rock rack. It alone keeps the old `Math.max(1.1, 0.07 * u)` outline
-  expression, so its shipped art is bit-identical.
-- **SCOUT** (`SCOUT_TIERS`) — a winged gun platform that arms itself by swallowing rock: intake
-  maw → hopper → wing-root conduits → hardpoints. **FOUR GUNS TOTAL is the ceiling** (two per
-  wing, from tier 2 on): everything after that buys GUIDANCE, because its kit is Nav Plotter /
-  Lead Computer / Impact Warning / Reflex Jink and a ladder that grew barrels was claiming to be
-  a gunship. It grows LONGER, NOT WIDER (length 2.2 → 4.4 against span 1.6 → 2.5), and the wing
-  PLANFORM evolves — crank, root extension, rake — so the silhouette changes tier to tier.
+  the arms ARE the orbit rock rack. Its `Math.max(1.1, 0.07 * u)` outline expression is now the
+  stroke weight for ALL THREE specs (see "One stroke weight" below), so its art is bit-identical.
+- **SCOUT** (`SCOUT_TIERS`) — a winged SENSOR platform on a needle fuselage, wings **BARE**
+  (the gun hardpoints were dropped 2026-08). **The ladder buys GUIDANCE, never armament**, because
+  its kit is Nav Plotter / Lead Computer / Impact Warning / Reflex Jink and a ladder that grew
+  barrels was claiming to be a gunship. It grows LONGER, NOT WIDER (length 2.2 → 4.4 against span
+  1.6 → 2.5), and the wing PLANFORM evolves — crank, root extension, rake — so the silhouette
+  changes tier to tier.
   Its gimmick is the GIMBAL: a sensor head that slews to `game.aim` independent of hull heading.
   **From tier 3 the hull SPLITS** — see below.
 - **BRAWLER** (`BRAWLER_TIERS`) — a ram, and the ram is the class. `prowW >= 1.20` on every tier,
   so the prow overhangs the hull on BOTH sides; it owns the front ~44% of the length. The stern
-  is drawn BARE on every tier because `st.shieldArc < PI` covers the front arc only — the spec's
-  weakness is visible from the hull alone.
+  is drawn BARE on every tier because the spec has NO shield at all and its one layer (the ram) is
+  welded to the bow — the weakness is visible from the hull alone.
 
 **A TIER MUST CHANGE THE OUTLINE, NOT JUST THE DETAIL** (user design rule). Both new ladders were
 first built varying only surface flags over one fixed shape, and six tiers read as ONE ship at six
@@ -977,15 +1243,17 @@ frays, jitters and arcs harder as `strain` rises. `scoutSplit` caches on `game.t
 `drawShip`'s flame anchors and `shipVisualR` read the same number in different passes, and two
 evaluations of a thrust-dependent value drift apart inside one frame.
 
-**Outline width** is `outlineW`: `max(1.0 / cam.zoom, 0.085 * u)`. The floor MUST be in screen
-pixels. It was 1.1 WORLD units, and since `u` shrinks with the tier that floor won on every small
-hull — a tier-0 ship is ~12 world units long, so the outline was most of what you could see of it.
+**Outline width** is `outlineW(tier, r)`: `max(1.1, 0.07 * u_hauler)` — ONE weight per tier, shared
+by all three specs and derived from the HAULER's art unit. It is never derived per spec; see "One
+stroke weight, and it is the hauler's" below for why that was the whole bug. The `1.1` is a WORLD-unit
+floor and it binds on the first three tiers — a known wart, kept because it is what the hauler has
+always drawn.
 
 Damage scars are seeded per
 (tier, dmg) so they're stable frame to frame — don't swap them to `Math.random`. WHERE they land
 is per-spec (`drawShipScars` takes an ellipse): sampled on the hauler's body disc they fall in the
-empty air beside a scout's thin fuselage. The shield bubble wraps `shipVisualR(tier, r)` (the drawn
-art's reach = `r / SHIP_HIT_FRAC`) PLUS the split stand-off on a split hull — without it the drive
+empty air beside a scout's thin fuselage. The shield bubble wraps `shipVisualR(game, tier, r)` (the
+drawn art's reach) PLUS the split stand-off on a split hull — without it the drive
 section trails outside its own shield — not the collision radius. The collision radius is a UNIFORM `SHIP_HIT_FRAC` (0.66) of the drawn
 footprint on every tier: `shipStats` reads it from `SHIP_RADIUS[tier]` (config.js), derived as
 `SHIP_HIT_FRAC × footprint`, where the FOOTPRINT grows by an equal RATIO each tier (perceptual
@@ -994,6 +1262,185 @@ so tuning the fraction moves only the hitbox, never the drawn size. (History: th
 to be the body disc alone — 43% coverage at tier 0 vs 57% at tier 5 read as "collisions don't
 match the ship".) Keep `SHIP_RADIUS` and `SHIP_ZOOM` in sync with the hull tables' proportions;
 the derivation rules live in the config.js comments.
+
+### The top tier is half again as big (2026-08)
+
+`SHIP_RADIUS` is now `[4.0, 7.0, 12.5, 21.8, 38.2, 66.3]` — the old ladder with a multiplier that
+ramps **linearly** from ×1.0 at tier 0 to ×1.5 at tier 5, so the Scout is untouched and the Titan is
+half again as big. The per-tier growth ratio stays near-uniform (×1.62 → ×1.75), which is the
+property that mattered; the ladder is simply steeper end to end.
+
+Two things had to move with it, and both are documented derivations rather than taste:
+
+- **`SHIP_ZOOM` holds APPARENT SIZE FIXED** — `zoom[t] = old_zoom[t] × old_radius[t] / new_radius[t]`,
+  giving `[2.46, 1.70, 1.16, 0.82, 0.57, 0.40]`. `footprint × zoom` is unchanged on every tier, so
+  the ship looks exactly as it always did in the viewport and the whole +50% is spent where it was
+  asked for: **the ship against the worlds**. Known cost — tier 5 sits ~1.5× further back, so
+  `game.viewR` goes 1987 → 2754 and the top tier's view covers ~1.9× the area.
+- **`CFG.STORM_SHADOW_PAD` 45 → 68** — the pad is measured in ship-widths so the biggest hull fits
+  behind the smallest moon, so it moves with the Titan and only with the Titan. Left at 45 the lee
+  would have been 48.7 against a 66.3 hull; mechTest T21 asserts exactly this and would have failed.
+
+### Every spec reads the same size as the hauler (2026-08)
+
+The three hull ladders were each normalized to their own **max reach**, which makes the collision
+fraction uniform but is NOT the same as looking the same size: a ladder whose reach comes from one
+outlier — the scout's needle nose, the brawler's standoff deflector brow — gets its whole body shrunk
+to pay for that outlier. Measured, the hauler read up to **1.49× bigger than the brawler** and
+**1.33× bigger than the scout**.
+
+`config.SHIP_VIS` is a second factor applied after the reach normalization, per spec and per tier, so
+all three match. The hauler is 1 by construction — its shipped art is untouched.
+
+**The metric is the ink's RADIUS OF GYRATION** (RMS distance of drawn material from the hull's own
+centroid). Two simpler metrics were measured and rejected against a side-by-side sheet, and both look
+right on paper, so the reasons are worth keeping:
+
+| Metric | Why it failed |
+|---|---|
+| Bounding box (`sqrt(w×h)`) | Made the BRAWLER the biggest ship in the sky — the hauler's box is mostly the air inside its ring arms, the brawler's is solid slab. |
+| Ink area (`sqrt(pixels)`) | Made the SCOUT enormous — a needle carries a third of the hauler's pixels, so matching counts stretched it half again the hauler's length at T3. |
+
+Gyration splits them, and the check that it is the right split is that it **agrees with ink area on
+the solid brawler** (1.27 vs 1.26 at T5) while still refusing to inflate the thin scout.
+
+MEASURED, NOT FELT: `render.measureShipArt(game)` draws all three ladders off-screen and returns the
+numbers; bake `hauler.raw / spec.raw × 1.25`. **Re-bake twice** — outline width is one shared weight
+per tier (`max(1.1, 0.07 × u_hauler)`) that does NOT scale with the factor being applied, so a hull
+drawn 1.25× bigger doesn't lay down 1.25× the ink; one pass lands within ~1.5–3.6%, a second
+converges to **~0.2%**. Re-run it whenever a tier table *or the stroke weight* changes.
+
+The knock-on to know: a spec's drawn reach is now `r / SHIP_HIT_FRAC × vis`, so scout and brawler
+extend past their collision circle by that factor. That is the deliberate trade — `SHIP_HIT_FRAC`
+stops being a per-spec constant so that apparent size can be one. Everything wrapping the ART rather
+than the hitbox multiplies by it (`shipVisualR`'s shield bubble, `ramPlate`'s whole standoff — the
+brawler's slab would otherwise end up NARROWER than the hull prow it mounts on, breaking "the ram
+overhangs the ship on both sides at every size"). The sim's collision circle does not move.
+
+**The target is `1.25 × hauler`, not `hauler`.** An exact match was the right correction and still
+read a touch small on those two in play — a needle and a slab need more room than a compact ring to
+carry the same weight on screen. The hauler is now the *smallest* of the three; it remains THE
+REFERENCE because one spec has to anchor the measurement, and its art is the one that never moves.
+
+### The ram's slab is floored at rock scale
+
+**…the one thing `SHIP_VIS` could not fix.** It matched the slab against the
+*hull*; the remaining problem was the slab against the *world*. Every proportion of the ram is a
+fraction of the ship, which is right at the top of the ladder and absurd at the bottom: a tier-0
+brawler is 5.4 drawn units, so a full rank-1 ram came out 15 units across carrying stones of radius
+~1.2 — while the belt rock it is BUILT FROM runs radius 6–14 (median asteroid ~9). You crushed a
+boulder three times longer than your whole ship and the nose gained three specks about one pixel
+each at the gameplay zoom; the class's signature mechanic was invisible for the entire early game
+(2026-08 user call: *"the brawler's ram rocks shouldn't be scaled down with the ship — at tier 0
+they're so tiny it looks ridiculous"*).
+
+So `config.ramPlate` sizes the slab off `hypot(r, CFG.RAM_MIN_R)` — a **soft** floor, deliberately,
+for two reasons: it never stops growing with the ship (a hard `max` would draw tiers 0 and 1
+identically and then jump), and it evaporates where it isn't wanted — **+391% at tier 0, +262% at
+tier 1, +73% at tier 2, +11% at tier 4, +3% at tier 5**, so the top of the ladder is the slab that
+was already tuned. **The floor is only the slab, never the mounting**: `back` and `gap` stay on the
+true drawn hull, or a floored ram floats a ship-length out in front instead of ploughing on the nose.
+
+**SIZE IT OFF THE STONE, NOT OFF THE SLAB.** What the eye compares is one ram rocklet against one
+belt rock, and the rocklet is capped by the slab's DEPTH (`render.ramTierRocks`: `r <= 0.8 ×
+depth/2`), so the floor has to clear that whole chain rather than merely look generous. `depth = rs ×
+0.655` at a full rank-1 ram, so a stone of radius R needs `rs >= R / 0.262`. Belt rock runs radius
+6–14 (median ~9), and **26 lands the tier-0 stones at ~7** — a real rock, mid-class for the rock the
+ram is built from. `RAM_MIN_R = 10` was the first attempt and was still wrong: it tripled the slab
+and the stones came out ~3, under the smallest gravel in the sky. Check the STONE when retuning this,
+never the slab.
+
+The knock-on is deliberate and follows the mirror rule: `ramFace`/`ramArc` read the same plate, so a
+low-tier ram's contact edge and protected arc grow with what you can see (tier 0 rank 1: 27° → 31°,
+contact edge 15 → 29 units; the top of the ladder goes 36° → 38°). Physics reading an *unfloored*
+slab is exactly the drift the rule exists to forbid. Absorption is unaffected either way: it is
+priced on ram MASS (`CFG.RAM_ABSORB`), which no part of this touches.
+
+### A ram is smashed together, at the expense of width
+
+**The slab's thickness sizes the STONE, and the WIDTH is whatever that many stones occupy shoulder to
+shoulder** (2026-08 user call: *"this is a RAM, they should be smashed next to each other always at
+the expense of width"*). `halfW` used to be its own ramp on `t` and `g`, and an independent ramp is
+exactly the bug: the width grew while the stone stayed capped by the slab's depth, so the pack got
+wider without getting fuller and the stones ended up hanging apart on their beams with daylight
+between them — a fence, not a ram.
+
+The chain, all of it in `config.ramPlate` so there is one geometry:
+
+- `stone = depth × RAM_STONE` — one course is one stone thick, which is what makes `depth` the honest
+  measure of a ram's substance.
+- `halfW = stone × (0.7 + ramPack(t) × (ramPerRow(t) − 1))` — render seats the outermost centre at
+  `halfW − 0.7 × stone` and spreads the rest evenly, so this is precisely the width at which the
+  centre spacing comes out `2 × stone × pack`.
+- `ramPack` is under 1 at every band, so the stones **always** touch — 0.92 at band 1 tightening to a
+  0.79 overlap at band 12. That is the loose-rubble-to-fused-wall story now, told by how hard the
+  stones are jammed rather than by how far apart they float.
+
+`ramRows`/`ramPerRow`/`ramPack`/`RAM_STONE` are **exported** for exactly this reason: render builds
+the layout from them and config solves the width against it, and a pack geometry living in two files
+is the mirror-drift trap. The plate publishes `stone` rather than letting render re-derive it, and
+render's per-stone jitter is bounded at ±10% and paid for by `ramPack`'s margin so even the two
+smallest neighbours still touch. **Nothing in `ramTierRocks` may size a stone from the width again.**
+
+A useful side effect: with the width now following the pack instead of running ahead of it, the
+protected-arc inflation from the rock-scale floor above mostly went away.
+
+### The ram's density ladder is twelve bands, two per rank
+
+`config.RAM_TIERS` (2026-08 user call: *"instead of 6 visual ram looks, 1 per level, it should be 12,
+2 per level, to give it a bit more granularity"*). Rank is still six and still the ceiling; what
+doubled is how many builds the pack walks through as it fills. **The even bands reproduce the old
+six-band ladder exactly** (2→old 1, 4→old 2, … 12→old 6), so every rank tops out on the build it
+always did and the odd bands are pure new ground — the same course, looser packed, on a slightly
+smaller slab.
+
+**Band 1 is a PAIR** (2026-08 user call: *"the lowest visual level should be just 2 rocks"*) — the
+one count the old ladder never had a rung for, and what makes the bottom read as two boulders
+dragged onto the nose rather than a thin course of something. `perRow` is anchored at 2 and 8 over
+eleven steps, which is what puts the six even bands on exactly 3/4/5/6/7/8.
+
+`RAM_TIERS` is the one place the length lives, and **three things are keyed off it and must move with
+it**: the `t` coefficients in `ramPlate` (halved when this doubled, so the per-rank endpoints hold),
+`render.ramTierRocks`' rows/perRow/packK ramp and its beam-rig count (same endpoints, twice the
+steps — `perRow` rounds every *other* band on purpose, since a stone count ticking up twelve times
+would put 14 across the bow), and `physics.spendRam`'s per-drop spall (halved to 1–2 pebbles: a
+downward crossing now happens twice as often, and doubling a brawl's spall against one debris budget
+would break invariant 7).
+
+### One stroke weight, and it is the hauler's
+
+**The hull outline is computed once per tier off the HAULER's art unit and handed to whichever hull
+is drawing** (`render.outlineW(tier, r)`). Do not derive it per spec.
+
+The trap this closes is subtle and bit twice. Every spec's stroke used to be `k × u`, and `u` is an
+*art-space* unit — `r × vis / (SHIP_HIT_FRAC × reach)` — so it means something different on each
+ladder: the tier-5 reaches are 1.85 (hauler), 2.75 (scout), 2.56 (brawler), and `SHIP_VIS` scales two
+of them up on top of that. **Equal coefficients over unequal units are unequal strokes.** The scout
+and brawler ran `0.085` against the hauler's `0.07`, which was survivable while all three normalized
+to the same reach and stopped being survivable the moment `SHIP_VIS` scaled them up — at tier 5 they
+drew ~27% and ~36% heavier. Dropping them to `0.07` narrowed it and *could not close it*: the brawler
+still drew 1.20–1.29× the hauler's line at tiers 3–5.
+
+Since `SHIP_VIS` matches all three to one apparent size, one line weight is the correct line weight
+for all of them. The hauler's expression is reproduced exactly, `Math.max(1.1, 0.07 × u_hauler)`,
+floor included — that 1.1 is a WORLD-unit floor that binds on the first three tiers, a known wart
+kept deliberately because it is what the hauler has always drawn and what the user calls correct.
+
+**Re-bake `SHIP_VIS` after any stroke change** — outline width feeds the ink the size match is
+measured from.
+
+### The scout's wings are bare (2026-08)
+
+The pod-and-barrel wing hardpoints are gone, and with them the `hard`, `coils` and `longBarrel`
+fields. The class loses nothing structural: it was already documented as escalating **guidance**
+rather than armament (its kit is Nav Plotter, Lead Computer, Impact Warning, Reflex Jink, and the gun
+count was frozen at four from tier 2 on), so the hardware that actually carries the ladder — gimbal,
+dishes, fire-control arrays, sensor booms, the crescent sail — is untouched, as is the evolving wing
+planform that carries the silhouette.
+
+One piece of fiction is now dangling and is worth a decision if the class is revisited: the **intake
+maw and hopper still feed a weapon system that no longer exists**. The feed conduits were retargeted
+to read as structural plumbing, but "it arms itself by swallowing rock" is no longer drawn anywhere.
 
 ## The crumble layer draws instanced (added 2026-08)
 
@@ -1027,3 +1474,93 @@ The shard family has its **own sheet geometry and its own tiers** (12 archetypes
 `drawImage` costs more raster than a small polygon fill. Instanced GL has no such crossover. Real
 crust debris measures a P50 drawn radius of ~19px at the game's own zoom, right past the rock cap, so
 capping shards there would have rejected the entire layer this path exists for.
+
+## The sun is a place, not a light source (added 2026-08)
+
+The star is `radius` 4,800 — it fills the screen from a lane out and keeps filling it all the way in.
+It used to be a flat cream disc wearing four soft blobs, seven wire-thin prominence arcs and four
+brown smudges, and the complaint that started this was exactly right: *"the scale of it is massive but
+none of it really reads."* Nothing on the surface had a size of its own, so there was nothing for the
+eye to measure 4,800 units against, and the disc read as a sticker at every distance.
+
+Everything below lives in `render.drawStar`.
+
+### Detail at three scales, each fading in at its own zoom
+
+| Layer | World size | Carries |
+|---|---|---|
+| supergranules | ~1,000-unit cells, live, **both signs** | the surface at any distance where a granule is sub-pixel |
+| granulation | baked tiles at three spans — cells ~129 / 43 / 14 units | what resolves as you close in |
+| chromosphere | ~50-unit boil cells on the limb | the scale itself — see below |
+
+**The coarse scale is LIVE and the fine scales are TILED, never the other way round.** A tiled texture
+1,500 units wide repeats three times across the disc and the eye reads that as wallpaper. Live cells
+never repeat and always evolve, which is what that scale needs; a 14-unit cell repeating ninety times
+reads as grain, which is what *that* scale needs.
+
+**The supergranules come in both signs.** They were additive-only at first, so the disc could only get
+*brighter* in patches — mottling needs the dark half, or the surface reads as a clean sphere with
+lamps on it. The dark set is bigger, slower and fainter than the bright set.
+
+**Granulation must BOIL.** Rigidly rotating one tile at `SUN_SPIN` (~1°/s) is a static texture — caught
+on sight. There are **three different bakes** and each octave cross-fades between them on its own
+clock (`boil`, 17 / 9 / 5s — the smaller the cell, the shorter it lives), each bake at its own bearing,
+so cells dissolve where they were and appear where they weren't.
+
+**Each octave fades in slowly with drawn cell size** (full at ~22px, gone under 8px). Granulation that
+reaches full strength at a few pixels per cell turns the whole disc into an even speckle — orange peel
+— and an even speckle flattens a sphere exactly as hard as no texture at all.
+
+### The limb is the point, and the smear is deliberate
+
+The photosphere is a **filled path**, so however softly it is shaded inside, it *ends*: a solid amber
+disc butts against the corona and the step reads as a stroke the whole way round. Nothing painted on
+the face can fix that, because the clip is what makes it.
+
+**THE SMEAR** (`sm`, `R*0.88 → R*1.10`, source-over): the disc's own limb colour pushed outward past
+where the fill stops, so photosphere colour is on both sides of the boundary and there is nothing to
+lock onto. Additive is wrong here — adding light *at* the edge brightens the seam.
+
+**It is wide on purpose, and it is not to be tightened.** A feather that hugged the outline was built
+and it dissolves the seam more cheaply, but flying the limb then reads as skimming a big warm object.
+This is a STAR: a few hundred units off the surface the whole view should be drowning in its light.
+That effect is the feature. *"It should look overwhelming, it's the sun!"*
+
+**The fringe is CELLS, not strands.** Individual spicule jets were drawn here first and every one read
+as a HAIR — a stiff, separable, faintly comic fringe that made the star look furry rather than molten.
+Soft blobs that each feather to nothing, **straddling** the surface rather than standing on a common
+standoff (a shared standoff puts every feather at one height and the fringe grows a second edge of its
+own), merge into one ragged hot boundary that churns.
+
+Two related traps already paid for, both in the same family:
+
+- **Prominences are filled tapered RIBBONS, in six faint nested bands.** Walked as N short strokes
+  under `'lighter'`, every round cap overlaps its neighbour and blends twice — up close a loop came out
+  a visible **chain of discs**. And one wide band at a readable alpha prints its own crisp boundary
+  across the screen when you are close enough to fly through the loop; stacking thin bands is how a
+  fill gets a soft shoulder. The sheath carries the read, the core is only a hint inside it: a bright
+  constant-width wire on a limb this long is an antenna, not plasma.
+- **The corona is a union of soft LOBES.** Wedge streamers (a fan filled through a radial gradient)
+  read as searchlights, and a single lumpy envelope *path* prints its own outline, because the
+  gradient still has alpha wherever the envelope dips inside its own maximum. A lobe that feathers to
+  zero on its own can do neither. Their tails need a smooth multi-stop falloff — a gradient running
+  linearly to zero has a kink at its outer stop, and where several overlap that kink draws an arc in
+  the corona.
+
+### No sunspots
+
+A full anatomy was built and cut: bipolar groups, irregular umbra, filamented penumbra, facular plage,
+tuned from near-black up to warm ember. At this size a spot is a **large dark object sitting on a
+surface that is otherwise all light and motion**, and it read as damage rather than as weather however
+the tones were graded. The star is better as a body that is uniformly, enormously alive. (The
+filaments had their own trap on the way: drawn long and sparse they reached past the penumbra fill
+meant to contain them and every spot came out a sea urchin.) Don't re-add spots without solving the
+"reads as damage" problem first.
+
+### Cost is bounded by the screen, never by the sun
+
+The pattern fills clip to the photosphere and the canvas bounds the raster. The limb passes walk only
+the bearing window the camera can see, solved as a **circle-circle intersection** (`limbWindow`) rather
+than `drawStormWave`'s `asin(viewR/d)` approximation — the camera can sit *inside* this body, where an
+asin window is meaningless. Measured: the `perf` suite reports no change against the pre-change
+baseline.

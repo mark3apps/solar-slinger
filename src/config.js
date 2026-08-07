@@ -158,7 +158,10 @@ export const CFG = {
   // ARMS (SHIP_WELL_START, below) are measured in body radii so a giant's well
   // reaches out proportionally rather than absolutely: a gas giant is now
   // something you fly ALONG, not something that snatches you. Raise
-  // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look.
+  // PLANET_GRAV_SHIP if the big worlds should grab as hard as they look —
+  // and SURFACE WEIGHT (SHIP_SURF_*, below) is the size-graded answer to the
+  // 1/mul² surface-gravity erosion this note describes: it restores strong
+  // surface pull on exactly the worlds this pass grew.
   // 5.25 = the previous 3 grown 1.75x (2026-08 user call: "planets should be
   // 1.5x to 2x bigger"). The 1.5-2x SPREAD comes from world.js's per-planet
   // seeded size jitter (x0.86-1.14 on the authored radius), so each world
@@ -222,13 +225,16 @@ export const CFG = {
   STAR_GRAV_SHIP: 0.8,
   // Planets, moons, and rogues also grab the ship extra hard — flying near
   // a world should FEEL like entering its well (total = SHIP_GRAV * this).
-  // 6.0 = the old 3.0 x 2 (2026-08 user call, first "about 1.4x as strong",
-  // then raised to "2x instead"), cashing in the invitation the WORLD SCALE
-  // note above makes: the growth pass left masses alone, so surface pull fell
-  // as 1/mul² while the worlds grew — this claws the felt grab back toward
-  // how big they now look. Ship-only, like everything in this family: rails,
-  // moon orbits, thrown rocks and damage never read it.
-  PLANET_GRAV_SHIP: 6.0,
+  // 12.0 = 6.0 x 2 (2026-08 user call: "double it — I really want it to be
+  // able to slingshot you"); 6.0 was itself the old 3.0 x 2 from the earlier
+  // "2x instead" call, cashing in the invitation the WORLD SCALE note above
+  // makes: the growth pass left masses alone, so surface pull fell as 1/mul²
+  // while the worlds grew. Ship-only, like everything in this family: rails,
+  // moon orbits, thrown rocks and damage never read it. Landing knock-on:
+  // residual settle drift is g_surface / SURF_FRICTION — see the canonical
+  // worst-case number on SURF_FRICTION's own comment (~28 u/s with SURFACE
+  // WEIGHT stacked on this mul, inside DOCK_SPEED 60).
+  PLANET_GRAV_SHIP: 12.0,
   // LONG ARMS (ship only): beyond SHIP_WELL_START planet radii, the
   // ship-felt pull of a world falls off as 1/r instead of 1/r² until the
   // boost caps at SHIP_WELL_MAX — wells reach farther WITHOUT deepening
@@ -237,6 +243,33 @@ export const CFG = {
   // debris, and celestials are untouched.
   SHIP_WELL_START: 2.5,
   SHIP_WELL_MAX: 6,
+  // SURFACE WEIGHT (ship only): inside SHIP_SURF_END body radii the ship-felt
+  // pull of a world ramps up toward the surface by up to radius/SHIP_SURF_REF
+  // (capped at SHIP_SURF_MAX). 2026-08 user call: "it should be semi difficult
+  // to launch straight up from a planet ... strong on the larger planets, not
+  // a straight pull across the board." The world-scale pass grew radii without
+  // masses, so surface g came out FLAT-TO-BACKWARDS across the sky (big worlds
+  // ~24 u/s², small dense ones ~47, thrust 180 — every launch a 7x-overpowered
+  // hop). This claws surface pull back in proportion to how big the world
+  // LOOKS: at REF 390 the largest giant peaks ~5.2x (surface g ~125, a real
+  // fight against thrust 180 but always escapable), mid worlds ~2-3x, worlds
+  // at/below REF and ALL moons are untouched (peak <= 1 never amplifies).
+  // SHIP_SURF_END deliberately equals SHIP_WELL_START so this hands off
+  // exactly where LONG ARMS begins — no overlap, no gap, and past 2.5 radii
+  // (cruise, slingshots, approach) nothing changes. Ship-only like the rest
+  // of this family, and MIRRORED in predictPaths.accelAt (keep in sync).
+  // SHIP_CULL_K needs no term for this: the boost exists only within 2.5
+  // radii, where a world's unboosted pull is orders of magnitude above the
+  // cull threshold — it can never rescue a culled attractor.
+  SHIP_SURF_REF: 390,
+  // COUPLED TO SHIP_CULL_K (physics.js): the ship cull's headroom is sized by
+  // SHIP_WELL_MAX (6), and this cap being <= that is the exact guarantee that
+  // no attractor the surface boost could matter for is ever culled. Raise it
+  // past SHIP_WELL_MAX and SHIP_CULL_K needs a max() of the two.
+  SHIP_SURF_MAX: 6,
+  // Must stay > 1 — the ramp normalizes by (SHIP_SURF_END - 1), i.e. "fades
+  // from the surface out"; at exactly 1 it divides by zero.
+  SHIP_SURF_END: 2.5,
   // ORBIT RUBBER BAND (ship only): inside SHIP_BAND_RANGE body radii (+300)
   // of a world, the INWARD radial component of the ship's velocity relative
   // to that world is damped by up to SHIP_BAND_DAMP/s (accel capped at
@@ -288,11 +321,17 @@ export const CFG = {
   // small worlds take the flat slowdown alone and are not sped up by the curve.
   //
   // Measured across the sky at these values: a 180-unit world goes from a
-  // ~78-210s day to ~157-419s, and the 1,290-unit giant from the same ~78-210s
-  // to ~9-25 MINUTES. MOONS ARE DELIBERATELY UNTOUCHED — the request named
-  // planets, moons are all well under the reference radius anyway, and their
-  // quicker turn is what makes a moon read as a small body next to a world.
-  PLANET_SPIN_SLOW: 0.5,
+  // ~78-210s day to ~314-838s, and the 1,290-unit giant from the same ~78-210s
+  // to ~18-50 MINUTES. A later user call halved rotation again for BOTH
+  // planets and moons — moons were deliberately left untouched the first
+  // time, but the second ask named both explicitly (the moon range itself is
+  // baked half-speed in entities.js, there being no prior moon knob to reuse).
+  // NOT purely cosmetic: `spin` feeds `util.surfaceVel` (surface friction's
+  // drag target, the dock speed gate, and a body's post-crumble/gravel spin),
+  // so halving it also halves the tangential ground speed a landing or a
+  // docked ship has to match — smaller worlds/moons barely move the number,
+  // but it is a real, if gentle, easing of the fastest-spinning giants' decks.
+  PLANET_SPIN_SLOW: 0.25,
   PLANET_SPIN_REF: 300,
   PLANET_SPIN_POW: 0.85,
 
@@ -309,8 +348,11 @@ export const CFG = {
   // that is what makes a landing possible at all: the radial part cancels the
   // gravity the ship keeps falling in with, so it settles against the
   // resolver's push-out instead of chattering on it. Residual drift is
-  // g_surface / SURF_FRICTION — under 1 u/s on a mid world, ~4 u/s under the
-  // deepest LONG ARMS amplification, i.e. far inside DOCK_SPEED either way.
+  // g_surface / SURF_FRICTION — THE canonical worst case is ~28 u/s, on the
+  // deepest world under SURFACE WEIGHT (surface g ~125 at PLANET_GRAV_SHIP 12
+  // × SHIP_SURF peak; other comments cite this number, update them together),
+  // still inside DOCK_SPEED (60). Mid worlds sit around 12, small worlds and
+  // moons under 6.
   //
   // It never touches the BOUNCE: the kick below is an impulse applied in the
   // same substep, and at 1/120s this rate removes 3.7% of a velocity. A hard
@@ -378,10 +420,78 @@ export const CFG = {
                            //   design law note in docs/design-laws.md — this is
                            //   the second sanctioned exception to "the hull
                            //   never heals")
+  // ---- The dome's CHARGE (user call, 2026-08: "the dock shield shouldn't be
+  // invulnerable — it should have a fixed amount but really high, it shouldn't
+  // recharge, and when it breaks the dock breaks").
+  //
+  // A berth used to be TOTAL immunity, which made a finished dock the one place
+  // in the game nothing could ever reach you — a safe room rather than a
+  // fortification. It is a POOL now: big, fixed, and spent forever. That turns
+  // a home port from a place you hide into a place you can lose, and it prices
+  // hiding at a dock while a nest works on you.
+  //
+  // REALLY HIGH is the brief, and 2400 is ~7.5 top-tier hulls or ~35 full CME
+  // passes: nothing in ordinary play scratches it, and it takes a sustained
+  // assault to break. It NEVER refills — not at a berth, not over time, not on
+  // a tier-up. The station carries it (`d.hp`), so each station has its own and
+  // a second port is a second pool.
+  DOCK_SHIELD: 2400,
+  // What the dome pays for THROWING something off (updateDomeShield). Damage is
+  // the main drain; this closes the hole where the most VISIBLE thing the field
+  // does — bouncing a hurled rock — cost it nothing, which reads as the shield
+  // still being invulnerable in exactly the moment the player is watching it.
+  // Priced on the same saturating mass knee as ship collision damage and on
+  // INBOUND speed only, so ambient drift against the rim costs ~0 (a shoal
+  // leaning on the dome must not bleed it) while a rock hurled at 400 u/s costs
+  // a few points.
+  DOCK_REPEL_COST: 0.02,
+  // …and a CEILING on any single bite. The pool is meant to be spent over a
+  // sustained assault, never lost to one event: without this, one heavy
+  // landmark rock arriving fast could take a visible chunk out of a harbour in
+  // a single frame, which is exactly the "shield vanished off one hit" failure
+  // the frame fix above was reported for. 12 points is ~0.5% of the pool — a
+  // hard hit you can watch land, two hundred of which would still not break it.
+  DOCK_REPEL_MAX: 12,
+  // Fraction of the pool at which the station warns it is failing. One shot per
+  // crossing, so a dome sitting at 19% doesn't nag.
+  DOCK_SHIELD_WARN: 0.2,
   DOCK_UPRIGHT: 6,         // 1/s the helm eases the nose to the surface normal
                            //   while berthed — the ship stands up and stays up
   DOCK_LIFT: 1.6,          // hull radii a respawn is placed above the pad, so
                            //   the ship never materializes inside the crust
+  // NO DOCK IN A WOUND. The deepest crater (fraction of the body's radius,
+  // measured off util.scarSurfaceAt — the same profile the collider and the
+  // silhouette read) the ground may carry and still take a berth. Two readers,
+  // one meaning: the LANDING gate refuses cratered ground ('crater' in
+  // game.dockGate), and a STANDING station whose footing is blasted past this
+  // same line COLLAPSES (updateDock) — before this, the pad floated over the
+  // hole on its build-time standoff, visibly detached from a surface that no
+  // longer existed. 0.05 of a 300-radius world is a 15-unit bite: a real
+  // crater, not cosmetic pitting (SCAR_MAX_CUT caps the profile at 0.38).
+  DOCK_CRATER_MAX: 0.05,
+  // ---- AUTOLAND (physics.updateAutoland) ----------------------------------
+  // A STANDING STATION LANDS YOU ITSELF. Come in close and slow with the
+  // throttle released and the pad takes the ship — eases it onto the berth,
+  // nose up, riding the surface — so RETURNING to a dock you already built is
+  // never a piloting test twice. The FIRST landing on bare ground is still
+  // flown by hand: the approach challenge is part of what a station costs,
+  // and the autoland is part of what it pays back.
+  //
+  // HANDS-OFF IS THE CONTRACT, in both directions: it never engages while the
+  // throttle is up (a pad that snatches a ship flying past its world would be
+  // the game fighting the pilot), and any thrust while it flies the approach
+  // hands the ship straight back and stands the autoland down for AUTOLAND_CD.
+  // The same cooldown is set by a LAUNCH, so the pad that just threw you off
+  // cannot reel you back in while you clear it.
+  AUTOLAND_R: 420,         // world units from the pad at which it can take over
+  AUTOLAND_VMAX: 260,      // surface-relative u/s above that it won't engage —
+                           //   a flyby is a flyby, however close it clips the pad
+  AUTOLAND_SPEED: 170,     // approach speed ceiling once it has the ship
+  AUTOLAND_TOUCH: 36,      // final descent u/s — under DOCK_SPEED (60), so the
+                           //   stillness gate is satisfied at contact by design
+  AUTOLAND_K: 3.5,         // 1/s velocity ease toward the approach vector
+  AUTOLAND_TURN: 5,        // 1/s attitude ease to rockets-down
+  AUTOLAND_CD: 2.5,        // s stood down after a manual override or a launch
   // ---- LAUNCH (physics.updateLaunch) --------------------------------------
   // LEAVING A DOCK IS A SEQUENCE, NOT A KEYPRESS. Thrust from a berth and the
   // station runs a release: the clamps swing back, the engine spools against
@@ -399,6 +509,19 @@ export const CFG = {
   LAUNCH_KICK: 300,        // u/s straight up as the clamps release — the shove
                            //   off the pad, so a launch clears the structure
                            //   without needing the player to fight gravity
+  // ---- The berth vista (main.js cinematic zoom) ---------------------------
+  // A FINISHED station pulls the camera out so a berth is a moment to survey
+  // the neighbourhood — the world you built on, its moons, whatever is inbound.
+  // It is a reward of the finished harbour (gated on dockReady, like the
+  // shield and the repair), never of the exposed build. Starting thrust — the
+  // launch spool — begins easing it back at the normal cinematic rate, so the
+  // dive to flight zoom overlaps the clamps releasing instead of following it.
+  // viewR rides the zoom, so sensors and the wake bubble genuinely widen with
+  // the vista; safe, because a berth is the one place nothing can touch you.
+  DOCK_VISTA: 1.8,         // × wider view while berthed at a finished station
+  DOCK_VISTA_K: 0.35,      // 1/s ease OUT to the vista — slower than the tier
+                           //   zoom's 0.5, so the pull-back reads as a slow
+                           //   establishing shot rather than a level-up zoom
   // The dome does not just absorb, it PUSHES: anything crossing it is thrown
   // back out at no less than this, so a berth can never be crowded or shoved.
   DOCK_REPEL_MIN: 210,
@@ -465,7 +588,17 @@ export const CFG = {
   //     giant's own rail, which its moons are handed to so a system survives
   //     losing its primary. Killing a gas giant transforms it rather than
   //     deleting it, which is also why the planet count holds.
-  GAS_IMPACT_MUL: 0.5,     // an impact spent sinking into atmosphere, not cratering
+  // REPRICED WITH THE PLANET HP PASS (0.5 -> 2.0). Gas hp rides PLANET_HP_BASE,
+  // so when planets were re-priced it fell 25,200 -> 14,200 (x0.56) — but the
+  // moon-mass impactor was tempered x0.25 in the same pass, and the gas class
+  // was carried along rather than re-derived. Net: the ladder went 16 -> 35
+  // moon slams, 3.5-5x off the stated target below, and GAS_HIT_CAP stopped
+  // binding at any reachable fling speed (0.079 of maxHp, needing ~2,500+
+  // closing against a 1,005 ceiling) — a documented bound that never fired.
+  // Measured back into band via `bench run combat`: 9 moon slams, 39 boulders,
+  // and gasSingleHitFraction back to the full 0.18, i.e. the cap engages again
+  // at the top of the fling range, which is the whole point of it.
+  GAS_IMPACT_MUL: 2.0,     // an impact spent sinking into atmosphere, not cratering
   // NO SINGLE IMPACT STRIPS A GIANT. Collision damage is QUADRATIC in closing
   // speed, and a late-game fling throws a moon three times faster than a mid
   // one — measured, a heavy moon at full tier-5 sling computed 2.7x the giant's
@@ -573,6 +706,14 @@ export const CFG = {
   // own low threshold — fling/alien-throw speeds are ship-derived, not orbital.
   DMG_THRESH: 240,         // closing speed below which impacts just bounce
   DMG_THRESH_THROWN: 140,  // threshold when either body was recently thrown
+  // RECOVERY TETHER: seconds without a fresh contact before a thrown rock
+  // counts as SPENT and is allowed home (tractor.updateTethers). Space has no
+  // drag, so a heavy shot that punches through its target never slows below
+  // DMG_THRESH_THROWN on its own — this, not the speed test, is what actually
+  // ends most throws. Long enough that a rock ricocheting through a moon
+  // family keeps its streak and stays out; short enough that a punch-through
+  // into empty space turns around promptly instead of expiring unrecovered.
+  TETHER_QUIET: 2.5,
   DMG_THROWN_MULT: 2,
   // DEALT damage is tempered (user calls, 2026-08: damage "shouldn't increase
   // exponentially as things get bigger", then "it shouldn't just affect the
@@ -634,6 +775,48 @@ export const CFG = {
   // actual dimensions live in config.ramPlate — the ONE geometry render draws
   // and physics measures, per the CFG.dockDomeR mirror-drift rule.
   RAM_R_POW: 0.4,           // front-loaded growth (see above)
+  // A RAM IS MADE OF ROCK, AND ROCK HAS ITS OWN SCALE (2026-08 user call: "the
+  // brawler's ram rocks shouldn't be scaled down with the ship — at tier 0
+  // they're so tiny it looks ridiculous"). Every other proportion of the slab is
+  // a fraction of the hull, which is right at the top of the ladder and absurd at
+  // the bottom: a tier-0 brawler is 5.4 drawn units, so a full rank-1 ram came
+  // out 15 units across carrying stones of radius ~1.2 — while the belt rock it
+  // is BUILT FROM runs radius 6-14. You would crush a boulder three times longer
+  // than your whole ship and the nose would gain three specks, at the gameplay
+  // zoom about one pixel each. The class's signature mechanic was invisible for
+  // the entire early game.
+  //
+  // So the slab's size basis gets a FLOOR in world units — sized off belt rock,
+  // not off the hull. It is a SOFT floor, hypot(r, RAM_MIN_R), for two reasons:
+  // it never stops growing with the ship (a hard max would draw tiers 0 and 1
+  // identically and then jump), and it vanishes where it isn't wanted — +391% at
+  // tier 0, +262% at tier 1, +73% at tier 2, +11% at tier 4, +3% at tier 5, so
+  // the top of the ladder is the slab that was already tuned.
+  //
+  // SIZE IT OFF THE STONE, NOT OFF THE SLAB. What the eye actually compares is
+  // one ram rocklet against one belt rock, and the rocklet is capped by the
+  // slab's DEPTH (render.ramTierRocks: r <= 0.8 x depth/2), so the floor has to
+  // clear that chain, not merely look generous. depth = rs x 0.655 at a full
+  // rank-1 ram, so a stone of radius R needs rs >= R / 0.262: belt rock runs
+  // radius 6-14 (median ~9), and 26 lands the tier-0 stones at ~7 — a real rock,
+  // in the middle of the class the ram is BUILT from. 10 was the first attempt
+  // and it was still wrong: it tripled the slab and the stones came out ~3,
+  // which is under the smallest gravel in the sky.
+  //
+  // THE FLOOR IS ONLY THE SLAB, NOT THE MOUNTING. `back` and `gap` stay on the
+  // true drawn hull, so a floored ram is a plough sitting on the nose where it
+  // always sat rather than a slab floating a ship-length out in front.
+  //
+  // Knock-on, and it is deliberate: ramFace/ramArc read this same plate per the
+  // mirror-drift rule, so a low-tier ram's contact edge and protected arc grow
+  // with what you can see — tier 0 rank 1 goes 27deg -> 31deg and its contact
+  // edge 15 -> 29 units, and the top of the ladder 36deg -> 38deg. (The floor
+  // alone put that first number at ~52deg; deriving halfW from the pack instead
+  // of ramping it independently is what brought it back down, so measure the arc
+  // after BOTH, never after this constant on its own.) The edge you can
+  // see IS the edge that hits; the alternative — physics reading an unfloored
+  // slab — is exactly the drift that rule exists to forbid.
+  RAM_MIN_R: 26,
   // ABSORPTION. Front-arc damage is taken by the ram INSTEAD of the hull —
   // fully, not as a percentage — and spends this much ram mass per hull point
   // it eats. The hull takes nothing at all until the ram is gone, which is the
@@ -868,6 +1051,31 @@ export const CFG = {
   // the bleed, the hard cap, AND the flow-relative reference; keep all in sync.
   SPEED_BLEED: 1.6,
   SPEED_HARD: 1.9,
+  // GRAVITY SLING CREDIT (2026-08 user call: "up the max rate at which being
+  // slung by gravity can propel your velocity ... it should still come down
+  // to the normal tier but speed increased due to gravity should fall off
+  // slower than other speed increases"). While the ship is over its ceiling
+  // AND world gravity is doing positive work on the flow-relative deviation
+  // (a slingshot, not a burn), the ship BANKS that work as s.slingSpd — an
+  // extra allowance added to the governor's cap, up to SLING_MAX × maxSpeed.
+  // The credit decays at SLING_DECAY (exponential, half-life ~5.8s), and the
+  // ordinary bleed keeps speed pinned to the falling cap+credit — so a sling
+  // rides high and comes down on the credit's slow clock, while thrust or
+  // knockback overspeed (no credit) still bleeds at SPEED_BLEED within a
+  // second. The signal is game.shipGx/Gy — WORLDS ONLY, same stash the
+  // gravity compass reads — so coasting a deep sun dive banks nothing.
+  // Accrual has deliberately NO over-cap gate: a slingshot builds its speed
+  // on the plunge, below the ceiling — at periapsis gravity runs
+  // perpendicular to the track and adds nothing — so an over-cap gate
+  // starves the whip and the bleed clamps it at the cap (measured: 294
+  // gated vs 465 ungated on the same flyby). A descent does bank credit on
+  // the way down, and that is the accepted cost: converting a dive into
+  // speed IS the slingshot maneuver, the credit is bounded and decaying,
+  // and climbing out accrues nothing since gravity work turns negative.
+  // predictPaths mirrors the elevated cap (frozen at the current credit —
+  // it decays too slowly for the forecast to lie).
+  SLING_MAX: 1.0,          // × maxSpeed of extra ceiling a sling can bank
+  SLING_DECAY: 0.12,       // 1/s — the slow falloff; tier cap is the floor
 
   // Fair-view normalization: cam.zoom is scaled by the canvas diagonal so
   // EVERY window sees the same world extent — a small screen renders the
@@ -1011,8 +1219,19 @@ export const CFG = {
   ALIEN_RADIUS: 13,
   ALIEN_ACCEL: 250,
   ALIEN_SPEED: 330,
+  // GRABBERS FLY AT HALF SPEED (user call, 2026-08: "about half the speed they
+  // do now"). ALIEN_SPEED stays the sheet-wide reference — the integrate-loop
+  // overspeed damp (x1.6) and the lurker's LURKER_SPEED multiplier both key
+  // off it — so the slowdown is a grabber-scoped multiplier, never a change to
+  // the base number those tunings were balanced against.
+  GRABBER_SPEED: 0.5,
   ALIEN_CAPACITY: 2600,    // heaviest rock an alien can grab
   ALIEN_THROW: 430,
+  // A grabber must CLOSE before it throws (user call, 2026-08). It used to
+  // launch from 950u — most of a screen out, so rocks arrived before the alien
+  // ever felt like a threat you could see. Range only: throw SPEED is
+  // untouched, and the seek/harass engage distances stay where they were.
+  ALIEN_THROW_R: 450,
   ALIEN_CONTACT_DMG: 24,
   ALIEN_FIRST_WAVE: 55,    // seconds of peace at the start
   // (No ALIEN_WAVE_EVERY. Timed waves are gone — nests and shoal-lurker broods
@@ -1021,6 +1240,11 @@ export const CFG = {
   ALIEN_SCRAP: 28,
   ALIEN_TERRITORY: 6000,   // aliens defend their nest's turf, never roam past this
   ALIEN_BURST: 4,          // a nest can scramble up to this many at once
+  // Seconds between nest eruptions. 12 -> 60 (user call, 2026-08: "the spawn
+  // time after one dies should be MUCH greater"): a 12s lull meant killing a
+  // patrol bought nothing — the yard read as an endless respawner instead of a
+  // garrison you can thin out.
+  ALIEN_REGROUP: 60,
 
   // DENSE ASTEROID FIELDS (world.js seedDenseFields): packed rock shoals
   // riding the sun's rails at fixed radii, each home to a finite brood of
@@ -2126,11 +2350,18 @@ export const CFG = {
   STORM_SHADOW: 1.15,      // shadow cylinder radius, x the sheltering body's radius
   // …plus a FLAT pad, because forgiveness has to be measured in ship-widths and
   // a pure multiple is not: 1.15x a 26-radius moon is a 30-unit half-width — a
-  // slot a TITAN (SHIP_RADIUS 44.2) does not fit through, let alone thread under
+  // slot a TITAN (SHIP_RADIUS 66.3) does not fit through, let alone thread under
   // fire with the sensors out. The pad is sized off the largest hull in the game
-  // for exactly that reason: at 45 the smallest moon in the sky shelters even
-  // the biggest ship, while a 500-radius planet barely notices the +8%.
-  STORM_SHADOW_PAD: 45,
+  // for exactly that reason: at 68 the smallest moon in the sky shelters even
+  // the biggest ship, while a 500-radius planet barely notices the +14%.
+  // MOVES WITH THE TITAN, and only ever with the Titan: it was 45 against a
+  // 44.2 hull, and the 2026-08 +50% top tier (SHIP_RADIUS) took the hull to
+  // 66.3, so the pad went x1.5 with it. Left at 45 the lee would have been
+  // 48.7 against a 66.3 hull — the biggest ship in the game no longer fits
+  // behind the smallest moon, which is the exact regression mechTest T21
+  // catches and the reason that assertion is written against SHIP_RADIUS[5]
+  // rather than a multiple of the moon's own radius.
+  STORM_SHADOW_PAD: 68,
   STORM_SHADOW_LEN: 30,    // how far that lee reaches behind it, x radius
   STORM_SHADOW_MIN_R: 24,  // smallest body that casts one — see MOONS SHELTER above
 
@@ -2161,23 +2392,60 @@ export const CFG = {
   // invisible to alien senses (ai.js gates on game.dustCloak). The render
   // gradient reaches wider than the mechanic so the boundary never reads as a
   // hard edge (in-world transitions are organic, never geometric).
-  DUST_HALO: 2.4,
+  // 4.15 = the old 2.4 x sqrt(3): a 2026-08 user call tripled the stealth
+  // AREA (radius rides the square root). Render's halo/speck reach scales
+  // with it — retune both together (drawBody's dust block).
+  DUST_HALO: 4.15,
   // SHROUD PLANETS conceal the same way (ai.js feeds the same game.dustCloak
   // flag, so every AI gate works unchanged) — a smaller multiple because the
   // world is planet-sized. Fortified shrouds don't cloak (a permanently
   // cloaked siege would be a free win). Render haze reaches 2.1x — wider than
   // the mechanic, same no-hard-edge law as the dust moons.
   SHROUD_HALO: 1.7,
-  // TERRAN ATMOSPHERE (physics.step): loose free-flying rocks entering the
-  // shell burn — depth² x maxHp-fraction dps, the corona-heat shape, so small
-  // rocks flash to nothing while a heavyweight (> ATMO_MAX_MASS) punches
-  // through to the surface: bombarding a terran world takes a real rock.
-  // Railed bodies are exempt (the world's own junk satellites live inside the
-  // shell, and damaging a railed body derails it — a cascade), as are held
-  // rocks and premium/quest objects. The SHIP is untouched: breathable sky.
+  // TERRAN ATMOSPHERE (physics.step): a BURN DECK, not a well — the layer
+  // between ATMO_IN and ATMO_ZONE burns what flies through it, and beneath it
+  // the air is CALM (user design call: "once through the damage stops"). The
+  // band profile is 4u(1-u) — zero at both edges, peak mid-deck — so the burn
+  // fades in and out with no hard edge at either boundary. Loose free-flying
+  // rocks burn at the maxHp-fraction rate (profile² x ATMO_DPS_FRAC, raised
+  // from 0.9 when the band replaced the full well — the deck is thinner and
+  // releases a rock that punches under it, so the rate compensates to keep
+  // "small rocks flash to nothing" true); a heavyweight (> ATMO_MAX_MASS)
+  // punches through: bombarding a terran world takes a real rock. Railed
+  // bodies are exempt (the world's own junk satellites live inside the shell,
+  // and damaging a railed body derails it — a cascade), as are held rocks and
+  // premium/quest objects.
+  // THE SHIP BURNS TOO NOW (user design call) — flat ATMO_SHIP_DPS x profile,
+  // the environmental-hazard convention (never hull-scaled), sitting under the
+  // gas cloud tops' 9: crossing the deck is a toll, camping in it is death,
+  // and the surface beneath is reachable by anyone willing to punch through.
+  // ATMO_IN clears the tallest dock pad (~44u on a ~500u world = 1.09r), so a
+  // berthed ship always sits in calm air below the deck.
   ATMO_ZONE: 1.5,
+  ATMO_IN: 1.14,
   ATMO_MAX_MASS: 1400,
-  ATMO_DPS_FRAC: 0.9,
+  ATMO_DPS_FRAC: 1.4,
+  ATMO_SHIP_DPS: 7,
+  // OCEAN WORLDS (user design call): the sea is not a surface — the COLLIDER
+  // is the seabed at OCEAN_CORE x radius (wired through surfRadius/shaped, so
+  // ship, rocks, aliens and both predictPaths mirrors all agree), and the
+  // water between seabed and the drawn radius is a DRAG VOLUME: anything loose
+  // in it is damped toward the water's own frame (util.surfaceVel — the
+  // world's motion plus its spin), depth-ramped so the waterline is not a hard
+  // edge, and divided by (1 + mass/OCEAN_DRAG_MASS) so a pebble stops in the
+  // shallows while a thrown moon ploughs to the bedrock — kinematic drag
+  // would stop both alike, and "heavyweights punch through" is the atmosphere
+  // rule read across. Splashdowns and seabed strikes stamp p.seaHits and
+  // render.drawSeaRipples runs waves across the face — an ocean world shows
+  // its hits as WATER, never as craters (canWear excludes it like gas, and
+  // ambient wear skips it: the sea closes over every wound).
+  // NO BERTH ON OPEN SEA: the landing gates in collideShipBody skip ocean
+  // worlds outright — there is bedrock to rest on beneath the water, but
+  // nothing to build a dock on.
+  OCEAN_CORE: 0.86,
+  OCEAN_DRAG: 2.6,
+  OCEAN_DRAG_MASS: 1500,
+  OCEAN_RIPPLE_T: 2.6,
 };
 
 // THE POCKET OUTLINE. A pocket sampled straight from the FIELD_LEN x
@@ -2393,9 +2661,59 @@ export const DOCK_TIERS = [
 export function dockTier(st) {
   return DOCK_TIERS[Math.min(DOCK_TIERS.length - 1, st.tier || 0)];
 }
+// THE BERTH IS SIZED BY THE HULL AS DRAWN, NOT AS COLLIDED (bug, 2026-08:
+// "the docking station for the tier 1 brawler is way too small").
+//
+// `st.radius` is the COLLISION circle, and that is deliberately one number for
+// every spec — SHIP_VIS is what makes all three ladders read the same SIZE, and
+// its own note spells out the knock-on: "a spec's DRAWN reach is `r /
+// SHIP_HIT_FRAC x vis`... everything that must wrap the ART rather than the
+// hitbox multiplies by it". A pad is as art-wrapping as anything gets, and it
+// was never given that multiply — so the deck was sized for a hauler and every
+// scout and brawler simply overhung it. Measured: a tier-1 brawler's drawn hull
+// reaches 16.0 units across a deck whose half-width was 15.2, i.e. the ship was
+// visibly WIDER THAN ITS OWN BERTH at tiers 1-4 (scout 1-2, worst 0.88x).
+//
+// Multiplying the ship term by `vis` makes the pad-to-hull ratio come out
+// EXACTLY the hauler's at every tier and every spec (1.43 -> 1.92 as the tier
+// widens the deck for what stands on it), which is the same equal-apparent-size
+// principle SHIP_VIS exists to enforce. The hauler ladder is unchanged by
+// construction (its vis is 1 at every tier), so nothing that already looked
+// right moves.
+export function berthR(st) { return st.radius * (st.vis || 1); }
 export function dockPadR(st, hostR) {
-  const want = Math.max(16, st.radius * 2.2) * dockTier(st).w;
-  return Math.max(Math.max(14, st.radius * 1.9), Math.min(want, hostR * 0.42));
+  const b = berthR(st);
+  const want = Math.max(16, b * 2.2) * dockTier(st).w;
+  return Math.max(Math.max(14, b * 1.9), Math.min(want, hostR * 0.42));
+}
+// A PORT NEEDS A WORLD THAT CAN CARRY IT (user call, 2026-08). The berth is
+// sized by the SHIP — dockPadR's berth floor deliberately WINS over the host
+// cap — so on a small moon a high-tier port claimed most of the horizon: a
+// megastructure the moon wore rather than a building standing on it. The
+// honest fix is a GATE, not a smaller pad (a pad the ship does not fit on is
+// not a pad): a body whose horizon cannot give the berth floor a reasonable
+// share simply offers NO ANCHORAGE at that ship class.
+//
+// THE LINE IS 0.55 OF THE HOST RADIUS, deliberately looser than dockPadR's
+// 0.42 aesthetic cap: the cap is where a pad stops LOOKING right, the gate is
+// where it stops being PLAUSIBLE at all. It reads the SAME `berthR` the pad
+// does, so the gate and the structure can never disagree about how big a berth
+// this ship needs — and it therefore varies by SPEC as well as tier, which is
+// correct: a brawler really is a wider thing to park. Host radius needed, by
+// spec across tiers 0-5:
+//   hauler   26  26  44  76  132  230
+//   scout    26  39  75  116  197  321
+//   brawler  26  37  68  130  231  384
+// Against the real sky (moons 41-232 median 135, planets 293-1998): every moon
+// hosts a tier-0 pad, the median moon carries to about tier 3, the biggest moon
+// takes a tier-4 hull, and a top-tier port is planet infrastructure for every
+// spec. One predicate, every reader: the
+// landing gate ('small' in game.dockGate), updateDock's refit sweep (a
+// standing station DECOMMISSIONS when the ship class outgrows its world — the
+// art refits to the current tier, so the rule must too), and the approach
+// guide's wording.
+export function dockHostOk(st, hostR) {
+  return Math.max(14, berthR(st) * 1.9) <= hostR * 0.55;
 }
 // The dome, measured FROM THE SURFACE POINT under the pad (not the pad origin,
 // which sits a hull-radius above the crust — `groundY` is that lift). Sized to
@@ -2430,16 +2748,53 @@ export function ramPlate(st, ram) {
   if (!(ram > 0) || !(st.ramCap > 0)) return null;
   const fill = Math.min(1, ram / st.ramCap);
   const g = Math.pow(fill, CFG.RAM_R_POW);
-  const r = st.radius;
+  // THE WHOLE PLATE RIDES THE DRAWN SHIP, NOT THE COLLISION CIRCLE, so every
+  // proportion below is taken against the size-matched radius. The brawler's art
+  // is scaled up ~1.4x by SHIP_VIS; leaving the slab on the bare collision radius
+  // would have left it NARROWER than the hull prow it mounts on, and the class's
+  // one hard rule is that the ram overhangs the ship on both sides at every size.
+  // Scaling it whole keeps back/gap/depth/halfW in exactly the proportions they
+  // were tuned in, and keeps ramFace/ramArc — the edge physics hits and the arc
+  // it protects — glued to the edge you can see.
+  const r = st.radius * (st.vis || 1);
+  // ...EXCEPT the slab's own size, which is floored at rock scale (CFG.RAM_MIN_R)
+  // so a small hull still carries something built out of recognisable rock. The
+  // mounting (`back`, `gap`) stays on `r` — the true drawn hull — and only the
+  // slab (`depth`, `halfW`) rides `rs`.
+  const rs = Math.hypot(r, CFG.RAM_MIN_R);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
   // as hits spend it. War Rack's rank only sets how high that ladder is
-  // allowed to climb: each rank unlocks the next tier, it does not wear it.
+  // allowed to climb: each rank unlocks the next TWO bands, it does not wear
+  // them.
   // ramTier below is the one place that mapping lives; the plate carries the
   // result so render's build and physics' tier-drop detection read one number.
   const t = ramTierOf(fill, st.orbitLvl || 1);
+  // A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH (2026-08 user design law).
+  // The slab's thickness sizes the STONE (one course is one stone thick — the
+  // same `depth x RAM_STONE` render builds its rocklets at) and the WIDTH IS
+  // WHATEVER THAT MANY STONES OCCUPY SHOULDER TO SHOULDER. It used to be an
+  // independent ramp, and an independent ramp is exactly the bug: the width grew
+  // on `t` and `g` while the stone stayed capped by depth, so the pack got wider
+  // without getting fuller and the stones ended up hanging apart on their beams
+  // with daylight between them — a fence, not a ram. Deriving it means the
+  // stones CANNOT come apart at any band, and the slab simply gets narrower
+  // where it holds less.
+  //
+  // Geometry: render seats the outermost stone centre at `halfW - 0.7 x stone`
+  // and spreads the rest evenly, so for `n` across, a centre spacing of
+  // `2 x stone x pack` needs `halfW = stone x (0.7 + pack x (n - 1))`. `pack`
+  // under 1 is overlap, and it TIGHTENS up the ladder — that is the whole of the
+  // old loose-rubble-to-fused-wall story, now told by how hard the stones are
+  // jammed rather than by how far apart they float.
+  const depth = rs * (0.26 + 0.0275 * t + 0.34 * g);
+  const stone = depth * RAM_STONE;
+  const halfW = stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1));
   return {
+    // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
+    // is scaled up by its size-match factor — read against the bare footprint
+    // the slab would sit buried inside the prow it is supposed to lead.
     back: (r / SHIP_HIT_FRAC) * 1.04,
     // The field gap is the compression spring's FREE LENGTH, and it is
     // deliberately generous: the slab rides well clear of the nose at rest so
@@ -2447,18 +2802,48 @@ export function ramPlate(st, ram) {
     // to ~2/3 of this, and an impact slams it nearly to the hull (render's
     // spring). A tight resting gap made all three states read the same.
     gap: r * 0.55,
-    depth: r * (0.26 + 0.055 * t + 0.34 * g),
-    halfW: r * (0.72 + 0.16 * t + 0.52 * g),
+    // The `t` coefficient is HALVED against the old six-band ladder because the
+    // ladder is now twelve bands long (RAM_TIERS) — same slab at the top of
+    // every rank, twice as many steps getting there.
+    depth,
+    halfW,
+    // The base rocklet radius, PUBLISHED rather than re-derived: render lays the
+    // pack out against the same number this width was solved for, or the two
+    // disagree and the stones drift apart again.
+    stone,
     fill,
     tier: t,
   };
 }
-// fill -> tier, capped by rank. Six even density bands: a rank-6 ram walks all
-// six as it fills; a rank-2 ram tops out at tier 2 however much it holds
-// (which can't be much — the cap is rank-scaled too, so the bands and the
-// capacity climb together).
+// THE PACK LADDER. `RAM_STONE` is the rocklet radius as a fraction of the slab's
+// thickness — one course is one stone thick, which is what makes `depth` the
+// honest measure of a ram's substance. `ramPack` is the centre spacing in stone
+// diameters: under 1 at every band, so the stones ALWAYS touch, tightening from
+// a just-jammed 0.92 at band 1 to a 0.79 overlap at band 12. `ramRows` and
+// `ramPerRow` are the course/count ramp — exported because render builds the
+// actual layout from them and config solves the width against it, and a pack
+// geometry living in two files is the mirror-drift trap.
+export const RAM_STONE = 0.4;
+export function ramRows(t) { return t <= 4 ? 1 : t <= 8 ? 2 : 3; }
+export function ramPerRow(t) { return 2 + Math.round((t - 1) * (6 / 11)); }
+export function ramPack(t) { return 0.92 - 0.012 * (t - 1); }
+// fill -> tier, capped by rank. TWELVE even density bands, TWO PER RANK (2026-08
+// user call: "instead of 6 visual ram looks, 1 per level, it should be 12, 2 per
+// level, to give it a bit more granularity") — a rank-6 ram walks all twelve as
+// it fills; a rank-2 ram tops out at tier 4 however much it holds (which can't
+// be much — the cap is rank-scaled too, so the bands and the capacity climb
+// together).
+//
+// RAM_TIERS is the ONE place the ladder's length lives, and three things are
+// keyed off it and must move with it: the `t` coefficient in ramPlate's depth
+// (halved when this doubled, so each rank still TOPS OUT at the slab it always
+// did), the ramRows/ramPerRow/ramPack ramp below (same endpoints, twice the
+// steps), and physics.spendRam's per-drop spall count (halved, because a
+// downward crossing now happens twice as often and the budget is not free).
+export const RAM_TIERS = 12;
 function ramTierOf(fill, rank) {
-  return Math.max(1, Math.min(rank, Math.ceil(fill * 6)));
+  const perRank = RAM_TIERS / 6;   // ranks are fixed at six; bands per rank is the knob
+  return Math.max(1, Math.min(rank * perRank, Math.ceil(fill * RAM_TIERS)));
 }
 // The shared read: what tier is this ram AT? Physics compares it across a
 // spend to catch a downward crossing (debris comes loose); render keys the
@@ -2554,6 +2939,13 @@ export const TIERS = {
 // Off the ladder entirely — no beam tier ever reaches these.
 export const LIFT_NEVER = 99;
 
+// RING SLOTS PER ORBITAL SLING RANK — the one copy of this ladder. shipStats
+// derives `maxOrbiters` from it and hud.js draws one stow pip per entry; the
+// gauge used to hard-code the length and quietly stopped counting at 7 the
+// moment the ladder's top doubled to 14 (2026-08). Same rule as DOCK_TIERS: a
+// number the sim and the instrument both read lives here, once.
+export const ORBIT_SLOTS = [1, 4, 6, 9, 11, 14];
+
 export function liftClass(b) {
   // A GAS GIANT HAS NOTHING TO GRIP (user design law). It is not a heavier rung
   // you buy your way up to; it is not on the ladder. This is the same fact the
@@ -2625,7 +3017,7 @@ export function canStow(st, b) {
 
 // Per-tier collision radius. DERIVED, not hand-picked: the ship's full drawn
 // FOOTPRINT (nose tip / outer ring — shipVisualR) grows by the SAME RATIO
-// each tier (x1.62, from 6.0 to 67 world units — equal RATIOS, not equal
+// each tier (x1.75, from 6.1 to 100 world units — equal RATIOS, not equal
 // increments: the eye judges size change multiplicatively), and the collision
 // circle is a UNIFORM fraction of that footprint on every tier:
 //   SHIP_RADIUS[t] = SHIP_HIT_FRAC × footprint[t]
@@ -2636,8 +3028,18 @@ export function canStow(st, b) {
 // hull mass everywhere while leaving nose tips and thin ring arcs forgiving.
 // render.js normalizes the art to the footprint (r / SHIP_HIT_FRAC), so
 // changing the fraction moves ONLY the hitbox, never the drawn size.
+//
+// 2026-08 user call: THE TOP TIER IS HALF AGAIN AS BIG, AND THE BOOST TAPERS
+// LINEARLY DOWN THE LADDER. The old ladder was [4.0, 6.4, 10.4, 16.8, 27.3,
+// 44.2]; each tier is multiplied by 1 + 0.1 x tier, so the SCOUT is untouched
+// and the TITAN is x1.5. That deliberately steepens the ladder — the per-tier
+// growth ratio goes from a flat x1.62 to a flat-ish x1.75 — because the point
+// was to widen the gap between where you start and where you end up, not to
+// inflate the whole fleet. The ratios stay near-uniform tier to tier, which is
+// the property that mattered (the eye judges size change multiplicatively);
+// what changed is how big each step is.
 export const SHIP_HIT_FRAC = 0.66;
-export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
+export const SHIP_RADIUS = [4.0, 7.0, 12.5, 21.8, 38.2, 66.3];
 
 // PER-TIER SHIP MASS. It was a flat 10 forever — which was harmless while
 // nothing read it, and stopped being harmless the moment the tether went taut
@@ -2645,18 +3047,23 @@ export const SHIP_RADIUS = [4.0, 6.4, 10.4, 16.8, 27.3, 44.2];
 // meant a Titan wrestled a moon exactly as badly as a Scout did, and every
 // load in the game won every fight outright.
 //
-// DERIVED from the drawn footprint, not hand-felt: SHIP_RADIUS grows by a
-// uniform x1.62 per tier, and mass rides that at the power 2.5 (1.62^2.5 =
-// x3.34 a tier) — between area and volume, because a ship is hull and framing
-// rather than a solid lump. Over the run that is ~420x, so what you can wrestle
-// changes completely from end to end: a Scout is a gnat on anything it can
-// lift, a Titan can genuinely muscle the smaller worlds and still gets swung
-// around by a gas giant's core.
+// DERIVED from the drawn footprint, not hand-felt: mass rides the footprint at
+// the power 2.5 — between area and volume, because a ship is hull and framing
+// rather than a solid lump. One expression, anchored on the Scout:
+//   SHIP_MASS[t] = 10 x (SHIP_RADIUS[t] / SHIP_RADIUS[0]) ^ 2.5
+// so what you can wrestle changes completely from end to end: a Scout is a gnat
+// on anything it can lift, a Titan can genuinely muscle the smaller worlds and
+// still gets swung around by a gas giant's core.
+// RE-DERIVED 2026-08 with the +50% top tier (see SHIP_RADIUS). The steeper size
+// ladder compounds hard at this exponent: the run-long spread went from ~420x
+// to ~1120x, and the Titan alone gained x2.66 (4200 -> 11200). That is a real
+// balance move, not a cosmetic one — every mass-ratio contest the ship enters
+// (today the taut tether, tractor.springHeld) tilts toward the big hulls.
 // If SHIP_RADIUS is ever re-derived, re-derive this with it.
-export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
+export const SHIP_MASS = [10, 41, 173, 694, 2820, 11200];
 
 // Per-tier camera zoom TARGET (the value cam zoom eases toward): a
-// geometric ramp from 2.46 to 0.6 — each step recedes by the same ~25%
+// geometric ramp from 2.46 to 0.40 — each step recedes by the same ~30%
 // RATIO. The start value is DERIVED, not aesthetic: it makes the ship's
 // APPARENT on-screen size arc identical to the approved one (~15px-eq
 // scout -> ~40px-eq titan) while the ship's WORLD size shrank — small
@@ -2665,15 +3072,137 @@ export const SHIP_MASS = [10, 34, 112, 375, 1250, 4200];
 // THAT and you must re-derive this — retuning SHIP_HIT_FRAC alone moves only
 // the hitbox and needs no zoom change. Zoom is driven by beam tier
 // alone — other progression tracks don't pull the camera back.
+//
+// RE-DERIVED 2026-08 for the +50% top tier, holding APPARENT SIZE FIXED. The
+// invariant is that `footprint x zoom` is unchanged on every tier, so
+//   SHIP_ZOOM[t] = old_zoom[t] x old_radius[t] / SHIP_RADIUS[t]
+// which is why tier 0 (unchanged radius) keeps its 2.46 exactly. The ship
+// therefore looks the SAME as it always did in the viewport, and the whole of
+// the +50% is spent where it was asked for: the ship against the worlds. The
+// side effect to know about is that the late tiers now sit ~1.5x further back,
+// so the view covers ~1.5x more world at tier 5 — more bodies inside game.viewR
+// on the biggest hull, which is the tier that already carries the most.
 // NOTE: this tight tier-0 zoom is why the SKY SPEED is tuned low (the sun's
 // mass, world.js) — the world scrolls past ~2x faster per zoom unit, so a
 // fast sky at this zoom reads as flying wildly fast. Flight feel = sky speed
 // x zoom; they tune together. Raise this zoom and the sun mass must drop.
-export const SHIP_ZOOM = [2.46, 1.86, 1.40, 1.06, 0.80, 0.60];
+export const SHIP_ZOOM = [2.46, 1.70, 1.16, 0.82, 0.57, 0.40];
 
 // Per-tier ship CLASS name (matches the hull designs drawn in render.js
 // SHIP_TIERS). Distinct from st.label, which names what your BEAM can grab.
-export const SHIP_NAMES = ['Scout', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'];
+// ONE LADDER PER SPEC (2026-08 user call: the name should say what the ship
+// is FOR, not repeat one generic list on every spec). This used to be a
+// single array — literally the HAULER_TIERS hull-art ladder from render.js
+// with tier 0 renamed "Scout" — so a tier-0 BRAWLER or SCOUT was HUD-labelled
+// "Scout" regardless of spec. HAULER keeps that original ladder (with tier 0
+// restored to SKIFF, matching its render.js hull comment); SCOUT and BRAWLER
+// take the ladders already authored for their hull art in
+// docs/ship-art-prompts.md, so the name always matches the silhouette.
+export const SHIP_NAMES = {
+  hauler: ['Skiff', 'Fighter', 'Corvette', 'Cruiser', 'Dreadnought', 'Titan'],
+  scout: ['Splinter', 'Dart', 'Stiletto', 'Longshot', 'Farsight', 'Oracle'],
+  brawler: ['Bruiser', 'Mauler', 'Breaker', 'Bulwark', 'Rampart', 'Colossus'],
+};
+
+// SIZE-MATCH: EVERY SPEC READS THE SAME SIZE AS THE HAULER (2026-08 user call).
+//
+// The three hull ladders were normalized to their own MAX REACH — the art is
+// scaled so the furthest point of every spec lands at the same r / SHIP_HIT_FRAC.
+// That makes the collision fraction uniform, but it is NOT the same thing as
+// looking the same size, and the difference is large: a spec whose reach comes
+// from ONE outlier (the scout's needle nose, the brawler's standoff deflector
+// brow) gets its whole body shrunk to pay for that outlier. Measured, the hauler
+// read up to 1.49x bigger than the brawler and 1.33x bigger than the scout.
+//
+// So the art now carries a second factor: the reach normalization FIRST, then
+// this. The metric is the ink's RADIUS OF GYRATION — the RMS distance of drawn
+// material from the hull's own centroid, i.e. how far the ship's substance
+// actually spreads. Two simpler metrics were measured and REJECTED by eye
+// against a side-by-side sheet of all three ladders, and the reasons are worth
+// keeping because both look right on paper:
+//   BOUNDING BOX (sqrt of w x h) made the BRAWLER the biggest ship in the sky.
+//     The hauler's box is mostly the AIR inside its ring arms and the brawler's
+//     is solid slab, so equal boxes are nowhere near equal presence.
+//   INK AREA (sqrt of painted pixels) made the SCOUT enormous — a needle carries
+//     a third of the hauler's pixels, so matching pixel counts stretched it to
+//     half again the hauler's length at T3.
+// Gyration splits them, and the check that it is the right split is that it
+// AGREES with ink area on the solid brawler (1.27 vs 1.26 at T5) while still
+// refusing to inflate the thin scout.
+//
+// MEASURED, NOT FELT, and re-derivable: render.measureShipArt(game) draws all
+// three ladders off-screen and returns the numbers. Each entry below is
+// hauler.raw[tier] / spec.raw[tier] from that tool TIMES THE TRIM below, so the
+// hauler is 1 by construction and its shipped art is untouched on every tier.
+// Re-run it and re-bake this whenever a tier table changes — the numbers are
+// stable to ~1.5% (the spinning ring arms and the slewing gimbal move the ink a
+// little).
+//
+// THE 1.25 TRIM (2026-08 user call: "the scout needs to be larger and so does
+// the brawler than they are now at each tier"). Matching the hauler EXACTLY was
+// the right correction and still read a touch small on those two once it was in
+// front of a player — a needle and a slab need more room than a compact ring to
+// carry the same weight on screen. So the target is not `hauler` but
+// `1.25 x hauler`, and the hauler is now the smallest of the three rather than
+// the biggest. It stays THE REFERENCE either way: one spec has to be the anchor
+// or there is nothing to measure against, and the hauler's art is the one that
+// has never needed to move.
+//
+// RE-BAKE AFTER TOUCHING OUTLINE WIDTH. render.outlineW feeds the ink these
+// numbers are measured from, so changing the stroke weight moves the
+// measurement — putting the scout and brawler onto the hauler's single shared
+// stroke shifted every entry here by ~1.5%.
+//
+// RE-BAKE TWICE. The measurement is very slightly non-linear in the factor it is
+// measuring: the hull OUTLINE is one weight per tier for every spec —
+// `max(1.1, 0.07 x u_hauler)`, see render.outlineW — so it does NOT scale with
+// the factor being applied here, and a hull drawn 1.25x bigger does not lay down
+// 1.25x the ink. One pass lands within ~1.5-3.6%; feeding that pass's ratios
+// back in converges to ~0.2%. The table below is a second-pass bake — don't be
+// surprised that it does not equal a single measurement.
+//
+// The knock-on to know: a spec's DRAWN reach is now `r / SHIP_HIT_FRAC x vis`,
+// so the scout and brawler extend past their collision circle by that factor.
+// That is the deliberate trade — SHIP_HIT_FRAC stops being a per-spec constant
+// so that apparent size can be one. Everything that must wrap the ART rather
+// than the hitbox (render.shipVisualR's shield bubble, ramPlate's standoff)
+// multiplies by it; the sim's collision circle does not move.
+const SHIP_VIS = {
+  hauler:  [1, 1, 1, 1, 1, 1],
+  scout:   [1.325, 1.591, 1.723, 1.539, 1.488, 1.398],
+  brawler: [1.342, 1.507, 1.572, 1.714, 1.750, 1.675],
+};
+
+// The one read. Defaults to the hauler ladder for a spec that isn't set yet —
+// the first frames of a run are drawn before the spec modal is answered, which
+// is the same reason render.shipTierTable can't assume one exists.
+export function shipVis(spec, tier) {
+  return (SHIP_VIS[spec] || SHIP_VIS.hauler)[tier] || 1;
+}
+
+// PER-SPEC HULL DENSITY (2026-08 user call: "the mass of the ship should be
+// different for each ship, brawler should be the largest mass and the scout the
+// smallest"). SHIP_MASS above is the TIER ladder and stays spec-agnostic; this
+// is what a hull of that size is built OUT OF.
+//
+// Once SHIP_VIS matched all three to the same apparent size, the art answered
+// this by itself — measured ink as a fraction of the bounding box:
+//   BRAWLER 0.75   armour slab and ram; nearly solid
+//   HAULER  0.54   framing and ring arms; half of its box is the air inside them
+//   SCOUT   0.42   airframe, wings and sensor masts; mostly not there
+// Those fills, normalized on the hauler, ARE the numbers below. So the ordering
+// the user asked for is not a dial someone picked — it is what the three
+// silhouettes have been saying all along, and a brawler outweighs a scout 1.78:1
+// at equal size for the visible reason that there is far more of it.
+//
+// FLAT PER SPEC, not per tier. The measured fill ratio does drift tier to tier,
+// but almost entirely because the HAULER's own fill climbs (0.44 -> 0.63 as the
+// ring arms fill in) rather than because the other two change — so a per-tier
+// table would narrow and widen the spread for a reason no player can see, and
+// "a brawler is always 1.39x a hauler" is the version you can reason about.
+const SPEC_MASS = { hauler: 1, scout: 0.78, brawler: 1.39 };
+
+export function specMass(spec) { return SPEC_MASS[spec] || 1; }
 
 // What each planet ARCHETYPE (b.ptype — one mechanic each, see world.js) calls
 // itself to the player. A catalog, so it lives here in the leaf rather than in
@@ -2933,13 +3462,63 @@ export const PROG = {
   GLOW_HOME_ACCEL: 1600,   // homing acceleration (u/s²): the vacuum ramp from MIN to MAX
   GLOW_HEAL: 4,            // hull points mended per mote (small — there are many)
   GLOW_XP: 3,              // XP per mote
+  // Verdant-moon garden regrowth: seconds per mote regrown in place (glow.js).
+  // Sized so camping pays a trickle (~GLOW_HEAL hull per this many seconds —
+  // an order under a dock's DOCK_HEAL) while a full 9-mote spring takes ~3.5
+  // minutes to come back: the moon is a WAYPOINT you return to, not a heal-bot.
+  GLOW_REGROW: 24,
 };
+
+// GAME MODES. Chosen on the TITLE SCREEN (never mid-run — the rules a run is
+// judged by must not move under it), and the row IS the ruleset: every consumer
+// reads a FIELD off `game.rules`, never the mode id, so adding a fourth mode is
+// a row here plus whatever field it needs. Two knobs today:
+//   hostiles — false strips the whole alien layer (world.applyModeRules)
+//   dmgMul   — every point of damage the ship takes, scaled (physics.damageShip)
+// THE WORLD IS THE SAME WORLD IN EVERY MODE. Generation is seeded and the modes
+// pay the identical rng draws; the hostile layer is REMOVED after the sky is
+// built, never skipped while building it. A saved system's seed therefore
+// rebuilds the same layout, names and all, whichever mode you fly it in — which
+// is the whole promise the SAVED SYSTEMS library is built on.
+// The order here is the order the title screen shows, and CLASSIC is first
+// because it is the default: a player who never touches the cards gets the
+// game as it has always been.
+// `tag` is what the CARD shows and it is deliberately a SPEC LINE, not a
+// pitch: the three read down the row in the same grammar (hostiles, then
+// damage) so the differences are the only thing that moves. A title screen is
+// not the place for a paragraph per mode — `desc` still exists, and the card
+// hangs it off the button's tooltip / accessible name, so the longer sentence
+// is there for anyone who wants it without being on screen for everyone.
+export const MODES = [
+  { id: 'classic', name: 'CLASSIC', icon: '✷',
+    tag: 'Hostiles · full damage',
+    desc: 'The whole sky: nests scramble, Bastions open fire, and every shoal hides a brood.',
+    hostiles: true, dmgMul: 1 },
+  { id: 'peaceful', name: 'PEACEFUL', icon: '◎',
+    tag: 'No hostiles',
+    desc: 'Nothing out there wants you dead. Gravity, heat and rock still do.',
+    hostiles: false, dmgMul: 1 },
+  // The card says MINIMAL DAMAGE, not "1/8 damage": the exact multiplier is
+  // tuning and belongs in this file, not on a title screen. What the player
+  // needs off the card is the SHAPE of the rule — the sky can still hurt you,
+  // but barely.
+  { id: 'exploration', name: 'EXPLORATION', icon: '✧',
+    tag: 'No hostiles · minimal damage',
+    desc: 'The sky barely bites. Fly anywhere, land anything, take your time.',
+    hostiles: false, dmgMul: 1 / 8 },
+];
+// The one lookup. Falls back to CLASSIC rather than throwing, so a corrupt
+// persisted setting (or a mode removed from the catalog) lands on the full game
+// instead of on a world with no rules at all.
+export function modeRules(id) {
+  return MODES.find((m) => m.id === id) || MODES[0];
+}
 
 // SPECIALIZATIONS. You pick ONE at the start of a run (main.startGame -> the 'spec'
 // modal). It sets your starting kit and gates which named ABILITIES you can be
 // offered at tier-ups. The core grab + throw + fly loop is UNIVERSAL (shipStats
 // bases), so every spec is playable from the first frame; the kit + tree layer on.
-// KIT RULE (design law): every kit must contain at least THREE abilities with
+// KIT RULE (design law): every kit must contain at least TWO abilities with
 // max > 1. A max-1 unlock arrives already maxed and can never rank, so a kit
 // short on rankable tracks opens the run with almost no automatic progress to
 // watch — the ability bars ARE the minute-one feedback, and the first card is a
@@ -2947,6 +3526,16 @@ export const PROG = {
 // between-tier picks could only deepen owned abilities, so a thin kit made the
 // first picks a non-choice. Same rule, same fix, different failure mode —
 // SCOUT once shipped with a lone rankable track behind Retro Jets.)
+// THE FLOOR WAS THREE UNTIL 2026-08 and is now TWO (user call). What forced it
+// down was HAULER: Salvage Magnet left the kit for the pool, and backfilling a
+// third row purely to satisfy an arity rule is how a kit stops being an identity
+// statement and becomes a quota. Two rankable tracks still clear the bar the
+// rule actually defends — the opening minute has bars visibly climbing — and
+// every ability is six ranks now, so a two-row kit is two long tracks rather
+// than the two-and-a-stub the rule was originally written against.
+// NOTE the kits are NOT all two rows: BRAWLER still ships three and SCOUT four.
+// This is a FLOOR, not a target, and a spec whose identity genuinely needs more
+// frame-one verbs should keep them.
 export const SPECS = [
   // Kit carries the COMPLETE RAM LOOP, not stat sliders: War Rack IS the loop
   // — built by eating rocks, spent by what it absorbs and rams (there is no
@@ -2968,16 +3557,29 @@ export const SPECS = [
   // ring, the Deflector is the scout's signature move — so the identity track
   // is the one whose bar moves fastest.
   // The orders are also SEARCHED, not just authored: the tightest gap between
-  // any two kit rank-ups is 100 / 102 / 76 XP here against devtest's floor of
-  // 40 (two ranks landing closer than that read as one event and the stagger
-  // has failed). The obvious authored orders were much worse — the hauler's
-  // longArmTractor-first reading scored 39 and tripped the suite outright.
+  // any two kit rank-ups is measured against devtest's floor of 40 XP (two ranks
+  // landing closer than that read as one event and the stagger has failed). The
+  // obvious authored orders were much worse — the hauler's longArmTractor-first
+  // reading scored 39 on the old THREE-row kit and tripped the suite outright.
+  // Dropping the hauler to two rows re-opened that: with one fewer track there
+  // are fewer pairs to collide, and the ladderScale spread is divided between
+  // two positions instead of three, so the surviving pair sits further apart
+  // than any three-row arrangement managed. Re-run devtest T-ladders after ANY
+  // kit edit — the gap is a property of the whole kit, not of one row.
   { id: 'brawler', name: 'BRAWLER', icon: '※',
     desc: 'Smash, ram, and shatter. Throws hard, flies tanky.',
     start: ['bulwarkRing', 'reinforcedHull', 'kineticSling'] },
+  // TWO ROWS, and it is the smallest kit in the game (see the kit rule above).
+  // Salvage Magnet moved to the POOL (user call, 2026-08): scrap vacuuming is a
+  // quality-of-life radius, not a statement about what a hauler IS, and it was
+  // sitting in the slot that should be teaching the ring. What is left is
+  // exactly the spec's thesis — the ring you fill, and the reach you fill it
+  // with. The ring's DEFENSIVE half is deliberately NOT here: Guard Sling is a
+  // card you have to draw, so an early hauler carries rock rather than hiding
+  // behind it.
   { id: 'hauler', name: 'HAULER', icon: '◎',
-    desc: 'Master of the beam — long reach, big hauls, orbit shields.',
-    start: ['orbitalSling', 'salvageMagnet', 'longArmTractor'] },
+    desc: 'Master of the beam — long reach, big hauls, a ring you fill with rock.',
+    start: ['orbitalSling', 'longArmTractor'] },
   { id: 'scout', name: 'SCOUT', icon: '◇',
     desc: 'Eyes and speed — sensors, precision, and mobility.',
     start: ['deflector', 'phaseScreen', 'tunedThrusters', 'navPlotter'] },
@@ -3015,8 +3617,8 @@ export const SPECS = [
 // An optional `needs: '<channel>'` is a HARD PREREQUISITE, not a soft floor: the
 // ability is not OFFERED at all until you own something feeding that channel
 // (prereqMet). It exists for rows that are literally inert on their own —
-// Rockwall/Aegis/Recovery Tether all act on ORBIT rocks, and with no
-// orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
+// Rockwall/Guard Sling/Sling Winch/Recovery Tether all act on ORBIT rocks, and
+// with no orbit ability shipStats hands you orbitCap 0 / maxOrbiters 0, so there is
 // never a rock for them to act on; Impact Warning marks a spot on the FORECAST
 // PATH, and shipStats gates it behind the plotter outright (`hasCrashWarn =
 // collisionC > 0 && hasPredict`). Offering one of those was a dead card: it
@@ -3033,10 +3635,14 @@ export const SPECS = [
 // slots a stat top-up. Every remaining row owns its channel outright, so the
 // pool is shorter and every card in it does something the others don't.
 // NAMING LAW (user design rule): two abilities that DO the same thing carry the
-// SAME name/icon/desc even across specs — Heavy Winch is the catch starter in
-// both BRAWLER and HAULER, Reinforced Hull is the hull track in both (ids stay
-// distinct, they're separate catalog rows). With the second tracks gone this is
-// now the ONLY reason two rows ever share a name.
+// SAME name/icon/desc even across specs — Reinforced Hull is the hull track in
+// both HAULER and BRAWLER (ids stay distinct, they're separate catalog rows).
+// With the second tracks gone this is now the ONLY reason two rows ever share a
+// name. IT CUTS BOTH WAYS, and HAULER's winch is the worked example: it was
+// "Heavy Winch" alongside BRAWLER's for exactly as long as both fed the beam's
+// `catch` channel, and became "Sling Winch" the moment it was rebuilt to size
+// the RING alone (`sling`). Two rows sharing a name while moving two different
+// numbers is the drift this law exists to stop.
 // BRAWLER's runtime abilities (War Rack's ram, Cluster Rounds, Shockwave,
 // Wall Splat, Berserker, Demolition) are live — their hooks live in physics.js
 // (collideShipBody's ram + absorption, brawlerThrowKill) and tractor.js
@@ -3044,9 +3650,10 @@ export const SPECS = [
 // ram used to have a spec-DNA floor in shipStats that made it hit harder at
 // rank 0 than any other spec, and that is gone — every spec now starts at the
 // universal base and differs only by what its kit and pool contain.
-// HAULER's: Recovery Tether + Twin Grip + Dead Stop (tractor.js), Aegis
-// Reflector (physics collideBodies), Rockwall (physics damageBody hardening +
-// tractor orbit spin). SCOUT's: Deflector (the parry state machine in
+// HAULER's: Recovery Tether + Twin Grip + Dead Stop (tractor.js), Guard Sling
+// (the interception scan in tractor.updateOrbit, drawn by render.drawBeam off
+// b.guardBeam), Rockwall (physics damageBody hardening only — the orbit spin
+// term was removed with the screening split). SCOUT's: Deflector (the parry state machine in
 // physics.js), Afterburner (fuel tank in main.js, thrust + governor in
 // physics), Dash Jets (A/D — main.onDash), Reflex Jink (the auto-dodge scan in
 // physics.step), Slipstream (main.onWarp), Recon Drone (world.js survey). All
@@ -3074,7 +3681,15 @@ export const ABILITIES = [
   // throw wearing a different name.
   { id: 'bulwarkRing',    spec: 'brawler', name: 'War Rack',       icon: '◒', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'RIGHT-CLICK rock to crush it into the ram riding ahead of your bow. It grows as it feeds — hits harder, shrugs off knockback, and eats head-on damage until it is spent.' },
   { id: 'heavyRounds',    spec: 'brawler', name: 'Heavy Winch',    icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
-  { id: 'warPlating',     spec: 'brawler', name: 'War Plating',    icon: '⛨', channel: 'shield', max: 6, minTier: 0, weight: 0.9, desc: 'A thin front plate that re-forms fast — FRONT ARC ONLY. Your tail stays bare.' },
+  // BRAWLER has NO energy shield ON PURPOSE (design law), the same way HAULER
+  // doesn't: its protection is MASS — Reinforced Hull plus what the fused War
+  // Rack prow soaks head-on before the hull ever sees it. War Plating (a thin
+  // front-arc plate on the `shield` channel) is DELETED and nothing may replace
+  // it: a regenerating layer is a forgiveness mechanic, and handing one to the
+  // spec that is already the tank meant the brawler could charge in, lose the
+  // plate, back off for a heartbeat and charge again — the ram's "spent by what
+  // it absorbs" bargain only costs something if the damage it eats is the
+  // damage you actually keep. SCOUT is now the only spec with a shield channel.
   { id: 'clusterRounds',  spec: 'brawler', name: 'Cluster Rounds', icon: '❋', channel: 'cluster',    max: 6, minTier: 0, weight: 1.0, desc: 'Your throw-kills burst into grabbable shrapnel.' },
   { id: 'shockwave',      spec: 'brawler', name: 'Shockwave',      icon: '◎', channel: 'shockwave',  max: 6, minTier: 0, weight: 1.0, desc: 'Throw-kills knock nearby bodies back.' },
   { id: 'wallSplat',      spec: 'brawler', name: 'Wall Splat',     icon: '▦', channel: 'wallsplat',  max: 6, minTier: 0, weight: 1.0, desc: 'Smash thrown rocks INTO worlds — splat kills pay bonus XP and shove nearby rocks, primed as yours.' },
@@ -3084,8 +3699,23 @@ export const ABILITIES = [
   // 📡 HAULER
   { id: 'longArmTractor', spec: 'hauler', name: 'Long-Arm Tractor', icon: '⤢', channel: 'reach',  max: 6, minTier: 0, weight: 1.0, desc: 'Extend tractor range and grab forgiveness.' },
   { id: 'salvageMagnet',  spec: 'hauler', name: 'Salvage Magnet',   icon: '⦿', channel: 'magnet', max: 6, minTier: 0, weight: 1.0, desc: 'Vacuum scrap and motes from farther away.' },
-  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Stow rocks into a defensive orbit ring.' },
-  { id: 'heavyWinch',     spec: 'hauler', name: 'Heavy Winch',      icon: '✦', channel: 'catch',  max: 6, minTier: 0, weight: 1.0, desc: 'Grab and hurl much heavier rocks.' },
+  // THE SLING IS A CARRY RACK, NOT A SHIELD (user design rule, 2026-08). Ranks
+  // buy SLOTS and nothing else — the ring holds rocks, spins them, and feeds the
+  // shotgun. It does NOT step in front of anything: that verb moved out to Guard
+  // Sling below, so a hauler who wants an active screen has to actually own one.
+  // The ladder tops out at DOUBLE what it used to (7 -> 14 slots, same user
+  // call), and it is authored as an explicit array rather than a rounded slope
+  // because the old `1 + round((lvl-1) * 1.2)` expression was already being read
+  // as a table by everyone who touched it.
+  { id: 'orbitalSling',   spec: 'hauler', name: 'Orbital Sling',    icon: '◍', channel: 'orbit',  max: 6, minTier: 0, weight: 1.1, desc: 'Stow rocks into an orbit ring that rides with you. Ranks buy slots — up to fourteen.' },
+  // NOT "Heavy Winch" ANY MORE, and the rename is the naming law doing its job:
+  // this row no longer does what BRAWLER's Heavy Winch does. It has stopped
+  // feeding the beam's own mass allowance entirely (channel 'catch' -> 'sling')
+  // and now sizes THE RING ALONE — both the class of rock the sling accepts and
+  // the mass allowance inside that class. Two rows called Heavy Winch that moved
+  // two different numbers would be exactly the drift the law exists to stop.
+  // `needs: 'orbit'` because it is now literally inert without a ring.
+  { id: 'heavyWinch',     spec: 'hauler', name: 'Sling Winch',      icon: '✦', channel: 'sling',  max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your orbit ring takes bigger, heavier rock. Ranks raise both the class it accepts and the weight inside it.' },
   // HAULER has NO energy shield ON PURPOSE (design law): the orbit rock wall IS
   // its protection — Rockwall/Reinforced Hull harden that identity instead.
   // chMul 2/3: the HAULER's hull track was deliberately SHORTER than the
@@ -3096,11 +3726,55 @@ export const ABILITIES = [
   // coefficient in shipStats would have nerfed the brawler's own track, which
   // never changed length.
   { id: 'cargoPlating',   spec: 'hauler', name: 'Reinforced Hull',  icon: '▤', channel: 'hull',   max: 6, chMul: 2 / 3, minTier: 0, weight: 0.9, desc: 'Raise maximum hull.' },
-  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher and spin faster to block.' },
-  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your thrown rocks curve back into your orbit.' },
+  // GUARD SLING owns the verb Orbital Sling used to give away for free: a ring
+  // rock BREAKING FORMATION to meet something on its way in. Splitting it out is
+  // the point — the ring is a rack you fill, the screen is a thing you choose —
+  // and it is why the block reads as the SHIP doing the work: the tether beam
+  // snaps onto the interceptor for as long as the lunge lasts (render.drawBeam
+  // off `b.guardBeam`), so the rock is visibly being SLUNG into the path rather
+  // than swimming there under its own power.
+  // Ranks buy the three things that decide whether a block actually lands:
+  // how far out the screen sees (perimeter), how far a rock may leave its slot
+  // to reach the line (shift), and HOW MANY can lunge at once — rank 1 is
+  // exactly the one-interceptor screen the sling used to give, so nobody's
+  // defence is worse for the split, and rank 6 puts four rocks in the way.
+  { id: 'guardSling',     spec: 'hauler', name: 'Guard Sling',      icon: '⊗', channel: 'guard',  max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Your orbit rocks break formation to block incoming fire — the beam slings them into the path. Ranks see farther, reach farther, and block more at once.' },
+  // ROCKWALL IS TOUGHNESS, FULL STOP (user design rule, 2026-08). The spin term
+  // is GONE — it lived here because a faster wall covered more sky per second,
+  // which is a screening effect, and screening is Guard Sling's job now. One
+  // ability, one number.
+  { id: 'rockwall',       spec: 'hauler', name: 'Rockwall',         icon: '⛉', channel: 'rockwall', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'Orbit rocks are far tougher — up to five times the punishment before they break.' },
+  // THE TETHER RECOVERS A SPENT SHOT, NEVER A LIVE ONE (user call, 2026-08).
+  // It used to start homing 0.7s after release, UNCONDITIONALLY — about 300
+  // units downrange at a tier-0 fling — so it did not recover your rock, it
+  // CANCELLED your throw: anything further away than that got recalled before it
+  // arrived, and `returnSpd` rising with rank meant every rank sabotaged the
+  // hauler's main offensive verb harder. It also made the three snipe
+  // achievements (throw-kills at 1,200 / 2,500 / 4,000 units) unreachable for
+  // anyone who took the card.
+  // Now it waits for the rock to be SPENT: it must have HIT something, and its
+  // speed must have fallen under `CFG.DMG_THRESH_THROWN` — the exact line below
+  // which a thrown body does no damage at all. So a flung moon ploughs through a
+  // whole family and only comes home once it has stopped being a weapon.
+  // DESTROYED OR NEVER CONNECTED = GONE. There is no recall for a rock that
+  // shattered or sailed off into the dark; the recovery is a reward for a shot
+  // that landed, not insurance against a miss.
+  // RANKS BUY RELOAD, not return speed (`tetherCool`, 14s -> 4s). The old ranks
+  // made the recall more aggressive, which was making the problem worse; what a
+  // player actually wants from more of this is to be able to do it AGAIN sooner.
+  { id: 'recoveryTether', spec: 'hauler', name: 'Recovery Tether',  icon: '↩', channel: 'tether', max: 6, minTier: 0, needs: 'orbit', weight: 1.0, desc: 'A thrown rock that has spent its force comes home to your orbit ring. Ranks reload it faster. A rock that shatters, or never connects, is gone.' },
   { id: 'deadStop',       spec: 'hauler', name: 'Dead Stop',        icon: '⊘', channel: 'deadstop', max: 6, minTier: 0, weight: 1.0, desc: 'Catch a rock an alien threw at you to prime it — its next fling flies far harder.' },
-  { id: 'aegisReflector', spec: 'hauler', name: 'Aegis Reflector',  icon: '❂', channel: 'aegis',  max: 6, minTier: 3, xpMul: 0.5, needs: 'orbit', weight: 0.9, desc: 'Orbit rocks hurl intercepted enemy fire back.' },
-  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once. Ranks steady the rig — the second rock rides tighter and drags you around less.' },
+  // AEGIS REFLECTOR IS DELETED (user call, 2026-08), not retuned. It fired the
+  // blocked rock RADIALLY OUTWARD from the ship rather than at anything, at a
+  // flat 320 + 65/rank — under the hauler's own fling speed at every tier — so a
+  // reflect left the ring, lost the argument with sun gravity and came back
+  // before it reached whatever had shot at you. The verb it was reaching for
+  // (read the incoming rock, send it back aimed) is SCOUT's Deflector and is
+  // better there; the hauler's answer to incoming fire is now the Guard Sling
+  // screen plus a Rockwall that survives it. Nothing may replace it on an
+  // `aegis` channel: the three achievements that rode `aegisBack` are deleted
+  // with it, so re-adding the channel alone would not bring the feature back.
+  { id: 'twinGrip',       spec: 'hauler', name: 'Twin Grip',        icon: '⇄', channel: 'twin',   max: 6, minTier: 3, xpMul: 0.5, weight: 0.9, desc: 'Hold and throw two rocks at once — with one in the beam, sweep the cursor over another to pick it up. Ranks steady the rig: the second rock rides tighter and drags you around less.' },
 
   // 🔭 SCOUT
   // ICONS ARE MONOCHROME LINE GLYPHS, never emoji. ⏩ (U+23E9) has emoji
@@ -3420,8 +4094,12 @@ export function shipStats(prog) {
   // SCOUT: the parry (Deflector moved here from BRAWLER).
   const deflectC = c('deflect');
   // HAULER runtime channels.
-  const tetherC = c('tether'), aegisC = c('aegis'), twinC = c('twin'),
-    rockwallC = c('rockwall'), deadstopC = c('deadstop');
+  // HAULER runtime channels. `sling` is the RING's own mass track (Sling Winch)
+  // and is deliberately separate from `catch`, which is the BEAM's — see the
+  // orbitTier/orbitCap derivation for why the two must not be the same number.
+  // There is no `aegis` channel any more; Aegis Reflector is deleted.
+  const tetherC = c('tether'), twinC = c('twin'), slingC = c('sling'),
+    guardC = c('guard'), rockwallC = c('rockwall'), deadstopC = c('deadstop');
   // SCOUT runtime channels.
   const afterburnerC = c('afterburner'), evasionC = c('evasion'), reconC = c('recon'),
     slipC = c('slipstream'), autoevadeC = c('autoevade');
@@ -3440,7 +4118,7 @@ export function shipStats(prog) {
   // finer. Channels stacked by two abilities (ram = Ram Prow + Juggernaut,
   // orbit = Sling + Bay) are scaled against the SUMMED old ceiling, not one
   // row's. Anything that reads a channel and was already six ranks (catch,
-  // reach, engine, fling, magnet, hull, deflect, brawler shield) is untouched.
+  // reach, engine, fling, magnet, hull, deflect) is untouched.
   // CATCH RANKS BUY MASS INSIDE YOUR CLASS, NEVER THE CLASS ABOVE (see the
   // TIERS block for the ladder and for the 3.64x rank multiplier this replaced).
   // The fill is asymptotic on purpose: it approaches the tier's own ceiling
@@ -3456,40 +4134,29 @@ export function shipStats(prog) {
   // them: the brawler's toughness is Reinforced Hull plus what the fused prow
   // soaks for it, and neither is a hidden term in a number the HUD prints.
   const maxHull = 120 + 40 * tier + 55 * hullC;
-  // The regenerating shield is an UPGRADE, and its SHAPE is spec DNA (design
-  // law): no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD
-  // bar. It trades max hull for a recharging layer; only the shield regens.
-  // BRAWLER (War Plating) is a SMALL, FAST-RE-FORMING FRONT PLATE — shieldArc is
-  // the half-angle around the nose, and hits from behind skip it entirely
-  // (physics.damageShip). It used to carve a BIG slice of the pool (38% -> 65%),
-  // which made it simply the best shield in the game: converting most of a
-  // brawler's health into a regenerating layer meant the front-arc drawback
-  // never cost anything, because the pool was deep enough to never run out
-  // while you were facing the right way. Its identity is the CYCLE, not the
-  // capacity: a thin plate that soaks one hit and is back almost immediately
-  // (regenDelay below), which rewards a ship built to keep its nose on the
-  // threat. SCOUT (Phase Screen) is a thin FULL WRAP that also recharges fast —
-  // forgiving of any angle, which is what a scout needs. HAULER has no shield
-  // ability at all; the orbit rock wall is its protection.
-  let shieldFrac = 0, shieldArc = Math.PI;
+  // The regenerating shield is an UPGRADE, and it is SCOUT-ONLY (design law):
+  // no shield ability -> shieldFrac 0 -> shieldMax 0 -> no shield, no SHLD bar.
+  // It trades max hull for a recharging layer; only the shield regens.
+  // SCOUT (Phase Screen) is a thin FULL WRAP that recharges fast — forgiving of
+  // any angle, which is what a scout needs. NEITHER other spec has a shield
+  // ability: HAULER's protection is the orbit rock wall, BRAWLER's is hull plus
+  // what the fused War Rack prow eats head-on (see the ABILITIES catalog for
+  // why the brawler's War Plating was deleted rather than retuned).
+  //
+  // `shieldArc` is the plate's HALF-ANGLE around the nose and stays a published
+  // stat: physics.damageShip skips a directional hit landing outside it and
+  // soaks only `arc / PI` of directionless damage (heat, gas crush, Oort
+  // grind), and render feathers the visual to the same wedge. Nothing in the
+  // catalog produces a partial arc today — every live shield is a full wrap —
+  // but the mechanism is the one place a directional shield would be expressed,
+  // so it stays intact and devtest T6 still exercises it against an explicit
+  // wedge rather than an ability's value.
+  let shieldFrac = 0;
+  const shieldArc = Math.PI;
   if (shieldC > 0) {
-    if (prog.spec === 'brawler') {
-      shieldFrac = Math.min(0.26, 0.12 + 0.028 * (shieldC - 1));
-      // Coverage is `shieldArc / PI` — the fraction of all bearings the plate
-      // covers, and the exact share it soaks from DIRECTIONLESS damage (heat,
-      // gas crush, Oort grind) in physics.damageShip. Deliberately well UNDER
-      // half: at a clean 50% the plate covered everything ahead of the beam, so
-      // "front arc only" was barely a drawback in practice — anything you were
-      // flying toward was covered. 35% is a genuinely NARROW nose plate (±63°):
-      // you have to point at the thing that is hurting you, glancing threats
-      // get through, and an all-over effect is soaked by only about a third.
-      // Render clips the shield visual to this same wedge.
-      shieldArc = Math.PI * 0.35;
-    } else {
-      // Phase Screen went 3 -> 6 ranks, so its step halved: still 0.16 at rank
-      // 1 and 0.26 at the top, reached over five smaller steps.
-      shieldFrac = Math.min(0.28, 0.16 + 0.02 * (shieldC - 1));
-    }
+    // Phase Screen went 3 -> 6 ranks, so its step halved: still 0.16 at rank
+    // 1 and 0.26 at the top, reached over five smaller steps.
+    shieldFrac = Math.min(0.28, 0.16 + 0.02 * (shieldC - 1));
   }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
 
@@ -3508,14 +4175,44 @@ export function shipStats(prog) {
   // one-class-below gate, so early tiers can promise nothing the beam
   // hasn't earned.
   const frontRam = prog.spec === 'brawler';
-  // Floored at 0, not at tier-1: a tier-0 beam still has a class to stow FROM,
-  // and an orbit ability that granted nothing until the first tier-up would be
-  // a dead card in two of the three starting kits.
-  let orbitTier = orbitLvl > 0 ? Math.max(0, tier - 1) : -1;
-  if (frontRam && orbitTier >= 0) {
-    orbitTier = Math.min(orbitTier, orbitLvl <= 2 ? 1 : 2);
+  // THE RING'S CLASS IS THE SLING WINCH'S, NOT THE BEAM'S (user design rule,
+  // 2026-08: "the Tier upgrades shouldn't upgrade what rocks can be added to the
+  // sling"). A beam tier-up used to silently hand the ring a whole new rung
+  // through `tier - 1`, which meant the two levers a hauler actually pulls —
+  // tier and Sling Winch — pushed the same number and the winch's own ranks were
+  // half-invisible behind the tier ladder. The ring now climbs on ONE track.
+  // Rank 0 still stows PEBBLES so Orbital Sling is never a dead card on its own,
+  // and the ladder stops at rung 4 (Large moons): a ring of PLANETS is not a
+  // thing, and the old `tier - 1` topped out at 4 too, so nothing is lost.
+  const SLING_RUNGS = [0, 1, 2, 2, 3, 3, 4];
+  // BRAWLER is untouched by all of the above and must stay that way — its stow
+  // is the ram, its class ladder is War Rack's own rank clamped at boulder, and
+  // it has no Sling Winch row to read. Keep it on the old beam-derived rung.
+  let orbitTier;
+  if (orbitLvl <= 0) orbitTier = -1;
+  else if (frontRam) orbitTier = Math.min(Math.max(0, tier - 1), orbitLvl <= 2 ? 1 : 2);
+  else orbitTier = SLING_RUNGS[Math.min(6, Math.round(slingC))];
+  // Mass allowance INSIDE that rung. The hauler's is the same asymptotic fill
+  // the beam runs on `catch` (see catchFill) but driven by `sling`, so the ring
+  // fills toward its rung's ceiling without ever rounding into the rung above.
+  // The old `capacity * 0.55` coupling is gone for the hauler on purpose: that
+  // was the beam sizing the ring, which is exactly what this change removes.
+  // THE 0.55 SURVIVES AS THE UNWINCHED FLOOR, and that is not nostalgia. Decoupling
+  // the ring from beam tier is the whole change; letting the ring OPEN stronger
+  // than it used to is a separate buff nobody asked for. Starting the fill at
+  // 55% of the rung's own caps puts a rank-0 tier-0 ring at exactly the 605 it
+  // has always been, so the opening is untouched and every point of growth from
+  // here is a Sling Winch rank you can watch land.
+  const slingFill = 1 - Math.pow(0.82, slingC);
+  let orbitCap = 0;
+  if (orbitTier >= 0) {
+    if (frontRam) {
+      orbitCap = Math.min(capacity * 0.55, TIERS.ceil[orbitTier]);
+    } else {
+      const floor = TIERS.caps[orbitTier] * 0.55;
+      orbitCap = floor + (TIERS.ceil[orbitTier] - floor) * slingFill;
+    }
   }
-  const orbitCap = orbitTier >= 0 ? Math.min(capacity * 0.55, TIERS.ceil[orbitTier]) : 0;
   const orbitLabel = orbitTier >= 0 ? TIERS.labels[orbitTier] : 'Nothing yet';
   // THE RAM'S TOTAL. Absorbed rock is DESTROYED and banked here as one number
   // (tractor.absorbIntoRam -> ship.ram), so a brawler never puts anything into
@@ -3543,7 +4240,7 @@ export function shipStats(prog) {
     capacity,
     tier,
     label: TIERS.labels[tier],
-    shipName: SHIP_NAMES[tier],
+    shipName: (SHIP_NAMES[prog.spec] || SHIP_NAMES.hauler)[tier],
     // Beam-reach base is sized against SHIP_ZOOM so the ring stays on-screen at
     // every tier; reach abilities + the orbit ring extend it.
     range: [160, 223, 308, 451, 538, 630][tier] + 40 * reachC + 20 * orbitLvl,
@@ -3593,11 +4290,21 @@ export function shipStats(prog) {
     // Physics still scales all of it by how full the ram actually is: an
     // empty-nosed brawler deals exactly what any other spec does.
     ramBiteMax: 0.30 + 0.25 * orbitLvl + 0.06 * orbitLvl * orbitLvl,
-    // 1/2/3/5/6/7 ring slots, capped at 7 — and HARD 0 for the brawler, which
-    // has no ring at all any more: its stow is the ram, and a spec that could
-    // fill both would be carrying two stows off one ability.
+    // RING SLOTS, and the top of this ladder DOUBLED in 2026-08 (user call:
+    // "at the top end allow twice as many rocks"). 1/4/6/9/11/14 against the old
+    // 1/2/3/5/6/7 — rank 1 is unchanged, so the split from Guard Sling doesn't
+    // also quietly move the opening, and the doubling is spent where it was
+    // asked for. HARD 0 for the brawler, which has no ring at all any more: its
+    // stow is the ram, and a spec that could fill both would be carrying two
+    // stows off one ability.
+    // Authored as a table, not a slope: this was `1 + round((lvl - 1) * 1.2)`
+    // and every reader had to evaluate it six times to see the ladder anyway.
+    // The table is ORBIT_SLOTS, exported, because hud.js draws one pip per slot
+    // and a second copy of "7" over there is the mirror-drift trap that
+    // DOCK_TIERS is in this file to avoid — when the ladder doubled, the
+    // hard-coded 7-pip gauge silently saturated and under-reported the ring.
     maxOrbiters: frontRam ? 0
-      : orbitLvl > 0 ? Math.min(7, 1 + Math.round((orbitLvl - 1) * 1.2)) : 0,
+      : orbitLvl > 0 ? ORBIT_SLOTS[Math.min(ORBIT_SLOTS.length - 1, Math.round(orbitLvl) - 1)] : 0,
     orbitLvl,
     // Kept for render (engine-flare size, chart-length) — indexed like the old levels
     levels: { beam: tier, orbit: orbitLvl, fling: flingC, hull: hullC, thrust: engineC, chart: deepC },
@@ -3670,8 +4377,31 @@ export function shipStats(prog) {
     // front-arc plating sets PI/2; physics.damageShip + render both read it.
     shieldArc,
     // ---- HAULER runtime abilities ----
-    tether: tetherC,                              // Recovery Tether: thrown rocks home back to orbit
-    aegis: aegisC,                                // Aegis Reflector: orbit rocks reflect intercepted fire
+    tether: tetherC,                              // Recovery Tether: SPENT thrown rocks home back to orbit
+    // RELOAD, in seconds — the one thing this ability's ranks buy. A throw only
+    // arms the tether when the reload has run out (tractor.releaseHeld), so the
+    // rank decides how often you get a rock back, never how hard it yanks. 14s
+    // at rank 1 down to 4s at rank 6.
+    tetherCool: tetherC > 0 ? 14 - 2 * (tetherC - 1) : 0,
+    // SLING WINCH's rank, published for the HUD/achievements. The numbers it
+    // actually moves (orbitTier, orbitCap) are derived above — this is the raw
+    // track, the same way orbitLvl is.
+    slingLvl: slingC,
+    // GUARD SLING: the active screen. `guard` is the rank; the three derived
+    // numbers are what updateOrbit reads. NOTHING may key off `guard > 0` alone
+    // in a hot loop — read guardCount, which is 0 without the ability and is the
+    // single test that turns the whole interception scan off.
+    guard: guardC,
+    // How many orbiters may break formation at once: 1 at rank 1 (exactly the
+    // screen Orbital Sling used to include for free), 4 at rank 6. Rounded down
+    // through a table so a fractional channel can never buy half an interceptor.
+    guardCount: guardC > 0 ? [1, 1, 2, 2, 3, 4][Math.min(5, Math.round(guardC) - 1)] : 0,
+    // Detection perimeter (world units). 520 was the old hard-coded scan radius
+    // and stays rank 1, so the split changes nothing for a rank-1 owner.
+    guardRange: guardC > 0 ? 520 + 70 * (guardC - 1) : 0,
+    // How far a defender may leave its slot to reach the threat's line. Was
+    // `80 + 25 * orbitLvl` — orbit rank no longer buys reach, guard rank does.
+    guardShift: guardC > 0 ? 80 + 34 * guardC : 0,
     twinGrip: twinC > 0,                          // Twin Grip: hold two rocks
     maxHeld: twinC > 0 ? 2 : 1,
     twinLvl: twinC,
@@ -3683,7 +4413,7 @@ export function shipStats(prog) {
     // hold halves it to 75 in the first place — ranks may not claw that back.
     twinHold: twinC > 0 ? 1 + 0.14 * (twinC - 1) : 1,   // x hold force on the second rock
     twinTug: twinC > 0 ? 1 - 0.06 * (twinC - 1) : 1,    // x the halved per-rock tug cap
-    rockwall: rockwallC,                          // Rockwall: hardened, faster-spinning orbit rocks
+    rockwall: rockwallC,                          // Rockwall: hardened orbit rocks (toughness only — no spin term)
     deadStop: deadstopC,                          // Dead Stop: caught alien throws prime for a harder fling
     // ---- SCOUT runtime abilities ----
     afterburner: afterburnerC,                    // hold Shift: fuel-tank overdrive (main.js drains, physics burns)
@@ -3706,15 +4436,13 @@ export function shipStats(prog) {
     // sharpens it further — the completionist reward reads through the same
     // stat every consumer already uses.
     sensorMul: (1 + 0.15 * deepC) * (prog.masterChart ? 1.25 : 1),
-    // RECHARGE IS SPEC DNA, like the shield's shape above. Both shields are thin
-    // now, so the CYCLE is what separates them: BRAWLER's plate is the quickest
-    // to re-form of anything in the game (a ~1.75s lull and the nose is covered
-    // again) because that is the whole point of a small front plate on a ship
-    // built to keep charging; SCOUT's wrap is a touch slower to return but
-    // covers every angle. HAULER keeps the base rate — it has no shield anyway.
-    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : prog.spec === 'brawler' ? 1.5 : 1),
-    regenDelay: CFG.SHIP_REGEN_DELAY
-      * (prog.spec === 'scout' ? 0.6 : prog.spec === 'brawler' ? 0.35 : 1),
+    // RECHARGE IS SPEC DNA, and only one spec has a shield to recharge: SCOUT's
+    // thin wrap comes back fast, because a screen that covers every angle is
+    // only a defence if the CYCLE is short. The brawler's 1.5x/0.35x pair went
+    // with War Plating rather than staying as a number no build can reach —
+    // BRAWLER and HAULER both keep the base rate against an empty pool.
+    regen: CFG.SHIP_REGEN * (prog.spec === 'scout' ? 1.6 : 1),
+    regenDelay: CFG.SHIP_REGEN_DELAY * (prog.spec === 'scout' ? 0.6 : 1),
     // Forecast horizon: Nav Plotter ranks widen it, Deep Array widens it further.
     // (Ranks must feed a real effect — a flat has-plotter boost made rank 2-3 dead.)
     // MASTER CHART adds a flat +0.2: a fully-logged sky forecasts farther.
@@ -3728,10 +4456,20 @@ export function shipStats(prog) {
       + (prog.masterChart ? 0.2 : 0),
     // Size/zoom are tier-driven ONLY (see the SHIP_RADIUS/SHIP_ZOOM comments)
     radius: SHIP_RADIUS[tier],
+    // ...but the DRAWN size is tier AND spec: the size-match factor that makes
+    // all three hulls read the same size (SHIP_VIS). The only thing that scales
+    // the ART and the standoff geometry hung off it — never the collision
+    // radius above, which stays one number for every spec.
+    vis: shipVis(prog.spec, tier),
     // What the ship WEIGHS, for anything that resolves by mass ratio — today
     // the taut tether (tractor.springHeld). main.js copies it onto game.ship
     // beside the radius, so `s.mass` stays the single authoritative read.
-    shipMass: SHIP_MASS[tier],
+    // TWO FACTORS: the tier ladder sets how big the hull is, SPEC_MASS sets how
+    // dense it is. Size is shared across specs (SHIP_RADIUS, and SHIP_VIS makes
+    // all three LOOK the same size); weight is not.
+    // Rounded to 2dp only to keep binary dust (13.899999999999999) out of the
+    // HUD and the bench diff — nothing reads this to more precision than that.
+    shipMass: Math.round(SHIP_MASS[tier] * specMass(prog.spec) * 100) / 100,
     zoomOut: 1.15 / SHIP_ZOOM[tier],
     totalLevel,
   };

@@ -45,7 +45,7 @@ const PTYPE_BIT = {
 // tenth archetype lands. Computed once at module init — the sweep never sees it.
 export const PTYPE_COUNT = Object.keys(PTYPE_BIT).length;
 
-export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 200 };
+export const PTS = { trivial: 5, easy: 10, normal: 20, tricky: 35, hard: 60, brutal: 100, insane: 220 };
 
 // Category order = panel order. `label` heads its block, `blurb` sits under it.
 export const CATEGORIES = [
@@ -74,16 +74,12 @@ const A = (id, cat, pts, name, desc, test) => ({ id, cat, pts, name, desc, test 
 // is the shared context filled in by updateAchievements below.
 export const ACHIEVEMENTS = [
   // ---- FIRST STEPS: one row per verb the opening minutes teach ----------
-  A('firstSpec', 'first', PTS.trivial, 'Specialist', 'Choose a specialization and begin a run.',
-    (g) => !!g.prog.spec),
   A('firstMinute', 'first', PTS.trivial, 'Wheels Up', 'Stay alive for one minute.',
     (g) => g.time >= 60),
   A('firstCatch', 'first', PTS.trivial, 'Finders Keepers', 'Catch your first rock in the tractor beam.',
     (g) => g.prog.catches >= 1),
   A('firstFling', 'first', PTS.trivial, 'Yeet', 'Fling a rock at something.',
     (g, s) => s.flings >= 1),
-  A('firstDrop', 'first', PTS.trivial, 'Set It Down', 'Put a rock down gently instead of throwing it.',
-    (g, s) => s.drops >= 1),
   A('firstSmash', 'first', PTS.easy, 'Demolition Debut', 'Destroy something with a thrown rock.',
     (g) => g.prog.smashes >= 1),
   A('firstOrbit', 'first', PTS.easy, 'Ring Bearer', 'Stow a rock into your orbit.',
@@ -94,8 +90,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.motes >= 1),
   A('firstScrap', 'first', PTS.trivial, 'Bin Diver', 'Collect a debris chunk.',
     (g, s) => s.scrap >= 1),
-  A('firstHit', 'first', PTS.trivial, 'First Dent', 'Take your first hit and keep flying.',
-    (g, s) => s.hits >= 1),
   A('firstAbility', 'first', PTS.easy, 'Trained', 'Learn an ability from a card.',
     (g) => g.prog.level >= 1),
   A('firstRank', 'first', PTS.easy, 'Practice Makes', 'Earn an ability rank without spending anything.',
@@ -339,10 +333,10 @@ export const ACHIEVEMENTS = [
     (g, s) => s.snipe >= 2500),
   A('snipe4000', 'combat', PTS.hard, 'Marksman', 'Throw-kill something 4,000 units from where you let go.',
     (g, s) => s.snipe >= 4000),
-  A('aegis', 'combat', PTS.normal, 'Reflected Glory', 'Hurl an intercepted shot straight back.',
-    (g, s) => s.aegisBack >= 1),
-  A('aegis30', 'combat', PTS.tricky, 'Mirror Finish', 'Reflect thirty incoming shots.',
-    (g, s) => s.aegisBack >= 30),
+  // 'aegis' / 'aegis30' were deleted with Aegis Reflector (2026-08). Nothing
+  // bumps `aegisBack` any more, so both rows were unachievable — a permanently
+  // dead achievement is worse than a missing one, because the score it is
+  // counted out of still includes it.
   A('blocks25', 'combat', PTS.tricky, 'Rock Wall', 'Block 25 alien throws with your orbit.',
     (g, s) => s.blocks >= 25),
   A('blocks100', 'combat', PTS.hard, 'Impenetrable', 'Block 100 alien throws.',
@@ -553,8 +547,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.rescues >= 3),
   A('rescue6', 'explore', PTS.insane, 'Coast Guard', 'Save six stranded pilots.',
     (g, s) => s.rescues >= 6),
-  A('maydaySeen', 'explore', PTS.easy, 'Distress Call', 'Pick up a mayday.',
-    (g, s) => s.maydays >= 1),
   A('vesper', 'explore', PTS.normal, 'Long Period', 'Sight Comet Vesper on its fall sunward.',
     (g) => !!g.tut.vesper),
   A('visitor', 'explore', PTS.tricky, 'Interstellar', 'Sight the interstellar visitor. It will not come back.',
@@ -585,8 +577,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.cometShowers >= 1),
   A('cometShower5', 'explore', PTS.tricky, 'Regular Viewer', 'Be there for five comet showers.',
     (g, s) => s.cometShowers >= 5),
-  A('flareSeen', 'explore', PTS.easy, 'Duck', 'Get a solar flare warning.',
-    (g, s) => s.flares >= 1),
   A('flareSeen10', 'explore', PTS.tricky, 'Active Sun', 'Get ten solar flare warnings.',
     (g, s) => s.flares >= 10),
   A('forge', 'explore', PTS.normal, 'Forge Moon', 'Find the volcanically live moon.',
@@ -668,23 +658,42 @@ export const ACHIEVEMENTS = [
     (g, s, c) => c.owned >= 10),
   A('abil12', 'build', PTS.hard, 'Overqualified', 'Own twelve abilities at once.',
     (g, s, c) => c.owned >= 12),
-  A('abil14', 'build', PTS.brutal, 'Everything on the Rack', 'Own fourteen abilities at once.',
-    (g, s, c) => c.owned >= 14),
-  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95).
-  // Every ability is six ranks now, so the same run banks ~1.6x the ranks it
-  // used to (measured over the full climb: ~44 before, ~69 after) — at the old
-  // thresholds 'Master of the Craft' went from the hardest rank row in the game
-  // to something every spec passes without trying, which is the freebie failure
-  // mode wearing a different hat. Scaled by the measured ratio, so each row
-  // still asks for what it used to ask for.
+  // 13, NOT 14. The SCOUT pool is exactly 14 rows, so a 14 here demands a
+  // literally perfect build from one spec — every card it is ever offered,
+  // taken. Same unevenness the rank row below is priced against. Every count
+  // row must clear the biggest STARTING kit and stay under the SMALLEST pool.
+  A('abil13', 'build', PTS.brutal, 'Everything on the Rack', 'Own thirteen abilities at once.',
+    (g, s, c) => c.owned >= 13),
+  // THESE FOUR MOVED WITH THE SIX-RANK PASS (10/25/45/65 -> 15/40/70/95), and
+  // the top row moved AGAIN when the catalog shrank. Every ability is six
+  // ranks, so a run banks ~1.6x the ranks it used to (measured over the full
+  // climb: ~44 before, ~69 after) — at the old thresholds 'Master of the Craft'
+  // was a freebie, which is why it went to 95.
+  //
+  // THEN THE POOL WAS CUT TWICE AND 95 WENT OFF THE END OF IT. `c.ranks` sums
+  // prog.upgrades, so a spec's ceiling is (rows it can be offered) x 6, counting
+  // the `also` cross-spec rows. Measured from the live catalog after War
+  // Plating's deletion: brawler 15 rows / 90, hauler 15 / 90, SCOUT 14 / 84.
+  //
+  // 78, NOT 85. 85 was tried and is wrong for the same reason 95 was: it sits
+  // ABOVE scout's 84, so it leaves the row mathematically unreachable for one
+  // spec of three — and "winnable on the two specs that could ever reach it" is
+  // just a dead row with a smaller blast radius. Unearnable is as broken as a
+  // freebie (the standard the catalog cut itself invoked). 78 clears
+  // 'Seasoned' at 70, sits ~9 above a typical full climb, and leaves 6 ranks of
+  // headroom under the SMALLEST ceiling, so it is the hardest rank row in the
+  // game for every spec and impossible for none.
+  //
+  // THE BINDING NUMBER IS SCOUT'S 84. Re-measure it before adding or deleting
+  // any ability row, and keep the id matching the threshold.
   A('ranks15', 'build', PTS.easy, 'Getting the Hang of It', 'Earn 15 ability ranks.',
     (g, s, c) => c.ranks >= 15),
   A('ranks40', 'build', PTS.normal, 'Practised', 'Earn 40 ability ranks.',
     (g, s, c) => c.ranks >= 40),
   A('ranks70', 'build', PTS.tricky, 'Seasoned', 'Earn 70 ability ranks.',
     (g, s, c) => c.ranks >= 70),
-  A('ranks95', 'build', PTS.hard, 'Master of the Craft', 'Earn 95 ability ranks.',
-    (g, s, c) => c.ranks >= 95),
+  A('ranks78', 'build', PTS.hard, 'Master of the Craft', 'Earn 78 ability ranks.',
+    (g, s, c) => c.ranks >= 78),
   A('maxTrack', 'build', PTS.tricky, 'Maxed Out', 'Take a rankable ability all the way to its final rank.',
     (g, s, c) => c.maxed >= 1),
   A('maxTrack3', 'build', PTS.hard, 'Three Ceilings', 'Max out three separate abilities.',
@@ -723,8 +732,13 @@ export const ACHIEVEMENTS = [
     (g) => g.st.berserk > 0),
   A('unlockDemo', 'build', PTS.tricky, 'Demolition Online', 'Unlock detonating throw-kills.',
     (g) => g.st.demolition > 0),
-  A('unlockAegis', 'build', PTS.tricky, 'Aegis Online', 'Unlock the reflecting orbit shield.',
-    (g) => g.st.aegis > 0),
+  // 'unlockAegis' deleted with the ability. Guard Sling takes the slot: it is
+  // the hauler's screening card now, and like every other unlock row it asks a
+  // RANK, never a derived number — guardCount is 0 without the ability, so this
+  // cannot be true on frame one for any spec (Guard Sling is pool-only; the
+  // hauler kit is Orbital Sling + Long-Arm Tractor).
+  A('unlockGuard', 'build', PTS.tricky, 'Guard Sling Online', 'Unlock the active orbit screen.',
+    (g) => g.st.guard > 0),
   A('unlockRockwall', 'build', PTS.normal, 'Rockwall Online', 'Unlock hardened orbit rocks.',
     (g) => g.st.rockwall > 0),
   A('unlockDeep', 'build', PTS.tricky, 'Deep Array Online', 'Unlock the long-range sensors.',
@@ -773,12 +787,6 @@ export const ACHIEVEMENTS = [
     (g, s) => s.pauses >= 25),
   A('pause75', 'silly', PTS.normal, 'Analysis Paralysis', 'Open the menu 75 times.',
     (g, s) => s.pauses >= 75),
-  A('readManual', 'silly', PTS.trivial, 'Read the Manual', 'Open the control schematic.',
-    (g, s) => s.openCtrl >= 1),
-  A('readCredits', 'silly', PTS.trivial, 'Stayed for the Credits', 'Open the credits panel.',
-    (g, s) => s.openCred >= 1),
-  A('achHunter', 'silly', PTS.trivial, 'Achievement Hunter', 'Open this panel. That was it. That was the achievement.',
-    (g, s) => s.openAch >= 1),
   A('achAddict', 'silly', PTS.normal, 'Checking Again', 'Open this panel twenty times in one run.',
     (g, s) => s.openAch >= 20),
   A('homeHop5', 'silly', PTS.normal, 'Commitment Issues',

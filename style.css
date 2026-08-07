@@ -277,6 +277,52 @@ body.preGame #hud::after { opacity: 0; }
 }
 #burnBar.burning #burnFill { animation: gaugeSheen .6s linear infinite; }
 #burnBar.low #burnFill { opacity: .55; }
+
+/* THE HARBOUR'S SHIELD — visible only while berthed at a finished station
+   (hud.js). Wears the DOME'S OWN pale ice (render.drawPad's field is
+   rgba(206,245,255)), deliberately NOT the ship shield's saturated blue: this
+   is the only gauge in the stack that measures something other than the ship,
+   and the bar must read as the same object as the field over the berth. Fixed
+   width and no point-cells, like the fuel tank — its pool is ~7 hulls deep and
+   is not part of the ship's hit-point scale. `.low` is the same threshold
+   physics warns on, and it does not blink: the dome is a calm thing, and the
+   message is what raises the alarm. */
+/* Pulled TEAL-ward from the dome's literal ice. Two near neighbours had to be
+   cleared: zone.js's `fringe` accent (198,226,255) and `corona` (110,205,255) —
+   and corona is genuinely reachable, since the innermost lava world sits inside
+   the corona envelope and that zone outranks `world`, so berthing there would
+   have put an ice-blue cockpit around an ice-blue gauge and the instrument
+   would stop reading as an instrument. Still recognisably the dome's colour,
+   and still clear of the ship SHIELD's saturated blue by the pale/deep split. */
+#dockBar { width: 220px; }
+#dockBar .statlabel { color: #b9f0f6; text-shadow: 0 0 8px rgba(150, 226, 236, .85); }
+#dockBar .statnum { text-shadow: 0 0 9px rgba(150, 226, 236, .6), 0 1px 2px rgba(0, 0, 0, .9); }
+#dockBar .statwell { background: linear-gradient(0deg, rgba(140, 216, 228, .1), rgba(140, 216, 228, .1)), rgba(8, 4, 20, .6); }
+#dockFill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 100%;
+  border-radius: 999px;
+  transition: width .12s ease;
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .25) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #dcf9fd, #8fd8e8 55%, #4f9fb8);
+  box-shadow: 0 0 12px rgba(150, 226, 236, .8), inset 0 1px 0 rgba(255, 255, 255, .6);
+  animation: gaugeSheen 4.5s linear infinite;
+}
+/* AMBER-EMBER, not hull red. Two long bars in one stack going the same red
+   means a spent dome can be misread as a critical hull in the one moment that
+   matters — and the only other separators are the word and the fact that hull's
+   label blinks. This alarms without colliding, and it does NOT blink: the dome
+   is a calm thing, and the message is what raises the alarm. */
+#dockBar.low .statlabel { color: #ffb648; text-shadow: 0 0 8px rgba(255, 170, 60, .9); }
+#dockBar.low .statwell {
+  background: linear-gradient(0deg, rgba(255, 165, 55, .12), rgba(255, 165, 55, .12)), rgba(8, 4, 20, .6);
+}
+#dockBar.low #dockFill {
+  background:
+    linear-gradient(115deg, transparent 42%, rgba(255, 255, 255, .22) 50%, transparent 58%) 0 0 / 260% 100%,
+    linear-gradient(180deg, #ffe2a0, #ffa32e 55%, #c96a08);
+  box-shadow: 0 0 12px rgba(255, 165, 55, .9), inset 0 1px 0 rgba(255, 255, 255, .4);
+}
 #shieldBar.down .statlabel { animation: shieldBlink 1s steps(2) infinite; color: #ff8a6c; }
 @keyframes shieldBlink { 50% { opacity: .3; } }
 .statbar.hit .stattrack { animation: barHit .25s ease; }
@@ -1212,16 +1258,31 @@ body.preGame #hud::after { opacity: 0; }
   background: repeating-linear-gradient(90deg,
     transparent 0 calc(16.666% - 1px), rgba(9, 4, 20, .9) calc(16.666% - 1px) 16.666%);
 }
-/* STOW slots: the 7-slot ring as pips — lit slots are yours, dark sockets
-   the ranks to come (the lives-pip idea, in the chrome's own colour; pips
-   because slots are a COUNT, and a bar over a count reads as a fraction). */
-.sppips { display: flex; gap: 6px; padding: 2px 0 1px 2px; }
+/* STOW slots: one socket per slot you own, LIT for each slot currently holding
+   a rock (the lives-pip idea, in the chrome's own colour; pips because slots
+   are a COUNT, and a bar over a count reads as a fraction).
+
+   ZIG-ZAG, NOT A ROW (user call, 2026-08). At 6px gaps a full 14-slot ring ran
+   178px of pips and pushed the row past the panel edge — the readout literally
+   left the screen at the ranks that need it most. Alternating pips up and down
+   lets the horizontal pitch drop to 3px WITHOUT the diamonds touching, because
+   neighbours no longer share a horizontal band: the same 14 slots now measure
+   ~140px and read as one interlocked chain rather than a line of dashes. The
+   offset is `top`, deliberately NOT a transform — `.pp` already spends its
+   transform on the 45deg diamond, and stacking a translate there would fight
+   the rotation's coordinate space (the shift would come out diagonal). */
+.sppips {
+  display: flex; gap: 2px; padding: 2px 0 1px 2px;
+  align-items: center; height: 16px;
+}
 .sppips .pp {
   width: 7px; height: 7px;
+  position: relative; top: -3px;
   transform: rotate(45deg) scale(.82);
   border: 1px solid rgba(var(--zone-rgb), .4);
   background: rgba(24, 12, 44, .6);
 }
+.sppips .pp:nth-child(even) { top: 3px; }
 .sppips .pp.on {
   background: radial-gradient(circle at 35% 35%, #f4ecff, rgb(var(--zone-rgb)) 75%);
   border-color: rgba(var(--zone-soft-rgb), .9);
@@ -1598,15 +1659,294 @@ body.preGame #game { filter: blur(7px) brightness(0.62) saturate(1.35); }
 .boot .orbitdeco { animation: bootFade .7s ease-out .12s backwards; }
 .boot .gametitle { animation: bootFade .45s ease-out .06s backwards; }
 .boot .subtitle { animation: bootSpread .5s ease-out .52s backwards; }
+/* The cascade runs top to bottom in the order the eye should read the screen:
+   the three MODE cards, then the launch button they arm, then the tray. The
+   delays are hand-placed rather than nth-child'd across one list because the
+   three groups are three different elements — but they stay one continuous
+   ramp, so the console still reads as ONE power-on and not three. */
+/* The console always boots on STEP 1 (playBoot only runs when the splash comes
+   up, and every path that puts it up resets the step), so the cascade only ever
+   needs to know about the mode cards and the tray. Step 2 has its own entrance
+   (.splashstep / stepIn) — it is a screen change, not a power-on. */
+.boot .modecols .moderow,
+.boot .steplabel,
+.boot .menutray > * { animation: bootRise .4s cubic-bezier(.2, 1.1, .3, 1) backwards; }
+.boot .steplabel { animation-delay: .58s; }
+.boot .modecols .moderow:nth-child(1) { animation-delay: .66s; }
+.boot .modecols .moderow:nth-child(2) { animation-delay: .74s; }
+.boot .modecols .moderow:nth-child(3) { animation-delay: .82s; }
+/* `> *` rather than a class: the tray's hairline separator is an element too,
+   and one child sitting fully drawn while its neighbours rise reads as a
+   rendering fault rather than as a divider. */
+.boot .menutray > *:nth-child(1) { animation-delay: .94s; }
+.boot .menutray > *:nth-child(2) { animation-delay: .99s; }
+.boot .menutray > *:nth-child(3) { animation-delay: 1.04s; }
+.boot .menutray > *:nth-child(4) { animation-delay: 1.09s; }
+.boot .menutray > *:nth-child(5) { animation-delay: 1.09s; }
+/* The PAUSE menu still uses the plain column, and it never boots — but keep the
+   rule so any future .menucol on a booting panel staggers like the rest. */
 .boot .menucol .menubtn { animation: bootRise .4s cubic-bezier(.2, 1.1, .3, 1) backwards; }
 .boot .menucol .menubtn:nth-child(1) { animation-delay: .66s; }
 .boot .menucol .menubtn:nth-child(2) { animation-delay: .73s; }
 .boot .menucol .menubtn:nth-child(3) { animation-delay: .80s; }
 .boot .menucol .menubtn:nth-child(4) { animation-delay: .87s; }
 .boot .menucol .menubtn:nth-child(5) { animation-delay: .94s; }
+.boot .menucol .menubtn:nth-child(6) { animation-delay: 1.01s; }
 @keyframes bootFade { from { opacity: 0; } }
 @keyframes bootRise { from { opacity: 0; transform: translateY(9px); } }
 @keyframes bootSpread { from { opacity: 0; letter-spacing: 20px; } }
+
+/* ---------------------------------------------------------------------------
+   THE TITLE SCREEN'S SHAPE: wordmark → mode cards → launch → tray.
+   The splash is the widest of the shell panels because the three mode cards
+   have to sit SIDE BY SIDE — stacked, they stop reading as one choice and turn
+   back into three more menu rows. 660px is what a three-up row of NAME + rule
+   line needs and no more; it was 720 (matching #upgradeScreen's spec banners)
+   while the cards still carried a sentence of blurb each, and came back down
+   with them.
+   ------------------------------------------------------------------------ */
+#splashScreen {
+  width: min(660px, calc(100vw - 28px));
+  min-width: 0; max-width: none;
+  padding: 26px 34px 26px;
+}
+/* Trimmed a little from the default — the mode cards carry breathing room the
+   old six-button column needed above it — but NOT collapsed: .orbitdeco's two
+   rings are centred on this box, so shrinking it drags the whole deco up into
+   the wordmark. */
+#splashScreen .titleblock { padding: 22px 0 8px; }
+
+/* MODE CARDS. Same octagon-slab language as the spec banners (.uprow), and the
+   same one-shot gesture: the three are PEERS with no chosen state between them,
+   because clicking one commits and moves the screen on (see hud.buildModes).
+   Hover is therefore the only lit state, and it is a full one.
+   Each mode's accent is semantic, and taken from the existing HUD palette:
+   violet = the house chrome (the game as it has always been), green = safe
+   (hull), cyan = sensors and discovery. */
+/* THE STEPS. Only one is in the DOM flow at a time, and the panel is centred by
+   transform, so it re-centres itself as the height changes. The incoming step
+   slides up a few pixels — enough to read as "the screen moved on" without a
+   transition long enough to sit through. */
+.splashstep { animation: stepIn .26s cubic-bezier(.2, 1.1, .3, 1); }
+@keyframes stepIn { from { opacity: 0; transform: translateY(7px); } }
+/* Section caption. Small, tracked wide, the same voice as .subtitle — it names
+   the step without turning the screen into instructions. */
+.steplabel {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 9.5px; letter-spacing: 5px; color: var(--ink-dim);
+  margin-top: 18px;
+}
+/* Step 2's header: the way back on the left, what you picked in the middle. The
+   back control is absolutely placed so the chip stays optically centred in the
+   panel rather than centred in the space the button leaves. */
+.steprow { position: relative; display: flex; justify-content: center; align-items: center; min-height: 26px; }
+.stepback {
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 9.5px; letter-spacing: 2.4px;
+  padding: 5px 8px;
+  color: var(--ink-dim); background: none; border: none; cursor: pointer;
+  transition: color .14s ease, text-shadow .14s ease;
+}
+.stepback:hover, .stepback:focus-visible {
+  outline: none; color: #ffffff; text-shadow: 0 0 10px var(--chrome);
+}
+.stephint { margin-top: 14px !important; color: var(--ink-dim); }
+
+.modecols { display: flex; gap: 12px; margin: 14px 0 0; }
+/* NOTE both .moderow and .modechip deliberately DON'T declare --acc: they
+   inherit the house violet from .panel and let their own .md-* class be the
+   only element-level declaration. Setting a default here would tie correctness
+   to source order — .modechip sits further down the file than the .md-* block,
+   so its own default silently beat the mode accent and every chip drew violet
+   whatever mode it was naming. */
+.moderow {
+  --ch: 11px;
+  position: relative; isolation: isolate;
+  flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 14px 10px 12px;
+  border: none; cursor: pointer; font: inherit; text-align: center;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(155deg,
+    color-mix(in srgb, var(--acc) 70%, white 10%),
+    color-mix(in srgb, var(--acc) 20%, transparent) 30%,
+    color-mix(in srgb, var(--acc) 20%, transparent) 70%,
+    color-mix(in srgb, var(--acc) 55%, transparent));
+  opacity: .84;
+  transition: opacity .16s ease, transform .16s ease, filter .16s ease;
+}
+.moderow::before {
+  content: ''; position: absolute; inset: 2px; z-index: -1;
+  clip-path: var(--clip-oct);
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--acc) 16%, transparent), transparent 60%),
+    linear-gradient(165deg, rgba(14, 8, 30, .95), rgba(8, 4, 18, .96));
+}
+/* The chosen card's flood. Opacity-driven so selection and hover share one
+   layer and can't double up into a blown-out face. */
+.moderow::after {
+  content: ''; position: absolute; inset: 2px; z-index: -1; pointer-events: none;
+  clip-path: var(--clip-oct);
+  background: linear-gradient(165deg,
+    color-mix(in srgb, var(--acc) 24%, transparent),
+    color-mix(in srgb, var(--acc) 8%, transparent));
+  opacity: 0; transition: opacity .16s ease;
+}
+/* NO CHOSEN STATE — the three cards are peers until one is clicked, and the
+   click moves the screen on (see buildModes). Hover is therefore the ONLY lit
+   state, and it is a full one: the card floods with its own light and lifts, so
+   pointing at it already looks like the commitment it is. */
+.moderow:hover, .moderow:focus-visible {
+  outline: none; opacity: 1; transform: translateY(-3px);
+  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--acc) 55%, transparent));
+}
+.moderow:hover::after, .moderow:focus-visible::after { opacity: 1; }
+
+/* Icon badge — the spec cards' glowing octagon, one size down. */
+.modeicon {
+  --ch: 9px;
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  clip-path: var(--clip-oct);
+  font-size: 19px; color: #ffffff;
+  text-shadow: 0 0 10px var(--acc), 0 0 4px var(--acc);
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--acc) 45%, transparent), color-mix(in srgb, var(--acc) 12%, transparent) 75%),
+    linear-gradient(155deg, color-mix(in srgb, var(--acc) 55%, transparent), color-mix(in srgb, var(--acc) 18%, transparent));
+  transition: transform .16s ease;
+}
+.moderow:hover .modeicon, .moderow:focus-visible .modeicon { transform: scale(1.1); }
+.modename {
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 12.5px; letter-spacing: 2.2px; color: #f6f0ff; white-space: nowrap;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 55%, transparent);
+}
+/* THE ONLY PROSE ON THE CARD, and it is a spec line rather than a pitch (see
+   the note on MODES in config.js). Sized and tracked to sit clearly UNDER the
+   name — one glance gets you the name, a second gets you the rule. */
+.modetag {
+  font-size: 9.5px; letter-spacing: .8px; white-space: nowrap;
+  color: color-mix(in srgb, var(--acc) 74%, white 26%);
+  text-shadow: 0 0 7px color-mix(in srgb, var(--acc) 45%, transparent);
+}
+/* ARMED MARK: a lit bar across the card's foot on hover. Solid, never dashed
+   (the dash is reserved for in-canvas aim UI), and it costs no layout — the card
+   reserves the strip whether or not it is lit, so pointing at a card doesn't
+   nudge its neighbours. */
+.modemark {
+  width: 46px; height: 3px; margin-top: 3px;
+  background: var(--acc);
+  box-shadow: 0 0 9px var(--acc), 0 0 3px #ffffff;
+  opacity: 0; transform: scaleX(.3);
+  transition: opacity .16s ease, transform .16s cubic-bezier(.2, 1.1, .3, 1);
+}
+.moderow:hover .modemark, .moderow:focus-visible .modemark { opacity: 1; transform: scaleX(1); }
+
+.md-classic     { --acc: var(--chrome); }
+.md-peaceful    { --acc: var(--green); }
+.md-exploration { --acc: var(--cyan); }
+
+/* THE LAUNCH PAIR. Two equal hero buttons — a new sky, or one from the library.
+   Equal WIDTH is the point: they are the same size of decision, and the colour
+   is what separates them (green = go, violet = the shelf). Each carries a glyph
+   so the two are told apart at a glance rather than by reading. */
+.menugo { display: flex; gap: 14px; margin-top: 20px; }
+#splashScreen .bigbtn {
+  flex: 1 1 0; min-width: 0;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  --hx: 18px; font-size: 13.5px; letter-spacing: 4.5px; padding: 15px 20px;
+}
+.gobtnglyph {
+  font-style: normal; font-size: 15px; line-height: 1;
+  color: var(--acc); text-shadow: 0 0 10px var(--acc), 0 0 3px #ffffff;
+  transition: transform .16s ease;
+}
+#splashScreen .bigbtn:hover:not(:disabled) .gobtnglyph { transform: scale(1.15) rotate(12deg); }
+/* An EMPTY library disables SAVED SYSTEM rather than hiding it — the path has to
+   stay visible or it can't teach that it exists. The hint line under the pair
+   says why (hud.refreshSplashStep). */
+#splashScreen .bigbtn:disabled { cursor: default; opacity: .32; filter: none; }
+#splashScreen .bigbtn:disabled::after { opacity: 0 !important; }
+
+/* THE TRAY — a tier quieter than everything above it: ghost text, no pill, no
+   frame. Panels that only read (and the way out) must not carry the same weight
+   as the two buttons that actually start a game; when they did, the screen was
+   a wall of eight identical pills with no hierarchy in it at all. */
+.menutray {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 4px; margin-top: 18px;
+}
+.traybtn {
+  --acc: var(--chrome);
+  position: relative;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 10.5px; letter-spacing: 2.6px;
+  padding: 7px 15px;
+  color: var(--ink-dim);
+  background: none; border: none; cursor: pointer;
+  transition: color .14s ease, text-shadow .14s ease;
+}
+/* Hover marks itself with a thin lit underline rather than a flood — the pills
+   above own the flood, and reusing it here would put the tray back on their
+   tier. Solid, like every other rule in this UI. */
+.traybtn::after {
+  content: ''; position: absolute; left: 15px; right: 15px; bottom: 3px; height: 1px;
+  background: var(--acc); box-shadow: 0 0 7px var(--acc);
+  opacity: 0; transform: scaleX(.4);
+  transition: opacity .14s ease, transform .14s cubic-bezier(.2, 1.1, .3, 1);
+}
+.traybtn:hover, .traybtn:focus-visible {
+  outline: none; color: #ffffff;
+  text-shadow: 0 0 10px var(--acc);
+}
+.traybtn:hover::after, .traybtn:focus-visible::after { opacity: 1; transform: scaleX(1); }
+/* EXIT is the one that doesn't come back — set off past a hairline and warmed
+   to ember, so it can never be mistaken for the panel next to it. */
+.traysep {
+  width: 1px; height: 13px; margin: 0 7px;
+  background: linear-gradient(180deg, transparent, rgba(196, 180, 240, .45), transparent);
+}
+.traybtn.quit { --acc: var(--ember); color: rgba(255, 160, 135, .72); }
+
+/* The pause menu's mode readout (see the note in index.html — a readout, not a
+   control). Sits between the header and the buttons, sized like a chip so it
+   never competes with either. */
+.modechip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 14px;
+  font-size: 10.5px; letter-spacing: 2.5px;
+  color: color-mix(in srgb, var(--acc) 70%, white 30%);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--acc) 50%, transparent);
+  background: color-mix(in srgb, var(--acc) 14%, transparent);
+  clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 9px 100%, 0 50%);
+}
+.modechip .modechipicon { font-size: 13px; text-shadow: 0 0 9px var(--acc); }
+/* The pause menu's copy needs the header gap; step 2's sits in its own row. */
+#pauseMode { margin-top: 10px; }
+
+/* Narrow windows: the three cards and the two launch buttons stack. They stop
+   reading as one gesture, but an unreadable row of 90px cards reads as nothing
+   at all — and the mode names are `white-space: nowrap`, so squeezing rather
+   than stacking would overflow them rather than wrap them. */
+@media (max-width: 660px) {
+  .modecols { flex-direction: column; gap: 8px; }
+  /* A GRID, not a flex row: the name and the rule line still have to stack
+     beside the icon, and they are direct children of the card (there is no
+     wrapper to turn — the wide layout doesn't need one, and adding a div per
+     card just to satisfy this breakpoint is markup paying for CSS). */
+  .moderow {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; column-gap: 12px; row-gap: 2px;
+    text-align: left; padding: 9px 14px;
+  }
+  .moderow .modeicon { grid-row: 1 / span 2; width: 32px; height: 32px; font-size: 16px; }
+  .modename { grid-column: 2; }
+  .modetag { grid-column: 2; }
+  .modemark { grid-column: 3; grid-row: 1 / span 2; width: 3px; height: 24px; margin: 0; transform: scaleY(.3); }
+  .moderow:hover .modemark, .moderow:focus-visible .modemark { transform: scaleY(1); }
+  .menugo { flex-direction: column; gap: 9px; }
+}
 
 /* Top margin carries the breathing room the old tagline paragraph used to provide */
 .menucol { display: flex; flex-direction: column; gap: 11px; align-items: stretch; margin: 26px auto 0; max-width: 340px; }
@@ -2087,13 +2427,15 @@ body.preGame #radar { opacity: 0; }
   color: color-mix(in srgb, var(--acc) 60%, white);
   text-shadow: 0 0 12px var(--acc);
 }
-/* The description, revealed on hover. Animating grid-template-rows 0fr -> 1fr
-   expands to the text's OWN height with no magic max-height to keep in sync
-   with the copy — the child just needs overflow:hidden and min-height:0. */
+/* The description shows up front — no hover needed to find out what a toast
+   is for — so it sits at its full 1fr/opacity 1 from the moment the node
+   mounts; the transition property is kept only so a reduced-motion toggle or
+   a future state change doesn't snap. The toast's own arrival motion (toastIn,
+   below) is what sells "just landed", not this row growing in separately. */
 .atwrap {
   grid-column: 1 / -1;
-  display: grid; grid-template-rows: 0fr;
-  opacity: 0;
+  display: grid; grid-template-rows: 1fr;
+  opacity: 1;
   transition: grid-template-rows .26s cubic-bezier(.3, .9, .3, 1), opacity .18s ease;
 }
 .atdesc {
@@ -2105,7 +2447,6 @@ body.preGame #radar { opacity: 0; }
   filter: drop-shadow(0 0 18px color-mix(in srgb, var(--acc) 70%, transparent));
   transform: translateX(-3px);
 }
-.actoast.hover .atwrap { grid-template-rows: 1fr; opacity: 1; }
 
 /* Enter: slides in from the right with a small overshoot, so it reads as
    arriving rather than appearing. Leave: fades and drifts back out, THEN
@@ -2330,6 +2671,79 @@ body.preGame #radar { opacity: 0; }
   font-size: 9px; letter-spacing: 4px; color: rgba(255, 190, 160, .75);
 }
 .gosdet { font-size: 11px; color: var(--ink-dim); margin-top: 4px; letter-spacing: 1px; }
+
+/* ---- Saved solar systems ---------------------------------------------------
+   The library panel (#systemsScreen) and the two save forms — the panel's own
+   (the pause-menu path) and the game-over one. Rows follow the journey rail's
+   grammar: a slab that lights on hover, name leading, data trailing. The ✕ is
+   a SEPARATE button beside the row, never nested inside it — a delete must not
+   also be a click on the thing it deletes. */
+.sysave, .gosave {
+  display: flex; gap: 9px; justify-content: center; align-items: stretch;
+  margin: 14px auto 0; max-width: 380px;
+}
+.gosave { margin-top: 18px; }
+/* The name field: the settings seed box widened into a form row */
+.sysnamein { flex: 1; width: auto; min-width: 0; text-align: left; }
+.sysave .menubtn, .gosave .menubtn {
+  --hx: 10px; flex: none; padding: 9px 16px; font-size: 11px; letter-spacing: 2px;
+}
+/* Spent (one save per game over): reads as the receipt, not a dead control */
+.gosave .menubtn:disabled { cursor: default; --acc: var(--green); color: #a7ffd2; }
+.syshint { margin: 12px 0 8px; font-size: 11px; letter-spacing: 1px; color: var(--ink-dim); }
+.syslist {
+  list-style: none; margin: 0 auto; padding: 0 6px 0 0; max-width: 380px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: min(38vh, 300px); overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: rgba(176, 112, 255, .5) transparent;
+  text-align: left;
+}
+.syslist::-webkit-scrollbar { width: 8px; }
+.syslist::-webkit-scrollbar-thumb { background: rgba(176, 112, 255, .45); border-radius: 4px; }
+.sysrow { display: flex; align-items: stretch; gap: 3px; }
+.sysgo {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin: 0; border: 0;
+  border-left: 2px solid rgba(176, 112, 255, .25);
+  background: rgba(120, 60, 220, .05);
+  font: inherit; text-align: left; cursor: pointer;
+  opacity: .7; transition: opacity .1s ease, background .1s ease;
+}
+.sysgo:hover, .sysgo:focus-visible {
+  outline: none; opacity: 1;
+  background: linear-gradient(90deg, rgba(150, 80, 255, .2), rgba(150, 80, 255, .06));
+  border-left-color: rgba(198, 170, 255, .9);
+}
+/* Over a live run the rows are a library to read, not a launch control — the
+   buttons are disabled (main.js refuses anyway), so the hover lift comes off. */
+.syslist.noplay .sysgo { cursor: default; }
+.syslist.noplay .sysgo:hover {
+  opacity: .7; background: rgba(120, 60, 220, .05);
+  border-left-color: rgba(176, 112, 255, .25);
+}
+.sysname {
+  flex: 1; min-width: 0;
+  font-family: var(--font-ui); font-weight: 600;
+  font-size: 12px; letter-spacing: 1.5px; color: #e6dcfb;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sysgo:hover .sysname, .sysgo:focus-visible .sysname { color: #ffffff; text-shadow: 0 0 9px rgba(198, 170, 255, .6); }
+.syslist.noplay .sysgo:hover .sysname { color: #e6dcfb; text-shadow: none; }
+.sysworld {
+  flex: none; font-family: var(--font-data); font-size: 9.5px; letter-spacing: 1px;
+  color: rgba(206, 170, 255, .6);
+}
+.sysdel {
+  flex: none; width: 30px; margin: 0; padding: 0; border: 0;
+  font: inherit; font-size: 11px; color: rgba(206, 170, 255, .45);
+  background: rgba(120, 60, 220, .05); cursor: pointer;
+  transition: color .1s ease, background .1s ease;
+}
+.sysdel:hover, .sysdel:focus-visible {
+  outline: none; color: #ff9d88;
+  background: rgba(255, 100, 70, .12);
+}
 
 /* ============================================================================
    THE SYSTEM CHART (#mapScreen)

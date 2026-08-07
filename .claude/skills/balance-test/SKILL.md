@@ -190,8 +190,11 @@ and carry their own "must never wander" rules, so lumping them in is a separate 
 - **`nanEvents` must be 0.** A nonzero count (or `Solar Slinger: culled non-finite body` / `reset
   non-finite ship` in the console) means something upstream produced a NaN — the tripwire in physics.js
   contained it, but the source is a real bug. Treat any tripwire firing as a failure to root-cause.
-- **Combat (with enemies engaged):** the orbit shield should intercept most thrown-rock volleys
-  (~5/6). Enemy density is deliberately sparse — most planets stay free.
+- **Combat (with enemies engaged):** interception is **Guard Sling's**, not the ring's — check
+  `game.st.guardCount` before judging this. With the ability owned the screen should meet most
+  thrown-rock volleys (~5/6 at rank 1, the single interceptor the ring used to include for free;
+  rank 6 puts four in the way). With `guardCount === 0` a full ring blocks only by accident, and
+  that is CORRECT, not a regression. Enemy density is deliberately sparse — most planets stay free.
 
 ## Interpreting deaths
 
