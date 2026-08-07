@@ -2324,6 +2324,200 @@ export function runMechTest(game, hooks, opts = {}) {
       }
     });
 
+    // T24b — A SPLASHDOWN IS A CROSSING, NOT A RELEASE (QA #198).
+    // `b.inSea` was doing two jobs: the PHYSICAL "this body is submerged"
+    // state the splash detector arms off (`if (!b.inSea)`), and the render
+    // half-alpha. The ocean walk's exemption branch (held / railed /
+    // parry-frozen / sinking / planets) cleared it every substep — so a rock
+    // grabbed INSIDE the water column and flung while STILL SUBMERGED read as
+    // a fresh arrival on the very next substep and re-billed a full
+    // OCEAN_HIT_CAP wound (12% of maxHp) plus fresh throw credit, per grab,
+    // without the rock ever leaving the sea. Measured before the fix: nine
+    // grab/fling cycles took 1729 hp — 22% of the world — and a 59,060-mass
+    // rock capped out and KILLED it in five.
+    //
+    // The flag is split now: `b.seaDim` is the render dim the exemption
+    // clears (the beam's load stays legible), and `b.inSea` may only be ARMED
+    // by the geometric test — the exemption branch is allowed to clear it, and
+    // nothing else may set it. Four legs, in this order because expect() throws
+    // on the first miss and the hp number is the one worth reading:
+    //   1. THE EXPLOIT — nine release-underwater cycles bill nothing at all.
+    //   2. THE CONTROL — the same rock thrown in from OUTSIDE the waterline
+    //      bills EXACTLY ONE splash and real damage. Without it, "the ocean
+    //      is never wounded" would pass leg 1 with the feature dead.
+    //   3. SHAPE — a held submerged rock is wet (`inSea`) and undimmed
+    //      (`!seaDim`). Cheap, and it is what fails if the two flags are ever
+    //      merged back into one.
+    //   4. THE MIRROR IMAGE — a rock carried OUT of the sea on the beam and
+    //      released just above the waterline moving inward still bills its
+    //      crossing. The first cut of this fix PRESERVED `inSea` in the
+    //      exemption branch instead of clearing it, so a carried-out rock
+    //      stayed stamped wet; position integration runs BEFORE the ocean walk,
+    //      so a release within one substep's travel of the surface crossed
+    //      p.radius on the very substep that would have corrected the flag, the
+    //      walk read the stale `true`, and a legitimate splashdown billed
+    //      NOTHING. Reachable by design — the hull floats half submerged AT the
+    //      waterline, so a rock grabbed under the ship and flung back down is
+    //      released exactly there. Measured on Brinn (r 523, 4000-mass rock at
+    //      900 u/s inward): a 4-unit gap billed 0 hp where a 30-unit gap billed
+    //      939.5. The gap here is deliberately inside that one-substep window.
+    t('ocean: a release underwater is not a new splashdown', () => {
+      hooks.freshRun(0, seed);
+      const p = game.bodies.find((b) => b.alive && b.ptype === 'ocean');
+      expect(p, 'no ocean world in this sky — nothing to test');
+      const stats = game.prog.ach.stats;
+      let rock = null;
+      try {
+        const SEAT = 0.85;    // fraction of p.radius: mid-column, well clear of
+        const THROW = 460;    // the seabed collider at CFG.OCEAN_CORE (0.58)
+        const CYCLES = 9;     // the count the exploit was measured at
+        expect(SEAT > CFG.OCEAN_CORE + 0.15,
+          `the seat (${SEAT}r) is not clear of the seabed at OCEAN_CORE ${CFG.OCEAN_CORE}r — `
+          + 'a surface contact would bill damage this case would misread as a splash');
+        // The ship stays out of the water: the sea drags and wounds a hull,
+        // and every number here is meant to be the ROCK's bill.
+        parkShip(game, p.x, p.y - p.radius * 4);
+        // Seat the rock in the column moving WITH the water (so an arrival
+        // reads rel ~ 0 and cannot itself splash), optionally plus `spd`
+        // outward. Re-seated every cycle because the world orbits — a fixed
+        // world coordinate would walk out of the sea inside a few frames.
+        const seat = (b, spd) => {
+          const x = p.x + p.radius * SEAT, y = p.y;
+          const sv = surfaceVel(p, x, y);
+          b.x = x; b.y = y; b.vx = sv.vx + spd; b.vy = sv.vy;
+        };
+        rock = spawnAsteroid(game.bodies, p.x + p.radius * SEAT, p.y, 0, 0, 4000);
+        seat(rock, 0);
+        hooks.stepSim(1 / 60);
+        expect(rock.inSea === true,
+          'setup: the walk did not stamp the seated rock submerged — it is not in the water');
+
+        // ---- 1. THE EXPLOIT: grab, fling while submerged, repeat.
+        // heldBy is set directly rather than through tryGrab/releaseHeld: the
+        // exemption branch reads exactly this flag, and the real tractor path
+        // would drag its own sfx, achievement and tether bookkeeping into a
+        // case about one physics flag.
+        const hp0 = p.hp, splash0 = stats.seaSplash || 0;
+        for (let i = 0; i < CYCLES; i++) {
+          rock.heldBy = 'player';
+          hooks.stepSim(1 / 60);
+          // Released and thrown, still under water — the thrown stamp is what
+          // releaseHeld leaves behind, and it is what makes the splash credit
+          // read 'player-throw' (physics.collisionCredit) and bump seaSplash.
+          rock.heldBy = null;
+          rock.thrownBy = 'player'; rock.thrownTimer = 4; rock.chainN = 0;
+          seat(rock, THROW);
+          hooks.stepSim(1 / 60);
+        }
+        expect(rock.alive, 'the rock did not survive the loop — nothing was measured');
+        expect(p.alive, `the ocean world DIED during ${CYCLES} underwater releases`);
+        const hpLost = hp0 - p.hp;
+        const rebills = (stats.seaSplash || 0) - splash0;
+        // Under 1, not exactly 0: the walk only queues a wound above dmg > 1,
+        // so anything a real splash bills lands far above this line (~190 hp
+        // per cycle with this rock) while float drift cannot reach it.
+        expect(hpLost < 1,
+          `${CYCLES} releases INSIDE the water column cost the world ${hpLost.toFixed(0)} hp `
+          + `(${(hpLost / p.maxHp * 100).toFixed(1)}% of maxHp, cap ${(p.maxHp * CFG.OCEAN_HIT_CAP).toFixed(0)} per hit) `
+          + '— a rock that never crossed the waterline is re-arming the splash detector');
+        expect(rebills === 0,
+          `${CYCLES} releases inside the water column billed ${rebills} splashdowns — a release is not an arrival`);
+
+        // ---- 2. THE CONTROL: one real crossing, one real splash.
+        const hp1 = p.hp, splash1 = stats.seaSplash || 0;
+        const out = p.radius * 1.3;
+        const sv = surfaceVel(p, p.x + out, p.y);
+        rock.x = p.x + out; rock.y = p.y;
+        rock.vx = sv.vx - THROW; rock.vy = sv.vy;
+        rock.inSea = false; rock.seaDim = false;
+        rock.thrownBy = 'player'; rock.thrownTimer = 4; rock.chainN = 0;
+        let frames = 0;
+        while (!rock.inSea && frames < 60) { hooks.stepSim(1 / 60); frames++; }
+        expect(rock.inSea, 'the control throw never reached the water in 1s — the rig is aimed wrong');
+        // Keep flying (still short of the seabed at 0.58r) — one crossing must
+        // stay one bill however long the rock stays under.
+        for (let i = 0; i < 10; i++) hooks.stepSim(1 / 60);
+        const ctrl = (stats.seaSplash || 0) - splash1;
+        const ctrlHp = hp1 - p.hp;
+        expect(ctrl === 1,
+          `the control throw billed ${ctrl} splashdowns, wanted exactly 1 — `
+          + (ctrl === 0 ? 'the splash detector is dead, which would make leg 1 pass vacuously'
+            : 'a single crossing is re-billing'));
+        expect(ctrlHp > 1,
+          `the control splash took ${ctrlHp.toFixed(1)} hp — a wounding splashdown must actually wound`);
+
+        // ---- 3. SHAPE: on the beam, still wet, no longer dimmed. Re-seated
+        // first so the reading is taken from a known place in the column
+        // rather than wherever the control throw ended up.
+        rock.thrownBy = null; rock.thrownTimer = 0;
+        seat(rock, 0);
+        hooks.stepSim(1 / 60);
+        expect(rock.inSea === true && rock.seaDim === true,
+          'a submerged rock the walk actually touched must be both wet and dimmed '
+          + `(inSea=${rock.inSea}, seaDim=${rock.seaDim})`);
+        rock.heldBy = 'player';
+        hooks.stepSim(1 / 60);
+        expect(rock.inSea === true,
+          'a rock held INSIDE the water column lost b.inSea — the splash detector is armed again, '
+          + 'and the next release bills a fresh arrival (this is QA #198)');
+        expect(rock.seaDim === false,
+          'a rock held inside the water column is still dimmed — the beam\'s load must stay legible');
+
+        // ---- 4. THE MIRROR IMAGE: carried OUT on the beam, released just
+        // above the surface moving inward — that crossing is real and must
+        // bill. The rock is still held from leg 3; walk it out of the column a
+        // step at a time so the exemption branch sees it leave, which is
+        // exactly the path a player flies.
+        const GAP = 4;        // units above the waterline at release: INSIDE one
+        const IN = 900;       // substep of travel at IN, which is the whole point
+        for (let i = 0; i < 4; i++) {
+          const f = 0.85 + (i + 1) * ((1 + GAP / p.radius) - 0.85) / 4;
+          const x = p.x + p.radius * f, y = p.y;
+          const sv2 = surfaceVel(p, x, y);
+          rock.x = x; rock.y = y; rock.vx = sv2.vx; rock.vy = sv2.vy;
+          hooks.stepSim(1 / 60);
+        }
+        const carriedWet = rock.inSea;
+        const hp2 = p.hp, splash2 = stats.seaSplash || 0;
+        const rx = p.x + p.radius + GAP, ry = p.y;
+        const sv3 = surfaceVel(p, rx, ry);
+        rock.x = rx; rock.y = ry; rock.vx = sv3.vx - IN; rock.vy = sv3.vy;
+        rock.heldBy = null;
+        rock.thrownBy = 'player'; rock.thrownTimer = 4; rock.chainN = 0;
+        let dropF = 0;
+        while (Math.hypot(rock.x - p.x, rock.y - p.y) >= p.radius && dropF < 30) {
+          hooks.stepSim(1 / 60); dropF++;
+        }
+        hooks.stepSim(1 / 60);   // let the queued splash drain
+        const drop = (stats.seaSplash || 0) - splash2;
+        const dropHp = hp2 - p.hp;
+        expect(drop === 1,
+          `a rock carried out of the sea and released ${GAP}u above the waterline at ${IN} u/s `
+          + `inward billed ${drop} splashdowns, wanted exactly 1 (inSea while carried clear: `
+          + `${carriedWet}) — a crossing inside one substep of the release point is still a `
+          + 'crossing, and preserving b.inSea through the exemption branch swallows it');
+        expect(dropHp > 1,
+          `that crossing took ${dropHp.toFixed(1)} hp — it billed a splash that did not wound`);
+        return `${CYCLES} underwater releases: ${hpLost.toFixed(1)} hp / ${rebills} splashes; `
+          + `control crossing (${frames} frames): 1 splash / ${ctrlHp.toFixed(0)} hp; `
+          + `held submerged: inSea, not seaDim; carried-out release (${GAP}u gap): `
+          + `${drop} splash / ${dropHp.toFixed(0)} hp`;
+      } finally {
+        // REBUILD, don't unwind (issue #151). The control and mirror-image legs
+        // put REAL wounds on this world — hp, scars, hitBy, the crust the splash
+        // calved, and every stat damageBody bumps on the way through. Restoring
+        // the two numbers this case reads leaves all of that behind for whatever
+        // is inserted after it, and a case that reads a scarred sky fails for a
+        // reason that has nothing to do with what it tests. The seed is fixed,
+        // so this is the identical sky T26's census was taken from; the step
+        // settles the camera so T25 reads the same view state every other case
+        // leaves behind.
+        if (rock) rock.alive = false;
+        hooks.freshRun(0, seed);
+        hooks.stepSim(1 / 60);
+      }
+    });
+
     // T25 — THE HARNESS VIEW IS PINNED, so the report cannot depend on the
     // window it ran in (issue #104). Everything above this line integrates
     // through game.viewR — the spawn ring and both leashes in
