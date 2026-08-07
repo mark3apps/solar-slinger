@@ -1,7 +1,7 @@
 import {
   CFG, PROG, SHIP_HIT_FRAC, fieldFrac, fieldLobe, FIELD_LOBE_MAX, PTYPE_LABELS,
   canLift, canStow, liftClass, shelterR, dockTier, dockPadR, dockDomeR, ramPlate,
-  ramRows, ramPerRow, shipVis,
+  ramRows, ramPerRow, shipVis, seaPhase,
 } from './config.js';
 import { predictPaths, frameReg, PARRY_ARC, PARRY_READY_T, parryLive, dockReady } from './physics.js';
 import * as gravel from './gravel.js';
@@ -198,6 +198,7 @@ function beginFrame(game) {
   // cannot swap the array out from under nearestStar.
   frameStars.length = 0;
   for (const b of frameReg(game).stars) if (b.alive) frameStars.push(b);
+  buildSeaWaves(game);
 }
 
 // View culling: true if any drawn element of this body can touch the screen.
@@ -206,8 +207,12 @@ function beginFrame(game) {
 // also paint faint orbit guides that can be on-screen while the body itself
 // is not — those get their own geometric checks so nothing ever pops.
 function bodyOnScreen(b) {
-  // Vesper's anti-sunward tail reaches ~34x radius at full perihelion bloom
-  const m = (b.majorComet ? b.radius * 36 : b.comet ? b.radius * 10 : b.radius * 4) + 80;
+  // Vesper's anti-sunward tail reaches ~34x radius at full perihelion bloom.
+  // A STAR gets its own margin: the generic 4x is a bound over every sprite
+  // pass, but drawStar's envelope is known exactly (SUN_HALO), and at this
+  // radius the difference is a ~2,000-unit shell of pure waste.
+  const m = (b.type === 'star' ? b.radius * SUN_HALO
+    : b.majorComet ? b.radius * 36 : b.comet ? b.radius * 10 : b.radius * 4) + 80;
   if (b.x + m > view.x0 && b.x - m < view.x1 && b.y + m > view.y0 && b.y - m < view.y1) return true;
   if (b.onRails && b.rail && b.rail.parent.alive) {
     if (b.type === 'moon') {
@@ -225,6 +230,16 @@ function bodyOnScreen(b) {
     }
   }
   return false;
+}
+
+// Circle-vs-view, for the passes INSIDE a body that are each their own little
+// sprite — the sun's corona lobes and supergranules. bodyOnScreen answers "is
+// this body worth drawing"; on a 4,800-unit star that question is far too
+// coarse, because the answer is yes while nine tenths of its own detail sits
+// off the far side of a disc bigger than the screen. Four compares against a
+// createRadialGradient + arc + fill is a trade worth making every time.
+function circleOnScreen(cx, cy, r) {
+  return cx + r > view.x0 && cx - r < view.x1 && cy + r > view.y0 && cy - r < view.y1;
 }
 
 // The frame's world matrix, kept as three numbers (it is always a uniform
@@ -1570,10 +1585,81 @@ function worldSil(b) {
 // circles and draw as their own jag silhouette); crystal worlds keep their
 // facets in both, since carving notches into a shape that is already fractured
 // fights the read instead of adding to it.
+// THE SEA'S LIMB RIPPLES (user design call). A swell that only drew inside the
+// silhouette left the world a perfect circle with rings painted on it — the one
+// edge in the frame that would actually deform stayed rigid. So the crest
+// DISPLACES the drawn outline as it rolls past, and because traceSurface backs
+// the fill, the clip and every clipped detail pass, the whole world breathes
+// with it for free.
+//
+// Baked ONCE per frame into seaRad, never per traceSurface call: the sea is
+// traced five or six times a frame (disc, detail clip, specular, ripples,
+// veil) and there can be OCEAN_RING_MAX live waves, so re-walking the hit list
+// inside the trace is the one way to make an outline this cheap expensive.
+// Only a sea with live waves gets a path at all — every other body, and a calm
+// ocean, keeps the plain-arc fast path below.
+const SEA_SEG = 96;
+const seaRad = new Float32Array(SEA_SEG + 1);
+let seaWaveBody = null;
+
+// The wave's reach + signed strength at age u comes from config.seaPhase — it
+// has three consumers (this limb, the drawn rings, and physics' chop damage)
+// and they must never disagree about what the water is doing. See its header
+// for the two-act shape and the three separate pops it exists to prevent.
+
+function buildSeaWaves(game) {
+  seaWaveBody = null;
+  const oceans = frameReg(game).oceans;
+  if (!oceans || !oceans.length) return;
+  const T = CFG.OCEAN_RIPPLE_T;
+  for (const b of oceans) {
+    if (!b.alive || !b.seaHits || !b.seaHits.length) continue;
+    const R = b.radius;
+    let live = 0;
+    for (let i = 0; i <= SEA_SEG; i++) seaRad[i] = R;
+    for (const h of b.seaHits) {
+      const age = game.time - h.t;
+      if (age < 0 || age >= T) continue;
+      live++;
+      const u = age / T;
+      const ang = h.a + b.rot;
+      const { reach, env } = seaPhase(R, u, h.s);
+      // SIGNED: negative during the cavity, so the limb dents inward at the
+      // strike before the crest rolls out of it.
+      const amp = R * CFG.OCEAN_WAVE_AMP * env * h.s;
+      const w = R * 0.11;                       // crest half-width along the limb
+      for (let i = 0; i <= SEA_SEG; i++) {
+        // Arc distance from the wave's origin BEARING — the hit is stamped on
+        // the surface, so its rings meet the limb at ±reach of arc either way.
+        let d = (i / SEA_SEG) * TAU - ang;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        const x = (Math.abs(d) * R - reach) / w;
+        if (x > -3 && x < 3) {
+          // A crest with troughs behind and ahead of it, not a lone bulge —
+          // one-sided displacement reads as the world swelling, not as water.
+          seaRad[i] += amp * Math.cos(x * 2.1) * Math.exp(-x * x);
+        }
+      }
+    }
+    if (live) { seaWaveBody = b; break; }   // one sea to a system
+  }
+}
+
+function seaSurface(b) {
+  ctx.beginPath();
+  for (let i = 0; i < SEA_SEG; i++) {
+    const th = (i / SEA_SEG) * TAU, rr = seaRad[i];
+    const px = b.x + Math.cos(th) * rr, py = b.y + Math.sin(th) * rr;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
 function traceSurface(b) {
   if (b.type === 'asteroid') { traceAsteroid(b); return; }
   if (b.ptype === 'crystal') { traceCrystal(b); return; }
   if (b.scars.length) { worldSil(b); return; }
+  if (b === seaWaveBody) { seaSurface(b); return; }
   ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU);
 }
 
@@ -1686,6 +1772,20 @@ function drawRing(game, b, near) {
 // surface feature is placed in that ROTATING FRAME, or the granulation would
 // stream past stationary spots and the whole illusion would come apart.
 const SUN_SPIN = 0.0175;         // rad/s — a full turn in ~6 minutes
+// THE STAR'S DRAWN ENVELOPE, in radii — the corona gradient's outer stop, and
+// the outermost thing drawStar paints. Every other pass is inside it: the
+// corona lobes reach 3.02R (seated at <=1.62R with a <=1.40R tail), the
+// prominences 1.23R, the limb smear 1.10R.
+//
+// THE CULL READS IT TOO, and that sharing is the point. bodyOnScreen's generic
+// margin is 4R + 80, which for a 4,800-unit sun overshoots by ~2,000 units — a
+// shell where the star paints literally nothing (measured: a framebuffer diff
+// at 17,500 units came back zero) and still cost 0.13ms a frame, ~43% of the
+// frame's whole draw. Two of the four inner worlds sit in that shell. Both the
+// cull and the corona gradient below take their reach from this one constant,
+// so the cull can never drift wider than what is actually painted. (Module
+// scope, not an export — bodyOnScreen lives in this file.)
+const SUN_HALO = 3.6;
 const GRAN_PX = 256;             // baked tile resolution
 const GRAN_CELLS = 7;            // cells per tile side
 // Octave world spans. `span` is how wide one tile lands in world units, so a
@@ -1714,6 +1814,10 @@ const PROM_BANDS = [
   [0.46, 'rgba(255, 194, 104, 0.048)'],
   [0.24, 'rgba(255, 226, 152, 0.055)'],
 ];
+// Widest band's half-width, in radii — the inflation the prominence cull adds
+// to the ribbon's control hull. Derived from the table rather than typed, so
+// widening a band cannot leave the cull clipping the thing it widened.
+const PROM_W_MAX = 0.05 * Math.max(...PROM_BANDS.map(([w]) => w)) + 0.002;
 
 // Bake the convection tile once: a dark intergranular bed, cells ERASED out of
 // it (so the lanes are what is left, the way granulation actually reads), then
@@ -1815,7 +1919,7 @@ function drawStar(game, b) {
   // ---- CORONA. Many stops, not four: the old four-stop ramp printed visible
   // concentric BANDS across a body this large, which is a hard edge in world by
   // any other name. The falloff below is roughly exponential and reads smooth.
-  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * 3.6);
+  const cg = ctx.createRadialGradient(b.x, b.y, R * 0.2, b.x, b.y, R * SUN_HALO);
   cg.addColorStop(0, b.color);
   cg.addColorStop(0.14, b.color + 'ee');
   cg.addColorStop(0.24, b.color + 'b0');
@@ -1826,9 +1930,17 @@ function drawStar(game, b) {
   cg.addColorStop(0.82, b.color + '0e');
   cg.addColorStop(1, 'transparent');
   ctx.fillStyle = cg;
-  ctx.beginPath(); ctx.arc(b.x, b.y, R * 3.6, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(b.x, b.y, R * SUN_HALO, 0, TAU); ctx.fill();
 
   ctx.globalCompositeOperation = 'lighter';
+
+  // EVERY PASS BELOW CULLS AGAINST THE VIEW. The limb pass (bottom of this
+  // function) has always walked only the arc the camera can see; nothing else
+  // did, so on a disc wider than the screen the star submitted its whole self —
+  // fifteen corona lobes, sixty-six prominence polygons, twenty-six
+  // supergranules and a full-disc pattern fill — however little of it landed.
+  // Each pass now tests its own exact extent, which is cheaper and tighter than
+  // one shared bearing window would be: they sit at very different radii.
 
   // ---- CORONAL STRUCTURE. The corona is not a fog, it is a SHAPE — it reaches
   // further where the field is open and hugs the limb where it is closed. Built
@@ -1848,6 +1960,10 @@ function drawStar(game, b) {
     const d = R * (0.95 + 0.55 * h2 + 0.12 * Math.sin(t * 0.06 + i));
     const br = R * (0.55 + 0.85 * h);
     const cx = b.x + Math.cos(a) * d, cy = b.y + Math.sin(a) * d;
+    // A lobe IS a circle — (cx, cy, br) is its exact extent, since the gradient
+    // reaches zero at br. So the cull is exact, not a bound, and from anywhere
+    // outside the corona all fifteen of these fall out for four compares each.
+    if (!circleOnScreen(cx, cy, br)) continue;
     // The tail has to fall off SMOOTHLY or the lobe prints its own circle: a
     // gradient that runs linearly to zero has a kink at its outer stop, and
     // where several overlap that kink reads as an arc drawn in the corona.
@@ -1890,6 +2006,14 @@ function drawStar(game, b) {
     const x1 = b.x + Math.cos(a1) * R0, y1 = b.y + Math.sin(a1) * R0;
     const am = a0 + span / 2;
     const cxp = b.x + Math.cos(am) * (R0 + h * 2), cyp = b.y + Math.sin(am) * (R0 + h * 2);
+    // SIX filled 30-point polygons hang off this loop, and on a body whose disc
+    // is wider than the screen most of the eleven loops are round the back. A
+    // quadratic Bezier is contained in the CONVEX HULL of its three control
+    // points, so the hull's box inflated by the widest band is an exact bound —
+    // no sampling, and it can never clip a ribbon it should have kept.
+    const pw = R * PROM_W_MAX;
+    if (Math.min(x0, x1, cxp) - pw > view.x1 || Math.max(x0, x1, cxp) + pw < view.x0
+      || Math.min(y0, y1, cyp) - pw > view.y1 || Math.max(y0, y1, cyp) + pw < view.y0) continue;
     const at = (k) => {   // point on the quadratic at parameter k
       const m = 1 - k;
       return [m * m * x0 + 2 * m * k * cxp + k * k * x1, m * m * y0 + 2 * m * k * cyp + k * k * y1];
@@ -1986,15 +2110,37 @@ function drawStar(game, b) {
       for (let n = 0; n < 2; n++) {
         const pat = granPats[(idx + n) % granPats.length];
         if (!pat) continue;
-        ctx.save();
-        ctx.translate(b.x, b.y);
         // Each bake also gets its own bearing, so a cross-fade is never two
         // layouts sitting on the same spot fading into one another.
-        ctx.rotate(rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09);
+        const ang = rot * o.spin + o.rot + ((idx + n) % granPats.length) * 2.09;
+        // THE RECT IS THE WHOLE DISC, AND THE DISC IS BIGGER THAN THE SCREEN.
+        // -q..q spans the star; on the finest octave that is a 25,000-unit
+        // square of pattern fill to cover a view a tenth as wide. So the rect
+        // is cut down to the VIEW, mapped back through this bake's own
+        // rotate+scale. The pattern is anchored to the TRANSFORM, not to the
+        // rect, so a smaller rect shifts nothing — inside the photosphere clip
+        // the pixels are identical, there are just far fewer tiles to lay.
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        let lx0 = Infinity, ly0 = Infinity, lx1 = -Infinity, ly1 = -Infinity;
+        for (let ci = 0; ci < 4; ci++) {
+          const wx = (ci & 1 ? view.x1 : view.x0) - b.x;
+          const wy = (ci & 2 ? view.y1 : view.y0) - b.y;
+          const lx = (wx * ca + wy * sa) / s, ly = (wy * ca - wx * sa) / s;
+          if (lx < lx0) lx0 = lx;
+          if (lx > lx1) lx1 = lx;
+          if (ly < ly0) ly0 = ly;
+          if (ly > ly1) ly1 = ly;
+        }
+        const rx0 = Math.max(-q, lx0), ry0 = Math.max(-q, ly0);
+        const rx1 = Math.min(q, lx1), ry1 = Math.min(q, ly1);
+        if (rx1 <= rx0 || ry1 <= ry0) continue;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(ang);
         ctx.scale(s, s);
         ctx.globalAlpha = o.alpha * k * (n ? f : 1 - f);
         ctx.fillStyle = pat;
-        ctx.fillRect(-q, -q, q * 2, q * 2);
+        ctx.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
         ctx.restore();
       }
     }
@@ -2025,6 +2171,10 @@ function drawStar(game, b) {
       const swell = 0.5 + 0.5 * Math.sin(t * (0.03 + h2 * 0.03) + i * 2.1);
       const br = R * (dark ? 0.22 + 0.20 * h2 : 0.14 + 0.13 * h2) * (0.75 + 0.35 * swell);
       const al = (dark ? 0.13 : 0.26) * (0.45 + 0.55 * swell);
+      // Exact, like the corona lobes: the gradient reaches zero at br, so a
+      // cell that misses the view contributes nothing. Half of them are round
+      // the back of the disc at any close range.
+      if (!circleOnScreen(bx, by, br)) continue;
       const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
       g.addColorStop(0, dark ? `rgba(196, 96, 22, ${al})` : `rgba(255, 250, 226, ${al})`);
       g.addColorStop(0.5, dark ? `rgba(204, 108, 30, ${al * 0.5})` : `rgba(255, 208, 128, ${al * 0.5})`);
@@ -3393,6 +3543,12 @@ function drawPlanetDetail(game, b) {
 // driven motion on game.time — the aurora/eclipse convention. Solid strokes,
 // clipped to the silhouette, and surface-local (h.a + b.rot) so a wave rides
 // the spin like every other feature.
+// SIZED LIKE A SEA, NOT A SCRATCH (user design call): these rings ARE the
+// world's damage read, on a body ~551 units across, so the crest is a wide
+// swell with a soft shoulder behind it and the trailing fronts are spaced far
+// enough apart to read as separate waves at flying zoom. Thin hairlines on a
+// disc that big looked like a hairline crack, which is the one thing an ocean
+// must never look like.
 function drawSeaRipples(game, b) {
   const T = CFG.OCEAN_RIPPLE_T;
   const R = b.radius;
@@ -3408,18 +3564,205 @@ function drawSeaRipples(game, b) {
     const u = age / T;
     const cx = b.x + Math.cos(h.a + b.rot) * R;
     const cy = b.y + Math.sin(h.a + b.rot) * R;
-    const reach = R * (0.22 + 1.35 * u) * (0.55 + 0.45 * h.s);
-    const fade = (1 - u) * (1 - u) * h.s;
-    ctx.lineWidth = Math.max(1.5, R * 0.018 * (1 - u * 0.5));
-    // three fronts trailing the leading wave, each fainter
-    for (let i = 0; i < 3; i++) {
-      const rr = reach - i * R * 0.09;
+    const { reach, env } = seaPhase(R, u, h.s);   // SHARED with the limb
+    // Off the wave's own envelope, so the rings attack from nothing and decay
+    // with the crest instead of being drawn at full strength on frame one.
+    // Absolute: the cavity act is a SHAPE (the limb dents), not an inside-out
+    // ring, and during it the reach is ~0 so there is nothing to draw anyway.
+    const fade = Math.abs(env) * h.s;
+    const lw = Math.max(2.5, R * 0.055 * (1 - u * 0.45));
+    // THE SWELL behind the crest — a broad soft band, so the leading wave has
+    // water piled behind it instead of being a lone stroke on flat blue.
+    ctx.lineWidth = lw * 3.4;
+    ctx.strokeStyle = `rgba(150, 205, 245, ${0.20 * fade})`;
+    ctx.beginPath(); ctx.arc(cx, cy, Math.max(0.1, reach - lw * 1.6), 0, TAU); ctx.stroke();
+    // ...then the crest and ONE front trailing it. Four fronts per hit, times
+    // every live hit, turned the face into concentric static (user call — "too
+    // many wave pulses"): the read wanted fewer, bigger swells, not more rings.
+    ctx.lineWidth = lw;
+    for (let i = 0; i < 2; i++) {
+      const rr = reach - i * R * 0.16;
       if (rr <= 0) continue;
-      ctx.strokeStyle = `rgba(210, 238, 255, ${(0.48 - i * 0.13) * fade})`;
+      ctx.strokeStyle = `rgba(214, 240, 255, ${(0.62 - i * 0.20) * fade})`;
       ctx.beginPath(); ctx.arc(cx, cy, rr, 0, TAU); ctx.stroke();
     }
   }
   ctx.restore();
+}
+
+// THE WATER CLOSES OVER THE SHIP. The hull is drawn after the world it is
+// flying through, so inside an ocean it painted on TOP of the sea and read as
+// sitting on a blue disc — the exact thing b.inSea already fixes for rock, but
+// rock is dimmed and the ship cannot be (drawShip owns its own alphas across a
+// dozen passes, and an outer globalAlpha would be clobbered by the first one
+// that sets its own). So the sea is painted back over the hull instead, which
+// is both cheaper and physically what is happening: you are UNDER the water.
+//
+// Graded by DEPTH, not flat — deep water is darker and denser, the waterline
+// barely tints — and the whole veil fades in on game.seaK, so the sea closes
+// over the ship as it sinks rather than snapping on at the surface. Clipped to
+// traceSurface, so the crumble silhouette (and a hit ocean's own limb) bounds
+// it exactly like every other in-world pass on this body.
+function drawSeaVeil(game) {
+  const b = game.seaBody;
+  const k = game.seaK || 0;
+  // Ship alive too: seaBody/seaK are published from the environmental sweep,
+  // which stops running on death, so a wreck would leave the last frame's water
+  // painted over the world until the respawn cleared it.
+  if (!b || !b.alive || k < 0.02 || !game.ship.alive) return;
+  const R = b.radius;
+  ctx.save();
+  traceSurface(b);
+  ctx.clip();
+  // GOING UNDER DARKENS, IT NEVER BRIGHTENS (user call). An earlier grade put
+  // its brightest stop at the waterline to keep the near-limb water from
+  // reading as void, and it worked — by lighting the whole world up the moment
+  // you touched it, which is backwards: entering water cannot make the planet
+  // you are entering brighter. So every stop here is DARKER than the sea's own
+  // blue (world.js ocean palette ~ 58,111,196) and the alpha is near zero at
+  // the drawn edge, ramping in with depth. The near-limb water stays legible
+  // for free — it is barely veiled — and the hiding work is done by the murk
+  // lens below and by the screen overlay, where it belongs.
+  // The stop positions follow the REAL water column (OCEAN_CORE), so the grade
+  // deepens across the water rather than across the whole disc — the column is
+  // 0.42r now, and a grade keyed to the disc put its dark end far below any
+  // water there is.
+  const core = CFG.OCEAN_CORE;
+  const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, R);
+  g.addColorStop(0, `rgba(3, 16, 48, ${0.80 * k})`);
+  g.addColorStop(core, `rgba(4, 20, 56, ${0.68 * k})`);
+  g.addColorStop(core + (1 - core) * 0.6, `rgba(5, 26, 68, ${0.44 * k})`);
+  g.addColorStop(0.985, `rgba(8, 36, 86, ${0.20 * k})`);
+  g.addColorStop(1, `rgba(10, 44, 100, ${0.06 * k})`);
+  ctx.fillStyle = g;
+  traceSurface(b);
+  ctx.fill();
+
+  // ...AND A COLUMN OF MURK OVER THE HULL. The disc wash is uniform, so the
+  // ship stayed perfectly legible inside it; this is what actually hides it.
+  // A dark, soft lens centred on the ship, dying off to nothing well inside the
+  // disc so it never draws an edge of its own.
+  //
+  // NO CAUSTIC BANDS. Lit arcs stacked by depth were tried here and cut (user
+  // call — "the weird curved horizontal lines look odd"): at planetary radius
+  // any short arc is visually straight, so light in the water came out as a
+  // stack of horizontal bars across the hull. Moving light belongs on the
+  // screen overlay, where it is not fighting a 500-unit curve.
+  const s = game.ship;
+  if (s.alive) {
+    // WIDE AND SOFT, NOT TIGHT AND STRONG. A hull-sized lens — and worse, a
+    // bright haze sized to the hull — both came out as a legible DISC sitting
+    // on the sea, which is a hard edge in-world and reads far worse than the
+    // ship it was hiding. This pool is a third of the world across with no
+    // stop steep enough to find, so what you register is that the water has
+    // gone deep here, not that something round is drawn on it.
+    //
+    // And it hides by LOWERING CONTRAST, not by covering: the hull is dark ink
+    // on a bright sea, so pulling the water down toward the hull's own value is
+    // what makes it hard to pick out. Adding light did the exact opposite.
+    // ...and it BACKS OFF WITH DEPTH. The murk exists to kill contrast against
+    // BRIGHT water; deep water is already near-black from the submersion
+    // overlay, so down there it has nothing left to hide and only subtracts the
+    // last few values that let a pilot find their own hull. At the seabed the
+    // scene is at its most dangerous and the ship must still be flyable.
+    const mk = k * (1 - 0.55 * Math.min(1, game.seaDeep || 0));
+    const lens = Math.max(s.radius * 22, R * 0.34);
+    const mg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, lens);
+    mg.addColorStop(0, `rgba(4, 18, 52, ${0.78 * mk})`);
+    mg.addColorStop(0.35, `rgba(5, 22, 60, ${0.52 * mk})`);
+    mg.addColorStop(0.7, `rgba(6, 28, 72, ${0.22 * mk})`);
+    mg.addColorStop(1, 'transparent');
+    ctx.fillStyle = mg;
+    ctx.beginPath(); ctx.arc(s.x, s.y, lens, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// SUBMERSION OVERLAY — screen space, the corona-heat / Oort-frost slot and the
+// same grammar: a wash plus a vignette whose depth tracks a 0..1 state, with a
+// slow shimmer so the glass reads as water rather than as a coloured filter.
+//
+// This is the pass that actually says YOU ARE UNDER: the in-world veil tints
+// the ship, and this tints the cockpit looking out at it. It also has to carry
+// the LIFE, because everything in world space is either a still wash or a curve
+// at planetary radius. Four layers, all on game.time — a deep wash, a breathing
+// vignette, god-rays raking down from the surface, and suspended particulate
+// drifting through them. The rays and the motes are what sell water; a flat
+// blue filter reads as a colour grade.
+//
+// TWO AXES, NOT ONE. `k` (game.seaK) is how WET the hull is and decides whether
+// this pass exists at all — it is 0.5 for a ship floating half submerged, so
+// bobbing on the surface gets a light, pleasant wash. `d` (game.seaDeep) is how
+// far down the water column it has been driven, and it is what turns that wash
+// into somewhere you should not be: the light dies, the vignette closes, the
+// colour drains toward black, and the water fills with fast-moving silt.
+// Keeping them separate is the whole trick — depth alone would leave a surfaced
+// ship un-tinted, and wetness alone would make the abyss look like a paddle.
+function drawSeaScreen(game) {
+  const k = game.seaK || 0;
+  if (k < 0.02 || !game.ship.alive) return;
+  const t = game.time;
+  const d = Math.min(1, game.seaDeep || 0);
+  const dd = d * d;                       // menace tracks the same curve the crush damage does
+  const shim = 1 + 0.08 * Math.sin(t * 1.7) + 0.05 * Math.sin(t * 3.1);
+  // 1. The water itself — deep, DARKER than what it covers, and draining of
+  // colour as it gets deeper. Sea blue at the surface, near-black at the floor.
+  const wr = Math.round(10 - 7 * dd), wg = Math.round(44 - 34 * dd), wb = Math.round(96 - 66 * dd);
+  ctx.fillStyle = `rgba(${wr}, ${wg}, ${wb}, ${(0.26 + 0.42 * dd) * k * shim})`;
+  ctx.fillRect(0, 0, vw, vh);
+  // 2. Vignette. It BREATHES on a slow clock at the surface and CLOSES IN with
+  // depth — the aperture shrinks toward a narrow tunnel, which is the single
+  // strongest "you are too deep" cue available in screen space.
+  const br = 1 + (0.05 + 0.05 * dd) * Math.sin(t * (0.9 + 1.5 * dd));
+  const vg = ctx.createRadialGradient(vw / 2, vh / 2, vh * (0.48 - 0.16 * k - 0.30 * dd) * br,
+    vw / 2, vh / 2, vh * 0.98);
+  vg.addColorStop(0, 'transparent');
+  vg.addColorStop(0.58, `rgba(6, 32, 78, ${(0.34 + 0.30 * dd) * k})`);
+  vg.addColorStop(1, `rgba(${Math.round(2 - 1 * dd)}, ${Math.round(14 - 11 * dd)}, ${Math.round(44 - 38 * dd)}, ${(0.80 + 0.18 * dd) * k * shim})`);
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, vw, vh);
+  // 3. GOD-RAYS from the surface — wide, tilted, and out of phase with each
+  // other so the pattern never lands on a beat. Additive and few: narrow bright
+  // bands would read as the scanline grammar the solar-storm overlay owns.
+  // They DIE OFF with depth, because the reason the deep is frightening is that
+  // the light does not reach it.
+  const lightK = Math.max(0, 1 - d * 1.5);
+  if (lightK > 0.01) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 5; i++) {
+      const ph = t * (0.11 + i * 0.027) + i * 2.3;
+      const x = (0.5 + 0.46 * Math.sin(ph)) * vw;
+      const tilt = vw * (0.10 + 0.06 * Math.sin(ph * 0.7 + i));
+      const w = vw * (0.035 + 0.020 * Math.sin(ph * 1.3));
+      const a = 0.075 * k * lightK * (0.55 + 0.45 * Math.sin(ph * 1.9 + i));
+      const lg = ctx.createLinearGradient(x - w - tilt, 0, x + w + tilt, vh);
+      lg.addColorStop(0, 'transparent');
+      lg.addColorStop(0.5, `rgba(150, 212, 255, ${a})`);
+      lg.addColorStop(1, 'transparent');
+      ctx.fillStyle = lg;
+      ctx.fillRect(0, 0, vw, vh);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  // 4. SUSPENDED PARTICULATE — the cue that costs least and reads hardest:
+  // water you are looking THROUGH has things floating in it. Deterministic
+  // positions off the index (no rng — the cosmetic streams are private and this
+  // must not touch one), drifting up and wrapping, each on its own sway. With
+  // depth it RISES FASTER and there is MORE of it, so the deep reads as a
+  // current dragging past rather than as still water that merely went dark.
+  const motes = 46 + Math.round(54 * dd);
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < motes; i++) {
+    const sx = ((i * 97.13) % 101) / 101;
+    const sp = 0.4 + ((i * 31.7) % 17) / 17 * 0.8;
+    const y = ((((i * 53.9) % 89) / 89) - t * (0.018 + 0.075 * dd) * sp) % 1;
+    const px = (sx + Math.sin(t * 0.25 * sp + i) * 0.012) * vw;
+    const py = (y < 0 ? y + 1 : y) * vh;
+    const r = 0.8 + ((i * 7) % 5) * 0.5;
+    ctx.fillStyle = `rgba(190, 226, 255, ${(0.20 + 0.14 * dd) * k * (0.35 + 0.65 * Math.sin(t * 0.8 + i) ** 2)})`;
+    ctx.beginPath(); ctx.arc(px, py, r, 0, TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 // Per-archetype moon surface, drawn clipped to the disc and seeded off b.id so
@@ -11400,6 +11743,9 @@ export function render(game) {
   // hold point and the ship should never be lost inside its own effect.
   drawLaunchFx(game);
   drawShip(game);
+  // ...and the sea goes back over it: the one pass that has to land AFTER the
+  // hull, or the ship is on top of the ocean instead of in it.
+  drawSeaVeil(game);
 
   // Surface-scrape feedback: a hot friction glow at the contact point while
   // the hull is grinding (sparks come from physics.js particles)
@@ -11667,6 +12013,11 @@ export function render(game) {
     ctx.fillStyle = ig;
     ctx.fillRect(0, 0, vw, vh);
   }
+
+  // UNDER THE SEA: the whole view goes through water before anything else
+  // environmental lands on it — heat and frost are things happening OUTSIDE
+  // the glass, and they should read through the water, not under it.
+  drawSeaScreen(game);
 
   // CORONA HEAT vignette: the screen edges catch fire and flicker as the
   // exponential ramp climbs — subtle warmth far out, wall of flame up close

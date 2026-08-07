@@ -279,8 +279,22 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kGolem >= 5),
   A('lurker', 'combat', PTS.normal, 'Not A Rock', 'Kill a shoal lurker.',
     (g, s) => s.kLurker >= 1),
-  A('lurker8', 'combat', PTS.hard, 'Shoal Survivor', 'Kill eight shoal lurkers.',
-    (g, s) => s.kLurker >= 8),
+  // THE THRESHOLD LIVES INSIDE ONE BROOD, and it has to. Only a quarter of the
+  // pockets carry lurkers now (CFG.FIELD_HOSTILE_FRAC), so a run's ENTIRE lurker
+  // population is one brood — CFG.FIELD_BROOD, 7. The old bar of eight was set
+  // when four pockets fielded 28 between them; against 7 it is unreachable on
+  // every seed, and padding the brood to reach it would have retuned the
+  // encounter to serve the scoreboard. Five leaves two lurkers of slack for the
+  // ones that die to the rocks rather than to the player.
+  //
+  // THE ID STAYS `lurker8`. It is persisted in saved progress, so renaming it to
+  // match the number would orphan every unlock already earned. The name is
+  // historical; the bar is the predicate.
+  //
+  // Still PTS.hard: five of the seven that exist is a bigger share of the run's
+  // combat than eight of twenty-eight ever was, even though the number fell.
+  A('lurker8', 'combat', PTS.hard, 'Shoal Survivor', 'Kill five shoal lurkers.',
+    (g, s) => s.kLurker >= 5),
   A('fieldClear', 'combat', PTS.tricky, 'Quiet Waters', "Destroy a dense field's whole lurker brood.",
     (g, s) => s.fieldClear >= 1),
   A('fort', 'combat', PTS.hard, 'Liberator', 'Smash every turret on a Bastion fort.',
@@ -359,6 +373,19 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kCrystal >= 1),
   A('killTerran', 'combat', PTS.brutal, 'Ecocide', 'Destroy the living world. It was the only one.',
     (g, s) => s.kTerran >= 1),
+  // A world-ocean answers a hit as WATER — no crater, no scar, just a wave — so
+  // the only read you get on wearing one down is the splash. These two say so:
+  // one for landing a wounding splashdown at all, one for finishing the job
+  // that way. Both count only rock the PLAYER put there (physics gates the bump
+  // on player-throw credit); the belt drops rock in on its own all day.
+  A('seaSplash', 'combat', PTS.normal, 'Making Waves', 'Wound an ocean world with a splashdown.',
+    (g, s) => s.seaSplash >= 1),
+  // HARD, not brutal: Ecocide is priced for a world the game calls the only one
+  // of its kind, and a sea is not that. It is also the one archetype you can
+  // wound WITHOUT reaching its surface now that a splashdown bills it, so it
+  // sits level with the crystal world rather than above it.
+  A('killOcean', 'combat', PTS.hard, 'Drowned', 'Break a world-ocean apart.',
+    (g, s) => s.kOcean >= 1),
 
   // ---- PILOTING ---------------------------------------------------------
   A('speed500', 'flight', PTS.trivial, 'Underway', 'Top 500 speed.',
@@ -494,6 +521,15 @@ export const ACHIEVEMENTS = [
     (g, s) => s.gasOut >= 1),
   A('gasDeep', 'peril', PTS.hard, 'Pressure Test', 'Dive halfway to a gas giant’s core and climb out.',
     (g, s) => s.gasHalf >= 1),
+  // THE SEA DIVE LADDER. Buoyancy parks the hull half submerged, so simply
+  // being in a world-ocean is the RESTING state and can never be the feat —
+  // these all read depth driven against the water, and all pay out only on
+  // surfacing alive (noteDeath clears the running depth), which is the same
+  // claim the gas-dive rows above make.
+  A('seaHalf', 'peril', PTS.tricky, 'Sounding', 'Drive halfway down a world-ocean and surface again.',
+    (g, s) => s.seaHalf >= 1),
+  A('seaBed', 'peril', PTS.hard, 'Benthic', 'Touch the bed of a world-ocean and climb back out.',
+    (g, s) => s.seaBed >= 1),
   A('oort10', 'peril', PTS.tricky, 'Frost Bitten', 'Spend 10 seconds inside the Oort cloud.',
     (g, s) => s.oortT >= 10),
   A('oortEdge', 'peril', PTS.normal, 'Edge of the Map', 'Get the Oort cloud warning.',
@@ -627,6 +663,12 @@ export const ACHIEVEMENTS = [
     (g, s) => s.spouts >= 1),
   A('spout10', 'explore', PTS.tricky, 'Tidewater', 'See ten waterspouts erupt.',
     (g, s) => s.spouts >= 10),
+  // Set down on open sea. Worth a row precisely BECAUSE an ocean is the one
+  // world you can never berth on — the landing gates refuse it outright, so
+  // floating is the closest thing to a landing it will ever give you. Timed,
+  // not instant: skimming through the water on the way past is not resting on it.
+  A('seaFloat', 'explore', PTS.easy, 'All at Sea', 'Come to rest floating on a world-ocean.',
+    (g, s) => s.seaFloatT >= 5),
   A('crystalShard', 'explore', PTS.normal, 'Struck a Chord', 'Ring a shard loose from a crystal world.',
     (g, s) => s.shards >= 1),
   A('crystalShard8', 'explore', PTS.tricky, 'Lapidary', 'Chip eight shards off the crystal worlds.',
@@ -1131,6 +1173,7 @@ export function noteKill(game, b, credit, impactor) {
   else if (b.ptype === 'lava') s.kLava = (s.kLava || 0) + 1;
   else if (b.ptype === 'terran') s.kTerran = (s.kTerran || 0) + 1;
   else if (b.ptype === 'crystal') s.kCrystal = (s.kCrystal || 0) + 1;
+  else if (b.ptype === 'ocean') s.kOcean = (s.kOcean || 0) + 1;
   if (b.type === 'moon') s.kMoon = (s.kMoon || 0) + 1;
   else if (b.type === 'planet') {
     if (b.ptype === 'gas') s.kGas = (s.kGas || 0) + 1;
@@ -1199,6 +1242,12 @@ export function noteDeath(game, cause) {
   else if (/corona|Melted over/i.test(c)) s.dieHeat = (s.dieHeat || 0) + 1;
   else if (/Oort/i.test(c)) s.dieOort = (s.dieOort || 0) + 1;
   s.gasDepthCur = 0;
+  // …and the sea dive with it: crushed on the seabed is not a dive you climbed
+  // out of, which is the whole claim the row makes. The float streak goes too —
+  // a stretch of resting on the water that ended in a death is not five unbroken
+  // seconds afloat.
+  s.seaDepthCur = 0;
+  s.seaFloatT = 0;
   // …and the berth streaks with it: "five unbroken minutes docked" must not
   // survive being blown up, and a repair run that ended in a death is no save.
   s.dockStreak = 0;
@@ -1276,6 +1325,33 @@ export function updateAchievements(game, dt) {
       if (s.gasDepthCur >= 0.5) s.gasHalf = (s.gasHalf || 0) + 1;
       if (s.gasDepthCur >= 0.67) s.gasDeep = (s.gasDeep || 0) + 1;
       s.gasDepthCur = 0;
+    }
+    // SEA DIVE — the gas-dive shape exactly, and for the same reason: only pay
+    // out when the ship SURFACES still alive, so a hull crushed on the seabed
+    // scores nothing (noteDeath clears the running depth). Rides game.seaDeep /
+    // game.shipInSea, which physics already publishes for the render veil, so
+    // the sweep costs two reads and no new instrumentation anywhere.
+    // FLOATING is its own thing and is measured separately: buoyancy parks the
+    // hull half submerged, so "in the sea" is the resting state, not a feat —
+    // the feat is being driven DOWN out of it.
+    if (game.shipInSea) {
+      const sd = game.seaDeep || 0;
+      // AT REST, AND IN ONE STRETCH. The row claims "come to rest floating", so
+      // depth alone is not enough on either count: without the speed gate it
+      // banked five seconds of skimming THROUGH the surface at full tilt, and
+      // as a lifetime total it banked them across a dozen separate passes.
+      // game.seaRel is physics' own speed-through-water, in the sea's frame.
+      if (sd < 0.05 && (game.seaRel || 0) < CFG.OCEAN_REST_SPD) {
+        s.seaFloatT = (s.seaFloatT || 0) + dt;
+      } else s.seaFloatT = 0;
+      if (sd > (s.seaDepthCur || 0)) s.seaDepthCur = sd;
+    } else {
+      s.seaFloatT = 0;
+      if (s.seaDepthCur) {
+        if (s.seaDepthCur >= 0.55) s.seaHalf = (s.seaHalf || 0) + 1;
+        if (s.seaDepthCur >= 0.92) s.seaBed = (s.seaBed || 0) + 1;
+        s.seaDepthCur = 0;
+      }
     }
     if (game.dustCloak) s.dustT = (s.dustT || 0) + dt;
     // ---- DOCKING. All O(1) reads of state main.js and physics already

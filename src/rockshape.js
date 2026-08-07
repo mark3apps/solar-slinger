@@ -139,11 +139,22 @@ function overlapOn(A, B, ax, ay, ox, oy) {
   return Math.min(aMax - bMin, bMax - aMin);
 }
 
+// THE GAP THE REJECT ALREADY MEASURED. When satAxis finds a separating axis it
+// has the projected distance between the hulls in hand, and used to drop it on
+// the floor. Two convex sets are at least as far apart as their separation
+// along any single direction, so that number is a conservative lower bound on
+// the real distance — exactly what a caller needs to prove a pair cannot touch
+// for a while yet. Module-level rather than boxed into a return value: the
+// reject path is the common one (~124 calls a substep in a shoal) and it must
+// not allocate.
+let axisGap = 0;
+
 // The deepest-penetration axis between two convex hulls, or null if they are
-// apart. `ox/oy` is B's origin in A's frame. The returned normal points from A
-// toward B, always — every caller downstream depends on that sign and getting
-// it from "whichever way the loop happened to be facing" is how the old code
-// ended up with a direction that disagreed with its own depth.
+// apart — and on `null`, `axisGap` carries how far apart, along the axis that
+// proved it. `ox/oy` is B's origin in A's frame. The returned normal points
+// from A toward B, always — every caller downstream depends on that sign and
+// getting it from "whichever way the loop happened to be facing" is how the old
+// code ended up with a direction that disagreed with its own depth.
 function satAxis(A, B, ox, oy) {
   let best = Infinity, bx = 0, by = 0, from = 0;
   for (let pass = 0; pass < 2; pass++) {
@@ -156,7 +167,7 @@ function satAxis(A, B, ox, oy) {
       // Outward normal of a CCW edge.
       let ax = ey / L, ay = -ex / L;
       const ov = overlapOn(A, B, ax, ay, ox, oy);
-      if (ov <= 0) return null;                       // separating axis — done
+      if (ov <= 0) { axisGap = -ov; return null; }     // separating axis — done
       if (ov < best) { best = ov; bx = ax; by = ay; from = pass; }
     }
   }
@@ -214,11 +225,22 @@ const MAX_POINTS = 2;
 // corners contributing nothing the first few have not already pinned.
 const MAX_CONTACTS = 4;
 
+// THE SEPARATION FROM THE LAST rockContacts CALL THAT FOUND NOTHING — the
+// smallest gap over every hull pair, and therefore a conservative lower bound
+// on the distance between the two bodies' surfaces. Zero whenever any hull pair
+// was NOT proven apart, which is the honest answer for "no certificate here".
+// Read it immediately after a call that returned an empty list; see
+// physics.js's separation certificates for what it buys.
+let sepGap = 0;
+export function lastSeparation() { return sepGap; }
+
 export function rockContacts(a, b, out) {
   const CA = hullsWorld(a), CB = hullsWorld(b);
   const ox = b.x - a.x, oy = b.y - a.y;
   const list = out || [];
   list.length = 0;
+  // min gap over the hull pairs, and whether any pair failed to separate at all
+  let minGap = Infinity, touched = false;
 
   for (let i = 0; i < CA.hulls.length; i++) {
     const A = CA.hulls[i];
@@ -229,13 +251,24 @@ export function rockContacts(a, b, out) {
       // 12-hull monolith is affordable at all.
       const dx = ox + B.cx - A.cx, dy = oy + B.cy - A.cy;
       const rr = A.far + B.far;
-      if (dx * dx + dy * dy > rr * rr) continue;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > rr * rr) {
+        // A circle reject is a gap too, and often the only one on offer — the
+        // hulls never reached SAT, so this is where their bound comes from.
+        const g = Math.sqrt(d2) - rr;
+        if (g < minGap) minGap = g;
+        continue;
+      }
       const s = satAxis(A, B, ox, oy);
-      if (!s) continue;
+      if (!s) { if (axisGap < minGap) minGap = axisGap; continue; }
+      // These two hulls OVERLAP. Whether or not a manifold survives the clip,
+      // there is no distance to certify for this body pair.
+      touched = true;
       const m = manifold(a, b, A, B, s, ox, oy);
       if (m) list.push(m);
     }
   }
+  sepGap = (touched || minGap === Infinity) ? 0 : minGap;
   if (!list.length) return list;
   list.sort((p, q) => q.depth - p.depth);
   if (list.length > MAX_CONTACTS) list.length = MAX_CONTACTS;

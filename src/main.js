@@ -1382,7 +1382,10 @@ function resetRun(seed, openCard = true) {
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
-  game.shipInSea = false;
+  // ...and the sea state with it: seaBody is a BODY REFERENCE, so a stale one
+  // would pin the water veil to a world that no longer exists.
+  game.shipInSea = false; game.seaBody = null; game.seaK = 0; game.seaDeep = 0;
+  game.seaRel = 0; game.seaWakeT = 0;
   game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
@@ -1620,7 +1623,7 @@ const EVENT_MSGS = [
   { flag: 'atmoShipWarn', tut: 'atmoShip', snd: sfx.sfxAlarm,
     first: ['ATMOSPHERIC ENTRY — the burn deck is searing the hull. Punch through: the air beneath is calm.', 5.5] },
   { flag: 'seaWarn', tut: 'sea', snd: sfx.sfxChime,
-    first: ['OPEN SEA — the water takes your speed. Bedrock lies beneath, but there is nothing here to berth on.', 5.5] },
+    first: ['OPEN SEA — the water takes your speed and holds you near the surface. Ride out the swell: chop grinds the hull, still water does not.', 6] },
   { flag: 'spoutWarn', tut: 'spout', snd: sfx.sfxChime,
     first: ['WATERSPOUT — the world-sea flings brine ice into low orbit. Free shield ammo.', 5.5] },
   { flag: 'duneWarn', tut: 'dune', snd: sfx.sfxChime,

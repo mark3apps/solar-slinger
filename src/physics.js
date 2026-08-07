@@ -1,6 +1,6 @@
 import {
   CFG, PROG, addXp, fieldXp, worldDebris, crustMass, fieldFrac, FIELD_LOBE_MAX, dockDomeR, dockHostOk,
-  burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass,
+  burnCap, burnThrust, ramKeep, ramArc, ramFace, ramTier, dmgMass, seaChop,
   surfWeight, shipBand, bandFade, wellCapAt, launchKick,
 } from './config.js';
 import {
@@ -12,7 +12,7 @@ import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
   surfaceVel, padPos, placeName,
 } from './util.js';
-import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
+import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf, lastSeparation } from './rockshape.js';
 import { bump, best, least, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
@@ -1190,6 +1190,19 @@ export function shatter(game, body, credit = null) {
   }
 }
 
+// AN OCEAN'S ONE WOUND RECORD. Every source that disturbs the world-sea —
+// a strike (damageBody), a rock splashing down, the ship diving or ploughing —
+// stamps the same ring here, in the world's OWN surface-local frame (a - rot),
+// so a wave rides the spin like every other surface feature. One writer means
+// the list cap and the ring shape cannot drift apart between the callers.
+// The cap outlives OCEAN_RIPPLE_T at the wake rate (see CFG.OCEAN_WAKE_EVERY):
+// dropping a ring while it is still drawn is a visible pop.
+function stampSeaHit(game, b, hx, hy, s) {
+  const hits = (b.seaHits ||= []);
+  hits.push({ a: Math.atan2(hy - b.y, hx - b.x) - b.rot, t: game.time, s });
+  if (hits.length > CFG.OCEAN_RING_MAX) hits.shift();
+}
+
 // Chip damage: lose hp, shed some mass as scrap, shrink. hx/hy is the impact
 // position when the caller knows it (fort turret targeting reads it).
 export function damageBody(game, body, dmg, credit = null, hx, hy) {
@@ -1328,10 +1341,7 @@ export function damageBody(game, body, dmg, credit = null, hx, hy) {
   // the gas-giant convention (damage reads as weather) applied to water.
   const isOcean = body.type === 'planet' && body.ptype === 'ocean';
   if (isOcean && hx !== undefined && dmg > 1) {
-    const hits = (body.seaHits ||= []);
-    hits.push({ a: Math.atan2(hy - body.y, hx - body.x) - body.rot, t: game.time,
-      s: Math.min(1, 0.3 + dmg / 90) });
-    if (hits.length > 8) hits.shift();
+    stampSeaHit(game, body, hx, hy, Math.min(1, 0.45 + dmg / 60));
   }
   const canWear = body.type !== 'station' && body.type !== 'nest' && body.ptype !== 'gas' && !isOcean;
   // PUMICE is world-class by SIZE, not mass: mMul 0.45 puts most pumice moons
@@ -2043,6 +2053,87 @@ function shaped(body) {
     || (body.type === 'planet' && body.ptype === 'ocean')
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
+
+// ---------------------------------------------------------------------------
+// SEPARATION CERTIFICATES — conservative advancement for the shaped pair test.
+//
+// 93% of the landmark pairs the sweep hands the narrow phase are APART, and the
+// pair set barely changes: measured in a shoal, 124 convex-hull SAT calls a
+// substep drawn from only 136 distinct pairs over 240 substeps. The same rocks
+// were being proven apart 120 times a second, from scratch.
+//
+// But a SAT reject has already MEASURED something useful — the gap along the
+// axis it separated on. Two convex sets are at least as far apart as their
+// separation along any one direction, so that gap is a conservative lower bound
+// on the real distance, and the pair cannot touch until relative motion has
+// eaten it. Bank it with the pose it was taken at, charge the motion since, and
+// the whole test is skipped while it holds. (Conservative advancement, the same
+// idea PhysX uses to hold resting contacts; Box2D reaches the same end from the
+// other side, by sleeping whole islands.)
+//
+// THE MOTION TERM IS RELATIVE, NOT ABSOLUTE, and that is the difference between
+// this working and not. A pocket's rock is carried by a rail: two neighbours
+// cross the whole sky together while the distance between them never changes.
+// Charging each body's own travel would burn every certificate on its first
+// substep for no reason. So the stored quantity is the OFFSET between the two
+// bodies, and only what changes that offset is charged.
+//
+// Rotation is still charged PER BODY, because a spin sweeps a corner through
+// its own reach even when the centres hold station, and there is no cheap way
+// to see that a co-rotating pair is rigid. That term is what actually expires
+// these, which is the honest trade: the gate is conservative everywhere it is
+// uncertain.
+//
+// WHY THIS CANNOT CHANGE THE SIM. A skipped pair is one rockContacts would have
+// returned empty for, and an empty list makes collideBodies return at exactly
+// this point. Same outcome, less work — so the stability suite must diff to
+// zero, and that is the test that this is right.
+//
+// STORAGE is eight fixed slots on the LOWER-id body of the pair, linear
+// scanned. A shoal rock has a median of 2.2 shaped partners a substep (p90 6,
+// max 10), so eight holds the working set; an overflow just loses a certificate
+// and pays for SAT, which is what it did before. No Map, no per-pair
+// allocation, no eviction bookkeeping — the lookup is a scan of eight ints
+// against a SAT call.
+const SEP_SLOTS = 8;
+const SEP_W = 7;      // gap, offX, offY, loRot, hiRot, loReach, hiReach
+
+// Is this pair PROVABLY still apart? `ox/oy` is hi's offset from lo.
+function sepHolds(lo, hi, ox, oy, loReach, hiReach) {
+  const s = lo._sep;
+  if (!s) return false;
+  const ids = s.id;
+  for (let k = 0; k < SEP_SLOTS; k++) {
+    if (ids[k] !== hi.id) continue;
+    const o = k * SEP_W, v = s.v;
+    // Reach folds radius AND shape together (rockReach = radius x shape.reach),
+    // so one compare invalidates a chipped rock and a fractured one alike.
+    if (v[o + 5] !== loReach || v[o + 6] !== hiReach) { ids[k] = -1; return false; }
+    const mx = ox - v[o + 1], my = oy - v[o + 2];
+    const spent = Math.sqrt(mx * mx + my * my)
+      + Math.abs(lo.rot - v[o + 3]) * loReach
+      + Math.abs(hi.rot - v[o + 4]) * hiReach;
+    if (spent < v[o]) return true;
+    ids[k] = -1;   // spent — this pair pays for a fresh test, and re-banks it
+    return false;
+  }
+  return false;
+}
+
+function sepKeep(lo, hi, ox, oy, loReach, hiReach, gap) {
+  if (!(gap > 0)) return;   // no certificate on offer (NaN-safe)
+  let s = lo._sep;
+  if (!s) s = lo._sep = { id: new Int32Array(SEP_SLOTS).fill(-1), v: new Float64Array(SEP_SLOTS * SEP_W), next: 0 };
+  const ids = s.id;
+  let k = -1;
+  for (let i = 0; i < SEP_SLOTS; i++) if (ids[i] === hi.id || ids[i] === -1) { k = i; break; }
+  if (k < 0) { k = s.next; s.next = (s.next + 1) % SEP_SLOTS; }   // full: round-robin
+  ids[k] = hi.id;
+  const o = k * SEP_W, v = s.v;
+  v[o] = gap; v[o + 1] = ox; v[o + 2] = oy;
+  v[o + 3] = lo.rot; v[o + 4] = hi.rot;
+  v[o + 5] = loReach; v[o + 6] = hiReach;
+}
 // A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
 // gates a cratered world on `nearShip` — an off-view wound is not worth a
 // narrow phase to the body it gates — but `surfRadius` honours scars whether
@@ -2275,8 +2366,15 @@ function collideBodies(game, a, b) {
       // caller can stop allocating a list it drops in the same breath. Safe to
       // reuse — `sat` below is one of the manifold OBJECTS, which are still
       // built per call, so the next fill cannot reach back and rewrite it.
+      // THE CERTIFICATE GATE (see sepHolds above). Canonical order so a pair is
+      // banked once, on the lower id, whichever way round the sweep hands it to
+      // us — the scan's order depends on x position and flips as rock drifts.
+      const lo = a.id < b.id ? a : b, hi = lo === a ? b : a;
+      const ox = hi.x - lo.x, oy = hi.y - lo.y;
+      const loReach = surfReach(lo), hiReach = surfReach(hi);
+      if (sepHolds(lo, hi, ox, oy, loReach, hiReach)) return;
       const cs = rockContacts(a, b, _satScratch);
-      if (!cs.length) return;
+      if (!cs.length) { sepKeep(lo, hi, ox, oy, loReach, hiReach, lastSeparation()); return; }
       sat = cs[0];
       probedPen = sat.depth;
       bigProbe = true;
@@ -3353,7 +3451,14 @@ function collideShipBody(game, s, b, dt) {
     // BEGINS — a frame later the ground has already dragged the hull toward
     // its own motion, so a hard arrival would score as a feather. `least`
     // keeps the best of the run, so this is the gentlest touchdown flown.
-    if (!landing.touch) least(game, 'softLand', Math.round(Math.hypot(s.vx - sv.vx, s.vy - sv.vy)));
+    // OPEN SEA IS EXCLUDED on the SAME compound the berth below uses, and for
+    // the same reason it is: a hull settling onto bedrock under a mile of water
+    // is not a landing, it is a sinking. The sea's own drag brings the ship
+    // down at a crawl, so counting it would hand out the gentlest touchdown in
+    // the game for doing nothing — the feat is FLYING it down.
+    if (!landing.touch && !(b.type === 'planet' && b.ptype === 'ocean')) {
+      least(game, 'softLand', Math.round(Math.hypot(s.vx - sv.vx, s.vy - sv.vy)));
+    }
     const f = 1 - Math.exp(-CFG.SURF_FRICTION * dt);
     s.vx += (sv.vx - s.vx) * f;
     s.vy += (sv.vy - s.vy) * f;
@@ -4630,6 +4735,11 @@ function collideAlienBody(game, al, b, dt) {
 // ---------- main step ----------
 
 const _sweep = [];       // collision broad-phase scratch (reused every substep)
+// Single-body attractor list for the ocean buoyancy's weight probe. gravityAt
+// takes a LIST, and building `[b]` inline allocated one array per substep for
+// every frame the hull was in a sea — the exact per-substep garbage every other
+// scratch on this page exists to avoid. Rebound in place at the call site.
+const _seaAtt = [null];
 // The sweep's SoA side-table (see THE SWEEP SIDE-TABLE in step()). Float64, not
 // Float32: world coordinates run to ~1e5 and the scan's compares must agree
 // with the f64 arithmetic collideBodies does, or a pair could be pruned here
@@ -6099,7 +6209,7 @@ export function step(game, dt) {
         }
       }
       const wasInSea = game.shipInSea;
-      let inSeaNow = false;
+      let inSeaNow = false, seaBodyNow = null, seaKNow = 0, seaDeepNow = 0, seaRelNow = 0;
       for (const b of attractors) {
         if (b.ptype === 'lava') {
           const lz = b.radius * CFG.LAVA_HEAT_ZONE;
@@ -6131,30 +6241,144 @@ export function step(game, dt) {
           // hull ploughs). The seabed at OCEAN_CORE is the collider; docking
           // is refused at the landing gates, so the sea takes your speed and
           // gives you nothing to berth on.
+          // The sea begins where the HULL touches it, not where the ship's
+          // centre crosses the waterline: a floating ship sits with its centre
+          // AT the surface, so a centre test would have the whole thing switch
+          // on and off underneath it.
           const dl = Math.hypot(s.x - b.x, s.y - b.y);
-          if (dl < b.radius) {
+          if (dl < b.radius + s.radius) {
             inSeaNow = true;
+            seaBodyNow = b;
             const sv = surfaceVel(b, s.x, s.y);
+            const rel = Math.hypot(s.vx - sv.vx, s.vy - sv.vy);
             if (!wasInSea) {
-              const rel = Math.hypot(s.vx - sv.vx, s.vy - sv.vy);
               if (rel > 60) {
-                const hits = (b.seaHits ||= []);
-                hits.push({ a: Math.atan2(s.y - b.y, s.x - b.x) - b.rot,
-                  t: game.time, s: Math.min(1, 0.3 + rel / 700) });
-                if (hits.length > 8) hits.shift();
-                addParticles(game, s.x, s.y, sv.vx, sv.vy, 10, '#cfe8ff', 130, 0.7, 2.5);
+                stampSeaHit(game, b, s.x, s.y, Math.min(1, 0.45 + rel / 420));
+                addParticles(game, s.x, s.y, sv.vx, sv.vy, 14, '#cfe8ff', 150, 0.7, 2.8);
               }
+              game.seaWakeT = 0;
               if (!game.tut.sea) game.seaWarn = true;
             }
-            const core = b.radius * CFG.OCEAN_CORE;
-            const depth = Math.min(1, (b.radius - dl) / (b.radius - core));
-            const k = 1 - Math.exp(-CFG.OCEAN_DRAG * depth * dt / (1 + s.mass / CFG.OCEAN_DRAG_MASS));
+            const deep = b.radius - dl;    // + = centre under the waterline
+            // WETTED FRACTION — how much of the hull is actually in the water:
+            // 0 just touching, 0.5 HALF SUBMERGED (centre exactly at the
+            // waterline), 1 fully under. This is the honest quantity for
+            // everything the sea does to a floating ship, so drag and the
+            // render veil both ride it instead of a depth measured against the
+            // whole water column, which only reached 1 down at the bedrock.
+            const sub = Math.max(0, Math.min(1, (deep + s.radius) / (2 * s.radius)));
+            // DIVE — how far down the water COLUMN the hull is, 0 at the
+            // waterline and 1 at the seabed. The other axis entirely: `sub` is
+            // how WET you are (and saturates one hull-radius under), `dive` is
+            // how DEEP, and it is what the pressure lift, the crush damage and
+            // the overlay's menace all ride.
+            const dive = Math.max(0, Math.min(1, deep / (b.radius - b.radius * CFG.OCEAN_CORE)));
+            const k = 1 - Math.exp(-CFG.OCEAN_SHIP_DRAG * sub * dt / (1 + s.mass / CFG.OCEAN_SHIP_MASS));
             s.vx += (sv.vx - s.vx) * k;
             s.vy += (sv.vy - s.vy) * k;
+            // BUOYANCY (see CFG.OCEAN_FLOAT): past the rest depth the water
+            // pushes back, driving the RADIAL velocity — measured in the sea's
+            // own frame, like the drag above — outward. The ship SURFACES and
+            // FLOATS (user design call): the rest depth is 0, i.e. the hull's
+            // centre at the waterline, so a dive is something you come back up
+            // from rather than a place you sink to. Velocity-space exponential
+            // approach, the same idiom as SURF_FRICTION, and like it the world
+            // is paid no reaction. Only ever pushes OUT: a rising ship is left
+            // alone, so this can never become a launch assist.
+            //
+            // The ramp is measured in HULL radii (OCEAN_LIFT_BAND), not against
+            // the water column. Against the column the lift was still near zero
+            // a few units under, so gravity held the hull ~6 units below the
+            // depth it was aimed at and every attempt to tune the float depth
+            // came out short of what was asked for.
+            // BUOYANCY IS A FORCE, AND IT IS QUOTED IN LOCAL WEIGHT.
+            //
+            // It used to be a velocity-space clamp (drive the radial velocity
+            // out at OCEAN_LIFT), which floats a hull beautifully and is
+            // completely UNBEATABLE: a clamp at rate OCEAN_BUOY is worth
+            // BUOY x (want - rv) of acceleration, which at any useful float
+            // stiffness dwarfs ship thrust. With a 3x column to dive into, that
+            // made the deep not merely hard to reach but unreachable — a 1800
+            // u/s entry got 10% down. A force can be pushed through; a clamp
+            // cannot, and "harder as you go deeper" has to mean harder, not no.
+            //
+            // The strength is a MULTIPLE OF WHAT THIS WORLD PULLS ON THE HULL,
+            // taken from gravityAt itself with the ship's own weighting rather
+            // than re-derived — LONG ARMS and SURFACE WEIGHT both apply inside
+            // a planet, and a buoyancy quoted in raw u/s² would mean something
+            // different on every world and at every tier. One extra single-body
+            // gravity call, only while the hull is in a sea.
+            const ux = (s.x - b.x) / (dl || 1), uy = (s.y - b.y) / (dl || 1);
+            const rest = CFG.OCEAN_FLOAT * s.radius;
+            if (deep > rest) {
+              _seaAtt[0] = b;   // scratch list — never allocate one per substep
+              const gw = gravityAt(_seaAtt, s.x, s.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
+              const gRad = -(gw.ax * ux + gw.ay * uy);      // + = this world pulling the hull down
+              if (gRad > 0) {
+                // TWO RAMPS, MULTIPLIED. `near` is the gentle one, measured in
+                // hull radii, that decides where the hull FLOATS — equilibrium
+                // sits where near x OCEAN_BUOY_G = 1, which is why the rest
+                // depth is set slightly ABOVE the waterline. `press` is the one
+                // that makes the deep hard to reach: quadratic in dive, so the
+                // top of the column is nearly free and the bottom is a wall you
+                // have to drive through.
+                const near = Math.min(1, (deep - rest) / Math.max(1, s.radius * CFG.OCEAN_LIFT_BAND));
+                const acc = gRad * CFG.OCEAN_BUOY_G * near * (1 + CFG.OCEAN_PRESS * dive * dive);
+                s.vx += ux * acc * dt; s.vy += uy * acc * dt;
+              }
+            }
+            // Render fades the water veil and the screen overlay in on this, so
+            // a floating ship gets HALF the water treatment (half of it is in
+            // the air) and a dive closes it over completely.
+            seaKNow = sub;
+            seaDeepNow = dive;
+            // Speed through the water in the sea's OWN frame. Published because
+            // "floating at rest" is a thing the achievement sweep has to be able
+            // to ask about, and rel is already in hand here — recomputing it
+            // there would mean a second surfaceVel call per frame.
+            seaRelNow = rel;
+            // PRESSURE TAKES SHIELD THEN HULL (user design call: "as we get
+            // deeper, we take more damage and at the surface, we don't take
+            // damage"). Quadratic in dive, so the waterline is free and the
+            // seabed is the full rate. CHOP AMPLIFIES it up to 2x —
+            // config.seaChop reads the same seaPhase render draws the waves
+            // from, so rough water visibly costs more than a flat calm at the
+            // same depth, and your own wake counts. Through damageShip like
+            // every environmental source, so the shield absorbs first and the
+            // mode's dmgMul applies.
+            const press = dive * dive;
+            if (press > 0.004 && s.invuln <= 0) {
+              const chop = Math.min(1, seaChop(b, game.time, s.x, s.y));
+              damageShip(game, press * (1 + chop) * CFG.OCEAN_DPS * dt,
+                `Crushed in the deep of ${b.name || 'an ocean world'}.`);
+              if (!game.tut.sea) game.seaWarn = true;
+            }
+            // WAKE: a hull MOVING through the sea keeps throwing waves, not
+            // just the one entry splash (user call — "as the ship moves in the
+            // planet, it should generate more waves"). Throttled by
+            // CFG.OCEAN_WAKE_EVERY because the ring list is capped, and gated
+            // on speed through the water in the sea's OWN frame — a hull that
+            // has settled and is riding the current makes no wake at all. The
+            // gate is LOW (45, not the 110 it started at): the ship's drag is
+            // strong enough that it drops under a high gate within a second,
+            // which made ploughing throw two rings and then go glassy.
+            game.seaWakeT -= dt;
+            if (rel > 45 && game.seaWakeT <= 0) {
+              game.seaWakeT = CFG.OCEAN_WAKE_EVERY;
+              stampSeaHit(game, b, s.x, s.y, Math.min(1, 0.28 + rel / 900));
+              addParticles(game, s.x, s.y, sv.vx, sv.vy, 4, '#bfe0ff', 90, 0.6, 2);
+            }
           }
         }
       }
       game.shipInSea = inSeaNow;
+      // Published for render.drawSeaVeil — WHICH sea the hull is in, and how
+      // deep. The sim never touches the DOM or the canvas; it hands the draw
+      // layer the two numbers and lets it decide what water looks like.
+      game.seaBody = seaBodyNow;
+      game.seaK = seaKNow;
+      game.seaDeep = seaDeepNow;
+      game.seaRel = seaRelNow;
     }
   }
 
@@ -6810,6 +7034,7 @@ export function step(game, dt) {
   {
     const oceans = reg.oceans.length ? reg.oceans : null;
     if (oceans) {
+      let splashes = null;   // drained after the walk — see the note at the push
       for (const b of live) {
         if (!b.alive || b === s || b.onRails || b.heldBy || b.parryFrozen ||
             b.sinkT > 0 || b.type === 'planet' || b.type === 'star') {
@@ -6834,10 +7059,46 @@ export function step(game, dt) {
             // drifting over the waterline at walking pace does not.
             const rel = Math.hypot(b.vx - sv.vx, b.vy - sv.vy);
             if (rel > 60) {
-              const hits = (p.seaHits ||= []);
-              hits.push({ a: Math.atan2(dy, dx) - p.rot, t: game.time,
-                s: Math.min(1, 0.22 + b.mass / 6000 + rel / 900) });
-              if (hits.length > 8) hits.shift();
+              // THE SPLASH ITSELF WOUNDS THE WORLD (see CFG.OCEAN_IMPACT_MUL).
+              // The sea used to bill only at the seabed, through the ordinary
+              // contact pass — so with a 0.42r column, a rock hurled into a
+              // world-ocean stopped in the water and the planet shrugged.
+              // Modelled on the gas-giant entry wound, and for its reason:
+              // water is not rigid, so the impactor deposits its energy INTO
+              // the body rather than chipping a surface. Credit is read here,
+              // while the thrown state is still live, exactly as the gas path
+              // does — collisionCredit keys off thrownBy/thrownTimer, and a
+              // kill read as ambient pays no XP and lands no achievement.
+              const thrown = b.thrownTimer > 0;
+              const eff = Math.max(0, rel - (thrown ? CFG.DMG_THRESH_THROWN : CFG.DMG_THRESH));
+              let dmg = 0;
+              if (eff > 0) {
+                const dom = Math.pow(b.mass / (b.mass + p.mass), CFG.OCEAN_DOM_EXP);
+                dmg = Math.min(p.maxHp * CFG.OCEAN_HIT_CAP,
+                  CFG.DMG_BODY * eff * eff * dmgMass(b.mass) *
+                  (thrown ? CFG.DMG_THROWN_MULT : 1) * CFG.OCEAN_IMPACT_MUL * 2 * dom);
+              }
+              if (dmg > 1) {
+                // DEFERRED, NOT APPLIED HERE — this is the one thing that must
+                // not happen inline. `live` is game.bodies (or its awake view),
+                // damageBody SPAWNS chunks into it, and a for..of over an array
+                // that grows keeps walking: every fresh chunk was already in the
+                // sea, so it splashed, wounded the world, calved more chunks and
+                // the substep never terminated. Hard hang, not a slowdown.
+                // damageBody stamps the ring itself for an ocean, so this must
+                // NOT also stamp — two rings born at one point in one frame
+                // draw as a single double-bright crest.
+                (splashes ||= []).push({ p, b, dmg, x: b.x, y: b.y,
+                  // Credit is read NOW, while the thrown state is still live:
+                  // collisionCredit keys off thrownBy/thrownTimer, and by the
+                  // time the queue drains the water may have damped the rock
+                  // out of its thrown window. Ambient credit pays no XP.
+                  cred: collisionCredit(p, b) });
+              } else {
+                // Too light to wound, but an arrival still makes a wave.
+                stampSeaHit(game, p, b.x, b.y,
+                  Math.min(1, 0.35 + b.mass / 4000 + rel / 600));
+              }
               addParticles(game, b.x, b.y, sv.vx, sv.vy,
                 Math.min(14, 4 + Math.round(b.mass / 400)), '#cfe8ff', 140, 0.8, 2.5);
             }
@@ -6850,6 +7111,22 @@ export function step(game, dt) {
           break;
         }
         b.inSea = inSea;
+      }
+      // THE SPLASH WOUNDS, DRAINED AFTER THE WALK. Every damageBody here can
+      // calve chunks into the very list the loop above iterates; queueing is
+      // what keeps one splash from seeding an endless cascade inside a single
+      // substep. Bodies can die between queue and drain (a world can shatter
+      // under an earlier entry in the queue), so both ends are re-checked.
+      if (splashes) {
+        for (const sp of splashes) {
+          if (!sp.p.alive || !sp.b.alive) continue;
+          sp.p.hitBy = sp.b;            // ACHIEVEMENTS: what landed the blow
+          // Counted only when the PLAYER put it there — the belt drops rock
+          // into a world-ocean all day on its own, exactly the reasoning the
+          // gas-giant feeding rows use.
+          if (sp.cred === 'player-throw') bump(game, 'seaSplash');
+          damageBody(game, sp.p, sp.dmg, sp.cred, sp.x, sp.y);
+        }
       }
     }
   }

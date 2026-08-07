@@ -299,7 +299,16 @@ rock collides normally again.
 
 Moon families deliberately reach past Hill stability (`world.moonZone`, `maxR = hill *
 CFG.MOON_ZONE_MUL`) so systems stay wide, which means **neighbouring planets' families overlap
-radially** — 14 of 16 adjacent pairs, the worst by more than 20,000 units. Adjacent lanes run at
+radially** — 14 of 16 adjacent pairs, the worst by more than 20,000 units.
+
+> **2026-08:** that overlap is now BOUNDED, not merely tolerated. `moonZone` takes a third clamp —
+> `planet.moonRoom`, the family's share of the gap to its nearest neighbouring lane
+> (`CFG.MOON_LANE_SHARE`) — and `buildLayout` opens each span until both families fit inside it.
+> Measured over 40 seeds: overlapping adjacent pairs 13 → 1 per seed, worst overlap 40,639 → 2,010,
+> and moons whose heliocentric annulus covers a foreign planet's lane 90% → 0% (the residue is
+> co-orbital pairs, which share a lane by design and can never conjunct). The pass-through below
+> STAYS — it is what makes the remaining touches safe, and it covers the co-orbital and
+> installation cases the geometry cannot separate. Adjacent lanes run at
 different angular speeds and therefore always reach conjunction, so those touches are a normal
 recurring event. They were silently lethal: at closing 25–240 an impact does no damage and logs
 nothing, but the `closing > 25` derail still fired, and a moon knocked out of its exact orbit falls
