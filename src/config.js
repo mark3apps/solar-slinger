@@ -2548,10 +2548,138 @@ export const CFG = {
   // NO BERTH ON OPEN SEA: the landing gates in collideShipBody skip ocean
   // worlds outright — there is bedrock to rest on beneath the water, but
   // nothing to build a dock on.
-  OCEAN_CORE: 0.86,
+  // 0.58, not 0.86: a 3x DEEPER SEA (user design call). The column goes 0.14r ->
+  // 0.42r, ~220 units on the world-sea, which is what gives the dive somewhere
+  // to go now that buoyancy holds the hull at the surface by default. This is
+  // the COLLIDER, so it moves for rock, aliens and both predictPaths mirrors
+  // together — they all read CFG.OCEAN_CORE, which is why they cannot drift.
+  OCEAN_CORE: 0.58,
   OCEAN_DRAG: 2.6,
   OCEAN_DRAG_MASS: 1500,
-  OCEAN_RIPPLE_T: 2.6,
+  // THE HULL FLOATS, IT DOES NOT PLUNGE (user design call). The seabed is a
+  // COLLIDER, not the depth a ship is meant to reach: at OCEAN_CORE the water
+  // column is 0.14r — ~77u on the world-sea — and a tier-0 hull (radius 4)
+  // used to sink all 77 of them, i.e. 19 hull-radii under, which is a dive to
+  // the bedrock every time. BUOYANCY caps that: past a rest depth the water
+  // drives the ship's RADIAL velocity (measured in the sea's own frame, like
+  // every other ocean term) outward. It is a SOFT ceiling on
+  // purpose — a hard floor for the ship would be a second surface to disagree
+  // with the collider, and nothing in this sim is a wall. THE HULL NO LONGER
+  // REACHES THE SEABED at all; the seabed is still the collider for rock, for
+  // aliens and for both predictPaths mirrors, so nothing else moved.
+  // Ship-only, and it pays the world no reaction — invariant 4 makes a planet
+  // immovable against the hull anyway, and a radial impulse on a world is a
+  // secular pump. Not mirrored in predictPaths: the ship's water terms (this
+  // and OCEAN_SHIP_DRAG) never were — the forecast ends at the seabed, and the
+  // drawn sea is where it visibly enters the water.
+  // THE SHIP FLOATS HALF SUBMERGED (user design call). Rest depth in HULL
+  // RADII, and 0 means the hull's centre sits exactly ON the waterline — half
+  // in the water, half in the air, like anything else that floats. A dive is
+  // now something you come back UP from: the ladder of "make it shallower"
+  // calls ran 29 units under -> 16 -> 7 -> the surface.
+  //   OCEAN_LIFT_BAND — how far past the rest depth, again in HULL RADII, the
+  //     lift takes to reach full. Small, because this band is what actually
+  //     sets where the hull comes to rest: buoyancy balances gravity partway
+  //     up the ramp, so a wide band parks the ship well below what it aims at.
+  // SLIGHTLY ABOVE THE WATERLINE, on purpose. Buoyancy is a force ramping up
+  // from this depth, so the hull comes to rest partway up that ramp — where
+  // near x OCEAN_BUOY_G = 1 — never at the rest depth itself. Aiming the ramp
+  // half a hull-radius into the AIR is what lands the equilibrium on the
+  // waterline, i.e. half submerged.
+  OCEAN_FLOAT: -0.5,
+  OCEAN_LIFT_BAND: 0.8,
+  // How hard the water pushes back, and how fast. Together with
+  // OCEAN_LIFT_BAND these decide where the hull actually comes to rest —
+  // buoyancy balances gravity partway up the ramp, so the settle point is
+  // always a little under what OCEAN_FLOAT names.
+  // How hard the water pushes back, AS A MULTIPLE OF WHAT THE WORLD PULLS on
+  // the hull at that point (physics reads the ship-weighted pull out of
+  // gravityAt itself, so this means the same thing on every world and at every
+  // tier). Just over 1 at the float point — enough to hold the hull up and no
+  // more, so it is a float and not the trampoline an early velocity-clamp
+  // version was, and so thrust can push you under without a fight.
+  OCEAN_BUOY_G: 1.9,
+  // ...and THE DEEP PUSHES BACK HARDER (user design call — "it should get
+  // harder to reach as we get deeper"). Lift is multiplied by
+  // 1 + OCEAN_PRESS x dive², dive being 0 at the waterline and 1 at the seabed.
+  // Quadratic, so the top of the column is nearly free and the bottom is a wall
+  // — a linear ramp made the whole descent uniformly sticky instead of getting
+  // worse. Sized so a hull under full thrust can WORK ITS WAY DOWN WITHOUT A
+  // CHORE: at 0.8 reaching the floor took ~35s of held thrust, which is a
+  // place you can go in principle and never actually visit (user call — "it's
+  // a bit too difficult to get to the bottom"). The deep still fights back,
+  // it just stops being a stalemate.
+  OCEAN_PRESS: 0.28,
+  // Water bites a VESSEL harder than it bites a rock, and the mass reference is
+  // the ship ladder's own (SHIP_MASS runs 10 -> 11,200), so a Titan ploughs a
+  // little further than a scout instead of ignoring the sea entirely — at
+  // OCEAN_DRAG_MASS 1500 the top tier came out 8.5x less damped than tier 0.
+  OCEAN_SHIP_DRAG: 6.0,
+  OCEAN_SHIP_MASS: 30000,
+  // THE WAVES ARE THE WHOLE DAMAGE READ, so they are drawn BIG (user design
+  // call): an ocean never craters, and a thin ring on a 551-unit world read as
+  // a scratch rather than a sea answering a strike. Wide fronts, a fat stroke,
+  // and a SLOW crossing — a swell on a world-sized sea rolls, it does not ping.
+  // The ring's expansion rate is (reach ramp / RIPPLE_T), so this constant IS
+  // the wave speed: 28s against the original 3.6 is two user calls compounded
+  // ("about 25%", then "50% of that"). A swell on a world-sized sea takes the
+  // better part of half a minute to cross the face, which is the point.
+  OCEAN_RIPPLE_T: 28,
+  // ...and the crest DISPLACES THE DRAWN LIMB as it passes (see
+  // render.buildSeaWaves) — a wave that only painted inside the silhouette
+  // left the world a perfect circle with rings on it. Fraction of the radius;
+  // small on purpose, because the limb is the world's own read at any zoom.
+  OCEAN_WAVE_AMP: 0.024,
+  // A hull ploughing the sea keeps throwing wake, not just one entry splash.
+  // The interval x the ring cap (OCEAN_RING_MAX) has to EXCEED OCEAN_RIPPLE_T,
+  // or the oldest wave is dropped from the list while it is still on screen and
+  // pops — at a 14s life that is what sets the cap, not the draw cost.
+  // 1.2s, not 0.45: at a 28s life a fast interval stacked two dozen overlapping
+  // ring sets on the face at once and the sea read as pulsing static rather
+  // than as a few big swells (user call — "too many wave pulses"). Fewer, and
+  // each one lasts long enough to matter.
+  OCEAN_WAKE_EVERY: 1.2,
+  OCEAN_RING_MAX: 24,
+  // What "at rest on the water" means, in the sea's own frame. Only the
+  // achievement sweep reads it — floating is not a mechanic that needs a
+  // threshold, but "come to rest floating" is a CLAIM, and without one the row
+  // banked five seconds of skimming through the surface at speed. Under the
+  // wake gate (45), so anything still enough to earn it is also too still to
+  // be throwing wake.
+  OCEAN_REST_SPD: 35,
+  // THE DEEP CRUSHES YOU; THE SURFACE DOES NOT (user design call — "as we get
+  // deeper, we take more damage and at the surface, we don't take damage").
+  // Pressure is the driver and it is QUADRATIC in dive, so it is zero at the
+  // waterline, still gentle through the first half of the column, and this full
+  // rate only at the seabed — where it sits just under the gas tops' 9. Flat
+  // and never hull-scaled, the environmental convention.
+  //
+  // CHOP is now an AMPLIFIER on top (x1 calm, up to x2 under a heavy swell)
+  // rather than the gate it briefly was: an earlier call made damage require
+  // chaotic water, and this one supersedes it at the surface, where nothing
+  // hurts you now whatever the sea is doing. Chop still means what it meant —
+  // config.seaChop reads the same seaPhase the waves are DRAWN from, so rough
+  // water visibly costs more than a flat calm at the same depth, and your own
+  // wake counts as chop.
+  OCEAN_DPS: 8,
+  // A SPLASH IS A WOUND (user design call — "when we throw rocks at it, it
+  // should damage it even if the rocks don't get to the bottom"). The sea used
+  // to take damage ONLY at the seabed, through the ordinary contact pass, so a
+  // rock hurled into a world-ocean stopped in the water and the planet shrugged
+  // — and with the column now 0.42r, almost nothing thrown ever reached the
+  // floor. The splashdown itself now bills the world.
+  //
+  // Same shape as the GAS GIANT entry wound, for the same reason: water is not
+  // RIGID, so an impactor deposits its energy INTO the body instead of chipping
+  // a surface. Ordinary DMG_BODY x eff² x dmgMass terms (so a splash stays in
+  // ratio with every other impact in the game), mass dominance SOFTENED by
+  // OCEAN_DOM_EXP, and the whole thing capped per hit because the speed term is
+  // quadratic and a late-game sling would otherwise end a world in two throws.
+  // Pitched under the gas giant's (2.0 / 0.18): feeding a giant is a mechanic
+  // the game wants, drowning a world is just something you can do.
+  OCEAN_IMPACT_MUL: 1.2,
+  OCEAN_DOM_EXP: 0.65,
+  OCEAN_HIT_CAP: 0.12,
 };
 
 // THE POCKET OUTLINE. A pocket sampled straight from the FIELD_LEN x
@@ -2724,6 +2852,62 @@ export function stormSpent(wave) { return wave.r > CFG.WORLD_R * wave.reach; }
 // it (shrunk, the safe direction — see there). The two drifting apart is a pilot
 // sitting in visible shadow taking damage, or worse, the reverse.
 export function shelterR(b) { return b.radius * CFG.STORM_SHADOW + CFG.STORM_SHADOW_PAD; }
+
+// A SEA WAVE'S STATE AT AGE u: how far its crest has travelled from its own
+// impact point, and its SIGNED strength. It lives here, next to shelterR and
+// dockDomeR, for exactly their reason — it has THREE consumers that must never
+// disagree: render's limb displacement, render's drawn rings, and physics'
+// chop damage. What bites the hull has to be the same water the player can see
+// rolling over it, and two expressions of a wave is the mirror-drift trap.
+//
+// The life runs in two acts, which is what an impact on water actually does:
+//   1. THE CAVITY (first SEA_DIP of the life). The strike punches the surface
+//      IN — the ring stays at the impact point and the strength is NEGATIVE,
+//      running 0 -> -1 -> 0, so the limb dents where it was hit and recovers.
+//      The reach ramp does not begin until this is over: a ring already 130
+//      units wide is not a splash cavity.
+//   2. THE CREST. The rebound launches outward, ATTACKING from zero before it
+//      decays. Three separate pops were fixed here and all three come back the
+//      moment this is simplified — a reach ramp opening at 0.30R (a strike's
+//      first drawn frame already a 157-unit ring), an amplitude at maximum on
+//      frame one (full height at birth even once the ring started small), and
+//      ring alpha taken from raw age rather than from this envelope.
+// Total reach across the life is redistributed by all this, never extended.
+export const SEA_DIP = 0.05;
+export function seaPhase(R, u, s) {
+  const scale = 0.55 + 0.45 * s;
+  if (u < SEA_DIP) {
+    return { reach: R * 0.01 * scale, env: -Math.sin(Math.PI * u / SEA_DIP) };
+  }
+  const v = (u - SEA_DIP) / (1 - SEA_DIP);
+  return {
+    reach: R * (0.01 + 2.59 * v) * scale,
+    env: Math.pow(1 - v, 1.6) * Math.min(1, v / 0.10),
+  };
+}
+
+// How much live crest is passing over a point on this sea, 0..1-ish. THE ONE
+// definition of "chaotic water", read by physics for the hull cost — summed off
+// the same seaPhase the waves are drawn from, and with the same gaussian
+// half-width the limb displacement uses, so the water that hurts is exactly the
+// water you can see. Calm sea returns 0 and costs nothing.
+export function seaChop(b, time, x, y) {
+  const hits = b.seaHits;
+  if (!hits || !hits.length) return 0;
+  const R = b.radius, w = R * 0.11;
+  const at = Math.atan2(y - b.y, x - b.x) - b.rot;
+  let chop = 0;
+  for (const h of hits) {
+    const age = time - h.t;
+    if (age < 0 || age >= CFG.OCEAN_RIPPLE_T) continue;
+    const ph = seaPhase(R, age / CFG.OCEAN_RIPPLE_T, h.s);
+    let d = at - h.a;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    const q = (Math.abs(d) * R - ph.reach) / w;
+    if (q > -3 && q < 3) chop += Math.abs(ph.env) * h.s * Math.exp(-q * q);
+  }
+  return chop;
+}
 
 // ---------------------------------------------------------------------------
 // DOCK STATIONS: the tier ladder, and the two radii both readers need.

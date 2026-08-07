@@ -800,7 +800,9 @@ from breaking the invariants above:
     railed `iceOf` pellets, same caps, so it can never flood the belt.
     **AND THE SEA ITSELF** (`CFG.OCEAN_*`, user call, 2026-08: *"you sink a bit but then you hit
     the hard planet … waves ripple across the planet on hits … you shouldn't be able to land"*):
-    - **The collider is the SEABED** at `OCEAN_CORE` (0.86) × radius, wired through
+    - **The collider is the SEABED** at `OCEAN_CORE` (0.58 — a **3× deeper column** than the
+      original 0.86 by user call, ~220 units on the world-sea, which is what gives a dive somewhere
+      to go now that buoyancy holds the hull at the surface by default) × radius, wired through
       `surfRadius`/`shaped`/`roundParty` and both `predictPaths` mirrors, so ship, rock, alien and
       the forecast ✕ all agree on where the floor is. Deliberately NOT gated on `nearShip`
       (crystal's reasoning inverted): the felt surface is SMALLER than the drawn disc, so dropping
@@ -812,12 +814,146 @@ from breaking the invariants above:
       ploughs to the bedrock — kinematic drag would stop both alike, and "heavyweights punch
       through" is the atmosphere rule read across. The water does NO damage; the hard hit is the
       seabed, through the ordinary contact pass. Exemptions mirror the gas swallow's (railed, held,
-      parry-frozen, already-sinking). The ship rides the same drag (divided by its per-tier mass)
-      in the environmental loop, with a one-shot `seaWarn` teaching the rule. Submerged bodies
-      carry `b.inSea` and render dims them to half strength.
-    - **Hits read as WAVES, never as craters.** Splashdowns, seabed strikes (`damageBody` with an
-      impact point) and ship dives stamp `p.seaHits`; `render.drawSeaRipples` runs expanding
-      fronts across the face — event-driven motion, the aurora convention. `canWear` excludes
+      parry-frozen, already-sinking). Submerged bodies carry `b.inSea` and render dims them to half
+      strength.
+    - **THE HULL FLOATS HALF SUBMERGED, AND THE DEEP IS SOMEWHERE YOU GO ON PURPOSE**
+      (`CFG.OCEAN_FLOAT`/`OCEAN_BUOY_G`/`OCEAN_PRESS`/`OCEAN_LIFT_BAND`). The seabed is a COLLIDER,
+      not the depth a ship is meant to sit at: a tier-0 hull (radius 4) used to sink the whole
+      column, 19 hull-radii under, every single time. Four user calls walked it in — *"it shouldn't
+      be able to go as deep"*, *"about half"*, *"half again"*, then *"you float back to the surface
+      and stay half submerged, basically buoyancy"* — and it now rests with its centre ON the
+      waterline (measured: 0.3 units under, wetted fraction 0.54).
+      - **Buoyancy is a FORCE, quoted in LOCAL WEIGHT.** It began as a velocity-space clamp
+        (drive the radial velocity outward at a target speed), which floats a hull beautifully and
+        is completely **unbeatable** — a clamp is worth `rate × (want − rv)` of acceleration, which
+        at any useful float stiffness dwarfs ship thrust. With a 3× column to dive into that made
+        the deep not merely hard to reach but unreachable: a 1800 u/s entry got 10% down. A force
+        can be pushed through. Its strength is `OCEAN_BUOY_G` × **what this world actually pulls on
+        the hull**, taken from `gravityAt` itself with the ship's own weighting rather than
+        re-derived — LONG ARMS and SURFACE WEIGHT both apply inside a planet, and a buoyancy quoted
+        in raw u/s² would mean something different on every world and at every tier.
+      - **Two ramps, multiplied.** `near` (hull radii, `OCEAN_LIFT_BAND`) decides where it FLOATS —
+        equilibrium sits where `near × OCEAN_BUOY_G = 1`, which is why `OCEAN_FLOAT` aims the ramp
+        slightly **above** the waterline. `1 + OCEAN_PRESS × dive²` is what makes the deep hard to
+        reach (user: *"it should get harder to reach as we get deeper"*); quadratic, so the top of
+        the column is nearly free and the bottom is a wall. Measured: a hull under sustained full
+        thrust works down to **98% of the 220-unit column in 8.4s**, which is the intent — a place
+        you can go, at a cost, not a wall and not a shrug. (`OCEAN_PRESS` was 0.8 and that took
+        **35s** of held thrust — reachable in principle and never actually visited; user call,
+        *"it's a bit too difficult to get to the bottom"*.)
+      - Ship-only, and it pays the world no reaction (invariant 4 makes a planet immovable against
+        the hull, and a radial impulse on a world is a secular pump). The ship's own drag is
+        `OCEAN_SHIP_DRAG` against `OCEAN_SHIP_MASS` — water bites a vessel harder than a rock, and
+        the ship ladder's own mass reference stops a Titan coming out 8.5× less damped than a
+        scout; it rides the WETTED FRACTION, so a half-out hull gets half the drag.
+      - **Not mirrored in `predictPaths`** — the ship's water terms never were; the forecast ends
+        at the seabed, which is still inside the water it is telling you about.
+    - **THE DEEP CRUSHES YOU; THE SURFACE DOES NOT** (`CFG.OCEAN_DPS`, user call: *"as we get
+      deeper, we take more damage and at the surface, we don't take damage"*). Pressure is
+      QUADRATIC in dive, so it is zero at the waterline and the full rate at the seabed — measured
+      on a tier-0 hull: **0 dps at the surface, 1.0 at 35% down, 4.5 at 75%, 7.7 at the floor**,
+      the last sitting just under the gas tops' 9. Flat and never hull-scaled (the environmental
+      convention), and through `damageShip` like every environmental source, so the shield absorbs
+      first and the mode's `dmgMul` applies.
+      **CHOP is an AMPLIFIER on top** (×1 calm, up to ×2 under a heavy swell), not the gate it
+      briefly was: an earlier user call made damage require chaotic water and this one **supersedes
+      it at the surface**, where nothing hurts you now whatever the sea is doing. Chop still means
+      what it always meant — `config.seaChop` sums the live crests passing over a point off the
+      SAME `seaPhase` the waves are DRAWN from, with the same gaussian half-width the limb
+      displacement uses, so rough water visibly costs more than a flat calm at the same depth and
+      your own wake counts as chop.
+    - **YOU ARE IN THE SEA, AND IT IS DRAWN OVER YOU** (user call 2026-08: *"it should look like
+      it's in the ocean … right now the ship stays on top"*). The hull draws after the world it is
+      flying through, so inside an ocean it painted on top of the sea. `render.drawSeaVeil` runs
+      AFTER `drawShip` and paints the water back over it — the sim publishes `game.seaBody` and
+      `game.seaK` (submersion in hull radii, capped) and the draw layer decides what water looks
+      like. Three rules learned the hard way, all of them regressions if undone:
+      - **It DARKENS, never brightens.** A grade with its brightest stop at the waterline kept the
+        near-limb water legible by lighting the whole world up the moment you touched it, which is
+        backwards. Every stop is now darker than the sea's own palette blue.
+      - **The murk that hides the ship is WIDE AND SOFT** (a third of the world across). Both a
+        hull-sized dark lens and a hull-sized bright haze read as a legible DISC on the sea — a
+        hard edge in-world, and worse than the ship they were hiding. It hides by lowering local
+        contrast, since the hull is dark ink on a bright sea; adding light did the opposite.
+      - **Moving light lives on the SCREEN overlay, not in world space.** Lit caustic arcs stacked
+        by depth were tried over the hull and cut: at planetary radius any short arc is visually
+        straight, so they printed as horizontal bars. `render.drawSeaScreen` carries the life
+        instead — wash, breathing vignette, god-rays and suspended particulate, in the
+        corona-heat / Oort-frost vignette slot and on that grammar. It draws BEFORE those two, so
+        heat and frost read through the water rather than under it.
+      - **The overlay runs on TWO axes, and they are not interchangeable.** `game.seaK` is how WET
+        the hull is (0.5 for a ship floating half submerged) and decides whether the pass exists at
+        all; `game.seaDeep` is how far down the column it has been driven, and it is what turns a
+        pleasant wash into somewhere you should not be (user call — *"the overlay should get more
+        intense and dangerous looking"*): the colour drains toward black, the vignette closes to a
+        tunnel, the god-rays **die out entirely** (the deep is frightening because light does not
+        reach it), and the silt gets denser and faster. Depth alone would leave a surfaced ship
+        un-tinted; wetness alone would make the abyss look like a paddle.
+      - **The world-space murk BACKS OFF with depth** while the screen overlay takes over. The murk
+        exists to kill contrast against BRIGHT water; deep water is already near-black, so down
+        there it only subtracts the last few values that let a pilot find their own hull. At the
+        seabed the scene is at its most dangerous and the ship must still be flyable — measured, the
+        hull holds ~19% lower luminance than the water around it at 55% depth.
+    - **A SPLASH IS A WOUND** (`CFG.OCEAN_IMPACT_MUL`/`OCEAN_DOM_EXP`/`OCEAN_HIT_CAP`, user call:
+      *"when we throw rocks at it, it should damage it even if the rocks don't get to the bottom"*).
+      The sea used to bill damage ONLY at the seabed, through the ordinary contact pass — so a rock
+      hurled into a world-ocean stopped in the water and the planet shrugged, and once the column
+      went to 0.42r almost nothing thrown ever reached the floor at all. The splashdown itself now
+      wounds the world, on the **gas-giant entry-wound pattern and for its reason**: water is not
+      RIGID, so an impactor deposits its energy INTO the body instead of chipping a surface.
+      Ordinary `DMG_BODY × eff² × dmgMass` terms so it stays in ratio with every other impact in
+      the game, mass dominance softened by `OCEAN_DOM_EXP`, and capped per hit because the speed
+      term is quadratic. Pitched under the giant's (2.0 / 0.18): feeding a giant is a mechanic the
+      game wants, drowning a world is just something you can do. Measured: a 1800-mass rock thrown
+      at 620 u/s takes **~2.6% of the world's max hp per splash**, and it never reaches the seabed.
+      - **THE DAMAGE IS QUEUED AND DRAINED AFTER THE WALK, AND MUST STAY THAT WAY.** `live` is
+        `game.bodies` (or its awake view) and `damageBody` calves chunks straight into it; a
+        `for..of` over an array that grows keeps walking, so applying the wound inline meant every
+        fresh chunk was already in the sea, splashed, wounded the world and calved more — the
+        substep never terminated. That is a hard hang, not a slowdown, and it is exactly what
+        happened the first time this was written. Credit is read at QUEUE time, while the thrown
+        state is still live (`collisionCredit` keys off `thrownBy`/`thrownTimer`, and the water may
+        damp a rock out of its thrown window before the queue drains); both bodies are re-checked
+        for `alive` at drain time, since a world can shatter under an earlier entry in the queue.
+      - `damageBody` stamps the sea ring itself for an ocean, so the splash path must NOT also
+        stamp — two rings born at one point in one frame draw as a single double-bright crest. It
+        stamps explicitly only for arrivals too light to wound.
+    - **Hits read as WAVES, never as craters** — drawn BIG and rolling SLOWLY (user calls 2026-08:
+      *"way bigger"*, then *"about 25%"* of the speed, then *"50%"* of that again), because on a
+      523-unit disc the old thin rings read as a hairline crack and these rings are the world's
+      whole damage read. Splashdowns, seabed strikes (`damageBody` with an impact point), ship
+      dives AND a hull moving through the sea (`CFG.OCEAN_WAKE_EVERY`, throttled, gated on speed in
+      the sea's own frame) all stamp `p.seaHits` through the ONE writer `physics.stampSeaHit`.
+      `render.drawSeaRipples` runs a wide crest with a soft swell behind it and ONE trailing front
+      out to 2.6× radius over `OCEAN_RIPPLE_T` — four fronts per hit times every live hit turned
+      the face into concentric static. Expansion rate is `reach ramp / OCEAN_RIPPLE_T`, so that
+      constant IS the wave speed. Event-driven motion, the aurora convention.
+    - **A WAVE HAS TWO ACTS, AND NEITHER OF THEM POPS** (`config.seaPhase`, user calls: *"they
+      should animate from the source of the crash"*, then *"shouldn't the wave start by flexing
+      into the planet and then flexing out?"*). One function returns a reach AND a SIGNED strength,
+      and it lives in **config.js next to `shelterR`/`dockDomeR` for their exact reason** — it has
+      THREE consumers that must never disagree (the limb displacement, the drawn rings, and the
+      chop damage above), and two expressions of a wave is the mirror-drift trap.
+      For the first `SEA_DIP` of the life the strike punches a CAVITY — the ring stays at
+      the impact point, the strength is negative (0 → -1 → 0), and the limb dents where it was hit;
+      the reach ramp does not begin until that is over. Then the rebound launches outward with an
+      ATTACK from zero before it decays. Three separate pops were fixed here and all three come
+      back the moment this is simplified: a reach ramp opening at 0.30R (first drawn frame already
+      a 157-unit ring), an amplitude at maximum on frame one (full height at birth even once the
+      ring started small), and ring alpha taken from age rather than from the envelope.
+    - **AND THE CREST DISPLACES THE DRAWN LIMB** (`CFG.OCEAN_WAVE_AMP`, `render.buildSeaWaves`,
+      user call: *"waves should actually ripple the edge of the planet"*). A wave that only drew
+      inside the silhouette left the world a perfect circle with rings painted on it. The outline
+      is baked ONCE per frame into `seaRad` and `traceSurface` returns it for that body, so the
+      fill, the clip and every clipped detail pass breathe with it for free — re-walking the hit
+      list inside the trace (five or six traces a frame × up to `OCEAN_RING_MAX` live waves) is the
+      one way to make an outline this cheap expensive. A calm ocean keeps the plain-arc fast path.
+      The crest carries troughs either side of it; a one-sided bulge reads as the world swelling
+      rather than as water. **The drawn edge is now cosmetically off `b.radius` by up to
+      `OCEAN_WAVE_AMP`** — the waterline the drag, `inSea` and buoyancy all test is still the true
+      radius, which is the correct call for a boundary the design laws say must never be a hard
+      edge anyway. The ring-list cap (`OCEAN_RING_MAX`) must outlive `OCEAN_RIPPLE_T` at the wake
+      rate, or the oldest wave is dropped while still on screen and pops. `canWear` excludes
       ocean exactly like gas, and the ambient-wear loop skips it: the sea closes over every wound,
       so an ocean world never scars, never pits, and its silhouette stays whole. (Its death is
       still the ordinary planet shatter — killing it remains a player feat, invariant 8.)

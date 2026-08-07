@@ -344,7 +344,24 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **A WORLD IS SOMEWHERE YOU CAN STOP — except an OCEAN world.** Open sea has no anchorage: the
   landing gates skip ptype `'ocean'` outright (its collider is the SEABED at `CFG.OCEAN_CORE`, the
   water above is a drag volume, and hits ripple instead of cratering — see
-  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. Everywhere else:
+  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. And **you go IN it, not
+  onto it**: the sea is DEEP (`OCEAN_CORE` 0.58, a 0.42r column) and the hull FLOATS HALF
+  SUBMERGED on it — buoyancy is a FORCE quoted in the world's own pull on the ship
+  (`OCEAN_BUOY_G`, never a velocity clamp: a clamp is unbeatable by thrust and made the deep
+  unreachable), ramped by `1 + OCEAN_PRESS × dive²` so the bottom is hard to reach but still
+  reachable under sustained thrust (~8s of it). **The deep CRUSHES you and the surface does not**
+  (`CFG.OCEAN_DPS`, quadratic in depth, chop an amplifier on top). **A SPLASH IS A WOUND** — the
+  sea bills on splashdown, not just at the seabed (`OCEAN_IMPACT_MUL`, the gas-giant entry pattern:
+  water isn't rigid), and that damage is QUEUED and drained after the body walk — applying it
+  inline hangs the substep, because `damageBody` calves chunks into the list being iterated and
+  each one splashes again. The water is DRAWN BACK OVER
+  the ship after `drawShip` and darkens it (`render.drawSeaVeil` — never brightens; the murk that
+  hides the hull is wide and soft, or it reads as a disc, and it backs off with depth so the hull
+  stays findable); the moving light lives on the SCREEN overlay (`drawSeaScreen`, the corona-heat
+  vignette slot), which runs on **two axes** — `seaK` how wet, `seaDeep` how dangerous. A wave's
+  crest **displaces the drawn limb** as it rolls, and `config.seaPhase` is the ONE wave definition
+  the limb, the rings and the chop damage all read, so what bites you is what you can see.
+  Everywhere else:
   set the ship down on a planet or moon ROCKETS-DOWN and hold
   still and it BERTHS (`physics.updateDock`): three gates — contact, the nose within `DOCK_ARC` of
   straight up, and surface-relative speed under `DOCK_SPEED` — all true for `DOCK_TIME`. The gates
