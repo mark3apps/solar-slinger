@@ -76,7 +76,7 @@ Skills wrap the recurring procedures; subagents audit a diff against the rules i
 
 | Skill | For |
 |---|---|
-| `balance-test` | long-horizon sky stability — `window.soak` against the run's own start-of-soak census (17 planets; moons vary per seed, ~70-80) |
+| `balance-test` | long-horizon sky stability — `window.soak` against the run's own start-of-soak census (17 planets; moons vary per seed, ~64-71) |
 | `mechanics-test` | fast "did I break the game loop?" — the fixed-seed `window.mechTest` suite |
 | `playtest` | **the default way to drive the game** — Browser pane: park the ship, force the event, screenshot it |
 | `run-solar-slinger` | clean-machine setup + scripted/unattended runs (Electron driver, nothing visible) |
@@ -226,6 +226,11 @@ changing anything it touches.**
 5. Ship bounce kick is hard-capped at 200.
 6. `WORLD_R` exceeds every system's outermost reach — enforced by construction in `world.moonZone`,
    not by arithmetic redone by hand; star-anchored bodies are exempt from the boundary force.
+   `moonZone` bounds a family by THREE things now — the Hill radius, the room `WORLD_R` leaves, and
+   **the neighbouring lane** (`planet.moonRoom`, stamped by generateWorld's lane pass off
+   `CFG.MOON_LANE_SHARE`). The third is the local one: a Hill radius here is ~25% of the orbital
+   radius, so the first two let a family span five to eight lanes — 84% of all moons swept clean
+   across a foreign planet's disc. See the constant's note in config.js.
 7. Chunk shedding is gated, or it cascades — and every fragment system answers to one debris budget.
    7b. A split must not chain (no credit propagation, `chainOk`, `CHUNK_INERT`).
 8. A planet is its own durability class (flat `PLANET_HP_BASE` + gentle slope, not the mass curve).
@@ -339,7 +344,24 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **A WORLD IS SOMEWHERE YOU CAN STOP — except an OCEAN world.** Open sea has no anchorage: the
   landing gates skip ptype `'ocean'` outright (its collider is the SEABED at `CFG.OCEAN_CORE`, the
   water above is a drag volume, and hits ripple instead of cratering — see
-  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. Everywhere else:
+  [docs/world-content.md](docs/world-content.md)). Its moons dock normally. And **you go IN it, not
+  onto it**: the sea is DEEP (`OCEAN_CORE` 0.58, a 0.42r column) and the hull FLOATS HALF
+  SUBMERGED on it — buoyancy is a FORCE quoted in the world's own pull on the ship
+  (`OCEAN_BUOY_G`, never a velocity clamp: a clamp is unbeatable by thrust and made the deep
+  unreachable), ramped by `1 + OCEAN_PRESS × dive²` so the bottom is hard to reach but still
+  reachable under sustained thrust (~8s of it). **The deep CRUSHES you and the surface does not**
+  (`CFG.OCEAN_DPS`, quadratic in depth, chop an amplifier on top). **A SPLASH IS A WOUND** — the
+  sea bills on splashdown, not just at the seabed (`OCEAN_IMPACT_MUL`, the gas-giant entry pattern:
+  water isn't rigid), and that damage is QUEUED and drained after the body walk — applying it
+  inline hangs the substep, because `damageBody` calves chunks into the list being iterated and
+  each one splashes again. The water is DRAWN BACK OVER
+  the ship after `drawShip` and darkens it (`render.drawSeaVeil` — never brightens; the murk that
+  hides the hull is wide and soft, or it reads as a disc, and it backs off with depth so the hull
+  stays findable); the moving light lives on the SCREEN overlay (`drawSeaScreen`, the corona-heat
+  vignette slot), which runs on **two axes** — `seaK` how wet, `seaDeep` how dangerous. A wave's
+  crest **displaces the drawn limb** as it rolls, and `config.seaPhase` is the ONE wave definition
+  the limb, the rings and the chop damage all read, so what bites you is what you can see.
+  Everywhere else:
   set the ship down on a planet or moon ROCKETS-DOWN and hold
   still and it BERTHS (`physics.updateDock`): three gates — contact, the nose within `DOCK_ARC` of
   straight up, and surface-relative speed under `DOCK_SPEED` — all true for `DOCK_TIME`. The gates
@@ -519,6 +541,15 @@ Plus the three scaling rules that make a big debris cascade affordable:
   because the *relationships* between those numbers are what the content is built on. It moves
   distance only: sky speed is `sqrt(G*sunMass/r)`, so spreading the sky slows every orbit rather
   than keeping it (the sun's mass is the speed knob, and it is deliberately not recompensated).
+- **A LANE IS SPACED BY WHAT ITS FAMILY NEEDS** (`buildLayout`'s need pass, `world.familyReach`) —
+  the authored gap ladder is the FLOOR and the shape, and every span between two worlds is opened
+  until both their moon families fit inside `CFG.MOON_LANE_SHARE` of it. The authored gaps are
+  near-uniform while a family's reach is not (a ringed giant wants ~22,000 units, a small ice world
+  ~9,000), so uniform spacing over-serves the small worlds and starves the giants — the ones whose
+  families are the point. The ladder's length is therefore **EMERGENT**, which is why `CFG.BOUND`
+  sizes the boundary instead of `SYS`, and why the outer anchors (`world.LADDER_CAP`,
+  `FARSHOAL_R`) are fractions of `CFG.WORLD_R` rather than authored `SR()` distances.
+  Inner lanes barely move — the lava world still sits at ~7,500.
 - **A PLANET SYSTEM IS RARE, AND IT IS AN EVENT** — fewer worlds, each with a bigger entourage.
   Cuts come off the DUPLICATED archetypes only, never a unique ptype and never a landmark host
   (`PTYPE_COUNT` and "strip every gas giant" both count them). Moon counts and `MOON_ZONE_MUL` move
@@ -584,7 +615,13 @@ Specialization-based, no passive leveling. **A rank buys mass inside your class,
 above:** the beam tier names a CLASS (`TIERS.labels` — pebbles → belt rock → boulders → small moons
 → large moons → planets, assigned by `config.liftClass`) and that class is a hard gate; catch ranks
 only fill `capacity` from `TIERS.caps[tier]` toward `ceil[tier]`. `config.canLift`/`canStow` are the
-only grab tests. **Two parallel tracks off one XP stream:** ability ranks
+only grab tests. **The HAULER's orbit ring is the one exception, and it is deliberate** (user rule,
+2026-08: tier-ups must not upgrade what the sling accepts): `orbitTier` climbs on Sling Winch's own
+`SLING_RUNGS` ladder with no clamp against beam tier, so a tier-0 ring with the winch maxed takes
+large moons a tier-0 beam cannot lift. The class it buys is the RING's, never the beam's — and what
+keeps that from being a free moon is that the stow **winches** like the beam does (see the winch law
+in [docs/design-laws.md](docs/design-laws.md)). The BRAWLER's rack is unchanged: still `tier - 1`,
+still hard-stopped at boulder class. **Two parallel tracks off one XP stream:** ability ranks
 are automatic and never a card; picks only ever offer *new* abilities. Achievements are a third
 track that feeds the other two. Field XP is gated twice (per-rock multiplier + per-field budget) and
 billiards credit is depth-capped inside a pocket. Add an ability = a catalog row + reading its
@@ -633,7 +670,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; every check must pass (32 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (37 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 
