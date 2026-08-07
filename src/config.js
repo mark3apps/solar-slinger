@@ -2200,7 +2200,24 @@ export const CFG = {
   // still chips and a moon still hits like a moon without ending a landmark in
   // one blow. 0.34 => at least three solid hits, whatever you throw.
   FIELD_BIG_HIT_CAP: 0.34,
-  FIELD_BROOD: 7,          // lurkers per field per run — finite; a cleared field is QUIET
+  // MOST SHOALS ARE EMPTY. A brood in every pocket made "a shoal" and "a fight"
+  // the same fact, so there was never a reason to read the water — and enemy
+  // density is meant to be sparse. A quarter of the pockets carry the brood and
+  // the rest are just rock, picked off the seed so a world's dangerous shoal is
+  // a property of that world (and of a saved system, which is only a seed).
+  //
+  // EXACTLY a quarter, not a 25% coin per pocket. Three achievements hang off
+  // lurkers — kill one, kill some, clear a whole brood — and a per-pocket roll
+  // leaves ~32% of seeds with no hostile shoal at all, which makes all three
+  // unearnable on those worlds. `Math.max(1, round(n * frac))` guarantees one.
+  FIELD_HOSTILE_FRAC: 0.25,
+  // THE BROOD ITSELF IS UNCHANGED at 7. A hostile pocket should feel exactly
+  // like a hostile pocket always did — the change is how MANY pockets are
+  // hostile, not what one is like inside. Padding the brood to keep an
+  // achievement reachable would have retuned the encounter to serve the
+  // scoreboard; the achievement moved instead (achievements.js 'lurker8' — its
+  // threshold now sits inside a single brood). Run total: 28 -> 7.
+  FIELD_BROOD: 7,          // lurkers in a HOSTILE field per run — finite; a cleared field is QUIET
   FIELD_HUNTERS: 3,        // how many of that brood may hunt at once (ai.updateFields)
   // NOT frail any more. At 34 hp a lurker was a jump-scare that died to the
   // first thing you threw, so an ambush resolved before it could develop and

@@ -97,6 +97,25 @@ let TINKER_R = SR(12000);             // the barge's trade lane
 const LADDER_CAP = () => CFG.WORLD_R * (41500 / 46000);
 const FARSHOAL_R = () => CFG.WORLD_R * (44300 / 46000);
 
+// AMBIENT TRAFFIC RIDES THE SEED, on its OWN stream. The view-local asteroid
+// spawner used Math.random with the rest of the runtime spawns; a world's
+// drive-by rock is now a property of the world, so the same seed deals the same
+// traffic rather than a fresh roll every session.
+//
+// A PRIVATE FORK, for the reason the name pools are one: this stream's draw
+// count follows the SHIP — where it flew, how long it lingered, which pockets
+// it sat in (the suppression below skips the draws entirely) — so it can never
+// be allowed to reach the worldgen stream, or flying a different route would
+// deal a different sky. Forked with the same avalanche step the name pools use,
+// because a plain `seed ^ K` was measured to bias its own early draws.
+//
+// WHAT THIS DOES AND DOES NOT PROMISE. The sequence is the seed's, but the
+// spawner is driven by ship position and game time, so it replays exactly only
+// for a run that flies the same path. That is the honest version of "tied to
+// the seed" for a runtime system, and it is still a real change: a seed now has
+// its own traffic rather than an arbitrary one per session.
+let trafficRng = Math.random;
+
 const PTYPE_COLORS = {
   lava:    ['#e0603a', '#d4502c', '#e8784a'],
   rocky:   ['#c98a5a', '#b0895f', '#8fae62', '#c9b45a'],
@@ -1614,6 +1633,12 @@ export function generateWorld(game, seed = 20260721) {
   // the seeded sky (the append-only rule below), and moon count varies per
   // seed so the draw count here varies too.
   seedMoonGlow(game, mulberry32((seed ^ 0x51f15e) >>> 0));
+  // The ambient-traffic stream is (re)forked HERE, so a fresh run of a seed
+  // starts its drive-by rock from the same place. Off the mixed seed, never off
+  // `rng` — taking a draw from the main stream to build this would make the
+  // sky itself depend on a runtime system, which is the trap the whole
+  // append-only rule exists to prevent.
+  trafficRng = mulberry32((Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) ^ (seed >>> 13) ^ 0x7a11f1c) >>> 0);
   // A stale husk-wake reference must not survive into a fresh sky (the
   // tinkerWant precedent): physics sets it, ai.js consumes it.
   game.huskWake = null;
@@ -1721,7 +1746,9 @@ export function generateWorld(game, seed = 20260721) {
   // fixed multiple of the authored gaps — see LADDER_CAP, which is the same
   // proportion and the same reason.
   fieldRs.push({ name: 'The Farshoal', r: FARSHOAL_R() });
-  seedDenseFields(game, sun, rng, fieldRs);
+  // `seed` rides along so seedDenseFields can fork its own stream for which
+  // pockets are hostile — never the main rng, which would move the sky.
+  seedDenseFields(game, sun, rng, fieldRs, seed);
   seedDebrisBelts(bodies, planets, rng);
   // GAME MODE, applied LAST and by SUBTRACTION (see applyModeRules). Everything
   // above has already drawn its rng, so a peaceful sky is the classic sky minus
@@ -2681,8 +2708,23 @@ function shapeBig(b) {
   return b;
 }
 
-function seedDenseFields(game, sun, rng, fieldRs) {
+function seedDenseFields(game, sun, rng, fieldRs, seed) {
   game.fields = [];
+  // WHICH POCKETS ARE HOSTILE (CFG.FIELD_HOSTILE_FRAC). Off a PRIVATE fork of
+  // the run seed, never off `rng` — taking draws from the main stream here
+  // would shift every draw after it and deal every existing seed a different
+  // sky, for a decision that is not about layout at all. Same avalanche step
+  // the name pools use, and for the same reason: a plain `seed ^ K` was
+  // measured to bias its own early draws.
+  //
+  // A SHUFFLE, not a per-pocket coin. The count is then exactly what the
+  // fraction says, so no seed can roll a world with nothing in any shoal —
+  // three achievements hang off lurkers existing somewhere (see the config
+  // note), and a 25% coin leaves ~32% of seeds with no brood at all.
+  const hostileN = Math.max(1, Math.round(fieldRs.length * CFG.FIELD_HOSTILE_FRAC));
+  const hOrder = fieldRs.map((_, i) => i);
+  shuffle(mulberry32((Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) ^ (seed >>> 13) ^ 0xb0d1e5) >>> 0), hOrder);
+  const hostile = new Set(hOrder.slice(0, hostileN));
   for (let fi = 0; fi < fieldRs.length; fi++) {
     const fd = fieldRs[fi];
     const fdR = fd.r;   // WORLD units already — generated lane-gap midpoints (+ the Farshoal's SR'd berth)
@@ -2698,7 +2740,14 @@ function seedDenseFields(game, sun, rng, fieldRs) {
     const f = {
       r: fdR, ang: ang0, w, name: fd.name, heart: null,
       x: sun.x + Math.cos(ang0) * fdR, y: sun.y + Math.sin(ang0) * fdR,
-      brood: CFG.FIELD_BROOD, wakeT: 0, cleared: false, near: false, seen: false,
+      // A QUIET POCKET IS SEEDED CLEARED, not merely empty. ai.updateFields
+      // reads `brood <= 0 && !cleared` as "the last lurker just died" and
+      // bumps the fieldClear achievement — so brood 0 with cleared false would
+      // hand out Quiet Waters on frame one, which is the freebie failure mode
+      // every new achievement is checked against. applyModeRules sets both
+      // together for exactly this reason; this follows it.
+      brood: hostile.has(fi) ? CFG.FIELD_BROOD : 0, wakeT: 0, cleared: !hostile.has(fi),
+      near: false, seen: false,
       // The pocket's own SILHOUETTE (config.fieldLobe): three harmonics drawn
       // once here, so a field's shape is part of the world seed and every
       // consumer of fieldFrac sees the same blob. Amplitudes sum to at most
@@ -4342,6 +4391,31 @@ export function replenishWorld(game, dt) {
   game.asteroidTimer -= dt;
   if (game.asteroidTimer > 0) return;
   game.asteroidTimer = 0.4;
+  // NO AMBIENT TRAFFIC INSIDE A POCKET. This spawner exists to stop EMPTY space
+  // reading as empty — that is the whole brief, and a shoal is the one place in
+  // the sky that already fails to be empty. Measured parked in the Shoal: 47
+  // ambient rocks alive, 34 of them inside the wake bubble, 5% of everything
+  // awake — and none of them tagged as field rock, so they get neither the
+  // pocket's shared w nor the railed-pair pass-through. They are free bodies
+  // loose in the densest masonry in the game.
+  //
+  // The cost is not mainly the bodies. It is that each one is a DERAILER: the
+  // settle re-rail needs a rock left alone for FIELD_RAIL_CLEAR with no hard
+  // contact for 1.5s, and ambient traffic drifting through the pocket keeps
+  // resetting exactly those clocks. Spawning chaos into the one place whose
+  // rock is trying to come to rest fights the rails, the LOD and the collision
+  // budget at once, to solve a problem the pocket does not have.
+  //
+  // fieldFrac is the same membership test physics.js uses to tag field rock, so
+  // "inside" means one thing across the codebase. Leaving the pocket resumes
+  // traffic on the very next tick; nothing is cleaned up or teleported, because
+  // the rocks already out there are ordinary asteroids and killing them off
+  // under the player would be its own kind of pop.
+  if (game.fields) {
+    for (const f of game.fields) {
+      if (fieldFrac(f, game.ship.x, game.ship.y) <= 1) return;
+    }
+  }
   // The available amount breathes over time so the field never feels static
   const target = Math.round(30 + 22 * (0.5 + 0.5 * Math.sin(game.time * 0.02)));
   // Both counts come off the registry — they were two more full-array reduces,
@@ -4362,17 +4436,22 @@ export function replenishWorld(game, dt) {
   // (CFG.FIELD_*), so the count costs the O(bodies x attractors) gravity loop
   // nothing; the budget that actually binds is the collision broad-phase.
   if (locals >= target || total >= 9800) return;
+  // trafficRng, not `rng` (= Math.random) and not the worldgen stream — see the
+  // note where it is declared. Every draw in this loop moves to it together:
+  // splitting the position off the mass would interleave two clocks into one
+  // rock and leave neither reproducible.
+  const trng = trafficRng;
   for (let i = 0; i < Math.min(3, target - locals); i++) {
-    const th = rng() * TAU;
-    const d = viewR + 250 + rng() * 1100;
+    const th = trng() * TAU;
+    const d = viewR + 250 + trng() * 1100;
     const x = game.ship.x + Math.cos(th) * d;
     const y = game.ship.y + Math.sin(th) * d;
     const fromSun = Math.hypot(x - game.homeStar.x, y - game.homeStar.y);
     if (Math.hypot(x, y) > CFG.WORLD_R || fromSun < game.homeStar.radius + 900) continue;
     const v = orbitVel(game.homeStar, x, y, 1);
-    const a = rng() < 0.05
+    const a = trng() < 0.05
       ? spawnCache(game.bodies, x, y, v.vx, v.vy)          // occasional salvage cache
-      : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(rng)), rng);
+      : maybeCore(spawnAsteroid(game.bodies, x, y, v.vx, v.vy, asteroidMass(trng)), trng);
     a.local = true;
     railBody(a, game.homeStar);
   }

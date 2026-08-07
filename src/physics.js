@@ -11,7 +11,7 @@ import {
   TAU, clamp, angDiff, crystalShards, crystalRadiusAt, scarSurfaceAt, CRYSTAL_REACH,
   surfaceVel, padPos, placeName,
 } from './util.js';
-import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf } from './rockshape.js';
+import { rockContacts, rockCircleQuery, rockReach, rockSurfAt, rockNormalAt, rockShapeOf, lastSeparation } from './rockshape.js';
 import { bump, best, noteKill } from './achievements.js';
 import * as gravel from './gravel.js';
 import { collideGrains, makeContactScratch } from './gravel-contact.js';
@@ -2009,6 +2009,87 @@ function shaped(body) {
     || (body.type === 'planet' && body.ptype === 'ocean')
     || (body.nearShip && body.type !== 'asteroid' && body.scars.length > 0);
 }
+
+// ---------------------------------------------------------------------------
+// SEPARATION CERTIFICATES — conservative advancement for the shaped pair test.
+//
+// 93% of the landmark pairs the sweep hands the narrow phase are APART, and the
+// pair set barely changes: measured in a shoal, 124 convex-hull SAT calls a
+// substep drawn from only 136 distinct pairs over 240 substeps. The same rocks
+// were being proven apart 120 times a second, from scratch.
+//
+// But a SAT reject has already MEASURED something useful — the gap along the
+// axis it separated on. Two convex sets are at least as far apart as their
+// separation along any one direction, so that gap is a conservative lower bound
+// on the real distance, and the pair cannot touch until relative motion has
+// eaten it. Bank it with the pose it was taken at, charge the motion since, and
+// the whole test is skipped while it holds. (Conservative advancement, the same
+// idea PhysX uses to hold resting contacts; Box2D reaches the same end from the
+// other side, by sleeping whole islands.)
+//
+// THE MOTION TERM IS RELATIVE, NOT ABSOLUTE, and that is the difference between
+// this working and not. A pocket's rock is carried by a rail: two neighbours
+// cross the whole sky together while the distance between them never changes.
+// Charging each body's own travel would burn every certificate on its first
+// substep for no reason. So the stored quantity is the OFFSET between the two
+// bodies, and only what changes that offset is charged.
+//
+// Rotation is still charged PER BODY, because a spin sweeps a corner through
+// its own reach even when the centres hold station, and there is no cheap way
+// to see that a co-rotating pair is rigid. That term is what actually expires
+// these, which is the honest trade: the gate is conservative everywhere it is
+// uncertain.
+//
+// WHY THIS CANNOT CHANGE THE SIM. A skipped pair is one rockContacts would have
+// returned empty for, and an empty list makes collideBodies return at exactly
+// this point. Same outcome, less work — so the stability suite must diff to
+// zero, and that is the test that this is right.
+//
+// STORAGE is eight fixed slots on the LOWER-id body of the pair, linear
+// scanned. A shoal rock has a median of 2.2 shaped partners a substep (p90 6,
+// max 10), so eight holds the working set; an overflow just loses a certificate
+// and pays for SAT, which is what it did before. No Map, no per-pair
+// allocation, no eviction bookkeeping — the lookup is a scan of eight ints
+// against a SAT call.
+const SEP_SLOTS = 8;
+const SEP_W = 7;      // gap, offX, offY, loRot, hiRot, loReach, hiReach
+
+// Is this pair PROVABLY still apart? `ox/oy` is hi's offset from lo.
+function sepHolds(lo, hi, ox, oy, loReach, hiReach) {
+  const s = lo._sep;
+  if (!s) return false;
+  const ids = s.id;
+  for (let k = 0; k < SEP_SLOTS; k++) {
+    if (ids[k] !== hi.id) continue;
+    const o = k * SEP_W, v = s.v;
+    // Reach folds radius AND shape together (rockReach = radius x shape.reach),
+    // so one compare invalidates a chipped rock and a fractured one alike.
+    if (v[o + 5] !== loReach || v[o + 6] !== hiReach) { ids[k] = -1; return false; }
+    const mx = ox - v[o + 1], my = oy - v[o + 2];
+    const spent = Math.sqrt(mx * mx + my * my)
+      + Math.abs(lo.rot - v[o + 3]) * loReach
+      + Math.abs(hi.rot - v[o + 4]) * hiReach;
+    if (spent < v[o]) return true;
+    ids[k] = -1;   // spent — this pair pays for a fresh test, and re-banks it
+    return false;
+  }
+  return false;
+}
+
+function sepKeep(lo, hi, ox, oy, loReach, hiReach, gap) {
+  if (!(gap > 0)) return;   // no certificate on offer (NaN-safe)
+  let s = lo._sep;
+  if (!s) s = lo._sep = { id: new Int32Array(SEP_SLOTS).fill(-1), v: new Float64Array(SEP_SLOTS * SEP_W), next: 0 };
+  const ids = s.id;
+  let k = -1;
+  for (let i = 0; i < SEP_SLOTS; i++) if (ids[i] === hi.id || ids[i] === -1) { k = i; break; }
+  if (k < 0) { k = s.next; s.next = (s.next + 1) % SEP_SLOTS; }   // full: round-robin
+  ids[k] = hi.id;
+  const o = k * SEP_W, v = s.v;
+  v[o] = gap; v[o + 1] = ox; v[o + 2] = oy;
+  v[o + 3] = lo.rot; v[o + 4] = hi.rot;
+  v[o + 5] = loReach; v[o + 6] = hiReach;
+}
 // A TRUE CIRCLE, which is NOT the same question as `!shaped(body)`. `shaped`
 // gates a cratered world on `nearShip` — an off-view wound is not worth a
 // narrow phase to the body it gates — but `surfRadius` honours scars whether
@@ -2241,8 +2322,15 @@ function collideBodies(game, a, b) {
       // caller can stop allocating a list it drops in the same breath. Safe to
       // reuse — `sat` below is one of the manifold OBJECTS, which are still
       // built per call, so the next fill cannot reach back and rewrite it.
+      // THE CERTIFICATE GATE (see sepHolds above). Canonical order so a pair is
+      // banked once, on the lower id, whichever way round the sweep hands it to
+      // us — the scan's order depends on x position and flips as rock drifts.
+      const lo = a.id < b.id ? a : b, hi = lo === a ? b : a;
+      const ox = hi.x - lo.x, oy = hi.y - lo.y;
+      const loReach = surfReach(lo), hiReach = surfReach(hi);
+      if (sepHolds(lo, hi, ox, oy, loReach, hiReach)) return;
       const cs = rockContacts(a, b, _satScratch);
-      if (!cs.length) return;
+      if (!cs.length) { sepKeep(lo, hi, ox, oy, loReach, hiReach, lastSeparation()); return; }
       sat = cs[0];
       probedPen = sat.depth;
       bigProbe = true;
