@@ -76,10 +76,104 @@ const SYS = 2.6;
 // families for real (61.2 moons, 10.6 per giant) and you are paying content
 // for scenery.
 const BOUND = 7.7;
+const WR = 46000 * BOUND;
+
+// A TIME IS A DESIGN TARGET; THE BOUNDARY IS NOT.
+//
+// Every sun-centred sweep in this game is a DISTANCE quoted as a fraction of
+// CFG.WORLD_R divided by a SPEED quoted in absolute units per second — so its
+// DURATION is a free function of the boundary, and moves every time the
+// boundary does. That is not a rounding-scale drift: BOUND took WORLD_R from
+// 46000*SYS = 119,600 to 46000*7.7 = 354,200 in one pass, x2.96, and it took
+// every one of those durations with it. Two of them are load-bearing:
+//   - the SOLAR WAVE's lifetime (STORM_CLASSES `reach` / `speed`), which sets
+//     the system's sense-blind duty cycle. It ran 49.8/76.0/146.8s and became
+//     147.6/225.0/434.8s, i.e. a wave that outlives its own STORM_EVERY timer.
+//   - the INTERSTELLAR VISITOR's transit (world.js: R0 = WORLD_R * 1.22 over
+//     an absolute `sp`), which went from ~4 minutes to ~12.
+// The rule is one rule: a speed that has to carry something ACROSS THE SKY is
+// quoted in the sky's own units, so the ratio — and therefore the time —
+// survives the next boundary move untouched.
+//
+// IT IS APPLIED AT TWO SITES, NOT AT EVERY SITE THAT HAS THE DEFECT. There is
+// a THIRD — COMET SHOWERS (world.js, `sp = 520 + rng() * 180`, launched at
+// CFG.WORLD_R * 0.95 with `cometT = 90` seconds to live). Measured ETA to the
+// ship is 506-619s against that 90-second expiry, so a shower covers ~15% of
+// the distance and evaporates while game.cometWarn is still announcing it.
+// Same defect, same code block, and it is OPEN ISSUE #226 — deliberately not
+// fixed here, because a comet's `cometT` and its spread are tuned together and
+// unlike the two below its speed carries no second floor. Do not read this
+// note as a claim that the class of bug is closed; read the issue.
+//
+// SKY_K is that conversion: the sky's radius in units of the radius these
+// absolute speeds were authored against. Multiply an authored u/s by it and
+// the authored SECONDS come back — 2.96 today.
+//
+// THE DENOMINATOR IS A FROZEN LITERAL, NOT `46000 * SYS`, even though that is
+// where it came from (the boundary in force when the storm ladder and the
+// visitor were tuned). It has to be: SYS spreads the authored SHAPE and does
+// not touch WORLD_R, so a SKY_K written against it would slow every wave down
+// when the inner system grew — the same class of bug this constant exists to
+// close, one knob along. It is a historical reference radius; only WORLD_R
+// above it is live.
+//
+// WHAT IT IS NOT FOR: any speed tuned against the SHIP rather than against the
+// sky. The ship's maxSpeed, the tractor's reach and every alien speed are
+// absolute on purpose and must stay that way — scaling those would make the
+// sky's events uncatchable rather than boundary-invariant.
+const SKY_K = WR / 119600;
+
+// THE VISITOR HAS TWO ABSOLUTE FLOORS, AND SKY_K ONLY RESPECTS ONE OF THEM.
+//
+// The carve-out three lines up is not a footnote to the interstellar visitor —
+// it is a constraint ON it. The object exists to be CAUGHT: achievements.js's
+// `secretVisitor` (PTS.insane, "Once in a Lifetime") fires off noteCatch, i.e.
+// a tractor grab, so the visitor's speed answers to two floors at once —
+//   - ESCAPE SPEED from below. Under it the hyperbola closes, the sun keeps
+//     the object and the whole "it will not return" promise is a lie.
+//   - THE SHIP'S OWN TOP SPEED from above. Past what the player can fly, the
+//     beam window collapses to 2 * range / (sp - shipSpeed) and the feat stops
+//     being hard and starts being arithmetic. At the full SKY_K the draw came
+//     out 1,599-1,836 u/s against a maxed tier-5 scout's 960 sustained and
+//     1,728 under a full afterburner — i.e. HALF THE DRAWS WERE FASTER THAN
+//     ANYTHING IN THE GAME, and the top-tier window was 1.7s.
+// A raw x SKY_K clears the first floor and drives straight through the second.
+//
+// So the visitor rides SKY_K CAPPED. VISITOR_K_MAX 2 is the largest multiplier
+// that keeps the top of the authored 540-620 band (620 x 2 = 1,240 u/s) under
+// ~72% of the fastest speed any ship can reach (960 x burnCap(6) = 1,728), so
+// the catch is an INTERCEPT PLUS A BURN — or a gravity sling, which banks up
+// to another 1.0 x maxSpeed on CFG.SLING_* — and not a photo finish. Measured
+// consequences of the cap, all three specs at tier 5 with their channels
+// maxed: a scout paces the object outright for its whole 8s tank; the hauler
+// (480 u/s, 990 reach) gets 2.6-3.3s of beam window per pass and the brawler
+// (480 u/s, 750 reach) 2.0-2.5s. Hard, at the top of the ladder, for an
+// insane-tier secret — which is the design target the raw SKY_K missed.
+//
+// WHAT THE CAP COSTS, STATED PLAINLY: the visitor's transit is NO LONGER
+// boundary-invariant above this sky size. Today the cap binds (2 < 2.96), the
+// fall from the rim measures 357-394s instead of the ~250s the authored
+// seconds would give, and a sky bigger than this one lengthens it further
+// (against 703-715s uncorrected, which is what #215 filed). That is the
+// correct trade — a duration is a design target, but an UNREACHABLE object is
+// not a design target at all — and the lever for it is the ENTRY RADIUS
+// (world.js's `R0 = CFG.WORLD_R * 1.22`), never this speed. Below WORLD_R
+// 239,200 the min stops binding and the authored seconds come back on their
+// own, which is why this is a cap and not a second frozen literal.
+const VISITOR_K_MAX = 2;
+const VISITOR_K = Math.min(SKY_K, VISITOR_K_MAX);
 
 // All gameplay tuning lives here.
 export const CFG = {
   SYS_R_MUL: SYS,
+  // Exported so world.js's own sun-centred sweeps can ride the same
+  // conversion — see the note on SKY_K above.
+  SKY_K,
+  // The interstellar visitor's own conversion: SKY_K, capped by what the
+  // player can chase. It is a SEPARATE constant and not a use of SKY_K
+  // because the visitor is the one sweep the player has to CATCH — see the
+  // note on VISITOR_K_MAX above for the two floors it sits between.
+  VISITOR_K,
   G: 8,                    // gravitational constant (gameplay-tuned)
   // FIXED PHYSICS SUBSTEP — the FINE step, and the reference every invariant in
   // CLAUDE.md was tuned at. Everything headless (window.tick / soak / mechTest)
@@ -204,7 +298,7 @@ export const CFG = {
   // The outermost MOON reach is no longer left to arithmetic done by hand
   // here: world.moonZone clamps a family by what this radius actually leaves,
   // which is what makes invariant 6 structural.
-  WORLD_R: 46000 * BOUND,
+  WORLD_R: WR,
   // WORLD SCALE — planets and moons are built at these multiples of the radii
   // authored in world.js (the layout table, and spawnMoon's own 18-34 range).
   // SIZE ONLY: THE MASSES ARE UNTOUCHED, deliberately. Radius is inert to every
@@ -2350,6 +2444,15 @@ export const CFG = {
   // UNCHANGED BY THE INTENSITY LADDER, deliberately: adding classes must not
   // make the sky stormier. The sun fires no more often than it ever did — what
   // changed is WHAT it throws, not how often it throws.
+  // THAT ONLY HOLDS WHILE A WAVE DIES INSIDE ITS OWN TIMER. This timer counts
+  // down DURING a live wave and world.js refuses to start a second one, so the
+  // real cadence is max(timer, charge + lifetime) — the moment a lifetime
+  // outgrows the 180s low end of the draw, the WAVE sets the cadence and this
+  // constant stops meaning anything. That is precisely what happened when
+  // WORLD_R tripled and the class lifetimes tripled with it (the CME reached
+  // 430s and the mean cycle went 330 -> 368, i.e. the sun fired ~10% LESS
+  // often than this line claims); SKY_K is what keeps it from recurring. If a
+  // class's lifetime ever approaches 180s, this constant is the thing to move.
   STORM_EVERY: 300,        // average seconds between waves — weather, not a metronome
   // THE INTENSITY LADDER, weakest first. Each row is a complete wave: its
   // telegraph, its geometry, its bite, its payday and its palette. The top row
@@ -2382,9 +2485,9 @@ export const CFG = {
   // alpha is multiplied by it. A wave that vanished at an exact radius would be
   // the geometric in-world edge the house style forbids; each class instead
   // spends its last ~10 seconds visibly shredding.
-  //   squall  reach 0.5   — the inner system only. Full strength to ~18,500,
-  //                         gone by ~29,900: it never touches the amber giant.
-  //   surge   reach 0.667 — out through the mid system, gone by ~39,900.
+  //   squall  reach 0.5   — the inner system only. Full strength to ~109,800,
+  //                         gone by ~177,100: it never touches the amber giant.
+  //   surge   reach 0.667 — out through the mid system, gone by ~236,300.
   //   cme     reach 1.17  — the whole sky. Its `fade` puts the taper's start at
   //                         exactly WORLD_R, i.e. entirely OUTSIDE the world, so
   //                         the top class behaves precisely as it always did:
@@ -2397,11 +2500,38 @@ export const CFG = {
   // but a squall is a ripple, not a flood (`blind: false`), so the only class
   // that costs nothing is also the only one that hands you nothing.
   // THIS IS THE KNOB THAT MOVES THE STEALTH LAYER. A shorter-reaching wave is a
-  // shorter-LIVED wave, so the ladder cuts the system's sense-blind duty cycle
-  // to ~12% from the ~25% it ran at when every wave was a CME and every wave
-  // crossed the whole sky. Handing `blind` to the squall would only take it to
-  // ~15%. If the aliens start feeling too sharp, this is the first place to
+  // shorter-LIVED wave, so the ladder HALVES the system's sense-blind duty
+  // cycle against a sky where every wave was a CME and every wave crossed the
+  // whole sky. That HALVING is the ladder's claim and it is exact at any
+  // boundary (blind seconds per cycle are (0 + L_surge + L_cme)/3 against
+  // L_cme); the percentage the halving lands on is set by lifetime against
+  // STORM_EVERY, which is to say by how big the sky is against how often the
+  // sun fires. Measured off the real timer (which decrements DURING a live
+  // wave, so a cycle is max(timer, charge + lifetime) and not their sum), at
+  // WORLD_R = 354,200 with SKY_K applied: lifetimes 48.5 / 74.4 / 145.1s, mean
+  // cycle 330s, duty **~22%** against ~44% for an all-CME sky. Handing `blind`
+  // to the squall would take it to ~27%.
+  // THE ~12%/~25% PAIR THIS NOTE USED TO QUOTE WAS MEASURED AT WORLD_R =
+  // 59,800 (10.3% / 20.7%) and is what the ladder was tuned against. The sky
+  // has grown twice since — SYS 1.3 -> 2.6, then the BOUND pass — and a duty
+  // cycle is lifetime over cadence, so growing the sky raises it unless
+  // STORM_EVERY comes down with it. SKY_K is what stops the BOUNDARY half of
+  // that drifting again; the remaining gap is a cadence question (STORM_EVERY),
+  // not a geometry one, and is deliberately left alone here rather than bought
+  // by making the waves faster than the sky they were authored for.
+  // If the aliens start feeling too sharp, this is the first place to
   // look — every nest and lurker answers to it.
+  //
+  // `speed`, `band` and `tail` ARE ALL x SKY_K, and all three or none: they are
+  // the wave's LONGITUDINAL geometry, and every DURATION the wave has comes out
+  // of ratios among them and CFG.WORLD_R. Lifetime is reach*WORLD_R/speed, the
+  // full-pass exposure that prices the hull cost is tail/speed, and the ~1.5s
+  // the thin front takes to cross you is 2*band/speed. Scale the speed alone
+  // and the sheath becomes a flicker that bills a third of the hull it should;
+  // scale none of them and the lifetime rides the boundary, which is exactly
+  // what put this system at a 59% blind duty cycle when WORLD_R tripled. The
+  // AUTHORED numbers below are unchanged — they are still the u/s the ladder
+  // was priced in, and SKY_K is the only thing between them and the sky.
   //
   // `pay` is the payday in one knob: it scales BOTH the per-second ride XP
   // (PROG.XP_STORM_RIDE) and how far the scrap it sweeps is charged toward
@@ -2438,19 +2568,22 @@ export const CFG = {
   // stringify straight into an `rgba(${c}, a)` template.
   STORM_CLASSES: [
     { key: 'squall', name: 'SOLAR SQUALL', tag: 'SQUALL',
-      charge: 3.5, speed: 1200, band: 380, tail: 4200, reach: 0.5, fade: 0.62,
+      charge: 3.5, speed: 1200 * SKY_K, band: 380 * SKY_K, tail: 4200 * SKY_K,
+      reach: 0.5, fade: 0.62,
       dps: 2.5, thrust: 0.85, ion: 2.0, shove: 60, blind: false, pay: 0.45,
       blurb: 'a thin front, and it will not reach the outer system.',
       dens: 0.45, core: [215, 245, 255], shock: [120, 195, 255], warm: [150, 205, 255],
       sheath: [95, 120, 235], haze: [70, 90, 210], filLo: [70, 130, 235], filHi: [170, 225, 255] },
     { key: 'surge', name: 'SOLAR SURGE', tag: 'SURGE',
-      charge: 5, speed: 1050, band: 520, tail: 6400, reach: 0.667, fade: 0.68,
+      charge: 5, speed: 1050 * SKY_K, band: 520 * SKY_K, tail: 6400 * SKY_K,
+      reach: 0.667, fade: 0.68,
       dps: 4.5, thrust: 0.72, ion: 3.4, shove: 100, blind: true, pay: 0.72,
       blurb: 'deep enough to hurt — and nothing alien can see you while it passes.',
       dens: 0.72, core: [255, 228, 246], shock: [255, 140, 200], warm: [255, 150, 190],
       sheath: [225, 80, 190], haze: [135, 55, 215], filLo: [235, 70, 140], filHi: [255, 180, 215] },
     { key: 'cme', name: 'CORONAL MASS EJECTION', tag: 'CME',
-      charge: 7, speed: 950, band: 700, tail: 9200, reach: 1.166, fade: 0.858,
+      charge: 7, speed: 950 * SKY_K, band: 700 * SKY_K, tail: 9200 * SKY_K,
+      reach: 1.166, fade: 0.858,
       dps: 7, thrust: 0.6, ion: 5, shove: 150, blind: true, pay: 1,
       blurb: 'a deep sheath, it crosses the whole sky, and it bites — but nothing alien can see you while it passes.',
       dens: 1, core: [255, 250, 240], shock: [255, 185, 105], warm: [255, 170, 90],
