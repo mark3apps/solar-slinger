@@ -3653,12 +3653,14 @@ function collideShipBody(game, s, b, dt) {
 // per-body collider can observe. Module-level rather than on `game` for the
 // same reason `shipContacts` is: it is scratch between two functions in this
 // file and means nothing to a save, a soak or the HUD.
-// `lock` is the EVICTION: the body a station just collapsed under the ship on,
-// which refuses a fresh build site until the hull is genuinely off the ground
-// again (set in removeDock, cleared below — the reasoning is on both). `off` is
-// the seconds it has been clear of any surface, which is what "genuinely" means
-// there.
-const landing = { touch: null, settle: null, gate: '', b: null, t: 0, lock: null, off: 0 };
+// `lock` is the EVICTION: the RETIRED STATION RECORD a dome just collapsed
+// under the ship, which refuses a fresh build site on its body until the hull
+// is genuinely off the ground and clear of that pad again (set in removeDock,
+// cleared in updateDock — the reasoning is on both). The whole record rather
+// than its body, because "genuinely" is a distance from the PAD and padPos
+// needs the bearing and the standoff to place it; the record is spliced out of
+// game.docks but stays perfectly readable, and it is never re-entered there.
+const landing = { touch: null, settle: null, gate: '', b: null, t: 0, lock: null };
 
 // Is this station finished? The ONE test for "does this dock actually work" —
 // the shield, the repair and the pad's built look all read it, so a station can
@@ -3702,14 +3704,15 @@ function removeDock(game, d) {
     // Clearing the latch ALONE does not fix that: the hull is still settled on
     // the surface with every gate held, so it re-earns the berth in DOCK_TIME
     // (0.5s) and rebuilds anyway. So the SITE is locked until the hull is
-    // actually off the ground. Rebuilding here after leaving and coming back
-    // stays legal — that is the sanctioned way to get a new pool, and it still
-    // costs the full DOCK_BUILD exposed.
+    // actually off the ground AND clear of this pad — a DISPLACEMENT, not a
+    // stopwatch (updateDock carries why). Rebuilding here after leaving and
+    // coming back stays legal — that is the sanctioned way to get a new pool,
+    // and it still costs the full DOCK_BUILD exposed.
     //
     // updateLaunch runs the same latch clear for the same "re-earned from zero"
     // reason; this is the collapse's half of it.
     landing.t = 0; landing.b = null;
-    landing.lock = d.b; landing.off = 0;
+    landing.lock = d;
   }
   if (game.autoland === d) game.autoland = null;
   const wasHome = game.home === d;
@@ -3759,7 +3762,7 @@ export function clearDocks(game) {
   game.autoland = null; game.autolandCd = 0;
   if (game.docks) game.docks.length = 0; else game.docks = [];
   landing.touch = null; landing.settle = null; landing.b = null;
-  landing.gate = ''; landing.t = 0; landing.lock = null; landing.off = 0;
+  landing.gate = ''; landing.t = 0; landing.lock = null;
   game.dockT = 0; game.dockCand = null; game.dockGate = '';
 }
 
@@ -3803,23 +3806,51 @@ function updateDock(game, dt) {
     }
   }
 
-  // LIFTING CLEAR LIFTS THE EVICTION (removeDock) — ON THE BERTH'S OWN GRACE,
-  // NEVER ON ONE SUBSTEP. A single frame off the surface is not a departure,
-  // and in the only scenario a dome ever dies in it is the COMMON case: the
-  // ground and the hull are under fire, so a bounce off the debris breakDock
-  // just spawned, a nudge from the next hit or a scar opening under the pad all
-  // break contact for a frame while the ship has plainly gone nowhere. Read as
-  // "the ship left", 8ms of air handed the rebuild straight back.
+  // LIFTING CLEAR LIFTS THE EVICTION (removeDock) — MEASURED IN DISTANCE FROM
+  // THE DEAD PAD, NEVER IN SECONDS OF AIR. A single frame off the surface is
+  // not a departure, and in the only scenario a dome ever dies in it is the
+  // COMMON case: the ground and the hull are under fire, so a bounce off the
+  // debris breakDock just spawned, a nudge from the next hit or a scar opening
+  // under the pad all break contact for a frame while the ship has plainly gone
+  // nowhere. Read as "the ship left", 8ms of air handed the rebuild straight
+  // back.
   //
-  // CFG.DOCK_DRAIN already prices exactly this question for the BERTH: contact
-  // holds a berth, and losing it spends the latch at DOCK_DRAIN, so a berth
-  // survives DOCK_TIME / DOCK_DRAIN (~0.17s) of no contact — its note calls
-  // that "a bump across a ridge". Leaving means the same thing to both, so the
-  // eviction reads the same clock rather than inventing a second answer.
-  // Capped: this counts up for the whole time the ship is in open space.
-  if (landing.touch) landing.off = 0;
-  else landing.off = Math.min(1, landing.off + dt);
-  if (landing.lock && landing.off >= CFG.DOCK_TIME / CFG.DOCK_DRAIN) landing.lock = null;
+  // "PLAINLY GONE NOWHERE" IS A DISPLACEMENT, AND A CLOCK CANNOT MEASURE IT.
+  // This borrowed the BERTH's grace (DOCK_TIME / DOCK_DRAIN, ~0.17s) on the
+  // reasoning that leaving means the same thing to both. It does not: a berth
+  // is held by CONTACT, so seconds-without-contact is the honest question
+  // there, while the eviction asks whether the hull is still AT THIS SITE. Time
+  // answers that only through gravity, and gravity here is neither uniform nor
+  // large. Bare G*m/r^2 over the sky's 67 moons runs 0.56 to 114.5 u/s^2
+  // (median 3.16) — no one duration means the same thing on two of them. And
+  // the bare figure is not even the one that sets hang time: the SHIP alone
+  // feels a world through CFG.PLANET_GRAV_SHIP (x12), so T18f's staging moon
+  // pulls the hull at ~53 u/s^2 where G*m/r^2 says 3.7. (SURFACE WEIGHT is not
+  // the mechanism — its peak is radius/SHIP_SURF_REF, <= 1 for every moon in
+  // the sky, so it never amplifies one.) Even at that pull, a 30 u/s nudge —
+  // small change beside a collapse, and the pad's pin is gone with the station
+  // — coasts 1.2s and lifts the hull 9 units: seven times the 0.17s grace,
+  // spent going nowhere, still falling back onto the crater it was evicted
+  // from. That is #175's exploit almost verbatim.
+  //
+  // So: OFF THE GROUND (the law's own words) AND OUT OF THE DEAD PAD'S BERTH
+  // RADIUS. Both halves are needed — distance alone would let the hull SKID out
+  // of the ring without ever lifting, and the 'rubble' gate says "LIFT CLEAR".
+  // CFG.DOCK_BERTH_R is not a borrowed constant here, it is the same question
+  // it already answers below: inside it you are at THIS pad's site (you berth
+  // at it rather than build beside it), outside it you are somewhere else. The
+  // measurement rides padPos, so it is taken in the site's own frame and an
+  // orbiting host contributes nothing — the dome-repel rule, same reason. Note
+  // that a big enough bounce DOES clear it, and should: the collapse's own kick
+  // caps at 200 u/s, which off that same moon throws the hull thousands of
+  // units up and well past the ring. A hull thrown that far has genuinely left,
+  // and it pays the fall back plus the full DOCK_BUILD — the sanctioned price.
+  if (landing.lock && !landing.touch) {
+    const pp = padPos(landing.lock, _padScratch);
+    if ((s.x - pp.x) ** 2 + (s.y - pp.y) ** 2 > CFG.DOCK_BERTH_R * CFG.DOCK_BERTH_R) {
+      landing.lock = null;
+    }
+  }
 
   // The latch timer fills only while all three gates hold and drains
   // DOCK_DRAIN times faster off the surface — see CFG.DOCK_DRAIN for why
@@ -3898,7 +3929,7 @@ function updateDock(game, dt) {
     // declines to lay a station is this feature's worst failure mode, so the
     // refusal goes through the same gate channel every other one does, and
     // drawDockGuide's instruction for it is "lift clear".
-    const evicted = !d && landing.lock === b;
+    const evicted = !d && !!landing.lock && landing.lock.b === b;
     if (evicted) {
       landing.gate = 'rubble';
     } else if (!d) {
