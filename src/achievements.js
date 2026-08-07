@@ -1023,6 +1023,14 @@ export const ACHIEVEMENTS = [
   // no loop (the predicate contract)
   A('secretGrandTour', 'secret', PTS.brutal, 'Grand Tour', 'You skimmed every skateable surface in the system: bands, dunes, cloud tops and bare rock.',
     (g, s) => !!g.tut.banded && !!g.tut.dune && !!g.tut.skim && s.scrapes >= 1),
+  // THIS ROW IS A CONSTRAINT ON world.js, not just a predicate over it. It is
+  // scored on a tractor GRAB, so the visitor's speed can never be a free
+  // function of the sky's size: past what the ship can fly, the beam window
+  // collapses to 2 * st.range / (sp - st.maxSpeed) and an insane-tier feat
+  // becomes an impossible one (it briefly was — the raw CFG.SKY_K put half the
+  // draws faster than any ship in the game). CFG.VISITOR_K is what holds the
+  // ceiling; if this row's difficulty is ever revisited, that constant and its
+  // note are the thing to move, not this predicate.
   A('secretVisitor', 'secret', PTS.insane, 'Once in a Lifetime', 'You caught the interstellar visitor before it left forever.',
     (g, s) => s.cVisitor >= 1),
   A('secretCarved', 'secret', PTS.tricky, 'Archaeology', 'You picked up the carved stone. Somebody made that.',

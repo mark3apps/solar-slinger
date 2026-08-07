@@ -1,8 +1,8 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
-  abilityById, abilityRankCost, tierChoices, tierFloorFor,
+  abilityById, abilityRankCost, tierChoices, tierFloorFor, newProgress, burnCap,
   stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR, modeRules } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
-import { spawnAsteroid, respawnShip, chartZoneR } from './world.js';
+import { spawnAsteroid, respawnShip, chartZoneR, replenishWorld } from './world.js';
 import { Alien } from './entities.js';
 import { updateAliens } from './ai.js';
 import { damageShip, parryLive, frameReg } from './physics.js';
@@ -1638,6 +1638,76 @@ export function runMechTest(game, hooks, opts = {}) {
         + `(${dark.length} shepherd exempt); smallest r=${small.radius.toFixed(1)}, lee=${shelterR(small).toFixed(1)}`;
     });
 
+    // T20b — A WAVE'S LIFETIME IS A DESIGN TARGET; THE BOUNDARY IS NOT (#214).
+    //
+    // WHY T20 CANNOT SEE THIS. Every assertion above is a RATIO — strength at
+    // the fade radius, strength at the reach limit, reach against reach, reach
+    // against WORLD_R — and a wave's geography is defined as a fraction of
+    // WORLD_R, so all of them are exactly preserved when the boundary moves.
+    // The BOUND pass took WORLD_R from 119,600 to 354,200 and T20 stayed green
+    // while every class lifetime tripled underneath it (143.6 / 220.4 / 429.7s,
+    // against the 48.5 / 74.4 / 145.1 the ladder was priced at). This case is
+    // therefore the same ladder read in SECONDS instead of in fractions, which
+    // is the only reading a boundary move can move.
+    //
+    // The lifetime is the front's own: world.js launches the wave at
+    // game.homeStar.radius and retires it on config.stormSpent (r past
+    // reach*WORLD_R), so it is (reach*WORLD_R - starR)/speed, read off the LIVE
+    // star rather than a copied 4,800.
+    //
+    // THE SECOND ASSERTION IS THE ONE WITH TEETH. CFG.STORM_EVERY draws over
+    // 0.6-1.6x of 300, so 180s is the low end of the cadence — and world.js's
+    // timer counts down DURING a live wave, so once charge + lifetime passes
+    // that draw the WAVE sets the cadence and STORM_EVERY stops meaning
+    // anything. At the tripled boundary the cme (436.7s) and the surge (225.4s)
+    // both broke it; nothing in the suite noticed.
+    //
+    // The third is belt-and-braces and is INVARIANT to this fix by design:
+    // `tail` and `speed` are scaled together, so tail/speed is unchanged before
+    // and after. That is exactly what it pins — the full-pass exposure that
+    // prices the hull cost (dps x tail/speed) is a ratio WITHIN the row, so
+    // scaling `speed` alone would leave the lifetimes right and quietly turn
+    // the sheath into a flicker billing a third of the hull it should.
+    t('storm: class lifetimes are absolute seconds, not a function of WORLD_R', () => {
+      // The authored seconds the intensity ladder was priced in. A boundary
+      // move must not move them; retuning a class deliberately must move them
+      // HERE too, because they are the design target this case exists to hold.
+      const WANT = { squall: 48.5, surge: 74.4, cme: 145.1 };
+      const EXPO = { squall: 3.50, surge: 6.10, cme: 9.68 };
+      const TOL = 2.5;        // seconds — a boundary move shifts these ~3x
+      const ETOL = 0.15;      // seconds of full-pass exposure
+      const starR = game.homeStar.radius;
+      const seen = [];
+      for (const c of CFG.STORM_CLASSES) {
+        const want = WANT[c.key], expoWant = EXPO[c.key];
+        expect(want !== undefined, `unknown storm class '${c.key}' — add its authored lifetime here`);
+        const life = (CFG.WORLD_R * c.reach - starR) / c.speed;
+        expect(Number.isFinite(life) && life > 0,
+          `${c.key}: lifetime came out ${life} — speed ${c.speed} is not a usable number`);
+        expect(Math.abs(life - want) <= TOL,
+          `${c.key} lives ${life.toFixed(1)}s, authored ${want}s (WORLD_R ${Math.round(CFG.WORLD_R)}, `
+          + `speed ${c.speed.toFixed(0)} u/s) — a duration is the design target and the boundary is not, `
+          + `so a sun-crossing speed is quoted in the sky's own units (CFG.SKY_K), never in absolute u/s`);
+        // The low end of world.js's own draw, `CFG.STORM_EVERY * (0.6 + rng())`
+        // — read off the constant, never restated as the 180 it happens to
+        // equal today, or retuning STORM_EVERY moves the cadence and leaves
+        // this case pinned to the old one.
+        const cadenceLow = CFG.STORM_EVERY * 0.6;
+        expect(c.charge + life < cadenceLow,
+          `${c.key}: charge ${c.charge}s + lifetime ${life.toFixed(1)}s = ${(c.charge + life).toFixed(1)}s `
+          + `outlives the ${cadenceLow.toFixed(0)}s low end of STORM_EVERY's draw — the timer counts down during a live wave and `
+          + `world.js refuses a second one, so past this the WAVE sets the cadence and STORM_EVERY is a lie`);
+        const expo = c.tail / c.speed;
+        expect(Math.abs(expo - expoWant) <= ETOL,
+          `${c.key}: full-pass exposure ${expo.toFixed(2)}s, authored ${expoWant}s — tail ${c.tail.toFixed(0)} `
+          + `and speed ${c.speed.toFixed(0)} are the wave's longitudinal geometry and scale TOGETHER or not at `
+          + `all; scaling speed alone leaves the lifetime right and bills ${(expo / expoWant * 100).toFixed(0)}% `
+          + `of the hull cost this class is priced at`);
+        seen.push(`${c.key} ${life.toFixed(1)}s`);
+      }
+      return `${seen.join(' / ')} (WORLD_R ${Math.round(CFG.WORLD_R)}, star r=${Math.round(starR)})`;
+    });
+
     // ---- ONE `game.latch`, TWO WINCHES (QA #205) ----------------------------
     // T21b..e. There is exactly ONE `game.latch` and it serves two winches —
     // the BEAM's on the left button and the RING's stow on the right (`L.stow`,
@@ -2952,6 +3022,139 @@ export function runMechTest(game, hooks, opts = {}) {
         // integrator, so the honest restore is where the moon WOULD be now.
         m.rail.w = wasW;
         m.rail.ang = wasAng + wasW * (game.time - t0);
+      }
+    });
+
+    // T27 — THE INTERSTELLAR VISITOR SITS BETWEEN TWO ABSOLUTE FLOORS (#215,
+    // and the QA follow-up to it). Same principle as T20b at the other site
+    // that has it: the visitor enters at CFG.WORLD_R * 1.22 and leaves past
+    // CFG.WORLD_R * 1.26, so both ends of the trip are quoted in the boundary
+    // while its speed was authored absolute — which made the whole event's
+    // DURATION a free function of the boundary. The BOUND pass turned a
+    // ~4-minute fall into a ~12.5-minute one, with game.visitorWarn announcing
+    // the object twelve minutes before there was anything to look at.
+    //
+    // BUT THE SPEED HAS A CEILING AS WELL AS A FLOOR, AND THAT IS WHAT MAKES
+    // THIS CASE DIFFERENT FROM T20B. A solar wave only has to be survivable; the
+    // visitor has to be CAUGHT (achievements.js `secretVisitor`, PTS.insane,
+    // fires off noteCatch). Applying the raw CFG.SKY_K to close the floor blew
+    // straight through the ceiling: the draw came out 1,599-1,836 u/s against a
+    // maxed tier-5 scout's 960 sustained and 1,728 under a full burn, i.e. half
+    // the draws were faster than anything in the game and the best-case beam
+    // window was 1.7s. CFG.VISITOR_K is SKY_K capped for exactly that reason,
+    // and the third assertion below is the ceiling this case exists to hold —
+    // it reads the ship's numbers off shipStats itself rather than restating
+    // them, because a restated ship ladder is the mirror-drift trap.
+    //
+    // RUN END-TO-END THROUGH world.replenishWorld, not against a copy of its
+    // arithmetic: the whole regression is one `* CFG.VISITOR_K` inside that
+    // function, and a closed form written out here would still pass with the
+    // multiply deleted. Nothing but the visitor branch is allowed to fire — the
+    // dt is a microsecond and every ambient timer is wound out of reach and put
+    // back — so this costs one call, not the 240 sim-seconds the gate names.
+    //
+    // WHAT THIS CASE DELIBERATELY DOES NOT ASSERT: that the visitor ever
+    // LEAVES. It does not. `off` (world.js, the impact parameter) is an
+    // absolute 3,200-5,000 in a sky whose sun is radius 4,800, so perihelion
+    // lands at 4,803-4,807 — inside CFG.HEAT_ZONE * 4,800 = 6,240 — and the
+    // corona kills it there in 11 of 12 measured runs, at this speed and at
+    // the pre-#215 one alike (703-715s, perihelion 4,865-4,975). So
+    // game.visitorGone effectively never fires. That is a separate open defect
+    // recorded on the world.js block; nothing here may assert past perihelion
+    // until it is fixed, which is also why the transit assertion below is
+    // written against the FALL and not against the round trip.
+    //
+    // IT RUNS LAST ON PURPOSE. It is the only case in the suite that takes RNG
+    // draws outside a stepSim, so sitting after the census means it cannot move
+    // a single number above it. The visitor it mints is unwound in the finally
+    // (killed and spliced out) so the report's own sky census never sees it.
+    t('visitor: the interstellar transit is minutes, and the ship can still catch it', () => {
+      // Every ambient spawner in replenishWorld is timer-gated; wound out of
+      // reach so the one microsecond below can only reach the visitor branch.
+      const FROZEN = ['moonTimer', 'flareTimer', 'cometTimer', 'maydayTimer',
+        'fieldTimer', 'stormTimer', 'scanT'];
+      const wasT = FROZEN.map((k) => game[k]);
+      const wasTime = game.time, wasDone = game.visitorDone;
+      const wasV = game.visitor, wasWarn = game.visitorWarn;
+      const n0 = game.bodies.length;
+      try {
+        for (const k of FROZEN) game[k] = 1e6;
+        game.time = 241;                 // the gate is `game.time > 240`
+        game.visitorDone = false; game.visitor = null;
+        replenishWorld(game, 1e-6);
+        const v = game.visitor;
+        expect(v && v.visitor, 'replenishWorld minted no visitor — the gate this case rides has moved');
+        expect(game.visitorWarn, 'the arrival was never announced');
+        const R0 = Math.hypot(v.x - game.homeStar.x, v.y - game.homeStar.y);
+        const sp = Math.hypot(v.vx, v.vy);
+        // Time to fall from the entry radius to the sun, ballistically. An
+        // UPPER bound on time-to-perihelion: it is aimed a few thousand units
+        // past the star and the star's own pull only shortens the trip, so a
+        // failure here cannot be an artefact of ignoring gravity. The gate is
+        // 450s because the CAPPED conversion no longer buys the authored ~240s
+        // in a sky this size — 348-400s ballistic is what CFG.VISITOR_K's
+        // ceiling costs, and it is the trade the constant's note argues for.
+        // The uncapped-absolute regression this case exists to catch lands at
+        // 697-800s, so the discrimination is not close.
+        const fall = R0 / sp;
+        expect(fall < 450,
+          `the visitor needs ${fall.toFixed(0)}s to fall from its entry radius (${Math.round(R0)}u) at `
+          + `${Math.round(sp)} u/s — the event is a MINUTES-long approach, not a quarter of an hour. `
+          + `Both ends of the trip are fractions of CFG.WORLD_R (${Math.round(CFG.WORLD_R)}), so the `
+          + `speed has to be quoted in the sky's own units (x CFG.VISITOR_K) or the duration rides the `
+          + `boundary. If the sky grew again, the lever is the ENTRY RADIUS, never this speed — raising `
+          + `the speed to buy the seconds back is what the ceiling assertion below refuses`);
+        // FLOOR: escape speed, so nobody closes the gap above by simply making
+        // the sky smaller than the hyperbola needs. "It will not return" is
+        // only true while it is unbound.
+        const esc = Math.sqrt(2 * CFG.G * game.homeStar.mass / R0);
+        expect(sp > esc * 2,
+          `${Math.round(sp)} u/s is not far above escape (${esc.toFixed(1)} u/s at ${Math.round(R0)}u) — `
+          + `the one-shot promise needs it comfortably unbound`);
+        // CEILING: THE SHIP. Read off shipStats rather than restated — every
+        // spec, top tier, every channel it can actually reach (`also` shares a
+        // row across specs, so an eligibility test and not just `a.spec`).
+        // `burn` is the fastest a ship can go at all: the governor multiplies
+        // its flow-relative cap by burnCap while the tank holds (physics.js) —
+        // gated on OWNING the afterburner, exactly as main.js gates the tank,
+        // or a hauler (which has no such row) is credited with a burn it can
+        // never light.
+        const eligible = (a, id) => !a.spec || a.spec === id || (a.also && a.also[id] !== undefined);
+        let best = null;
+        const windows = [];
+        for (const S of SPECS) {
+          const prog = newProgress();
+          prog.spec = S.id; prog.tier = 5;
+          for (const a of ABILITIES) if (eligible(a, S.id)) prog.upgrades[a.id] = a.max ?? 6;
+          const st = shipStats(prog);
+          const burn = st.maxSpeed * (st.afterburner > 0 ? burnCap(st.afterburner) : 1);
+          // The beam reach is st.range + the body's own radius (tractor.js), and
+          // a tail chase crosses it twice — that is the whole grab opportunity
+          // on one pass for a ship that cannot pace the object.
+          const win = sp > st.maxSpeed ? 2 * (st.range + v.radius) / (sp - st.maxSpeed) : Infinity;
+          windows.push(`${S.id} ${win === Infinity ? 'paces it' : win.toFixed(1) + 's'}`);
+          if (!best || burn > best.burn) best = { id: S.id, burn, st };
+        }
+        expect(sp < best.burn * 0.85,
+          `the visitor flies at ${Math.round(sp)} u/s and the fastest thing the player can fly is the `
+          + `${best.id} at ${Math.round(best.burn)} u/s (tier 5, ${best.st.maxSpeed} sustained x a full `
+          + `afterburner) — a tractor grab is what achievements.js's secretVisitor is scored on, so a `
+          + `speed the ship cannot close on turns an insane-tier feat into an impossible one. This is the `
+          + `SECOND absolute floor CFG.SKY_K's own header names and CFG.VISITOR_K exists to hold; scaling `
+          + `a sun-crossing speed by the boundary is only correct while the thing does not have to be caught`);
+        return `entry ${Math.round(R0)}u at ${Math.round(sp)} u/s -> perihelion in <=${fall.toFixed(0)}s `
+          + `(escape ${esc.toFixed(1)} u/s; ${best.id} burn ${Math.round(best.burn)} u/s; T5 windows `
+          + `${windows.join(', ')}), +${game.bodies.length - n0} body`;
+      } finally {
+        // UNWIND, never force (issue #151): the timers and the visitor
+        // bookkeeping go back exactly as they were, and anything that call
+        // pushed onto the sky comes back off it — the report's census is taken
+        // after this and must describe the world the suite actually flew.
+        for (let i = n0; i < game.bodies.length; i++) game.bodies[i].alive = false;
+        game.bodies.length = n0;
+        for (let i = 0; i < FROZEN.length; i++) game[FROZEN[i]] = wasT[i];
+        game.time = wasTime; game.visitorDone = wasDone;
+        game.visitor = wasV; game.visitorWarn = wasWarn;
       }
     });
   } finally {

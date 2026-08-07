@@ -103,6 +103,57 @@ for (const m of moons) {
   if (c < minPeriClear) { minPeriClear = c; minPeriMoon = m.parent.name; }
 }
 
+// MOONS LOST TO FLOATING POINT, NOT TO GEOMETRY (issue #200). `byType.moon`
+// already moves when this breaks (67 vs 72 on this seed) — but a census that
+// moved tells you THAT the sky changed, never WHY, and "the moon count is 5
+// lower" is indistinguishable from a real clearance regression. This field is
+// the why: it counts lanes where addPlanet's family cap threw away a whole
+// moon for a rounding error and nothing else.
+//
+// The clip is `Math.floor((maxR - minR) / moonSlot())`, and the common case is
+// that quotient landing EXACTLY on an integer by construction — buildLayout
+// opens each span until it equals what the family wants, generateWorld's lane
+// pass divides that same span back by the same proportions, and familyReach
+// multiplies by (1 + MOON_E_MAX) where moonZone's laneRoom divides by it
+// again. Exact in real arithmetic, not one of them exact in binary, so the
+// quotient arrives ~1 ulp UNDER its integer (13 as 12.999999999999993) and the
+// floor drops a moon. A lane is counted here when the epsilon would have
+// rescued a moon AND the family generated at the un-rescued count — i.e. the
+// rounding, not the geometry, is what ended it. Each such lane loses exactly
+// one moon, so this number RECONCILES with the census: without the epsilon it
+// reads 5 on seed 20260721 (byType.moon 67 vs 72) and 10 on 3827467762 (64 vs
+// 74), and with it, 0 on both. A non-zero reading here and an unexplained
+// byType.moon drop are the same event; a byType.moon drop with 0 here is a
+// genuine geometry change and wants reading as one.
+//
+// THE ZONE MATH IS MIRRORED HERE BECAUSE world.js EXPORTS NONE OF IT
+// (moonZone / moonSlot / moonFloor are module-private). Keep this block in
+// step with them: it reads the SAME inputs off the generated bodies —
+// p.moonRoom is stamped by the lane pass, the lane comes off the rail
+// parameter for the reason laneOf above documents — so a drift shows up as
+// this count going non-zero on unmodified code, not as a silent wrong answer.
+// Deterministic: pure arithmetic over generated values, no survival state, no
+// live position. The 1-ulp round trip through rail.r moves the quotient by
+// ~1e-14, four orders under the 1e-9 the test uses.
+const { CFG: cfg } = await import('/src/config.js');
+const MOON_SLOT = 220 * cfg.MOON_R_MUL;
+const moonFloorOf = (p) => Math.max(p.radius + 90 * cfg.MOON_R_MUL,
+  p.radius * (p.ring ? 2.5 : p.ptype === 'terran' ? 1.75 : p.ptype === 'crystal' ? 1.6 : 1.45));
+let roundingClippedLanes = 0;
+for (const { p, lane } of planets) {
+  const hill = lane * Math.cbrt(p.mass / (3 * star.mass));
+  const room = Math.max(0, cfg.WORLD_R - lane) / (1 + cfg.MOON_E_MAX);
+  const laneRoom = (p.moonRoom ?? Infinity) / (1 + cfg.MOON_E_MAX);
+  const minR = moonFloorOf(p);
+  const maxR = Math.min(hill * cfg.MOON_ZONE_MUL, room, laneRoom);
+  const q = (maxR - minR) / MOON_SLOT;
+  if (!(Math.floor(q + 1e-9) > Math.floor(q))) continue;   // not a rounding case at all
+  // The ring shepherd is pinned to its lane by spawnShepherd and never comes
+  // out of this clamp, so it must not count toward the family it sits in.
+  const got = moons.filter((m) => m.parent === p && !m.shepherd).length;
+  if (got === Math.floor(q)) roundingClippedLanes++;
+}
+
 // Neighbouring families overlapping radially is EXPECTED and allowed (the
 // railed-conjunction pass-through in physics.collideBodies is what makes it
 // safe). Tracked as a number so a worldgen change that suddenly makes them
@@ -177,7 +228,8 @@ return {
   planetLanes: { count: planets.length, minSurfaceGap: Math.round(minSurfaceGap), at: minSurfacePair,
                  coOrbitalPairs },
   moonSystems: { count: moons.length, minPeriClearance: Math.round(minPeriClear), at: minPeriMoon,
-                 overlappingNeighbourPairs: overlappingPairs, worstOverlap },
+                 overlappingNeighbourPairs: overlappingPairs, worstOverlap,
+                 roundingClippedLanes },
   fields,
   landmarks,
 };

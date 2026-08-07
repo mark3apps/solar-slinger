@@ -531,8 +531,24 @@ function addPlanet(bodies, rng, star, orbitR, mass, radius, opts = {}) {
   // Chunk-shell clearance on top of that is seedDebrisBelts' own job — it
   // measures real slack per moon and shrinks or skips the shell.
   // An over-draw therefore degrades to FEWER moons, never to a crossing pair.
+  //
+  // THE EPSILON IS LOAD-BEARING, AND IT IS NOT A FUDGE. The common case is the
+  // clamp landing EXACTLY on the drawn count, by construction: buildLayout
+  // opens each span until it equals `wantSpan`, generateWorld's lane pass
+  // divides that same span back by the same proportions, and `familyReach`
+  // multiplies by (1 + MOON_E_MAX) where `moonZone`'s laneRoom divides by it
+  // again. Every one of those round-trips is exact in real arithmetic and
+  // NONE of them is exact in binary floating point, so the quotient lands ~1
+  // ulp UNDER the integer it was built to equal (measured: q = 13 arriving as
+  // 12.999999999999993, or 1 as 0.9999999999999996) and Math.floor throws away
+  // a whole moon. Measured over 40 seeds without it: 276 of 520 lanes clipped,
+  // 264 of them (96%) purely to rounding — and the default seed's ocean world
+  // lost its ONLY moon. The epsilon is 1e-9 of a SLOT, i.e. ~1e-6 world units
+  // of extra room granted, nine orders of magnitude under the 100*MOON_R_MUL
+  // margin the no-crossing rule is solved against; a genuine geometric clip is
+  // short by a fraction of a slot and still clips. Do not "simplify" it away.
   const { minR, maxR } = moonZone(star, p, orbitR);
-  const count = Math.min(opts.moons || 0, Math.floor((maxR - minR) / moonSlot()));
+  const count = Math.min(opts.moons || 0, Math.floor((maxR - minR) / moonSlot() + 1e-9));
   if (count > 0) {
     if (maxR > minR + 50) {
       const slotW = (maxR - minR) / count;
@@ -3490,11 +3506,38 @@ export function replenishWorld(game, dt) {
     game.cometWarn = true;
   }
 
-  // ---- interstellar visitor: a hyperbolic one-shot. It enters once per
-  // run, crosses the system in ~3 minutes, and leaves FOREVER unless caught.
+  // ---- interstellar visitor: a hyperbolic one-shot. It enters once per run,
+  // falls in from the rim in ~6 minutes, and leaves FOREVER unless caught.
   // noBoundary exempts it from the world-edge force (physics.js) — that
   // force would bend the hyperbola into a captured orbit and break the
   // whole "it will not return" promise.
+  //
+  // OPEN DEFECT — IT DOES NOT ACTUALLY LEAVE, AND THIS COMMENT USED TO CLAIM
+  // IT DID (it said "past the sun and out of the sky ~8.5 minutes after it
+  // appears"). `off` below is the impact parameter and it is an ABSOLUTE
+  // 3,200-5,000 in a sky whose sun is radius 4,800, so the object falls down
+  // the star's throat rather than sweeping the mid-system: measured end to end
+  // through the sim, 11 of 12 runs reach perihelion at 4,803-4,807 and DIE
+  // THERE at 357-394s — clearing the photosphere by ~5 units, deep inside
+  // CFG.HEAT_ZONE * 4,800 = 6,240, and the corona bills the difference.
+  // game.visitorGone effectively never fires, so achievements.js's
+  // `visitorGone` ("Farewell", watch it leave) is all but unreachable.
+  //
+  // IT IS NOT A REGRESSION OF THE SPEED WORK — with the speed reverted to its
+  // pre-#215 absolute the same runs died at perihelion too, at 703-715s. But
+  // the speed does MOVE it: a slower object arrives with less energy against
+  // the same pull and dives deeper (perihelion 4,865-4,975 at the old speed,
+  // 4,803-4,807 now), so it grazes the surface where it used to clear it by
+  // ~70 units. That is the reason CFG.VISITOR_K may not be tuned down much
+  // further without moving `off` first.
+  //
+  // That is the SAME defect class as the two CFG.SKY_K sites — an absolute
+  // distance in a sky sized by CFG.WORLD_R — at a THIRD site, and it is
+  // deliberately not fixed here: scaling `off` changes what the object flies
+  // past, which is content rather than a units bug, and it would make a
+  // dormant achievement newly reachable. Fix it on its own, with its own
+  // measurement. Until then this block's promise ends at perihelion and
+  // nothing downstream may assume otherwise.
   if (!game.visitorDone && game.time > 240) {
     game.visitorDone = true;
     const th = rng() * TAU;
@@ -3505,7 +3548,36 @@ export function replenishWorld(game, dt) {
     const off = (rng() < 0.5 ? -1 : 1) * (3200 + rng() * 1800);
     const px = -Math.sin(th) * off, py = Math.cos(th) * off;
     const ang = Math.atan2(py - ey, px - ex);
-    const sp = 540 + rng() * 80;   // far above escape speed everywhere
+    // ITS SPEED SITS BETWEEN TWO ABSOLUTE FLOORS, AND IT IS THE ONLY SUN-
+    // CROSSING SPEED IN THE GAME THAT HAS A SECOND ONE (CFG.VISITOR_K — the
+    // full derivation is on VISITOR_K_MAX in config.js).
+    //
+    // FROM BELOW, ESCAPE SPEED. Both ends of the trip are fractions of
+    // CFG.WORLD_R (R0 above, the despawn radius below), so an absolute u/s
+    // makes the event's DURATION a free function of the boundary: at the
+    // authored 540-620 the BOUND pass turned a ~4-minute fall into a
+    // ~12.5-minute one (measured 703-715s to perihelion), with
+    // game.visitorWarn announcing the object twelve minutes before there was
+    // anything to see. That is what CFG.SKY_K exists to close.
+    //
+    // FROM ABOVE, THE SHIP. This object is meant to be CAUGHT — achievements.js
+    // `secretVisitor` fires off a tractor grab — and the beam window on a pass
+    // is 2 * st.range / (sp - st.maxSpeed) once it outruns you. At raw SKY_K the
+    // draw was 1,599-1,836 u/s against a maxed tier-5 scout's 960 sustained
+    // (1,728 on a full burn), which put half the draws past ANY ship in the
+    // game and the best-case window at 1.7s. A speed tuned against the SHIP is
+    // absolute on purpose — SKY_K's own header says so — so the conversion is
+    // capped rather than applied raw, and the cost is that the fall measures
+    // 357-394s rather than the authored ~250s. Hard, not impossible, is the
+    // target for an insane-tier secret: a maxed scout paces the object
+    // outright on its afterburner, while a tier-5 hauler gets 2.6-3.3s of beam
+    // window per pass and a brawler 2.0-2.5s.
+    //
+    // The draw itself is untouched — same one rng() call, same position in the
+    // stream, so no seed's sky shifts behind it. Still far above escape speed
+    // everywhere (~25 u/s at the rim, ~174 at the lava world's lane), which is
+    // the floor VISITOR_K may never be tuned back through.
+    const sp = (540 + rng() * 80) * CFG.VISITOR_K;
     const v = spawnAsteroid(game.bodies, ex, ey, Math.cos(ang) * sp, Math.sin(ang) * sp, 1800);
     v.visitor = true; v.noBoundary = true; v.junk = true;
     v.color = '#c08a5f'; v.name = 'Interstellar Object';
@@ -3752,6 +3824,13 @@ export function replenishWorld(game, dt) {
   // THE CADENCE IS UNTOUCHED BY THE LADDER. This timer and CFG.STORM_EVERY are
   // exactly what they were when every wave was a CME — three classes means the
   // sun throws something DIFFERENT each time, never something more often.
+  // IT COUNTS DOWN DURING A LIVE WAVE, deliberately (the `!game.storm` guard
+  // below is what refuses a second wave, not a paused timer), so the real
+  // wave-to-wave cycle is max(this draw, charge + lifetime) — the sentence
+  // above is only true while a wave dies inside its own timer. It stopped
+  // being true when WORLD_R tripled and the class lifetimes tripled with it:
+  // the mean cycle went 330s -> 368s and the sun fired ~10% LESS often. The
+  // lifetimes ride CFG.SKY_K now (see STORM_CLASSES) and it is 330s again.
   game.stormTimer = (game.stormTimer ?? 240) - dt;
   if (game.stormTimer <= 0 && !game.storm && !(game.stormChargeT > 0)) {
     game.stormTimer = CFG.STORM_EVERY * (0.6 + rng() * 1.0);
