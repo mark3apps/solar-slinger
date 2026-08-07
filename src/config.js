@@ -364,19 +364,19 @@ export const CFG = {
   // the world is, i.e. it undoes the 1/R² erosion the growth pass caused
   // instead of papering over it.
   //
-  // MEASURED LADDER at REF 400 / POW 2.05 / MAX 12 (seed 12345, ship-felt
+  // MEASURED LADDER at REF 400 / POW 2.05 / MAX 18 (seed 12345, ship-felt
   // surface g, VERIFIED by flying it — physics.shipSurfG plus a full-burn
   // straight-up lift test at each tier):
   //   Pyrris     R  359 ->  23   (peak <= 1, untouched)
   //   Nivelle    R  592 ->  46
   //   Lagune     R  620 ->  59
   //   Wold       R  718 -> 106
-  //   Pell       R  914 -> 146
-  //   Kyrast     R 1214 -> 193  } the gate: over tier-0 thrust (180), so a
+  //   Pell       R  956 -> 146
+  //   Kyrast     R 1293 -> 194  } the gate: over tier-0 thrust (180), so a
   //   Corve      R 1166 -> 198  } fresh ship CANNOT lift off these
-  //   Ullur      R 1882 -> 225  } ballistically — measured, it sits on the
-  //   Maelgor    R 1386 -> 276  } deck at full burn and does not rise
-  //   Vashtar    R 1935 -> 310  } (hits MAX)
+  //   Maelgor    R 2003 -> 198  } ballistically — measured, it sits on the
+  //   Vashtar    R 2797 -> 223  } deck at full burn and does not rise
+  //   Ullur      R 2005 -> 297  } (the three giants all hit MAX)
   // That ladder IS the feature (2026-08 user call: "we also want to make it so
   // that ships can't just escape especially a large planet by just shooting
   // straight out. (unless from a lander)"). The five biggest worlds are a hard
@@ -387,10 +387,11 @@ export const CFG = {
   // TWO CEILINGS BOUND `MAX`, AND BOTH ARE EASY TO MISS.
   //   THRUST. The engine channel is SCOUT-ONLY (tunedThrusters), so a hauler
   //     or brawler tops out at 180 + 30 x tier = 330, NOT the 900 a maxed
-  //     scout reaches. MAX 12 puts the deepest world at 310, under 330, so
-  //     tier 5 walks off everything for EVERY spec — measured. Size this
-  //     against 330 and never against the scout's 900, or two thirds of the
-  //     roster is permanently stranded on the giants.
+  //     scout reaches. MAX 18 puts the deepest world (Ullur, 297 — it is the
+  //     heaviest of the giants, not the widest) under 330, so tier 5 walks off
+  //     everything for EVERY spec — measured. THIS is the ceiling that sets
+  //     MAX: raising it to 26 would put Ullur at 429 and strand two thirds of
+  //     the roster on it forever. Size against 330, never the scout's 900.
   //   THE SPEED CEILING. maxSpeed is 280 and the governor holds the ship to it
   //     OUTSIDE a well, so a world whose near-field circular speed far exceeds
   //     280 can only ever CAPTURE the ship — it cannot be arrived at fast
@@ -416,7 +417,20 @@ export const CFG = {
   // lives only inside SHIP_SURF_END radii, where a world's UNBOOSTED pull is
   // already ~250x the GRAV_CULL_A threshold. No value of this cap can rescue a
   // culled attractor, so it is free to exceed the long-arm cap.
-  SHIP_SURF_MAX: 12,
+  // 12 -> 18 when PR #193 ("Bound moon families by their neighbouring lane")
+  // landed. NOT an accommodation — a correction, and the one this constant's
+  // own note said to make: PLANET_LANE_GAP had been shrinking 6.7 of ~15 worlds
+  // per seed BELOW their authored PLANET_R_MUL size (worst 41%), so spacing
+  // lanes by need let worlds reach the size they were always meant to be
+  // (Vashtar 1935 -> 2797, its real radius; the old number was a 31% squeeze).
+  // Surface pull is GM/R² and the masses did not move, so every world that
+  // un-squeezed got WEAKER, and the three giants were all sitting on this cap —
+  // past which extra radius only dilutes. The ladder inverted at the top: the
+  // largest world in the sky (Vashtar, 148) pulled LESS than a mid-size terran
+  // (Corve, 198), which is precisely the flat-to-backwards pathology this whole
+  // family exists to undo. 18 restores it, and the three ceilings are re-checked
+  // below against the NEW sizes, not the old ones.
+  SHIP_SURF_MAX: 18,
   // Must stay > 1 — the ramp normalizes by (SHIP_SURF_END - 1), i.e. "fades
   // from the surface out"; at exactly 1 it divides by zero.
   // Still deliberately equal to SHIP_WELL_START: this hands off exactly where
