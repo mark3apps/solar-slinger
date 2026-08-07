@@ -815,7 +815,29 @@ from breaking the invariants above:
       through" is the atmosphere rule read across. The water does NO damage; the hard hit is the
       seabed, through the ordinary contact pass. Exemptions mirror the gas swallow's (railed, held,
       parry-frozen, already-sinking). Submerged bodies carry `b.inSea` and render dims them to half
-      strength.
+      strength off a SECOND flag, `b.seaDim`. **The two are not the same thing and must not be
+      merged back.** `inSea` is PHYSICAL — the splash test arms on `!b.inSea`, so it may only be
+      ARMED on a real crossing of `p.radius`, in the walk and nowhere else. `seaDim` is the render
+      half-alpha, and the exemptions DO clear it (a rock on the beam is the thing you are looking
+      at). Clearing `inSea` in that branch too was a live exploit: a rock grabbed inside the column
+      and flung while still submerged read as a fresh arrival on the next substep and re-billed a
+      full `OCEAN_HIT_CAP` wound plus throw credit, every grab — nine cycles took ~22% of a world's
+      hp with the rock never leaving the water.
+      **But the exemption branch may still CLEAR it, and must** — that is the rule, not "leave it
+      exactly as you found it". Preserving it outright is the mirror-image bug: a rock carried OUT
+      of the sea on the beam stayed stamped wet, and since position integration runs BEFORE the
+      ocean walk, a release within one substep's travel of the waterline crossed `p.radius` on the
+      very substep that would have corrected the flag — the walk read the stale `true` and a
+      legitimate splashdown billed nothing. Reachable by design (the hull floats half submerged AT
+      the waterline, so a rock grabbed under the ship and flung back down is released right there);
+      measured on a 523-unit ocean world with a 4000-mass rock at 900 u/s inward, a 4-unit gap took
+      0 hp where a 30-unit gap took 939.5. So the branch runs the geometric test for bodies already
+      stamped wet and clears the flag when they are dry — an AABB reject per wet skipped body
+      against a registry that normally holds one world. The caveat that buys, and it is the right
+      answer: a rock carried dry → in → out → in bills on EACH genuine crossing, which is just
+      "thrown in from outside bills once" applied to a beam-carried entry, still priced on `rel²`
+      and still behind the `rel > 60` gate. Both directions are locked down by mechTest's T24b
+      (four legs: the exploit, the control, the flag shape, the mirror image).
     - **THE HULL FLOATS HALF SUBMERGED, AND THE DEEP IS SOMEWHERE YOU GO ON PURPOSE**
       (`CFG.OCEAN_FLOAT`/`OCEAN_BUOY_G`/`OCEAN_PRESS`/`OCEAN_LIFT_BAND`). The seabed is a COLLIDER,
       not the depth a ship is meant to sit at: a tier-0 hull (radius 4) used to sink the whole

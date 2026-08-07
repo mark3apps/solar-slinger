@@ -6944,7 +6944,44 @@ export function step(game, dt) {
       for (const b of live) {
         if (!b.alive || b === s || b.onRails || b.heldBy || b.parryFrozen ||
             b.sinkT > 0 || b.type === 'planet' || b.type === 'star') {
-          if (b.inSea) b.inSea = false;   // grabbed out of the water: undim
+          // UNDIM ALWAYS, DISARM ONLY — the two flags part company here.
+          // `b.seaDim` is the half-alpha draw (a rock on the beam is the thing
+          // you are looking at, so the beam's load stays legible) and it just
+          // clears. `b.inSea` is the PHYSICAL state the splash test arms off,
+          // and clearing it unconditionally was a hole: a rock grabbed INSIDE
+          // the water column and flung while STILL SUBMERGED read as a fresh
+          // arrival on the very next substep, so the world took another full
+          // OCEAN_HIT_CAP wound (12% of maxHp) plus fresh throw credit, per
+          // grab, without the rock ever leaving the sea.
+          //
+          // So this branch may CLEAR the flag but must never ARM it: a splash
+          // arms in the walk below and nowhere else. Preserving it outright was
+          // the mirror-image bug — a rock carried OUT of the sea on the beam
+          // stayed stamped wet, and if it was released within one substep's
+          // travel of the waterline and thrown back in, position integration
+          // (which runs BEFORE this walk) put it across p.radius on the very
+          // substep that would have cleared the flag, the walk read the stale
+          // `true`, and a legitimate splashdown billed nothing.
+          //
+          // Caveat this buys, and it is the right answer: a rock carried
+          // dry -> in -> out -> in bills on EACH genuine crossing. That is just
+          // "thrown in from outside bills once" applied to a beam-carried
+          // entry, and it is still priced on rel² — a rock lifted out and
+          // lowered back at walking pace stays under the rel > 60 gate.
+          if (b.seaDim) b.seaDim = false;
+          if (b.inSea) {
+            // Geometry only, and only for bodies already stamped wet — one AABB
+            // reject per already-wet skipped body against a registry that
+            // normally holds a single world.
+            let wet = false;
+            for (const p of oceans) {
+              if (!p.alive) continue;
+              const dx = b.x - p.x, dy = b.y - p.y, pr = p.radius;
+              if (dx > pr || dx < -pr || dy > pr || dy < -pr) continue;
+              if (dx * dx + dy * dy < pr * pr) { wet = true; break; }
+            }
+            if (!wet) b.inSea = false;
+          }
           continue;
         }
         let inSea = false;
@@ -7016,7 +7053,10 @@ export function step(game, dt) {
           b.vy += (sv.vy - b.vy) * k;
           break;
         }
+        // The two flags only ever diverge in the skip branch above: a body this
+        // walk actually touched is dimmed exactly when it is wet.
         b.inSea = inSea;
+        b.seaDim = inSea;
       }
       // THE SPLASH WOUNDS, DRAINED AFTER THE WALK. Every damageBody here can
       // calve chunks into the very list the loop above iterates; queueing is

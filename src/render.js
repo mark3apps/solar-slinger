@@ -1152,7 +1152,7 @@ export function rockCacheStats() {
 // All three are a handful of bodies against a shoal's ~1900, so keeping them
 // on the old path costs nothing and removes a whole class of z-order bug.
 function rockNeedsOverlay(b) {
-  return b.cored || !!b.heldBy || b.inSea ||
+  return b.cored || !!b.heldBy || b.seaDim ||
     (b.maxHp !== Infinity && (b.hp < b.maxHp || (b.scars && b.scars.length)));
 }
 
@@ -1208,10 +1208,10 @@ function blitChunk(game, b) {
   if (b.cored || b.heldBy) return false;   // glint / hold rings draw ON TOP (see rockNeedsOverlay)
   // A rock going under a gas giant fades out on ctx.globalAlpha, and an
   // instance carries no alpha of its own — it would stay solid all the way
-  // down. A rock UNDER AN OCEAN dims on the same ambient alpha (b.inSea), and
+  // down. A rock UNDER AN OCEAN dims on the same ambient alpha (b.seaDim), and
   // the instanced sheet also composites after the body loop, so it would draw
   // solid ON TOP of the sea — both stay on the 2D path.
-  if (b.sinkT > 0 || b.inSea) return false;
+  if (b.sinkT > 0 || b.seaDim) return false;
   const bk = shardBucket(b.radius);
   if (bk < 0) return false;                // slab: unique silhouette + the R>14 layers
   // A WOUNDED CHUNK KEEPS THE VECTOR SPRITE. The GL layer composites after the
@@ -3592,7 +3592,7 @@ function drawSeaRipples(game, b) {
 
 // THE WATER CLOSES OVER THE SHIP. The hull is drawn after the world it is
 // flying through, so inside an ocean it painted on TOP of the sea and read as
-// sitting on a blue disc — the exact thing b.inSea already fixes for rock, but
+// sitting on a blue disc — the exact thing b.seaDim already fixes for rock, but
 // rock is dimmed and the ship cannot be (drawShip owns its own alphas across a
 // dozen passes, and an outer globalAlpha would be clobbered by the first one
 // that sets its own). So the sea is painted back over the hull instead, which
@@ -11360,9 +11360,11 @@ export function render(game) {
   for (const b of (game.bodies._awake || game.bodies)) {
     if (b.alive && !b.dormant && bodyOnScreen(b)) {
       // SUBMERGED bodies dim: a rock inside an ocean's water column (physics
-      // stamps b.inSea) draws at half strength, so it reads as under the sea
+      // stamps b.seaDim) draws at half strength, so it reads as under the sea
       // instead of floating on a blue disc. The alpha is restored either way.
-      if (b.inSea) {
+      // seaDim, NOT the physical b.inSea — the beam's load stays legible, and
+      // the split is what keeps a release underwater from re-billing a splash.
+      if (b.seaDim) {
         ctx.globalAlpha = 0.5;
         drawBody(game, b);
         ctx.globalAlpha = 1;
