@@ -2,13 +2,13 @@ import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
   stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR, modeRules } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
-import { spawnAsteroid, respawnShip } from './world.js';
+import { spawnAsteroid, respawnShip, chartZoneR } from './world.js';
 import { Alien } from './entities.js';
 import { updateAliens } from './ai.js';
 import { damageShip, parryLive, frameReg } from './physics.js';
 import { tryGrab, releaseHeld, addToOrbit, flingAllFromOrbit } from './tractor.js';
 import { updateGlow } from './glow.js';
-import { setDeathVisible, updateHud } from './hud.js';
+import { setDeathVisible, updateHud, achToast } from './hud.js';
 import { setSfxVolume } from './sfx.js';
 import { mulberry32, surfaceVel, scarSurfaceAt, padPos, senseBlind, TAU } from './util.js';
 import { ROCK_SHAPES } from './rockdata.js';
@@ -2683,6 +2683,276 @@ export function runMechTest(game, hooks, opts = {}) {
         `cleared all ${nests} nests and all ${forts} Bastions and still cannot earn: `
         + `${missing.join(', ')} — unreachable on every seed`);
       return `${nests} nests + ${forts} Bastions clears ${want.join(', ')}`;
+    });
+
+    // ---- HUD LAYOUT ---------------------------------------------------------
+    // T29 — THE NEWEST ACHIEVEMENT TOAST IS THE ONE THAT MUST BE READABLE
+    // (issue #203). The rail is a BAND between the radar cluster's lower edge
+    // and #bottomright's top, and it is routinely shorter than its own
+    // contents, so WHICH END CLIPS is the whole design: it is bottom-anchored
+    // and the stack grows UPWARD, so the toast that just landed sits hard
+    // against the floor and it is the OLDEST that retires off the top.
+    //
+    // WHAT THIS CATCHES. The `max-height: calc(100vh - 228px - ...)` form this
+    // replaced was top-anchored, so the achievement you had just earned was
+    // always the most-hidden one — and at the shell's own minimum window
+    // (electron/main.js minWidth 960 / minHeight 600, no useContentSize -> a
+    // 960x568 viewport) the band resolved to FOUR PIXELS and the toast was
+    // hidden entirely. That same rect is hud.js's cheap `near` reject in
+    // railHover, so a clipped toast cannot be hovered either, which kills the
+    // hover-to-hold-open behaviour the JS-driven lifetimes exist for.
+    //
+    // TWO ASSERTIONS, AND THEY FAIL AT DIFFERENT SIZES ON PURPOSE:
+    //   - CONTAINMENT is read at whatever viewport the suite is running in. It
+    //     discriminates wherever TOAST_MAX toasts overflow the band at all
+    //     (measured: the last toast laid out at y303..403 inside a 304px rail
+    //     at 1440x868 before the fix, and y204..304 after it) — but at a tall
+    //     enough window all four fit and it proves nothing, which is why the
+    //     second one exists.
+    //   - THE FLOOR (`min-height`) is viewport-INDEPENDENT, and it is the whole
+    //     of the small-window fix: min-height beats max-height in CSS, so "one
+    //     whole toast always fits" survives a band that has resolved to 4px.
+    //     Before the fix the computed value is 0px, which no toast clears.
+    //     It is checked against the MEASURED tallest of every catalog row, not
+    //     against whatever happens to be on the rail — see the probe below.
+    // Run the suite once at `--size 960x600` to watch the first one fail too.
+    //
+    // No RNG and no sim: it is DOM only, so it neither moves the `draws` column
+    // nor disturbs the sky T26 just finished counting.
+    t('achievement toast rail: the newest toast is readable', () => {
+      const rail = document.getElementById('achRail');
+      expect(rail, '#achRail is not in the document');
+      const col = document.getElementById('bottomright');
+      expect(col, '#bottomright is not in the document');
+      // Nodes WE created, so the cleanup cannot reap a real toast the suite's
+      // own achievements pushed. achToast's own TOAST_MAX cap evicts the oldest
+      // immediately (killToast, no exit animation), so pushing more than the cap
+      // guarantees every survivor on the rail is one of these.
+      const mine = [];
+      try {
+        // THE TALLEST ROW IN THE CATALOG, MEASURED — never inferred from text
+        // length, and never inferred from what happens to survive on the rail.
+        // The floor's whole claim is that it covers the tallest toast there is,
+        // so the number it is checked against has to be the real maximum over
+        // every row, and character count does NOT order them: the name and the
+        // description wrap independently at different sizes inside a fixed
+        // 252px card, so the 403 rows collapse onto five distinct heights and
+        // the tallest of them ("Somewhere To Come Back To", 100px) sits only
+        // EIGHTH by name+desc length. Sorting by length and pushing the top six
+        // through achToast measured neither end of that — achToast caps at
+        // TOAST_MAX by evicting the OLDEST, so the survivors were rows 3-6 —
+        // and it landed on the right answer by luck. Reversing the push order
+        // is not the fix either: it would have left the rail carrying 97px.
+        //
+        // Measured off a REAL toast hud.js built, cloned per row with only the
+        // three text nodes that can drive height swapped (the points column is
+        // `auto`, so a wider figure narrows the 1fr column and can add a wrap).
+        // Nothing here copies achToast's markup, so there is no template to
+        // drift. Appended in one batch and read in one pass: ONE layout, not
+        // 403 — and it all happens inside this synchronous block, so the probe
+        // never reaches a paint. The card's category class and its
+        // CLASSIFIED/ACHIEVEMENT label are left at the prototype's: the label
+        // is 8px and neither string comes close to wrapping, and the category
+        // only picks an accent colour.
+        achToast(ACHIEVEMENTS[0]);
+        const proto = rail.lastElementChild;
+        mine.push(proto);
+        const probes = ACHIEVEMENTS.map((a) => {
+          const n = proto.cloneNode(true);
+          n.querySelector('.atname').textContent = a.name;
+          n.querySelector('.atdesc').textContent = a.desc;
+          n.querySelector('.atpts').textContent = `+${a.pts}`;
+          rail.appendChild(n);
+          return { a, n, h: 0 };
+        });
+        for (const p of probes) p.h = p.n.offsetHeight;   // one flush, then read
+        for (const p of probes) p.n.remove();
+        const tall = Math.max(...probes.map((p) => p.h));
+        expect(tall > 0, `every one of the ${probes.length} catalog rows measured 0px — the probe never laid out`);
+
+        // Now put the tallest rows ON the rail, SHORTEST-FIRST, because the cap
+        // evicts the oldest: pushing the six tallest in ascending order is what
+        // makes the four survivors the four tallest in the catalog. `proto`
+        // above is the seventh, so the cap is cleared either way and every
+        // survivor is a node this case created — the cleanup can never reap a
+        // real toast the suite's own achievements pushed.
+        const rows = probes.slice().sort((x, y) => x.h - y.h).slice(-6);
+        for (const p of rows) { achToast(p.a); mine.push(rail.lastElementChild); }
+        const kids = [...rail.children];
+        expect(kids.length >= 2, `the rail took ${kids.length} of ${rows.length} toasts`);
+        const last = kids[kids.length - 1];
+
+        // THE LAID-OUT BOX, not getBoundingClientRect: a toast animates in on a
+        // translateX(42px) over 0.42s, so its client rect is mid-flight for the
+        // whole of this case. offsetTop/offsetHeight are the box the clip
+        // actually acts on, and #achRail is positioned, so it is their
+        // offsetParent.
+        const top = last.offsetTop, h = last.offsetHeight, band = rail.clientHeight;
+        expect(top >= -0.5 && top + h <= band + 0.5,
+          `the newest toast lays out at y${top.toFixed(1)}..${(top + h).toFixed(1)} inside a ${band.toFixed(1)}px rail `
+          + `(viewport ${window.innerWidth}x${window.innerHeight}) — it is clipped, so it cannot be read OR hovered. `
+          + `The rail must be bottom-anchored so the OLDEST toast is the one that retires off the top`);
+
+        // ...AND ONE WHOLE TOAST ALWAYS FITS, whatever the window. This is the
+        // part that holds at 960x568, where the band itself is 4px.
+        //
+        // Guard the guard first: the assertion below is only worth anything if
+        // the tallest row in the catalog is actually one of the toasts on the
+        // rail, and that is a property of the push order two dozen lines up,
+        // which is exactly the sort of thing that gets "tidied". If the rail is
+        // not carrying the maximum, say so instead of quietly checking a
+        // shorter row against the floor.
+        const onRail = Math.max(...kids.map((k) => k.offsetHeight));
+        expect(onRail === tall,
+          `the rail's tallest toast is ${onRail.toFixed(1)}px but the catalog's is ${tall.toFixed(1)}px — the push order `
+          + `no longer leaves the tallest rows among the TOAST_MAX survivors, so the floor check below measures nothing`);
+        const floor = parseFloat(getComputedStyle(rail).minHeight);
+        expect(floor >= tall,
+          `the rail's guaranteed floor is ${Number.isFinite(floor) ? floor.toFixed(1) + 'px' : getComputedStyle(rail).minHeight} `
+          + `but the tallest of the ${probes.length} catalog rows is ${tall.toFixed(1)}px — at the shell's own minimum window `
+          + `(960x568) the band resolves to 4px and the whole toast disappears. #achRail needs a min-height that covers `
+          + `the tallest catalog row`);
+
+        // The rail is a play-area overlay: it may not leave the viewport, and
+        // it may not paint its z-index:3 toasts over the z-index:0 canopy
+        // readout it shares the right edge with.
+        const rr = rail.getBoundingClientRect(), cr = col.getBoundingClientRect();
+        expect(rr.top >= -0.5 && rr.bottom <= window.innerHeight + 0.5
+          && rr.left >= -0.5 && rr.right <= window.innerWidth + 0.5,
+          `the rail (${rr.top.toFixed(0)}..${rr.bottom.toFixed(0)} x ${rr.left.toFixed(0)}..${rr.right.toFixed(0)}) `
+          + `runs outside the ${window.innerWidth}x${window.innerHeight} viewport`);
+        expect(cr.height > 0, 'the #bottomright column is not laid out — the rail has nothing to measure against');
+        expect(rr.bottom <= cr.top + 0.5 || rr.right <= cr.left + 0.5 || rr.left >= cr.right - 0.5
+          || rr.top >= cr.bottom - 0.5,
+          `the rail (bottom ${rr.bottom.toFixed(0)}) overlaps #bottomright (top ${cr.top.toFixed(0)}) — `
+          + `its floor must be that column's top edge`);
+
+        return `${kids.length} toasts, band ${band.toFixed(0)}px (floor ${floor.toFixed(0)}px, tallest of ${probes.length} `
+          + `rows ${tall.toFixed(0)}px), newest at y${top.toFixed(0)}..${(top + h).toFixed(0)} `
+          + `@${window.innerWidth}x${window.innerHeight}`;
+      } finally {
+        // Detach the nodes now so nothing this case drew is left on screen.
+        // hud.js's own records are module-private and reap themselves on the
+        // dwell timer they were already armed with (removing an already-detached
+        // node is a no-op there), which also drops the mousemove listener — so
+        // there is nothing left to restore that is reachable from here.
+        for (const n of mine) if (n) n.remove();
+      }
+    });
+
+    // ---- ECLIPSE CREDIT -----------------------------------------------------
+    // T30 — MOONSHADOW IS PURE GEOMETRY, SO THE GATE MUST BE AN ACT, NOT A
+    // CLOCK (issue #213). A world whose moon already happens to sit on the
+    // sun-planet line credits the achievement for nothing, which is the same
+    // frame-one freebie class PR #169 deleted elsewhere. A `game.time > 3`
+    // floor does NOT close that — it only hides it from the frame-one sweep:
+    // the alignment window is 2*asin(1.7*r_moon/r_orbit)/|w_moon - w_planet|,
+    // a MINIMUM of 5.36s across 313 moons, so no alignment in this sky is
+    // short enough to expire inside any floor short enough to be invisible.
+    // The freebie just landed a few seconds later, still with zero player
+    // action. The credit rides `game.charted[p.chartKey]` instead — charting is
+    // something the player DID, and generateWorld's spawn-clearance search
+    // guarantees nothing is charted at spawn.
+    //
+    // THE ALIGNMENT IS SYNTHESIZED, NOT SEED-HUNTED, on purpose: which seed
+    // happens to be aligned at t=0 moves with any worldgen change (it has
+    // already invalidated two of #180's seeds), and the detector is pure
+    // geometry over live positions, so it can simply be handed the geometry.
+    // A circular-railed moon's `ang` is set sunward of its planet and its `w`
+    // to the PLANET'S OWN angular rate about the star, so the moon co-rotates
+    // with the lane and the alignment holds for the whole case instead of
+    // drifting out from under it. Both restored in the finally.
+    //
+    // THREE PHASES, and the middle one is the fix:
+    //   A  t < 3, nothing charted -> the COSMETIC shadow draws. Deliberately
+    //      not gated: the time floor suppressed p.eclipseT for three seconds,
+    //      so the opening of a real eclipse was invisible and the achievement
+    //      rewarded something the player was never shown.
+    //   B  t > 3, still nothing charted -> still NO credit. This is where the
+    //      time floor's freebie landed.
+    //   C  charted -> the credit lands. The guard against over-gating; it must
+    //      pass with the fix AND without it.
+    t('eclipse credit needs a charted world', () => {
+      hooks.freshRun(0, seed);
+      const s = game.ship, sun = game.homeStar;
+      // Pick the planet with the most room between its own chart zone and the
+      // detector's 6500-unit radius — the ship has to be inside the second and
+      // outside the first for phases A and B to mean anything.
+      let p = null, m = null, best = -1;
+      for (const b of game.bodies) {
+        if (b.type !== 'planet' || !b.alive || b.hidden) continue;
+        const room = 6500 - chartZoneR(b);
+        if (room <= 1600 || room <= best) continue;
+        // Circular rails only: an elliptical rail carries a/e/M instead of
+        // r/w/ang, and writing `ang` onto one is a no-op the case would then
+        // misreport as a broken detector.
+        const ms = game.bodies.filter((x) => x.alive && x.type === 'moon' && x.parent === b
+          && x.onRails && x.rail && !(x.rail.e > 0));
+        if (!ms.length) continue;
+        best = room; p = b;
+        m = ms.reduce((a, c) => (c.radius > a.radius ? c : a));   // widest shadow
+      }
+      expect(p, 'no planet in this sky has a circular-railed moon inside the eclipse detector\'s reach');
+      const cz = chartZoneR(p);
+      // Captured TOGETHER with the clock they were taken at: the restore below
+      // has to ADVANCE the phase over the seconds this case burns, not rewind
+      // the moon to where it stood before them. `ang` alone would teleport it
+      // backwards along its rail while every sibling had moved on, leaving the
+      // sky in an arrangement that never occurred (QA #151's class). Circular
+      // rails are phase-invariant so nothing would NaN, and T28 is last — but
+      // "last today" is not a property to lean on.
+      const wasAng = m.rail.ang, wasW = m.rail.w, t0 = game.time;
+      try {
+        // Seat the moon on the sun-planet line, sunward of the planet (the
+        // detector needs 0 < proj < pr), and park the ship `dist` off to the
+        // side so it is neither between them nor on top of either.
+        const rig = (dist) => {
+          const rpx = p.x - sun.x, rpy = p.y - sun.y, pr = Math.hypot(rpx, rpy) || 1;
+          m.rail.ang = Math.atan2(-rpy, -rpx);
+          m.rail.w = (rpx * (p.vy - sun.vy) - rpy * (p.vx - sun.vx)) / (pr * pr);
+          parkShip(game, p.x - (rpy / pr) * dist, p.y + (rpx / pr) * dist);
+          s.vx = p.vx; s.vy = p.vy;      // ride the lane, so `dist` holds
+        };
+        const near = (cz + 6500) / 2;    // inside the detector, outside the chart zone
+        expect(near > cz * 1.1 && near < 6500 * 0.95,
+          `no stand-off works for ${p.name}: chart zone ${cz.toFixed(0)}, detector 6500`);
+        const eclipses = () => (game.prog.ach.stats.eclipses || 0);
+
+        // PHASE A — the shadow draws immediately, with nothing charted.
+        rig(near); hooks.stepSim(0.6);
+        expect(!game.charted[p.chartKey], `${p.name} charted itself at ${near.toFixed(0)} units — the rig is inside its chart zone`);
+        expect(game.time < 3, `phase A ran to t=${game.time.toFixed(2)} — it must sit under any plausible time floor`);
+        expect(p.eclipseT > 0,
+          `no shadow on ${p.name} at t=${game.time.toFixed(2)} with ${m.name} on the line — the COSMETIC eclipse is gated. `
+          + `p.eclipseT must be set from t=0, or the opening of a real eclipse is invisible`);
+        expect(eclipses() === 0, `an uncharted world credited an eclipse at t=${game.time.toFixed(2)}`);
+
+        // PHASE B — hold the alignment past any time floor. Re-rigged each
+        // block so the ship's own drift cannot walk it out of the detector.
+        for (let i = 0; i < 12; i++) { rig(near); hooks.stepSim(0.3); }
+        expect(game.time > 3.5, `phase B only reached t=${game.time.toFixed(2)} — it must clear the old floor`);
+        expect(!game.charted[p.chartKey], `${p.name} charted itself during phase B`);
+        expect(p.eclipseT > 0, `the alignment did not hold — ${m.name} drifted off the line by t=${game.time.toFixed(2)}`);
+        expect(eclipses() === 0,
+          `${eclipses()} eclipse(s) credited on UNCHARTED ${p.name} at t=${game.time.toFixed(2)} — a game.time floor `
+          + `does not close this freebie, it only moves it past the frame-one sweep. Gate the credit on game.charted[p.chartKey]`);
+
+        // PHASE C — chart it by flying the nameplate zone, and the credit lands.
+        // This must pass with the fix and without it: a gate that never opens
+        // is the same bug from the other side.
+        for (let i = 0; i < 8; i++) { rig(cz * 0.6); hooks.stepSim(0.3); }
+        expect(game.charted[p.chartKey], `flying to ${(cz * 0.6).toFixed(0)} units did not chart ${p.name}`);
+        expect(eclipses() >= 1,
+          `${p.name} is charted and ${m.name} is on the line, but the eclipse still did not credit — the gate is over-tight`);
+        return `${p.name}/${m.name}: shadow at t=0.6 uncharted, no credit through t=${game.time.toFixed(1)}, `
+          + `credited on charting (${eclipses()})`;
+      } finally {
+        // The rate goes back first, then the phase it would have reached had
+        // the case never touched it: `ang` advances at `w` under the rail
+        // integrator, so the honest restore is where the moon WOULD be now.
+        m.rail.w = wasW;
+        m.rail.ang = wasAng + wasW * (game.time - t0);
+      }
     });
   } finally {
     Math.random = realRandom;
