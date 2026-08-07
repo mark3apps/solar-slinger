@@ -1573,7 +1573,7 @@ export function generateWorld(game, seed = 20260721) {
   // which is pinned to WORLD_R by construction (44300 of the 46000 the
   // boundary is authored at, both spread by the same SYS).
   fieldRs.push({ name: 'The Farshoal', r: SR(44300) });
-  seedDenseFields(game, sun, rng, fieldRs);
+  seedDenseFields(game, sun, rng, fieldRs, seed);
   seedDebrisBelts(bodies, planets, rng);
   // GAME MODE, applied LAST and by SUBTRACTION (see applyModeRules). Everything
   // above has already drawn its rng, so a peaceful sky is the classic sky minus
@@ -2533,8 +2533,23 @@ function shapeBig(b) {
   return b;
 }
 
-function seedDenseFields(game, sun, rng, fieldRs) {
+function seedDenseFields(game, sun, rng, fieldRs, seed) {
   game.fields = [];
+  // WHICH POCKETS ARE HOSTILE (CFG.FIELD_HOSTILE_FRAC). Off a PRIVATE fork of
+  // the run seed, never off `rng` — taking draws from the main stream here
+  // would shift every draw after it and deal every existing seed a different
+  // sky, for a decision that is not about layout at all. Same avalanche step
+  // the name pools use, and for the same reason: a plain `seed ^ K` was
+  // measured to bias its own early draws.
+  //
+  // A SHUFFLE, not a per-pocket coin. The count is then exactly what the
+  // fraction says, so no seed can roll a world with nothing in any shoal —
+  // three achievements hang off lurkers existing somewhere (see the config
+  // note), and a 25% coin leaves ~32% of seeds with no brood at all.
+  const hostileN = Math.max(1, Math.round(fieldRs.length * CFG.FIELD_HOSTILE_FRAC));
+  const hOrder = fieldRs.map((_, i) => i);
+  shuffle(mulberry32((Math.imul(seed ^ 0x9E3779B9, 0x85EBCA6B) ^ (seed >>> 13) ^ 0xb0d1e5) >>> 0), hOrder);
+  const hostile = new Set(hOrder.slice(0, hostileN));
   for (let fi = 0; fi < fieldRs.length; fi++) {
     const fd = fieldRs[fi];
     const fdR = fd.r;   // WORLD units already — generated lane-gap midpoints (+ the Farshoal's SR'd berth)
@@ -2550,7 +2565,14 @@ function seedDenseFields(game, sun, rng, fieldRs) {
     const f = {
       r: fdR, ang: ang0, w, name: fd.name, heart: null,
       x: sun.x + Math.cos(ang0) * fdR, y: sun.y + Math.sin(ang0) * fdR,
-      brood: CFG.FIELD_BROOD, wakeT: 0, cleared: false, near: false, seen: false,
+      // A QUIET POCKET IS SEEDED CLEARED, not merely empty. ai.updateFields
+      // reads `brood <= 0 && !cleared` as "the last lurker just died" and
+      // bumps the fieldClear achievement — so brood 0 with cleared false would
+      // hand out Quiet Waters on frame one, which is the freebie failure mode
+      // every new achievement is checked against. applyModeRules sets both
+      // together for exactly this reason; this follows it.
+      brood: hostile.has(fi) ? CFG.FIELD_BROOD : 0, wakeT: 0, cleared: !hostile.has(fi),
+      hostile: hostile.has(fi), near: false, seen: false,
       // The pocket's own SILHOUETTE (config.fieldLobe): three harmonics drawn
       // once here, so a field's shape is part of the world seed and every
       // consumer of fieldFrac sees the same blob. Amplitudes sum to at most
