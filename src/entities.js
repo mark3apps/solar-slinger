@@ -275,6 +275,12 @@ export class Ship {
     // deviation — a slingshot rides above maxSpeed and decays on its own
     // slow clock instead of being bled off like thrust overspeed.
     this.slingSpd = 0;
+    // Thrust integrator state (physics.js updateThrust): spool is the 0..1
+    // ramp toward the current throttle sign, burnK is the afterburner's own
+    // exponential toward on/off. Declared here (not just lazily created) so
+    // a fresh Ship never inherits a dead run's mid-ramp value.
+    this.spool = 0;
+    this.burnK = 0;
   }
 }
 

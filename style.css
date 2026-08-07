@@ -2369,6 +2369,15 @@ body.preGame #radar { opacity: 0; }
 #achRail {
   position: absolute; top: 228px; right: 14px; z-index: 3;
   display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  /* BOUNDED AGAINST #shipPanel below. The two share the right edge, and
+     #shipPanel can run ~314px tall bottom-anchored 12px off the viewport at
+     the shell's own minimum window (960x600, electron/main.js) — a rail with
+     no ceiling paints its z-index:3 toasts straight over that z-index:0
+     canopy readout. A stack that would run into the panel clips instead of
+     burying it; the clipped toast is already mid-lifetime and fades on its
+     own regardless of whether it's visible. */
+  max-height: calc(100vh - 228px - 12px - 314px - 10px);
+  overflow: hidden;
   /* NOT interactive. The rail sits in the middle of the play area, and a toast
      with real pointer-events would swallow the mousedown that starts a tractor
      grab. hud.js hit-tests the pointer against the toast rects instead. */

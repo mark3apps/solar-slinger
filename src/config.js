@@ -1219,12 +1219,25 @@ export const CFG = {
   ALIEN_RADIUS: 13,
   ALIEN_ACCEL: 250,
   ALIEN_SPEED: 330,
-  // GRABBERS FLY AT HALF SPEED (user call, 2026-08: "about half the speed they
-  // do now"). ALIEN_SPEED stays the sheet-wide reference — the integrate-loop
-  // overspeed damp (x1.6) and the lurker's LURKER_SPEED multiplier both key
-  // off it — so the slowdown is a grabber-scoped multiplier, never a change to
-  // the base number those tunings were balanced against.
-  GRABBER_SPEED: 0.5,
+  // GRABBERS FLY AT ROUGHLY TWO-THIRDS SPEED (user call, 2026-08: "about half
+  // the speed they do now"). ALIEN_SPEED stays the sheet-wide reference — the
+  // integrate-loop overspeed damp (x1.6) and the lurker's LURKER_SPEED
+  // multiplier both key off it — so the slowdown is a grabber-scoped
+  // multiplier, never a change to the base number those tunings were
+  // balanced against.
+  //
+  // THIS IS AN ABSOLUTE BUDGET, NOT A FLOW-RELATIVE ONE (2026-08 QA #178,
+  // the exact trap the LURKER_SPEED note above documents): `steer` sets a
+  // desired WORLD velocity, so this multiplier x ALIEN_SPEED is a ground-
+  // speed ceiling, and the pocket/nest-world flow it has to close against
+  // does not net out of it. LURKER_SPEED is held at 0.55 (181) because the
+  // shoal's own flow runs 52-103 u/s and halving again would put a lurker
+  // below the rock it chases. The nest worlds run flow 59-81, so 0.5 (165)
+  // put a grabber's retrograde budget at ~84 u/s against a ship doing
+  // 280+ flow-relative — UNDER the lurker's own floor, and combined with
+  // ALIEN_THROW_R's close-in range it meant a loaded grabber could only ever
+  // catch a stationary player. 0.65 (215) clears that floor with margin.
+  GRABBER_SPEED: 0.65,
   ALIEN_CAPACITY: 2600,    // heaviest rock an alien can grab
   ALIEN_THROW: 430,
   // A grabber must CLOSE before it throws (user call, 2026-08). It used to
@@ -2761,7 +2774,19 @@ export function ramPlate(st, ram) {
   // so a small hull still carries something built out of recognisable rock. The
   // mounting (`back`, `gap`) stays on `r` — the true drawn hull — and only the
   // slab (`depth`, `halfW`) rides `rs`.
-  const rs = Math.hypot(r, CFG.RAM_MIN_R);
+  //
+  // CAPPED AT `r * 2.5` TOO (2026-08 QA #183/#184). Uncapped, `rs` is
+  // dominated by RAM_MIN_R at the smallest hull (T0 brawler: r ~5.4, rs ~26.5
+  // — a 5x gap), and `depth`/`stone` and `halfW` all ride it, so a full War
+  // Rack ran the slab to 17x the hull's own half-width. Capping `rs` itself
+  // (rather than halfW alone) keeps `stone` and `halfW` deriving from the
+  // SAME number, which is load-bearing: render seats `perRow` stones of
+  // radius `stone` shoulder-to-shoulder across `halfW` (below), and a halfW
+  // clamped independently of stone would either bury the pack in overlap or
+  // fence it apart with daylight showing. A tier-0 ram is still built from
+  // rock a full 2.5x its own hull's radius — that is still unmistakably
+  // "recognisable rock", just no longer allowed to dwarf the ship it rides on.
+  const rs = Math.min(Math.hypot(r, CFG.RAM_MIN_R), r * 2.5);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
@@ -2790,7 +2815,13 @@ export function ramPlate(st, ram) {
   // jammed rather than by how far apart they float.
   const depth = rs * (0.26 + 0.0275 * t + 0.34 * g);
   const stone = depth * RAM_STONE;
-  const halfW = stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1));
+  // THE FLOOR IS THE CLASS'S ONE HARD RULE MADE LITERAL (2026-08 QA #183):
+  // "WIDER THAN THE SHIP at every size". The `rs` cap above pulls T0 back
+  // out of the explosion, but at high tier a few big stones across a short
+  // slab (small `ramPerRow`, near-empty fill) can still solve narrower than
+  // the hull that mounts it — this floor is what the width law actually
+  // demands, not a cosmetic minimum.
+  const halfW = Math.max(stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1)), r * 1.05);
   return {
     // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
     // is scaled up by its size-match factor — read against the bare footprint
@@ -2929,10 +2960,15 @@ export const TIERS = {
 //     20,000-mass lava pebble at the inner lane or the 650,000 amber giant;
 //     "planets only at the top tier" is the whole point and a mass test would
 //     hand the small ones over three tiers early.
-//   - A MOON IS NEVER BELT ROCK, however light. Moon mass (900, then
-//     2,400-17,050) overlaps boulders and shoal rock across two whole rungs, so
-//     a pure mass test would sell a named, charted moon at the boulder tier.
-//     The moon rungs are its own, split small/large at ceil[3].
+//   - A MOON IS NEVER BELT ROCK, however light, and NEVER RUNG 5 EITHER,
+//     however heavy (2026-08 QA #181) — rung 5 is WORLDS, and `LATCH_BAND`/
+//     `LATCH_SPAN` price it as a 4.0-5.8s WORLD winch, not a moon. Moon mass
+//     runs 900 up to ~49,500 (the lodestar archetype's mMul: 4.5, deliberately
+//     the sky's longest winch) and overlaps boulders, shoal rock and — at the
+//     top — the small end of the planet ladder across several rungs, so a
+//     pure mass test would either sell a named, charted moon at the boulder
+//     tier or hand it a planet-class latch it has no business needing. The
+//     moon rungs are its own, split small/large at ceil[3], full stop.
 // Anything else — belt rock, crust slabs, shoal monoliths, derelicts — is
 // classed purely by weight, so a full-severity slab off a gas giant asks for
 // the same beam a moon of the same mass does.
@@ -2958,7 +2994,16 @@ export function liftClass(b) {
   if (b.type === 'star') return LIFT_NEVER;
   if (b.ptype === 'gas' && (b.type === 'planet' || b.type === 'rogue')) return LIFT_NEVER;
   if (b.type === 'planet' || b.type === 'rogue') return 5;
-  let k = b.type === 'moon' ? 3 : 0;   // the moon floor
+  // MOONS ARE CLAMPED TO THEIR OWN TWO RUNGS (3-4), never walked up to 5 —
+  // rung 5 is WORLDS (LATCH_BAND[5] is a 4.0-5.8s world winch). The lodestar
+  // archetype's mMul: 4.5 pushes moon mass past TIERS.ceil[4] (18,000) for
+  // any lodestar over ~t=0.125 — 87% of them — which the old `while` loop
+  // walked straight into rung 5, printing "BEAM CLASS TOO LOW — PLANETS" on
+  // a moon and handing it a world's winch band. A heavier-than-large moon
+  // just stays at the large-moon rung; "the longest winch in the sky" comes
+  // off the top of LATCH_SPAN[4], not off borrowing rung 5's band.
+  if (b.type === 'moon') return b.mass > TIERS.ceil[3] ? 4 : 3;
+  let k = 0;
   while (k < 5 && b.mass > TIERS.ceil[k]) k++;
   return k;
 }

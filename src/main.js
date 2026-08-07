@@ -1373,6 +1373,10 @@ function resetRun(seed, openCard = true) {
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;
   game.parry = null; game.parryCd = 0; game.parryReadyT = 0;   // a parry must never survive into a fresh world
   game.tetherT = 0;   // ...nor a Recovery Tether reload
+  // Ship momentum-bank state — world.respawnShip zeroes these too (a wreck's
+  // own argument), but resetRun runs before regenWorld builds the ship this
+  // frame, and the fixed-seed suites read game.ship immediately after.
+  game.throwSpd = null; game.throwCharged = false; game.flowSpd = 0; game.engineOut = 0;
   game.rankUps.length = 0;               // undrained ranks belong to the dead run
   game.achQueue.length = 0;              // ...and so do undrained achievement toasts
   // ...and so does the journey: every stop pins to a body in the world that is
