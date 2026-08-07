@@ -3054,8 +3054,16 @@ export function canLift(st, b) {
   return liftClass(b) <= st.tier && b.mass <= st.capacity;
 }
 
-// The same pair for the STOW (orbit shield / brawler rack), which rides one
-// class below the beam — see shipStats for how orbitTier/orbitCap are derived.
+// The same pair for the STOW (orbit shield / brawler rack) — but on ITS OWN
+// LADDER, not the beam's. The BRAWLER's rack still rides one class below the
+// beam; the HAULER's ring climbs on Sling Winch alone (user design rule, 2026-08)
+// and can therefore out-class the beam — a tier-0 ring with the winch maxed
+// accepts large moons a tier-0 beam cannot lift. That is deliberate and it is
+// the ONE exception to "a rank buys mass inside your class, never the class
+// above"; the class it buys is the RING's, never the beam's. What keeps it from
+// being a free moon is that a moon still has to be WINCHED into the ring
+// (tractor.stowFromCursor -> updateLatch), the same act the beam demands.
+// See shipStats for how orbitTier/orbitCap are derived.
 export function canStow(st, b) {
   return st.orbitCap > 0 && liftClass(b) <= st.orbitTier && b.mass <= st.orbitCap;
 }
@@ -4205,10 +4213,14 @@ export function shipStats(prog) {
   }
   const hullMax = Math.round(maxHull * (1 - shieldFrac));
 
-  // Stow: ONE CLASS BELOW THE BEAM, unlocked by an orbit ability. It is the
-  // same two-part gate the beam runs (config.canStow) — a class rung plus a
-  // mass allowance inside it — so a rock you can hold is not automatically a
-  // rock you can stow. The FORMATION is spec DNA like the shield: HAULER's stow
+  // Stow: its own class rung, unlocked by an orbit ability. It is the same
+  // two-part gate the beam runs (config.canStow) — a class rung plus a mass
+  // allowance inside it — so a rock you can hold is not automatically a rock you
+  // can stow, and (for the hauler) vice versa. The BRAWLER's rack is still
+  // derived from beam tier, ONE CLASS BELOW it; the HAULER's ring left that
+  // ladder in 2026-08 and climbs on Sling Winch alone — see the SLING_RUNGS
+  // block below, and canStow's own note for why the ring is allowed to
+  // out-class the beam. The FORMATION is spec DNA like the shield: HAULER's stow
   // orbits and protects; BRAWLER's is CRUSHED INTO THE RAM (frontRam).
   // THE RAM'S ROCK CLASS CLIMBS WITH WAR RACK'S OWN RANK (user design rule:
   // "the tiers allow the max amount of debris to go up, plus larger rocks") —
@@ -4229,6 +4241,15 @@ export function shipStats(prog) {
   // Rank 0 still stows PEBBLES so Orbital Sling is never a dead card on its own,
   // and the ladder stops at rung 4 (Large moons): a ring of PLANETS is not a
   // thing, and the old `tier - 1` topped out at 4 too, so nothing is lost.
+  // WHAT DEFENDS THE FLOOR IS THE WINCH, not a clamp against beam tier. This
+  // ladder deliberately reaches rungs the early beam cannot (tier 0 + Sling
+  // Winch 6 = large moons against a beam that cannot lift a boulder), so the
+  // thing standing between a low-tier hauler and a pocketed moon has to be the
+  // ACT: tractor.stowFromCursor starts a config.latchTime winch on anything at
+  // the moon rungs and seats it only if the button stays down for the full
+  // band. Re-clamping this to `tier - 1` would put tier back in charge of the
+  // ring's class, which is exactly what this change removed — if the winch ever
+  // stops gating the stow, fix the winch, not this ladder.
   const SLING_RUNGS = [0, 1, 2, 2, 3, 3, 4];
   // BRAWLER is untouched by all of the above and must stay that way — its stow
   // is the ram, its class ladder is War Rack's own rank clamped at boulder, and

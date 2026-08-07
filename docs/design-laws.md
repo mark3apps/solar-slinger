@@ -43,6 +43,17 @@ code "works."
   `tractor.updateLatch`). **Nothing below the moon rungs winches** — belt rock takes hold on the
   click exactly as it always did, and the whole early game is untouched. Taking a world is an ACT,
   not a click.
+  - **AND THAT IS A STATEMENT ABOUT THE WORLD, NOT ABOUT WHICH BUTTON WAS PRESSED.** The hauler's
+    right-click stow winches too (`tractor.stowFromCursor` returns `'winching'` and hands off to the
+    same `updateLatch`, on `game.stowEating` instead of the left button, drawn in the stow's green
+    rather than the beam's cyan). It has to: the ring's class ladder is Sling Winch's own and
+    deliberately reaches rungs the early beam cannot, so **the winch is the only thing standing
+    between a tier-0 hauler and a pocketed moon**. Without it the held-button sweep re-armed every
+    0.12s and dragging the cursor across a moon family pocketed five named moons in under a second,
+    from a beam that could not lift a boulder. **One `game.latch`, so the two winches are mutually
+    exclusive by construction** — a live stow winch makes `tryGrab` report `'winching'` (silently,
+    and *not* `null`, which would fall through to the retrieve fallback and pull a rock back out of
+    the ring the winch is filling).
   - **The winch is a BAND per class, and MASS positions you inside it** (`config.LATCH_BAND`):
     small moons **1.6–2.6s**, large moons **2.6–4.0s**, worlds **4.0–5.8s**. A flat per-class number
     said a 2,400-mass moon and a 17,000-mass one were the same job. The bands do not overlap, so the

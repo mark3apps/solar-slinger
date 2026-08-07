@@ -210,7 +210,7 @@ const game = {
   lockTarget: null,
   timeScale: 1,            // dev sim speed (window.speed / ?dev hotkeys); 1 = normal play
   speedActual: 1,          // achieved multiple when fast-forwarding (HUD badge honesty)
-  tut: { grabbed: false, flung: false, orbited: false, alienSeen: false, glow: false, stormLee: false },
+  tut: { grabbed: false, flung: false, orbited: false, stowWinch: false, alienSeen: false, glow: false, stormLee: false },
 };
 
 // Dev mode (?dev=1) unlocks the sim-speed hotkeys. A plain query param works
@@ -595,20 +595,35 @@ initInput(canvas, {
     // leaves it to the shotgun below. The choice is COMMITTED for the whole
     // press (stowEating), so a sweep that starts on a rock and crosses empty
     // space keeps stowing instead of arming a volley mid-drag.
-    if (!game.st.frontRam && game.st.maxOrbiters > 0 && stowFromCursor(game)) {
-      game.stowEating = true;
-      game.stowEatCd = 0.12;
-      if (!game.tut.orbited) {
-        game.tut.orbited = true;
-        // DON'T PROMISE THE SHOTGUN. `hasVolley` is false for every reachable
-        // build — Scattergun was deleted with the brawler's trailing rack and
-        // nothing feeds the volley channel — so the old copy here ("hold RIGHT
-        // MOUSE to charge a shotgun") described a move the player could never
-        // make. LEFT-click on empty space is the real way rock comes back out
-        // (main.onGrab -> retrieveFromOrbit), so that is what this says.
-        hud.message('Stowed into your orbit ring! HOLD RIGHT MOUSE and sweep over rocks to keep filling it. LEFT-CLICK empty space to pull one back out and throw it.', 6);
+    if (!game.st.frontRam && game.st.maxOrbiters > 0) {
+      // stowFromCursor reports WHAT THE PRESS DID, not a boolean (see its doc
+      // comment) — 'stowed' or a winch it has just started. Both claim the press
+      // for the stow; only one of them has actually put anything in the ring.
+      const did = stowFromCursor(game);
+      if (did) {
+        game.stowEating = true;
+        game.stowEatCd = 0.12;
+        if (did === 'winching') {
+          // SAY THAT THE BUTTON MUST STAY DOWN. A moon's winch runs for two to
+          // four seconds with nothing in the ring the whole time, so a player
+          // who taps and lets go sees a stow that silently did nothing — the
+          // same "dead button" read the beam's winch needed answering once.
+          if (!game.tut.stowWinch) {
+            game.tut.stowWinch = true;
+            hud.message('Winching it into your ring — HOLD RIGHT MOUSE until it seats. A moon is hauled aboard, never pocketed.', 5);
+          }
+        } else if (!game.tut.orbited) {
+          game.tut.orbited = true;
+          // DON'T PROMISE THE SHOTGUN. `hasVolley` is false for every reachable
+          // build — Scattergun was deleted with the brawler's trailing rack and
+          // nothing feeds the volley channel — so the old copy here ("hold RIGHT
+          // MOUSE to charge a shotgun") described a move the player could never
+          // make. LEFT-click on empty space is the real way rock comes back out
+          // (main.onGrab -> retrieveFromOrbit), so that is what this says.
+          hud.message('Stowed into your orbit ring! HOLD RIGHT MOUSE and sweep over rocks to keep filling it. LEFT-CLICK empty space to pull one back out and throw it.', 6);
+        }
+        return;
       }
-      return;
     }
     // The shotgun is an upgrade — no charge until the array is unlocked
     if (game.st.hasVolley && game.orbit.length) game.volleyCharging = true;
