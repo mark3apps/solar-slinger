@@ -6059,7 +6059,12 @@ function drawLatch(game, fromX, fromY) {
   const b = L.body;
   const f = clamp(L.t / L.need, 0, 1);
   const z = Math.max(game.cam.zoom, 0.4);
-  const col = '#5ac8ff';
+  // ONE GRAMMAR, BOTH WINCHES: the hue says which BUTTON is doing this, exactly
+  // as the hover hint rings do (cyan = left/hold, green = right/stow). A ring
+  // winch drawn in the beam's cyan would promise a hold that is not coming —
+  // this rock is going straight into the rack, and the strands hand over to the
+  // seat rather than to drawBeam.
+  const col = L.stow ? '#78ffb4' : '#5ac8ff';
   // THE EFFECT AMPS UP WITH THE WINCH — it must start at almost nothing and
   // build, because the ramp IS the readout. `amp` is the eased fill everything
   // below is scaled by; at f=0 the strands are the faintest thread the emitter
@@ -6122,7 +6127,9 @@ function drawLatch(game, fromX, fromY) {
   // Progress ring around the load — helper UI, so it is drawn flat and solid
   // and sized in screen pixels, not world units. Full brightness from the first
   // instant: this is the one element that must be legible before the effect is.
-  ctx.strokeStyle = `rgba(140, 215, 255, ${0.55 + 0.45 * f})`;
+  ctx.strokeStyle = L.stow
+    ? `rgba(150, 255, 200, ${0.55 + 0.45 * f})`
+    : `rgba(140, 215, 255, ${0.55 + 0.45 * f})`;
   ctx.lineWidth = 2.6 / z;
   ctx.beginPath();
   ctx.arc(b.x, b.y, b.radius + 13 / z, -Math.PI / 2, -Math.PI / 2 + f * TAU);

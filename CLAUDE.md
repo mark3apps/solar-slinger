@@ -584,7 +584,13 @@ Specialization-based, no passive leveling. **A rank buys mass inside your class,
 above:** the beam tier names a CLASS (`TIERS.labels` — pebbles → belt rock → boulders → small moons
 → large moons → planets, assigned by `config.liftClass`) and that class is a hard gate; catch ranks
 only fill `capacity` from `TIERS.caps[tier]` toward `ceil[tier]`. `config.canLift`/`canStow` are the
-only grab tests. **Two parallel tracks off one XP stream:** ability ranks
+only grab tests. **The HAULER's orbit ring is the one exception, and it is deliberate** (user rule,
+2026-08: tier-ups must not upgrade what the sling accepts): `orbitTier` climbs on Sling Winch's own
+`SLING_RUNGS` ladder with no clamp against beam tier, so a tier-0 ring with the winch maxed takes
+large moons a tier-0 beam cannot lift. The class it buys is the RING's, never the beam's — and what
+keeps that from being a free moon is that the stow **winches** like the beam does (see the winch law
+in [docs/design-laws.md](docs/design-laws.md)). The BRAWLER's rack is unchanged: still `tier - 1`,
+still hard-stopped at boulder class. **Two parallel tracks off one XP stream:** ability ranks
 are automatic and never a card; picks only ever offer *new* abilities. Achievements are a third
 track that feeds the other two. Field XP is gated twice (per-rock multiplier + per-field budget) and
 billiards credit is depth-capped inside a pocket. Add an ability = a catalog row + reading its
@@ -633,7 +639,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 | `window.goto('vesper')` / `window.god(true)` / `window.storm('charge', 'cme')` | Teleport / invuln / fire a solar wave now (2nd arg pins the intensity class). |
 
 `window.mechTest()` is NOT in the bench suites — run it directly (~4s) after any player-facing
-mechanic change; every check must pass (32 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
+mechanic change; every check must pass (37 of them today). Skills wrapping the standard checks: **`balance-test`** (how to
 judge a soak), **`mechanics-test`** (did I break the game loop?), **`run-solar-slinger`** (the runner
 and driver). Full hook catalog and pass criteria: [docs/testing.md](docs/testing.md).
 

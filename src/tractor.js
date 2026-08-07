@@ -342,13 +342,33 @@ function pickTarget(game) {
 // onFling is fixed, but the rule belongs where the winch lives too. Passed in
 // rather than read here: tractor.js does not import input.js, and reaching into
 // raw input state from the sim would be the wrong direction for that edge.
+// THE RING WINCHES TOO (`L.stow`), and it is the same machine because it is the
+// same law: a moon is a held commitment however it ends up aboard. Right-click
+// on a moon starts a winch here instead of pocketing it on the press
+// (stowFromCursor). It has to live in THIS function and not a parallel one —
+// two winch state machines would drift, and there is only ever one `game.latch`
+// so the beam and the ring cannot both be working at once by construction.
 export function updateLatch(game, dt, btn = true) {
   const L = game.latch;
   if (!L) return;
   const b = L.body, s = game.ship, st = game.st;
+  // WHICH BUTTON OWNS THIS WINCH. The beam's rides the LEFT button (passed in
+  // from main.js); the ring's rides the RIGHT, which main.js already keeps as
+  // `game.stowEating` — reading that instead is how the stow winch honours the
+  // same held-commitment contract without tractor.js importing input.js. It is
+  // cleared above the menu gate (main.onRmbUp) for the same reason the left
+  // button's is: a release that lands while frozen must still end the winch.
+  const down = L.stow ? !!game.stowEating : btn;
   const canSecond = st.twinGrip && game.held && !game.held2;
-  if (!btn || !b.alive || !s.alive || b.heldBy === 'orbit' || b.parryFrozen ||
-      (game.held && !canSecond) || !canLift(st, b) ||
+  // EACH WINCH ANSWERS TO ITS OWN GATES, re-tested every substep. The beam's is
+  // canLift plus a free hand; the ring's is canStow plus a free slot plus a spec
+  // that HAS a ring — deliberately not the beam's, since the whole point of the
+  // stow winch is to reach the rungs Sling Winch bought that the beam has not.
+  const ok = L.stow
+    ? (!st.frontRam && game.orbit.length < st.maxOrbiters && canStow(st, b)
+       && b.heldBy !== 'orbit' && b !== game.held && b !== game.held2)
+    : (canLift(st, b) && !(game.held && !canSecond) && b.heldBy !== 'orbit');
+  if (!down || !b.alive || !s.alive || b.parryFrozen || !ok ||
       Math.hypot(b.x - s.x, b.y - s.y) > st.range + b.radius) {
     cancelLatch(game);
     return;
@@ -356,6 +376,9 @@ export function updateLatch(game, dt, btn = true) {
   L.t += dt;
   if (L.t < L.need) return;
   game.latch = null;
+  // The ring has no wind-up to carry the seconds into — a stow is not a throw —
+  // so the winch simply ends in the seat it was working toward.
+  if (L.stow) { takeIntoRing(game, b); return; }
   // THE WINCH SECONDS CARRY INTO THE WIND-UP, they are not charged twice: from
   // the player's side this was one continuous press, and billing the full
   // beamGrip ramp again on top of the winch would put a hard throw on a moon
@@ -384,6 +407,15 @@ export function cancelLatch(game) {
 // boolean, and do not test it for truthiness — 'refused' is truthy too.
 export function tryGrab(game) {
   if (!game.ship.alive) return null;
+  // A RING WINCH ALREADY OWNS THE EMITTERS. The stow winch rides the right
+  // button, so the left one is free to be pressed underneath it — and there is
+  // exactly one `game.latch`, so starting a beam winch here would silently
+  // steal a moon the player is two seconds into hauling into the ring.
+  // Reported as 'winching' rather than null because null falls through to
+  // main.onGrab's retrieve fallback, which would yank a rock back OUT of the
+  // ring the winch is trying to fill. Silent: nothing was refused, the press
+  // simply arrived while a winch it has no business interrupting was running.
+  if (game.latch && game.latch.stow) return 'winching';
   // Twin Grip lets a SECOND rock go into game.held2; without it (or both full) no grab.
   const canSecond = game.st.twinGrip && game.held && !game.held2;
   if (game.held && !canSecond) return null;
@@ -877,22 +909,56 @@ export function addToOrbit(game) {
 // It reuses `pickTarget`, so the stow obeys every rule the beam does about WHAT
 // is under the cursor — nests and forts excluded, your own shot demoted, the
 // throw lockout respected. What it does NOT reuse is the beam's mass gate: the
-// ring's gate is `canStow` (one class lower), which is the whole point of it.
-// Silent on failure — this runs on a held-button sweep, so a rock the ring
-// cannot take must simply not be taken, without a denial sound per frame.
+// ring's gate is `canStow` (its own Sling Winch rung), which is the whole point
+// of it. Silent on failure — this runs on a held-button sweep, so a rock the
+// ring cannot take must simply not be taken, without a denial sound per frame.
+//
+// A MOON IS STILL WINCHED (user design law, docs/design-laws.md): belt rock
+// pockets on the press exactly as it always has, but anything with a
+// `config.latchTime` starts a winch here rather than being taken, because
+// "taking a world is an ACT, not a click" is a statement about the WORLD, not
+// about which button was pressed. Without this the held-button sweep re-armed
+// every 0.12s and dragging the cursor across a moon family pocketed the lot —
+// five named moons, no winch, from a beam that could not lift a boulder.
+//
+// LIKE `tryGrab`, WHAT IT REPORTS IS NOT A BOOLEAN, for the same reason: the
+// caller has to tell a seat from a winch it just started, or the sweep's
+// tutorial line congratulates the player on a stow that has not happened yet.
+//   'stowed'   — the rock is in the ring now
+//   'winching' — a moon/world winch has started (updateLatch owns it from here)
+//   false      — nothing doing, silently
+// Both non-false values are truthy, which is what claims the press for the stow.
 export function stowFromCursor(game) {
   const st = game.st;
   if (!game.ship.alive || st.frontRam) return false;
   if (game.orbit.length >= st.maxOrbiters) return false;
+  // One winch at a time, whichever button started it — there is a single
+  // `game.latch`, and a sweep that clobbered a beam winch mid-haul would lose
+  // seconds of work to a cursor that merely crossed a pebble.
+  if (game.latch) return false;
   const { best } = pickTarget(game);
   if (!best || !best.alive || best.type === 'nest') return false;
   if (best.heldBy === 'orbit' || best === game.held || best === game.held2) return false;
   if (!canStow(st, best)) return false;
-  derail(best);
-  unglue(game, best);
-  best.crust = null;
-  seatInRing(game, best);
-  return true;
+  const need = latchTime(best);
+  if (need > 0) {
+    game.latch = { body: best, t: 0, need, stow: true };
+    sfx.sfxGrab();
+    return 'winching';
+  }
+  takeIntoRing(game, best);
+  return 'stowed';
+}
+
+// The stow's own tail: everything between "this rock is coming aboard" and
+// seatInRing. Shared by the press (belt rock, immediately) and by the winch
+// completion (a moon, seconds later) so the two cannot drift — a moon that
+// skipped `derail` would ride the ring still glued to its old rail.
+function takeIntoRing(game, b) {
+  derail(b);
+  unglue(game, b);
+  b.crust = null;
+  seatInRing(game, b);
 }
 
 // The shared tail of both stow paths — everything that makes a body a RING
