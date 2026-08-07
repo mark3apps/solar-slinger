@@ -2701,6 +2701,27 @@ window.mechTest = async (opts = {}) => {
 // {idle: true} kills the ship first — the cleanest sky-stability signal
 // (no deathCause is set, so no life is spent and no death panel opens).
 window.soak = (seconds = 600, opts = {}) => {
+  // PINNED TO CLASSIC, like every other harness — this is the hook CLAUDE.md
+  // calls "the one-call balance soak", and it soaks whatever world `game` is
+  // holding, so a dev who left the title screen on PEACEFUL would measure a sky
+  // with no nests, two disarmed Bastions and every brood already spent, and read
+  // the missing bodies as a balance change nobody made.
+  //
+  // It has to REBUILD, not just swap `game.rules`: world.applyModeRules only ever
+  // SUBTRACTS and it ran back at generation time, so nothing short of a regen can
+  // put the hostile layer back (setMode's own reasoning). Same worldSeed, so it is
+  // the identical layout under the classic ruleset.
+  //
+  // ONLY when the mode is wrong. An unconditional freshRun would reset time,
+  // progression and the ship on every classic soak too — silently changing the
+  // world every existing caller was measuring, which is the same class of bug.
+  //
+  // {keepMode: true} is the deliberate OPT-OUT, for someone who means to soak a
+  // non-classic sky: `dmgMul` is a shipped rule (exploration takes damage to
+  // 1/8) and peaceful's missing hostile layer is a real ruleset, so a pin with
+  // no escape hatch would make those two modes unsoakable.
+  const rebuilt = game.mode !== 'classic' && !opts.keepMode;
+  if (rebuilt) window.freshRun(0, game.worldSeed);
   if (opts.idle) game.ship.alive = false;
   const wasAuto = game.autoUpgrade;
   game.autoUpgrade = true;
@@ -2720,6 +2741,12 @@ window.soak = (seconds = 600, opts = {}) => {
   game.autoUpgrade = wasAuto;
   return {
     simSeconds: seconds, wallMs,
+    // Reported, not silent, and reported in FULL: the rebuild is a freshRun, so
+    // it throws away the whole RUN the caller was holding — progression, tier,
+    // lives, docks, home port and game.time all reset, and the spec is forced to
+    // spec 0 — not merely the sky. A soak whose numbers came from a different
+    // run than the one on screen has to say which parts it replaced.
+    ...(rebuilt ? { rebuilt: `mode was not classic — restarted the whole run on seed ${game.worldSeed} under classic rules (progression, tier, lives, docks, home and clock reset; spec forced to 0). {keepMode: true} soaks the mode as-is.` } : {}),
     planets: frac('planet'), moons: frac('moon'),
     ship: game.ship.alive ? `alive, hull ${Math.round(game.ship.hull)}` : `dead${game.deathCause ? ` (${game.deathCause})` : ' (idle soak)'}`,
     lives: game.prog.lives, tier: game.prog.tier,

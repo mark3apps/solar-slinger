@@ -249,8 +249,27 @@ export const ACHIEVEMENTS = [
     (g, s) => s.kStation >= 4),
   A('killNest', 'combat', PTS.tricky, 'Fumigation', 'Destroy an alien nest.',
     (g, s) => s.kNest >= 1),
-  A('killNest3', 'combat', PTS.brutal, 'Exterminator', 'Destroy three alien nests.',
-    (g, s) => s.kNest >= 3),
+  // THE BAR IS THE WHOLE POPULATION, because the population is TWO. `buildLayout`
+  // carries exactly two `nest: true` slots (world.js — the ice world's, and the
+  // rocky world in the warm group; both ship on every seed, since all nine
+  // ptypes always ship and the warm group places all three of its contents) and
+  // NOTHING RESPAWNS A NEST by design (ai.js, "the nest rule: consequence traces
+  // to a player choice; no respawner"). Censused across 40 seeds: 2 nests, every
+  // time. The old bar of three was therefore unreachable on every seed in every
+  // mode — the same failure the rogue rows below were retired for, and the same
+  // rule decides it: an achievement nothing in the world can produce is worse
+  // than one row short. Raising the nest count to serve the scoreboard was not
+  // an option (enemy density is deliberately sparse — design law).
+  //
+  // THE ID STAYS `killNest3`, the lurker8 case exactly: the name is historical,
+  // the bar is the predicate.
+  //
+  // Still PTS.brutal, for lurker8's reason: two of the two that exist is the
+  // run's ENTIRE nest population — a bigger share of the sky than three of an
+  // imagined five — and clearing it shuts off the grabber waves' only supply
+  // for the rest of the run.
+  A('killNest3', 'combat', PTS.brutal, 'Exterminator', 'Destroy every alien nest in the system.',
+    (g, s) => s.kNest >= 2),
   // (The two rogue-planet rows retired with rogue planets themselves — an
   // achievement nothing in the world can produce is worse than one row short.
   // The kRogue ledger key and noteKill's rogue branch stay: type 'rogue' is
@@ -299,8 +318,15 @@ export const ACHIEVEMENTS = [
     (g, s) => s.fieldClear >= 1),
   A('fort', 'combat', PTS.hard, 'Liberator', 'Smash every turret on a Bastion fort.',
     (g, s) => s.kFort >= 1),
-  A('fort3', 'combat', PTS.insane, 'Siege Engine', 'Liberate three Bastion forts.',
-    (g, s) => s.kFort >= 3),
+  // TWO Bastions exist, not three, and the same rescope as killNest3 applies for
+  // the same reason. world.js calls `fortify` exactly twice: once on the desert
+  // world (`roleHost('fort')`, which every seed ships) and once on the single
+  // biggest eligible moon (`bigMoons` is a `.slice(0, 1)`). Censused across 40
+  // seeds: 2 forts, every time — one planet, one moon. A liberation nulls
+  // `body.fort` (physics.js), so kFort cannot double-count one Bastion either.
+  // The id stays `fort3` for the lurker8 reason.
+  A('fort3', 'combat', PTS.insane, 'Siege Engine', 'Liberate every Bastion fort in the system.',
+    (g, s) => s.kFort >= 2),
   A('fortShield', 'combat', PTS.tricky, 'Shields Down', "Break through a Bastion fort's shield.",
     (g, s) => s.fortShields >= 1),
   A('combo2', 'combat', PTS.easy, 'Trick Shot', 'Chain a ×2 gravity-billiards combo.',
@@ -971,8 +997,18 @@ export const ACHIEVEMENTS = [
     (g, s) => g.prog.tier >= 5 && !s.deaths),
   A('darkStar', 'insane', PTS.insane, "The Wanderer's Star", 'Find and chart the hidden dark star.',
     (g) => (g.prog.maxLivesBonus || 0) >= 1),
-  A('nest5', 'insane', PTS.insane, 'Silent Sector', 'Destroy five alien nests.',
-    (g, s) => s.kNest >= 5),
+  // Rescoped alongside killNest3 and fort3 (the counts are argued at both rows):
+  // the sky holds two nests and two Bastions, so `kNest >= 5` could never land.
+  // Dropping it to `kNest >= 2` was the obvious move and is wrong — it would
+  // fire on the same kill as killNest3, making this a silent 220-point rider on
+  // a 100-point row rather than a feat of its own. So the INSANE rung becomes
+  // the COMPOUND: every hostile installation in the system, cleared in one run.
+  // It is strictly above both rows it caps (you cannot earn it without earning
+  // each of them), it reads only counters that already exist, and it takes the
+  // same shape `completionist` below already uses for this category.
+  // THE ID STAYS `nest5` (the lurker8 rule).
+  A('nest5', 'insane', PTS.insane, 'Silent Sector', 'Destroy every alien nest and liberate every Bastion fort in one run.',
+    (g, s) => s.kNest >= 2 && s.kFort >= 2),
   A('survive60', 'insane', PTS.insane, 'The Long Watch', 'Survive a full hour.',
     (g) => g.time >= 3600),
   A('completionist', 'insane', PTS.insane, 'Completionist', 'Chart everything, wake the Herald, and power the Relay in one run.',

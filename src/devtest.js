@@ -1,6 +1,6 @@
 import { CFG, SPECS, ABILITIES, shipStats, xpForPick, owesPick, addXp,
   abilityById, abilityRankCost, tierChoices, tierFloorFor,
-  stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR } from './config.js';
+  stormStrength, stormSpent, shelterR, SHIP_RADIUS, berthR, modeRules } from './config.js';
 import { ACHIEVEMENTS } from './achievements.js';
 import { spawnAsteroid, respawnShip } from './world.js';
 import { Alien } from './entities.js';
@@ -1796,6 +1796,140 @@ export function runMechTest(game, hooks, opts = {}) {
       expect((now.moon || 0) === (skyBefore.moon || 0),
         `moons ${skyBefore.moon} -> ${now.moon}`);
       return `planets ${now.planet}, moons ${now.moon}`;
+    });
+
+    // ---- THE HARNESSES THEMSELVES (QA #206 / #207) -------------------------
+    // Both of these check the TEST RIG rather than the game, which is why they
+    // sit past T26: they rebuild the world, so anything asserting on the
+    // suite's own flight would be measuring a fresh sky if it ran after them.
+    //
+    // T27 — window.soak PINS CLASSIC, and REPORTS when it had to. The mode is
+    // a persisted title-screen setting, so a dev who last played PEACEFUL had
+    // every soak silently measure a sky with no nests, two disarmed Bastions
+    // and every brood already spent — and read the missing bodies as a balance
+    // change nobody made. window.freshRun already pins classic and mechTest
+    // enters through it; soak did not, and soak is the hook CLAUDE.md calls
+    // "the one-call balance soak".
+    //
+    // It has to REBUILD, not just swap game.rules: world.applyModeRules only
+    // SUBTRACTS, and it ran back at generation time — nothing short of a regen
+    // puts the hostile layer back. Same worldSeed, so it is the identical
+    // layout under the classic ruleset, which is the half asserted hardest
+    // here: a rebuild that re-rolled the seed would be a different sky.
+    t('soak pins classic and rebuilds a non-classic sky', () => {
+      hooks.freshRun(0, seed);
+      // CAPTURE FIRST, RESTORE IN THE finally — issue #151's rule. Three
+      // separate leaks live here if this throws mid-way:
+      //   - game.mode/game.rules would be left PEACEFUL, and every later
+      //     harness call in the session would run the no-hostiles sky this
+      //     case exists to catch;
+      //   - soak arms game.collisionLog / game.deathLog and leaves its own
+      //     arrays behind, and the report's `logs` block below reads them AFTER
+      //     the outer finally — so a harness check would quietly erase the
+      //     suite's own record of the run it just flew;
+      //   - and the SKY ITSELF, which this case breaks on purpose. See the
+      //     finally: the rebuild lives there, not on the happy path.
+      const wasMode = game.mode, wasRules = game.rules;
+      const wasColl = game.collisionLog, wasDeath = game.deathLog;
+      try {
+        const seed0 = game.worldSeed;
+        // A peaceful sky, built the way world.applyModeRules builds one —
+        // written out rather than calling it, so this asserts against the
+        // SHAPE of a no-hostiles world rather than against that function
+        // agreeing with itself.
+        game.mode = 'peaceful';
+        game.rules = modeRules('peaceful');
+        for (let i = game.bodies.length - 1; i >= 0; i--) {
+          const b = game.bodies[i];
+          if (b.type === 'nest') { game.bodies.splice(i, 1); continue; }
+          if (b.fort) b.fort = null;
+        }
+        for (const f of (game.fields || [])) { f.brood = 0; f.cleared = true; }
+        const nests = () => game.bodies.filter((b) => b.type === 'nest').length;
+        const forts = () => game.bodies.filter((b) => b.fort).length;
+        const brood = () => (game.fields || []).reduce((n, f) => n + (f.brood || 0), 0);
+        expect(nests() === 0 && forts() === 0 && brood() === 0,
+          `setup: the emulated peaceful sky still has ${nests()} nests / ${forts()} forts / ${brood()} brood`);
+
+        const r = window.soak(0.5, { idle: true });
+        expect(game.mode === 'classic',
+          `soak left the mode on '${game.mode}' — it soaked a sky with ${nests()} nests, `
+          + `${forts()} armed Bastions and ${brood()} brood, and reported the result as normal`);
+        expect(game.worldSeed === seed0,
+          `the rebuild re-rolled the world: seed ${seed0} -> ${game.worldSeed}`);
+        expect(nests() > 0, 'the rebuild put no nests back');
+        expect(forts() > 0, 'the rebuild left every Bastion disarmed');
+        expect(brood() > 0, 'the rebuild left every shoal brood spent');
+        expect(typeof r.rebuilt === 'string',
+          'the soak result carries no `rebuilt` note — a soak whose numbers came from a '
+          + 'different sky than the caller was holding has to say so');
+
+        // …AND THE CLASSIC PATH IS NOT DISTURBED. This is the guard against
+        // someone later "simplifying" the conditional into an unconditional
+        // freshRun: that would reset time, progression and the ship on every
+        // classic soak too, silently changing the world every existing caller
+        // was already measuring — the same class of bug, pointed the other way.
+        const r2 = window.soak(0.5, { idle: true });
+        expect(!('rebuilt' in r2),
+          `a soak of an already-classic run rebuilt anyway (${r2.rebuilt}) — every existing `
+          + 'caller would lose the run it was measuring');
+        return `peaceful -> rebuilt seed ${game.worldSeed} (${nests()} nests, ${forts()} forts, `
+          + `${brood()} brood); a second classic soak rebuilt nothing`;
+      } finally {
+        // SELF-CONTAINED, and it has to be. Restoring mode and rules is not
+        // enough: this case leaves a DEAD SHIP and an emulated peaceful sky
+        // behind it — two nests spliced out of game.bodies, both b.fort nulled,
+        // every f.brood zeroed — so a throw in the setup expect or inside soak
+        // would hand that broken world to whatever runs next. It looks fine
+        // today only because T28 happens to open with its own freshRun, i.e.
+        // the check is order-dependent on its successor. Rebuild here instead.
+        hooks.freshRun(0, seed);
+        game.mode = wasMode; game.rules = wasRules;
+        game.collisionLog = wasColl; game.deathLog = wasDeath;
+        // game.nanEvents is deliberately NOT restored. Any snapshot of it taken
+        // above would be from BEFORE the soaks, so writing it back would erase a
+        // real NaN raised during this check's own second of simulation — the one
+        // field the project requires to be 0. T21 scrubs its tally too, but only
+        // the DELIBERATE injection it made itself; there is no injection here, so
+        // anything the counter holds now is genuine and must reach the report.
+      }
+    });
+
+    // T28 — EVERY HOSTILE-INSTALLATION ROW IS EARNABLE. The catalog asked for
+    // three nests, three Bastions and five nests; the sky holds TWO of each and
+    // nothing respawns either (ai.js's nest rule: no respawner), so all three
+    // rows were dead on every seed in every mode — the same defect the two
+    // rogue-planet rows were retired for.
+    //
+    // BOTH HALVES MATTER, and the census half is the one that catches the
+    // REVERSE drift: rescoping the rows to the population makes the population
+    // load-bearing, so a later change to the nest or Bastion count silently
+    // turns `kNest >= 2` into a row you earn two-thirds of the way through the
+    // job. Counted off the world, never off a constant.
+    t('hostile-installation rows are earnable', () => {
+      hooks.freshRun(0, seed);
+      const nests = game.bodies.filter((b) => b.type === 'nest').length;
+      const forts = game.bodies.filter((b) => b.fort).length;
+      expect(nests === 2,
+        `the sky generates ${nests} nests, not 2 — killNest3/nest5 are scoped to 2 and no longer `
+        + 'match the population (see their notes in achievements.js)');
+      expect(forts === 2,
+        `the sky generates ${forts} Bastions, not 2 — fort3/nest5 are scoped to 2 and no longer `
+        + 'match the population');
+      // Clear every hostile installation the run actually contains, then let
+      // the ordinary per-frame sweep score it. `got` maps id -> game.time, and
+      // frame-one time is 0, so membership is read off `order` — a truthiness
+      // test on `got[id]` would report an earned row as unearned.
+      const st = game.prog.ach.stats;
+      st.kNest = nests; st.kFort = forts;
+      hooks.stepSim(1 / 60);
+      const order = game.prog.ach.order;
+      const want = ['killNest', 'killNest3', 'fort', 'fort3', 'nest5'];
+      const missing = want.filter((id) => !order.includes(id));
+      expect(missing.length === 0,
+        `cleared all ${nests} nests and all ${forts} Bastions and still cannot earn: `
+        + `${missing.join(', ')} — unreachable on every seed`);
+      return `${nests} nests + ${forts} Bastions clears ${want.join(', ')}`;
     });
   } finally {
     Math.random = realRandom;

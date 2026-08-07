@@ -6,12 +6,21 @@
 There is no test runner. Verify balance and physics with the console hooks (all defined at the bottom
 of main.js; ship-damage god mode and the NaN tally hook into physics.js):
 
-- `window.soak(seconds, {idle})` — **the one-call balance soak**: arms `collisionLog`/`deathLog`/
-  `game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a summary —
-  `{ planets: "N/N", moons: "N/N", ship, lives, tier, deaths[], impacts, nanEvents, wallMs }` —
+- `window.soak(seconds, {idle, keepMode})` — **the one-call balance soak**: arms `collisionLog`/
+  `deathLog`/`game.nanEvents`, forces `autoUpgrade` on for the duration, `window.tick`s, and returns a
+  summary —
+  `{ planets: "N/N", moons: "N/N", ship, lives, tier, deaths[], impacts, nanEvents, wallMs, rebuilt? }` —
   the denominators are the run's own start-of-soak census (per-seed since the seeded layout).
   `{idle: true}` kills the ship first (no life spent — deathCause stays empty) for the cleanest
   sky-stability signal. Judge the result against the `balance-test` skill's pass criteria.
+  **It PINS CLASSIC**, like `window.freshRun`: the mode is a persisted title-screen setting, so a dev
+  who last played peaceful would otherwise soak a sky with no nests, disarmed Bastions and spent
+  broods and read the missing bodies as a balance change nobody made. Fixing it needs a regen, not a
+  rules swap (`world.applyModeRules` only subtracts, back at generation time), so a non-classic mode
+  restarts the whole run on the same `worldSeed` — progression, tier, lives, docks, home and
+  `game.time` reset, spec forced to 0 — and the result says so in a **`rebuilt`** key. That key is
+  absent whenever nothing was replaced. `{keepMode: true}` is the deliberate opt-out for soaking a
+  peaceful or exploration sky on purpose (`dmgMul` is a shipped rule).
   **Soaks now run on a RANDOM world** unless you pin one — load `?seed=20260721` for a run that is
   bit-comparable with an earlier soak. The 17/45 criteria hold on any seed (the layout table is fixed);
   `game.worldSeed` records which world a given result came from, so quote it when reporting.

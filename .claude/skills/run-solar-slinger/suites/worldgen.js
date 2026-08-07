@@ -157,6 +157,14 @@ const landmarks = {
   glowPockets: (g.glowPockets || []).length,
   echoes: gen.filter((b) => b.echo).length,
   chartable: gen.filter((b) => b.chartKey).length,
+  // BASTIONS. The hostile-installation achievements are scoped to the
+  // population the sky actually generates (achievements.js killNest3 / fort3 /
+  // nest5 all read 2), so that population is load-bearing and moving it
+  // silently rescopes three rows. Nests already have their tripwire —
+  // `byType.nest` is EXACT-diffed above, so counting them again here would
+  // only print the same change twice. Forts had none: an emplacement is a
+  // field on an ordinary planet or moon, invisible to a census by type.
+  forts: gen.filter((b) => b.fort).length,
 };
 
 return {
