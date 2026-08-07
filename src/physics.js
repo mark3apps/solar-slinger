@@ -3555,7 +3555,12 @@ function collideShipBody(game, s, b, dt) {
 // per-body collider can observe. Module-level rather than on `game` for the
 // same reason `shipContacts` is: it is scratch between two functions in this
 // file and means nothing to a save, a soak or the HUD.
-const landing = { touch: null, settle: null, gate: '', b: null, t: 0 };
+// `lock` is the EVICTION: the body a station just collapsed under the ship on,
+// which refuses a fresh build site until the hull is genuinely off the ground
+// again (set in removeDock, cleared below — the reasoning is on both). `off` is
+// the seconds it has been clear of any surface, which is what "genuinely" means
+// there.
+const landing = { touch: null, settle: null, gate: '', b: null, t: 0, lock: null, off: 0 };
 
 // Is this station finished? The ONE test for "does this dock actually work" —
 // the shield, the repair and the pad's built look all read it, so a station can
@@ -3587,6 +3592,26 @@ function removeDock(game, d) {
   if (game.dock === d) {
     game.dock = null;
     game.launch = null;      // a release sequence cannot outlive its pad
+    // THE BERTH DIES WITH THE STATION — AND THE SITE IS EVICTED.
+    //
+    // The landing latch is module scratch that OUTLIVES the station it filled.
+    // Left full, updateDock's build branch lays a fresh site on the same spot
+    // on the very NEXT substep, with a brand-new CFG.DOCK_SHIELD pool, without
+    // the ship ever leaving the ground — so a dome collapsing under you cost
+    // one substep instead of a station, which is the exact opposite of "a place
+    // you can lose, rather than a safe room" (CFG.DOCK_SHIELD's own note).
+    //
+    // Clearing the latch ALONE does not fix that: the hull is still settled on
+    // the surface with every gate held, so it re-earns the berth in DOCK_TIME
+    // (0.5s) and rebuilds anyway. So the SITE is locked until the hull is
+    // actually off the ground. Rebuilding here after leaving and coming back
+    // stays legal — that is the sanctioned way to get a new pool, and it still
+    // costs the full DOCK_BUILD exposed.
+    //
+    // updateLaunch runs the same latch clear for the same "re-earned from zero"
+    // reason; this is the collapse's half of it.
+    landing.t = 0; landing.b = null;
+    landing.lock = d.b; landing.off = 0;
   }
   if (game.autoland === d) game.autoland = null;
   const wasHome = game.home === d;
@@ -3636,7 +3661,7 @@ export function clearDocks(game) {
   game.autoland = null; game.autolandCd = 0;
   if (game.docks) game.docks.length = 0; else game.docks = [];
   landing.touch = null; landing.settle = null; landing.b = null;
-  landing.gate = ''; landing.t = 0;
+  landing.gate = ''; landing.t = 0; landing.lock = null; landing.off = 0;
   game.dockT = 0; game.dockCand = null; game.dockGate = '';
 }
 
@@ -3679,6 +3704,24 @@ function updateDock(game, dt) {
       game.homeLostName = placeName(q.b, 'your home world');
     }
   }
+
+  // LIFTING CLEAR LIFTS THE EVICTION (removeDock) — ON THE BERTH'S OWN GRACE,
+  // NEVER ON ONE SUBSTEP. A single frame off the surface is not a departure,
+  // and in the only scenario a dome ever dies in it is the COMMON case: the
+  // ground and the hull are under fire, so a bounce off the debris breakDock
+  // just spawned, a nudge from the next hit or a scar opening under the pad all
+  // break contact for a frame while the ship has plainly gone nowhere. Read as
+  // "the ship left", 8ms of air handed the rebuild straight back.
+  //
+  // CFG.DOCK_DRAIN already prices exactly this question for the BERTH: contact
+  // holds a berth, and losing it spends the latch at DOCK_DRAIN, so a berth
+  // survives DOCK_TIME / DOCK_DRAIN (~0.17s) of no contact — its note calls
+  // that "a bump across a ridge". Leaving means the same thing to both, so the
+  // eviction reads the same clock rather than inventing a second answer.
+  // Capped: this counts up for the whole time the ship is in open space.
+  if (landing.touch) landing.off = 0;
+  else landing.off = Math.min(1, landing.off + dt);
+  if (landing.lock && landing.off >= CFG.DOCK_TIME / CFG.DOCK_DRAIN) landing.lock = null;
 
   // The latch timer fills only while all three gates hold and drains
   // DOCK_DRAIN times faster off the surface — see CFG.DOCK_DRAIN for why
@@ -3752,7 +3795,15 @@ function updateDock(game, dt) {
       const d2 = (p.x - s.x) ** 2 + (p.y - s.y) ** 2;
       if (d2 < best) { best = d2; d = q; }
     }
-    if (!d) {
+    // NO REBUILD IN THE RUBBLE — the site is evicted until the ship leaves it
+    // (removeDock). It NAMES ITSELF: a latch that fills and then quietly
+    // declines to lay a station is this feature's worst failure mode, so the
+    // refusal goes through the same gate channel every other one does, and
+    // drawDockGuide's instruction for it is "lift clear".
+    const evicted = !d && landing.lock === b;
+    if (evicted) {
+      landing.gate = 'rubble';
+    } else if (!d) {
       // A FRESH BUILD SITE.
       d = {
         b,
@@ -3796,16 +3847,18 @@ function updateDock(game, dt) {
       game.dockedName = placeName(b);
       game.dockFlashT = 0.9;   // one-shot bloom on the pad (render.drawPad)
     }
-    game.dock = d;
-    // THE CLAMPS TAKE THE SHIP, SO THE BEAM STANDS DOWN. A dock is a place you
-    // stop working: the beam, the ring, the tethers and the shotgun are all
-    // inert while berthed (main.js skips their updates and refuses their
-    // inputs), so anything still held has to be let go HERE — at the berth,
-    // which is before the station finishes building. Rocks left welded to a
-    // parked ship would orbit a structure they also phase through, with no
-    // input able to clear them. A gentle drop, never a volley (tractor.dropOrbit).
-    standDown(game);
-    sfx.sfxOrbitCapture();     // the clamps biting — a mechanical catch, not a chime
+    if (!evicted) {
+      game.dock = d;
+      // THE CLAMPS TAKE THE SHIP, SO THE BEAM STANDS DOWN. A dock is a place
+      // you stop working: the beam, the ring, the tethers and the shotgun are
+      // all inert while berthed (main.js skips their updates and refuses their
+      // inputs), so anything still held has to be let go HERE — at the berth,
+      // which is before the station finishes building. Rocks left welded to a
+      // parked ship would orbit a structure they also phase through, with no
+      // input able to clear them. A gentle drop, never a volley (tractor.dropOrbit).
+      standDown(game);
+      sfx.sfxOrbitCapture();   // the clamps biting — a mechanical catch, not a chime
+    }
   }
 
   // Published for the approach guidance (render.drawDockGuide) — the player has
@@ -3904,6 +3957,32 @@ function updateAutoland(game, dt) {
   const s = game.ship;
   const c = game.controls;
   const handsOn = (c.f || 0) > 0 || (c.b || 0) > 0 || game.burnerOn;
+  // …AND A SHIP CARRYING A LOAD IS WORKING, NOT COMING HOME. The throttle is
+  // the only thing `handsOn` can see, but the beam, the winch and the ring are
+  // all MOUSE-driven — so mining the world your own station is on, from inside
+  // AUTOLAND_R, is bit-for-bit the hands-off, slow, non-receding state the scan
+  // is looking for. The berth then calls tractor.standDown, which empties the
+  // ring, drops both held rocks and cancels the winch, earning nothing: the
+  // design law prices that as the cost of a landing the player CHOSE, never of
+  // one the pad chose for them. Without this, working next to your own dock
+  // means tapping thrust every AUTOLAND_CD seconds to stay uncaptured.
+  //
+  // THE HELD-BUTTON WORK VERBS COUNT TOO, and one of them is a whole spec's
+  // entire loop: a BRAWLER works by holding right mouse and sweeping rock into
+  // the ram (main.js's ramEating), which never touches held/held2/latch and
+  // cannot touch the ring at all (shipStats pins its maxOrbiters to 0) — so
+  // without game.ramEating a brawler mining beside its own pad is invisible
+  // here, and worse, the berth's dockBlocking then disarms the button it is
+  // still holding. game.stowEating is the hauler's mirror of it, and the ring
+  // term only covers that sweep from the first rock it seats onward. Neither
+  // can stick: main.js clears both on right-mouse-up and again every frame at
+  // a berth.
+  //
+  // game.volleyCharging is deliberately NOT in here: main.js arms it only off
+  // game.orbit.length and clears it the moment the ring empties, so the ring
+  // term already covers every frame it can be true in.
+  const working = !!(game.held || game.held2 || game.orbit.length || game.latch
+    || game.ramEating || game.stowEating);
   const A = game.autoland;
   if (A) {
     // Done (the latch took it), dead, or the station itself is gone.
@@ -3911,8 +3990,11 @@ function updateAutoland(game, dt) {
       game.autoland = null;
       return;
     }
-    // MANUAL OVERRIDE: any throttle hands the ship straight back.
-    if (handsOn) {
+    // MANUAL OVERRIDE: any throttle hands the ship straight back — and so does
+    // picking work back up mid-approach, which is the same statement made with
+    // the mouse and would otherwise reach the berth's standDown by the back
+    // door. Both spend the cooldown, for the reason on the engage gate below.
+    if (handsOn || working) {
       game.autoland = null;
       game.autolandCd = CFG.AUTOLAND_CD;
       return;
@@ -3944,7 +4026,24 @@ function updateAutoland(game, dt) {
   // all gate on dockReady, but the autoland is a convenience of re-landing at
   // a pad you already own — and coming back to RESUME A BUILD is exactly the
   // repeat approach it exists to remove.
-  if (!s.alive || game.dock || game.launch || game.autolandCd > 0 || handsOn) return;
+  // WORKING STANDS THE PAD DOWN, exactly as a LAUNCH does, and it is refreshed
+  // every substep the ship is carrying something — a bare refusal is not
+  // enough. Mining is a cycle, and the gaps in it are fractions of a second:
+  // in a 0.3s gap between a release and the next grab the pad would engage,
+  // swing most of the way to rockets-down (AUTOLAND_TURN 5) and drag the
+  // approach vector on (AUTOLAND_K 3.5) before the next grab cancelled it —
+  // over and over, with the guide's dashed line and "PAD HAS THE HELM" ring
+  // blinking each time. A pad that repeatedly tugs at a working ship and never
+  // finishes is a worse failure than the capture this gate was added to stop.
+  // The price is the launch's price: AUTOLAND_CD of drifting after the last
+  // rock leaves your hands before the pad may take you.
+  // Ordered: the disqualifiers that make the stand-down meaningless first (a
+  // berth has already stood the beam down; a dead ship is not working), then
+  // the refresh, which has to run BEFORE the cooldown's own return or a
+  // cooldown already ticking would never be topped up.
+  if (!s.alive || game.dock || game.launch) return;
+  if (working) { game.autolandCd = CFG.AUTOLAND_CD; return; }
+  if (game.autolandCd > 0 || handsOn) return;
   let pick = null, best = CFG.AUTOLAND_R * CFG.AUTOLAND_R;
   for (const d of game.docks) {
     // The same doomed-pad tests updateDock sweeps on, because this runs BEFORE
