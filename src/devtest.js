@@ -1452,7 +1452,7 @@ export function runMechTest(game, hooks, opts = {}) {
     // Everything else is arranged to contribute exactly zero along u, so the
     // whisker is the only thing the assertion can be reading: the moon is the
     // most isolated in the sky (asserted — no other world is within its own
-    // avoidance reach of the alien, and the star is far outside avoidStars'),
+    // avoidance reach of the alien, and the star is far outside avoidStars' shell),
     // the alien sits OUTSIDE the surface push's band so the radial term is zero
     // (asserted), and the ship is parked 1200 back along -v, which puts steer()
     // purely on v and is beyond the 700 at which the landed-ship exemption
