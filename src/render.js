@@ -3601,16 +3601,17 @@ function drawSeaVeil(game) {
 }
 
 // SUBMERSION OVERLAY — screen space, the corona-heat / Oort-frost slot and the
-// same grammar: a wash plus a vignette whose depth tracks one 0..1 state, with
-// a slow shimmer so the glass reads as water rather than as a coloured filter.
-// This is the pass that actually says YOU ARE UNDER — the in-world veil tints
-// the ship, and this tints the cockpit looking out at it.
-// This is the pass that actually says YOU ARE UNDER — and it has to carry the
-// LIFE (user call), because everything in world space is either a still wash or
-// a curve at planetary radius. Four layers, all screen space, all on game.time:
-// a deep wash, a breathing vignette, god-rays raking down from the surface, and
-// suspended particulate drifting through them. The rays and the motes are what
-// sell water; a flat blue filter reads as a colour grade.
+// same grammar: a wash plus a vignette whose depth tracks a 0..1 state, with a
+// slow shimmer so the glass reads as water rather than as a coloured filter.
+//
+// This is the pass that actually says YOU ARE UNDER: the in-world veil tints
+// the ship, and this tints the cockpit looking out at it. It also has to carry
+// the LIFE, because everything in world space is either a still wash or a curve
+// at planetary radius. Four layers, all on game.time — a deep wash, a breathing
+// vignette, god-rays raking down from the surface, and suspended particulate
+// drifting through them. The rays and the motes are what sell water; a flat
+// blue filter reads as a colour grade.
+//
 // TWO AXES, NOT ONE. `k` (game.seaK) is how WET the hull is and decides whether
 // this pass exists at all — it is 0.5 for a ship floating half submerged, so
 // bobbing on the surface gets a light, pleasant wash. `d` (game.seaDeep) is how

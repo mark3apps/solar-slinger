@@ -1369,7 +1369,8 @@ function resetRun(seed, openCard = true) {
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;
   // ...and the sea state with it: seaBody is a BODY REFERENCE, so a stale one
   // would pin the water veil to a world that no longer exists.
-  game.shipInSea = false; game.seaBody = null; game.seaK = 0; game.seaDeep = 0; game.seaWakeT = 0;
+  game.shipInSea = false; game.seaBody = null; game.seaK = 0; game.seaDeep = 0;
+  game.seaRel = 0; game.seaWakeT = 0;
   game.dockFlashT = 0; game.domeHitT = 0;   // (the stations go with the world — regenWorld)
   game.volleyT = 0; game.volleySel = 0; game.volleyCharging = false;
   game.evadeT = 0; game.warpT = 0; game.flingDelayT = 0; game.oortWarnT = 0;

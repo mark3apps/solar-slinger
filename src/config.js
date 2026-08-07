@@ -2547,6 +2547,13 @@ export const CFG = {
   // each one lasts long enough to matter.
   OCEAN_WAKE_EVERY: 1.2,
   OCEAN_RING_MAX: 24,
+  // What "at rest on the water" means, in the sea's own frame. Only the
+  // achievement sweep reads it — floating is not a mechanic that needs a
+  // threshold, but "come to rest floating" is a CLAIM, and without one the row
+  // banked five seconds of skimming through the surface at speed. Under the
+  // wake gate (45), so anything still enough to earn it is also too still to
+  // be throwing wake.
+  OCEAN_REST_SPD: 35,
   // THE DEEP CRUSHES YOU; THE SURFACE DOES NOT (user design call — "as we get
   // deeper, we take more damage and at the surface, we don't take damage").
   // Pressure is the driver and it is QUADRATIC in dive, so it is zero at the

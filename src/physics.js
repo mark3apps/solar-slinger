@@ -4586,6 +4586,11 @@ function collideAlienBody(game, al, b, dt) {
 // ---------- main step ----------
 
 const _sweep = [];       // collision broad-phase scratch (reused every substep)
+// Single-body attractor list for the ocean buoyancy's weight probe. gravityAt
+// takes a LIST, and building `[b]` inline allocated one array per substep for
+// every frame the hull was in a sea — the exact per-substep garbage every other
+// scratch on this page exists to avoid. Rebound in place at the call site.
+const _seaAtt = [null];
 // The sweep's SoA side-table (see THE SWEEP SIDE-TABLE in step()). Float64, not
 // Float32: world coordinates run to ~1e5 and the scan's compares must agree
 // with the f64 arithmetic collideBodies does, or a pair could be pruned here
@@ -6012,7 +6017,7 @@ export function step(game, dt) {
         }
       }
       const wasInSea = game.shipInSea;
-      let inSeaNow = false, seaBodyNow = null, seaKNow = 0, seaDeepNow = 0;
+      let inSeaNow = false, seaBodyNow = null, seaKNow = 0, seaDeepNow = 0, seaRelNow = 0;
       for (const b of attractors) {
         if (b.ptype === 'lava') {
           const lz = b.radius * CFG.LAVA_HEAT_ZONE;
@@ -6114,7 +6119,8 @@ export function step(game, dt) {
             const ux = (s.x - b.x) / (dl || 1), uy = (s.y - b.y) / (dl || 1);
             const rest = CFG.OCEAN_FLOAT * s.radius;
             if (deep > rest) {
-              const gw = gravityAt([b], s.x, s.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
+              _seaAtt[0] = b;   // scratch list — never allocate one per substep
+              const gw = gravityAt(_seaAtt, s.x, s.y, CFG.STAR_GRAV_SHIP, CFG.PLANET_GRAV_SHIP);
               const gRad = -(gw.ax * ux + gw.ay * uy);      // + = this world pulling the hull down
               if (gRad > 0) {
                 // TWO RAMPS, MULTIPLIED. `near` is the gentle one, measured in
@@ -6134,6 +6140,11 @@ export function step(game, dt) {
             // the air) and a dive closes it over completely.
             seaKNow = sub;
             seaDeepNow = dive;
+            // Speed through the water in the sea's OWN frame. Published because
+            // "floating at rest" is a thing the achievement sweep has to be able
+            // to ask about, and rel is already in hand here — recomputing it
+            // there would mean a second surfaceVel call per frame.
+            seaRelNow = rel;
             // PRESSURE TAKES SHIELD THEN HULL (user design call: "as we get
             // deeper, we take more damage and at the surface, we don't take
             // damage"). Quadratic in dive, so the waterline is free and the
@@ -6175,6 +6186,7 @@ export function step(game, dt) {
       game.seaBody = seaBodyNow;
       game.seaK = seaKNow;
       game.seaDeep = seaDeepNow;
+      game.seaRel = seaRelNow;
     }
   }
 

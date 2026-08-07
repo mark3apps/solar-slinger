@@ -1205,8 +1205,11 @@ export function noteDeath(game, cause) {
   else if (/Oort/i.test(c)) s.dieOort = (s.dieOort || 0) + 1;
   s.gasDepthCur = 0;
   // …and the sea dive with it: crushed on the seabed is not a dive you climbed
-  // out of, which is the whole claim the row makes.
+  // out of, which is the whole claim the row makes. The float streak goes too —
+  // a stretch of resting on the water that ended in a death is not five unbroken
+  // seconds afloat.
   s.seaDepthCur = 0;
+  s.seaFloatT = 0;
   // …and the berth streaks with it: "five unbroken minutes docked" must not
   // survive being blown up, and a repair run that ended in a death is no save.
   s.dockStreak = 0;
@@ -1295,12 +1298,22 @@ export function updateAchievements(game, dt) {
     // the feat is being driven DOWN out of it.
     if (game.shipInSea) {
       const sd = game.seaDeep || 0;
-      if (sd < 0.05) s.seaFloatT = (s.seaFloatT || 0) + dt;
+      // AT REST, AND IN ONE STRETCH. The row claims "come to rest floating", so
+      // depth alone is not enough on either count: without the speed gate it
+      // banked five seconds of skimming THROUGH the surface at full tilt, and
+      // as a lifetime total it banked them across a dozen separate passes.
+      // game.seaRel is physics' own speed-through-water, in the sea's frame.
+      if (sd < 0.05 && (game.seaRel || 0) < CFG.OCEAN_REST_SPD) {
+        s.seaFloatT = (s.seaFloatT || 0) + dt;
+      } else s.seaFloatT = 0;
       if (sd > (s.seaDepthCur || 0)) s.seaDepthCur = sd;
-    } else if (s.seaDepthCur) {
-      if (s.seaDepthCur >= 0.55) s.seaHalf = (s.seaHalf || 0) + 1;
-      if (s.seaDepthCur >= 0.92) s.seaBed = (s.seaBed || 0) + 1;
-      s.seaDepthCur = 0;
+    } else {
+      s.seaFloatT = 0;
+      if (s.seaDepthCur) {
+        if (s.seaDepthCur >= 0.55) s.seaHalf = (s.seaHalf || 0) + 1;
+        if (s.seaDepthCur >= 0.92) s.seaBed = (s.seaBed || 0) + 1;
+        s.seaDepthCur = 0;
+      }
     }
     if (game.dustCloak) s.dustT = (s.dustT || 0) + dt;
     // ---- DOCKING. All O(1) reads of state main.js and physics already
