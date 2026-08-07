@@ -14,7 +14,7 @@
 > | ✅ `src/rockshape.js` | SAT narrow phase: true MTV, real manifolds |
 > | ✅ wired into `physics.js` | `bigShape` pairs, `surfRadius` / `surfReach` / `surfNormal`, the packer |
 > | ✅ the fracture | giant → mids → smalls → ordinary asteroids, mass conserved to 1.000 |
-> | ✅ `tools/test-rockshape.mjs` | 15,896 checks green |
+> | ✅ `tools/test-rockshape.mjs` | 17,029 checks green |
 > | ✅ `tools/rockviz.html` | look at the library and verify the pieces tile |
 > | ⬜ soft rails | overlap still accumulates in play — see "Still open" |
 >

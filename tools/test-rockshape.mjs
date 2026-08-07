@@ -135,6 +135,14 @@ function pointExcess(deep) {
     }
     const c = rockContact(a, b);
     if (!c) continue;
+    // A POINT IS A POSITION, NOT A DEPTH — the one depth in a manifold is the SAT
+    // axis's, and it is checked HERE rather than per point (see the note in
+    // rockshape.manifold; a per-point `depth` existed, was read by nothing, and
+    // reported 0 on every corner contact by construction). Gated in the deep
+    // regime as well as the realistic one: point PLACEMENT degrades when one
+    // monolith is dropped inside another, but the axis depth must stay a real
+    // positive number in both, or the push has no magnitude.
+    ok(Number.isFinite(c.depth) && c.depth > 0, 'manifold depth is not a positive number');
     for (const p of c.points) {
       // No per-point `depth` any more — the manifold carries one depth for the pair.
       // What actually measures point PLACEMENT is finiteness plus the eA/eB reach
