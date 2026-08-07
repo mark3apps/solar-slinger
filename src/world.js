@@ -996,9 +996,11 @@ function buildLayout(rng, graveyardR) {
   // 2-5 moons short of its family). The same three anchors, in the same
   // proportion they were authored in (41500 / 44300 / 46000), read off
   // CFG.WORLD_R so the guard scales with the BOUNDARY the ladder has to fit
-  // inside rather than with the gaps it is made of. LADDER_CAP is exported
-  // because the Farshoal's berth is the thing this is protecting and the two
-  // must not drift apart.
+  // inside rather than with the gaps it is made of. LADDER_CAP and FARSHOAL_R
+  // are one binding each, module-local to this file because nothing outside it
+  // has any business placing something in that band — but they sit side by side
+  // at the top for the reason the "lane named twice" note gives: the berth is
+  // the thing this cap is protecting, and the two must not drift apart.
   const first = rows[0].r, last = rows[rows.length - 1].r;
   const cap = LADDER_CAP();
   if (last > cap) {

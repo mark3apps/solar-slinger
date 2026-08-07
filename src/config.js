@@ -1,11 +1,15 @@
 // SYSTEM SCALE — how far apart the sky is spread. Every sun-anchored radius
 // world.js authors (the layout lanes, the belts, the graveyard, Vesper's
 // ellipse, the dense fields, the landmark lookups, the ship's own spawn) is a
-// SHAPE that gets multiplied by this, and CFG.WORLD_R rides it too so the
-// boundary and the Oort cloud stay in the same relation to the outermost lane.
-// It lives OUTSIDE the CFG literal only because WORLD_R has to be computed
-// from it and an object literal cannot read its own siblings — treat it as a
-// member of the WORLD SCALE family documented at PLANET_R_MUL below.
+// SHAPE that gets multiplied by this.
+// CFG.WORLD_R NO LONGER RIDES IT — it rides BOUND, immediately below, because
+// the lane ladder's length is emergent now and the boundary has to be sized
+// against the ladder rather than against the authored gaps. Reach for SYS to
+// move the SHAPE (and with it the inner system); reach for BOUND to move the
+// boundary and the Oort cloud relative to the outermost lane.
+// Both live OUTSIDE the CFG literal only because WORLD_R has to be computed
+// from one of them and an object literal cannot read its own siblings — treat
+// them as members of the WORLD SCALE family documented at PLANET_R_MUL below.
 //
 // It is a DISTANCE knob, not a speed one: sun-anchored orbital speed is
 // sqrt(G*sunMass/r), so spreading the sky 1.3x without touching the sun's mass

@@ -1108,13 +1108,12 @@ export function runMechTest(game, hooks, opts = {}) {
       // COLLAPSE: blast the ground under the standing station. The station
       // must break — before this rule it floated on its build-time standoff
       // over the hole (the pad knows only the NOMINAL radius).
-      // Kept by reference, because scars[0] is NOT reliably the one this test
-      // just made: the autoland's 8 seconds of free sim above are long enough
-      // for ambient rock to crater the same moon, and then the seat below is
-      // built for a shallow wound somewhere else on the world entirely — which
-      // reads as "no gate at all" rather than as the staging problem it is.
-      const blast = { a: dk.ang, s: 2.5, t: game.time };
-      w.scars.push(blast);
+      // Under the PAD's own bearing, so the ground that goes is the ground the
+      // station stands on. Nothing reads this scar back — the crater gate below
+      // stages its own wound on a clean run, deliberately (see its note), which
+      // is also why this one does not have to be told apart from any crater
+      // ambient rock opened during the autoland's 8 seconds of free sim.
+      w.scars.push({ a: dk.ang, s: 2.5, t: game.time });
       hooks.stepSim(2 / 60);
       expect(!game.docks.includes(dk), 'a station survived losing its ground');
       expect(!game.dock, 'the berth survived the collapse');
