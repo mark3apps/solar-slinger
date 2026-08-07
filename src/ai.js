@@ -470,9 +470,45 @@ function updateAlien(game, al, dt) {
       // before it launches, so the wind-up is something you can watch coming.
       steer(al, s.x, s.y, gsp);
       if (distShip < CFG.ALIEN_THROW_R && !senseBlind(game)) {
-        const t = distShip / CFG.ALIEN_THROW;
-        const px = s.x + s.vx * t, py = s.y + s.vy * t;
-        const ang = Math.atan2(py - r.y, px - r.x);
+        // THE LEAD IS SOLVED IN THE THROWER'S OWN FRAME, because the launch
+        // below INHERITS the thrower's motion — the same law as the whisker's
+        // above and physics.js's lurker body-check. The rock leaves at
+        // `al.v + ALIEN_THROW*dir`, so a lead solved against the ship's
+        // ABSOLUTE velocity is wrong by `al.v * t`, and a grabber's own speed
+        // is no small term: GRABBER_SPEED x ALIEN_SPEED is 215 u/s of ground
+        // budget on top of the nest worlds' 59-81 of flow, i.e. up to half of
+        // ALIEN_THROW. Cast absolutely, a grabber strafing across a PARKED
+        // ship threw every rock up to ~30 deg off the lead it had just solved
+        // and could not hit it at all.
+        //
+        // THE CARRY STAYS. A thrown rock keeping the thrower's motion is the
+        // real physics, and it holds the launch speed in the THROWER's frame —
+        // which is the invariant T24b asserts — exactly where it was tuned.
+        // It does NOT hold the shot's GROUND speed, and never did:
+        // |al.v + ALIEN_THROW*dir| depends on `dir`, so moving the aim angle
+        // moves the world-frame speed with it (372 u/s under this solve against
+        // 481 before it, measured on T24b's own rig). Deleting the carry would
+        // be a damage retune wearing an aim fix's clothes — that is why it
+        // stays, not because the ground speed is fixed.
+        //
+        // Two-pass flight time, from the ROCK's own position: the first pass'
+        // time is wrong by however far the ship travels during it, so feed it
+        // back once. `distShip` is the ALIEN's distance and the rock is held a
+        // body-length out in front of it, so it is not the flight to solve.
+        // THE ITERATION DOES NOT CLOSE — it converges linearly, shrinking the
+        // error by |s.v - al.v| / (projectile speed) per pass, so the leftover
+        // miss grows with the target's RELATIVE speed and two passes still
+        // leave real gaps at the edges of the envelope: ~50 u for a grabber at
+        // d = 450 against |rv| = 250, on a 13.4 u hit radius — and the fort's
+        // slower bolt below is worse, ~140 u at d = 1300 against |rv| = 150 on
+        // a 10 u hit radius. That is a FAIRNESS property and is left alone: a
+        // ship that keeps MOVING still beats the lead, and only a parked or
+        // co-orbiting one is reliably hit. A third pass would roughly halve the
+        // residual if that ever needs to change.
+        const rvx = s.vx - al.vx, rvy = s.vy - al.vy;
+        let t = Math.hypot(s.x - r.x, s.y - r.y) / CFG.ALIEN_THROW;
+        t = Math.hypot(s.x + rvx * t - r.x, s.y + rvy * t - r.y) / CFG.ALIEN_THROW;
+        const ang = Math.atan2(s.y + rvy * t - r.y, s.x + rvx * t - r.x);
         r.heldBy = null; r.extAx = 0; r.extAy = 0;
         r.vx = al.vx + Math.cos(ang) * CFG.ALIEN_THROW;
         r.vy = al.vy + Math.sin(ang) * CFG.ALIEN_THROW;
@@ -602,8 +638,21 @@ function updateForts(game, dt) {
       t.fireT = 0.1;
       const wx = b.x + Math.cos(b.rot + t.ang) * b.radius;
       const wy = b.y + Math.sin(b.rot + t.ang) * b.radius;
-      const tt = d / 260;
-      const ang = Math.atan2(s.y + s.vy * tt - wy, s.x + s.vx * tt - wx);
+      // THE LEAD IS SOLVED IN THE FORT'S OWN FRAME, for the same reason the
+      // grabber's throw is (updateAlien's carry state above): the bolt INHERITS the
+      // fort world's velocity, and A FORT ORBITS. Solved absolutely the aim
+      // point was off by `b.v * tt` — at the 41-130 u/s a world carries and
+      // the ~5s flight `d <= 1300` allows, 200-650 units of systematic lateral
+      // lead against a hull whose radius is at most 44. The case that made it
+      // absurd is the commonest one: a ship holding station beside the fort is
+      // CO-ORBITING, so the true lead is near zero, yet every shell of the
+      // barrage was thrown a world's-worth of speed ahead of it.
+      // Two passes, from the MUZZLE — `d` is centre-to-ship and overstates the
+      // flight by b.radius/260.
+      const rvx = s.vx - b.vx, rvy = s.vy - b.vy;
+      let tt = Math.hypot(s.x - wx, s.y - wy) / 260;
+      tt = Math.hypot(s.x + rvx * tt - wx, s.y + rvy * tt - wy) / 260;
+      const ang = Math.atan2(s.y + rvy * tt - wy, s.x + rvx * tt - wx);
       game.bolts.push({
         x: wx, y: wy,
         vx: Math.cos(ang) * 260 + b.vx, vy: Math.sin(ang) * 260 + b.vy,
