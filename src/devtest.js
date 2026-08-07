@@ -191,6 +191,12 @@ export function runMechTest(game, hooks, opts = {}) {
     draws = 0;
     Math.random = () => { draws++; return rng(); };
     game.autoUpgrade = true;
+    // FORCE GOD MODE OFF, THEN RESTORE IT — the finally puts wasGod back
+    // (issue #151), but an ambient window.god(true) left ON here silently
+    // disarms damageShip's early-out for the whole suite, which the shield
+    // case then mis-attributes as its own failure (#186) instead of a
+    // known debugging hook being live.
+    game.godMode = false;
     game.viewPin = VIEW_PIN;
     // PARK THE CURSOR AT THE PINNED CENTRE. The suite restored input.mouseX/Y
     // but never INITIALISED them, and update() rebuilds game.aim from them

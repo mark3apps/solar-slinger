@@ -1380,21 +1380,33 @@ export function generateWorld(game, seed = 20260721) {
   // from the rocks around it.
   const sr = spawnBeltR;   // the inner belt's generated lane, wherever this seed put it
   const sv = Math.sqrt((CFG.G * CFG.SHIP_GRAV * CFG.STAR_GRAV_SHIP * sun.mass) / sr);
-  // NEVER SPAWN PRE-CHARTED. The north point (th = -PI/2) is the traditional
-  // spot and clears on the vast majority of seeds, but a layout can put a
-  // planet's lane — or a fast-orbiting moon sweeping past it — close enough
-  // that the fixed north point already sits inside a chartable body's own
-  // nameplate zone (chartZoneR). That handed "You Are Here" for free before
-  // the player had done anything, the exact frame-one freebie the achievement
-  // sweep exists to catch (docs/progression.md, "Watch for freebies"). Walked
-  // in fixed steps around the SAME belt radius, never with a new rng draw —
-  // pulling from the seeded stream here would shift every pool downstream of
-  // it and break the mechTest world checksum. CHART_CLEAR_MARGIN pads every
-  // zone so a second of orbital drift before the player can react can't
-  // close the gap either. When the north point already clears (true for
-  // ~93% of seeds, empirically), this is a no-op: i=0 IS the north point, so
-  // the ship's spawn is byte-identical to before the fix on every seed that
-  // didn't need one.
+  // seedGlowPockets reads game.homeStar, so this has to land before the glow
+  // seeding below — the spawn-clearance search that used to sit here doesn't
+  // need it, which is exactly why that search moved past the glow seeding.
+  game.homeStar = sun;
+  // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
+  // they reset with the world). Seeded off the same world rng — see glow.js.
+  // BEFORE the spawn-clearance search below, on purpose: that search must be
+  // able to check itself against a pocket, which doesn't exist until this runs.
+  seedGlowPockets(game, rng);
+  // NEVER SPAWN PRE-CHARTED, AND NEVER SPAWN INSIDE A GLOW POCKET. The north
+  // point (th = -PI/2) is the traditional spot and clears on the vast
+  // majority of seeds, but a layout can put a planet's lane — or a fast-
+  // orbiting moon sweeping past it, or a healing pocket — close enough that
+  // the fixed north point already sits inside a chartable body's own
+  // nameplate zone (chartZoneR) or a pocket's spread. Either one handed a
+  // frame-one freebie for free before the player had done anything (the exact
+  // class the achievement sweep exists to catch, docs/progression.md "Watch
+  // for freebies") — the glow term was missing originally because this search
+  // ran before seedGlowPockets even had a pocket list to check against.
+  // Walked in fixed steps around the SAME belt radius, never with a new rng
+  // draw — pulling from the seeded stream here would shift every pool
+  // downstream of it and break the mechTest world checksum. CHART_CLEAR_MARGIN
+  // pads every zone so a second of orbital drift before the player can react
+  // can't close the gap either. When the north point already clears (true for
+  // the vast majority of seeds, empirically), this is a no-op: i=0 IS the
+  // north point, so the ship's spawn is byte-identical to before the fix on
+  // every seed that didn't need one.
   const CHART_CLEAR_MARGIN = 1200;
   const CHART_ANGLE_STEPS = 72;
   let spawnTh = -Math.PI / 2;
@@ -1404,7 +1416,8 @@ export function generateWorld(game, seed = 20260721) {
     const clear = bodies.every((b) => {
       if (!b.alive || !b.chartKey || b.hidden) return true;
       return Math.hypot(b.x - px, b.y - py) >= chartZoneR(b) + CHART_CLEAR_MARGIN;
-    });
+    }) && (game.glowPockets || []).every((p) =>
+      Math.hypot(p.cx - px, p.cy - py) >= PROG.GLOW_SPREAD + CHART_CLEAR_MARGIN);
     if (clear) { spawnTh = th; break; }
   }
   const spawnX = sun.x + Math.cos(spawnTh) * sr, spawnY = sun.y + Math.sin(spawnTh) * sr;
@@ -1412,7 +1425,6 @@ export function generateWorld(game, seed = 20260721) {
     x: spawnX, y: spawnY,
     vx: -sv * Math.sin(spawnTh), vy: sv * Math.cos(spawnTh),
   };
-  game.homeStar = sun;
   game.moonBaseline = bodies.filter((b) => b.type === 'moon').length;
   // Roguelite life pods: one seeded near the starting belt so the +1-life
   // mechanic is discoverable; replenishWorld/main.js trickle in more. The
@@ -1427,9 +1439,6 @@ export function generateWorld(game, seed = 20260721) {
     const ox = 2400, oy = -1100;   // the original fixed offset, at the original north angle
     spawnLifePod(game, spawnX + (ox * cd - oy * sd), spawnY + (ox * sd + oy * cd));
   }
-  // Glow pockets: the sparse, sun-orbiting healing springs (deterministic, so
-  // they reset with the world). Seeded off the same world rng — see glow.js.
-  seedGlowPockets(game, rng);
   // VERDANT MOONS each host one anchored pocket in low orbit. Off the forked
   // naming stream, NOT the main rng — a cosmetic mote layout must not shift
   // the seeded sky (the append-only rule below), and moon count varies per
@@ -2999,6 +3008,13 @@ export function respawnShip(game) {
   // ram is the rock you were carrying.)
   s.ram = 0;
   s.ramHitT = 0;
+  // A wreck keeps none of its momentum banks either — same argument as the
+  // ram above: the sling credit and the thrust spool/afterburner ramp are
+  // per-flight state, not per-pilot, and a respawn that inherits them hands
+  // a fresh ship a free doubled speed ceiling or skips its spool-up ramp.
+  s.slingSpd = 0;
+  s.spool = 0;
+  s.burnK = 0;
   s.alive = true;
   s.invuln = 4;
   game.deathCause = '';
@@ -3888,7 +3904,13 @@ export function replenishWorld(game, dt) {
         if (n >= 3) { game.ironWarn = true; break; }
       }
     }
-    if (s.alive) for (const p of game.bodies) {
+    // MOONSHADOW is pure geometry with no player action required, so a world
+    // whose moon already happens to sit aligned at spawn credits the
+    // achievement for free — the same frame-one class PR #169 deleted
+    // elsewhere (maydaySeen, flareSeen). game.time floors it past that
+    // window the way visitorDone/mayday already do above, without touching
+    // the cooldown or the geometry a real eclipse relies on.
+    if (s.alive && game.time > 3) for (const p of game.bodies) {
       if (!p.alive || p.type !== 'planet') continue;
       if (p.eclipseCd > 0) p.eclipseCd -= 0.5;
       const d = Math.hypot(p.x - s.x, p.y - s.y);

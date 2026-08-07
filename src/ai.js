@@ -422,6 +422,7 @@ function updateAlien(game, al, dt) {
         r.heldBy = al;
         derail(r);
         al.fetchT = 0;
+        al.carryT = 0;
         al.state = 'carry';
       }
       break;
@@ -429,6 +430,17 @@ function updateAlien(game, al, dt) {
     case 'carry': {
       const r = al.target;
       if (!r || !r.alive || r.heldBy !== al) { al.target = null; al.state = 'seek'; break; }
+      // CARRY HAS A TIMEOUT TOO, mirroring fetch's `fetchT > 7` above (QA
+      // #178): a grabber whose speed budget can't close on a moving player —
+      // or one it simply can't get sight of past a world — used to haul its
+      // rock forever instead of ever re-planning. Drop it clean, same as the
+      // death branch below, rather than let a stuck grabber sit on ammo no
+      // other alien can use.
+      al.carryT = (al.carryT || 0) + dt;
+      if (al.carryT > 9) {
+        r.heldBy = null; r.extAx = 0; r.extAy = 0;
+        al.carryT = 0; al.target = null; al.state = 'seek'; break;
+      }
       // Ship died mid-haul: DROP the rock, and zero the carry accel with it.
       // extAx/extAy is not rebuilt from scratch each frame — physics adds it to
       // b.ax every substep until somebody clears it — so a release that let it
