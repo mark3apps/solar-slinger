@@ -597,7 +597,9 @@ Plus the three scaling rules that make a big debris cascade affordable:
   saved system is nothing but a seed, and swallowing `addNest`'s rng draws would give the same seed a
   different sky per mode. `dmgMul` rides the one funnel in `physics.damageShip` — and never `fxDmg`,
   which counts real blows. The mode is a persisted SETTING chosen on the title screen only, and
-  `window.freshRun` pins CLASSIC so no suite ever soaks a sky the code didn't change. Full rules:
+  `window.freshRun` **and `window.soak`** both pin CLASSIC so no suite ever soaks a sky the code
+  didn't change — soak rebuilds the run on its own seed when the mode is wrong and reports it in a
+  `rebuilt` key, and `soak(s, {keepMode: true})` is the deliberate opt-out. Full rules:
   [docs/shell-and-menus.md](docs/shell-and-menus.md).
 - **The shield is an ability, not base, and it is SCOUT-ONLY** (Phase Screen's full wrap). HAULER
   answers a hit with the orbit rock wall — and that wall is TWO abilities, deliberately: Orbital
@@ -662,7 +664,7 @@ Verify from `javascript_tool` against the preview (the pane suspends rAF when hi
 
 | Hook | Use |
 |---|---|
-| `window.soak(seconds, {idle})` | The one-call balance soak. Returns `{planets: "N/N", moons: "N/N", deaths, impacts, nanEvents, …}` — the denominators are the run's own start-of-soak census (the layout is seeded per run). |
+| `window.soak(seconds, {idle, keepMode})` | The one-call balance soak. Returns `{planets: "N/N", moons: "N/N", deaths, impacts, nanEvents, …}` — the denominators are the run's own start-of-soak census (the layout is seeded per run). Pins CLASSIC: a non-classic mode restarts the run on the same seed and the result carries a `rebuilt` note saying so; `{keepMode: true}` opts out. |
 | `window.mechTest()` | Fixed-seed scripted mechanics suite, ~4s, bit-repeatable. |
 | `window.tick(seconds)` | Raw headless fast-forward at fixed dt. |
 | `window.freshRun(specIdx, seed)` | Repeatable fresh run with the spec auto-picked. |

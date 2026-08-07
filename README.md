@@ -97,7 +97,9 @@ The game exposes hooks in the devtools console:
 - `freshRun(specIdx, seed)` — restart into a repeatable fresh run (same seed = same world).
 - `tick(seconds)` — advance the simulation headlessly (used for balance soaks).
 - `soak(seconds, {idle: true})` — one-call balance soak: records deaths/impacts and returns a summary
-  (`{idle: true}` removes the ship first for a pure sky-stability run).
+  (`{idle: true}` removes the ship first for a pure sky-stability run). It soaks CLASSIC: if you're in
+  peaceful or exploration it restarts the run on the same seed under classic rules and says so in the
+  summary's `rebuilt` line — pass `{keepMode: true}` when you mean to soak the mode you're in.
 - `goto('vesper')` / `locate('vesper')` — teleport the ship beside a named body / grab the body itself.
 - `god(true)` — the ship ignores all damage while you investigate somewhere lethal.
 - `game.autoUpgrade = true` — auto-resolve upgrade picks so a long `tick()` never stalls on a choice.
