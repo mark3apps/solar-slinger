@@ -1638,6 +1638,210 @@ export function runMechTest(game, hooks, opts = {}) {
         + `(${dark.length} shepherd exempt); smallest r=${small.radius.toFixed(1)}, lee=${shelterR(small).toFixed(1)}`;
     });
 
+    // ---- ONE `game.latch`, TWO WINCHES (QA #205) ----------------------------
+    // T21b..e. There is exactly ONE `game.latch` and it serves two winches —
+    // the BEAM's on the left button and the RING's stow on the right (`L.stow`,
+    // driven by `game.stowEating`). `main.onFling`, the LEFT button's release
+    // handler, cancelled it unconditionally, so a left-click tap two seconds
+    // into a world's 5.8s stow threw the whole haul away. Recovery was accident
+    // only: update()'s stow sweep re-arms `stowFromCursor` at t=0 and only if
+    // the cursor still happens to be on the target — and the winch deliberately
+    // FREES the cursor so you can aim, so the intended way to play was exactly
+    // the case that could not recover.
+    //
+    // FOUR CASES, BECAUSE THE FIX IS A NARROWING. The subject is that the stow
+    // winch survives the left button; the three guards around it are what stops
+    // the narrowing growing later — each button must still end the winch it DOES
+    // own (T21c beam, T21e ring), and neither may end the other's (T21b, T21d).
+    // Together they pin BOTH DIRECTIONS OF BOTH HALVES of the ownership rule
+    // `tractor.updateLatch` already derives as
+    // `const down = L.stow ? !!game.stowEating : btn;`.
+    //
+    // DRIVEN THROUGH REAL DOM EVENTS, like T23's pilot card: onGrab / onFling /
+    // onRmbDown are closures inside `main.initInput` and the event path is the
+    // only honest way to reach them. That makes `input.mouseDown` this block's
+    // own shared state — updateLatch reads it as the BEAM winch's `down` every
+    // substep, and nothing in resetRun touches it — so every case releases what
+    // it pressed in a `finally`. A button left logically down would poison the
+    // rest of the file. The per-run mutations (spec, tier, upgrades, the ring)
+    // are not restored piecemeal on purpose: each case stages its own
+    // `hooks.freshRun`, and T22 below stages another, which is the same
+    // convention T22/T23 already run on.
+    const cvEl = document.getElementById('game');
+    // mousedown is a CANVAS listener and mouseup a WINDOW one (input.js), and
+    // dispatching either at the wrong target is a silent no-op — which would
+    // make every case here pass vacuously.
+    const press = (button) => cvEl.dispatchEvent(new MouseEvent('mousedown', { button, bubbles: true }));
+    const release = (button) => window.dispatchEvent(new MouseEvent('mouseup', { button, bubbles: true }));
+    // ONCE A WINCH HAS ITS TARGET THE CURSOR IS FREE (docs/design-laws.md), and
+    // freeing it is exactly what made the bug unrecoverable — so these cases do
+    // it rather than leaving the cursor parked where a re-arm could quietly
+    // paper over the failure. BOTH halves have to move: the click handlers read
+    // `game.aim` synchronously, and update() rebuilds it from input.mouseX/Y on
+    // the very next step. 900 screen-px off the pinned centre is ~16,000 world
+    // units at the tier-5 zoom these cases stage at; `cursorIsFree` keeps that
+    // arithmetic honest instead of assumed.
+    const freeCursor = () => {
+      input.mouseX = VIEW_PIN.vw / 2 + 900;
+      input.mouseY = VIEW_PIN.vh / 2 + 900;
+      game.aim.x = game.ship.x + 2e4; game.aim.y = game.ship.y + 2e4;
+    };
+    const cursorIsFree = (b) =>
+      Math.hypot(b.x - game.aim.x, b.y - game.aim.y) > b.radius + game.st.grabSlack;
+    // A tier-5 HAULER parked alongside the lightest quiet moon and matched to
+    // its motion, cursor on it. TIER 5 is what lets the BEAM take a moon at all
+    // (config.canLift's class gate) and SLING WINCH 6 is what lets the RING take
+    // the same one (config.canStow's, which climbs on its own ladder) — the
+    // four cases need one build between them, so they share this staging.
+    // `game.prog` IS THE LEVER, NEVER `game.st`: update() rebuilds st from prog
+    // every frame, so a stat poked directly does not survive one stepSim.
+    const stageWinch = () => {
+      hooks.freshRun(1, seed);                 // spec 1 = HAULER (SPECS order)
+      game.prog.tier = 5;
+      game.prog.upgrades.orbitalSling = 6;     // ring slots
+      game.prog.upgrades.heavyWinch = 6;       // the RING's own class rung
+      game.st = shipStats(game.prog);
+      // update() does this every frame, but the seat below needs the tier-5
+      // hull radius NOW — staged against the factory radius the ship starts
+      // ~60 units deep inside the moon it is supposed to be winching.
+      game.ship.radius = game.st.radius;
+      const moon = game.bodies.filter((b) => quietMoon(b) && !b.shepherd)
+        .reduce((a, b) => (b.mass < a.mass ? b : a));
+      const s = game.ship;
+      parkShip(game, moon.x + moon.radius + s.radius + 60, moon.y);
+      // MATCHED TO THE MOON, because the winch's own RANGE gate is re-tested
+      // every substep: a stationary ship beside an orbiting moon would end the
+      // winch by drifting out of reach, which is a pass for the wrong reason.
+      s.vx = moon.vx; s.vy = moon.vy;
+      game.aim.x = moon.x; game.aim.y = moon.y;
+      input.mouseX = VIEW_PIN.vw / 2; input.mouseY = VIEW_PIN.vh / 2;
+      return moon;
+    };
+
+    // T21b — THE SUBJECT (QA #205): a left-click tap must not throw away a
+    // right-button haul. Fails on both the survival check and the seating check
+    // without main.onFling's `!game.latch.stow`.
+    t('winch: a left-click tap does not cancel the ring\'s stow', () => {
+      const moon = stageWinch();
+      try {
+        press(2);                              // RMB — the ring's stow winch
+        expect(game.latch && game.latch.stow, 'setup: the right button started no stow winch');
+        expect(game.latch.body === moon, 'setup: the stow winch took the wrong body');
+        const need = game.latch.need;
+        hooks.stepSim(0.5);
+        expect(game.latch && game.latch.stow, 'setup: the stow winch died on its own');
+        expect(game.latch.t > 0.4, `setup: the winch made no progress (t=${game.latch.t})`);
+        freeCursor();
+        hooks.stepSim(1 / 60);
+        expect(cursorIsFree(moon),
+          'setup: the cursor is still on the moon, so update()\'s sweep could re-arm the winch and hide the bug');
+        const t1 = game.latch && game.latch.t;
+        press(0); release(0);                  // the whole bug: one left-click tap
+        expect(game.latch && game.latch.stow, 'a left-click tap destroyed the ring\'s stow winch');
+        expect(game.latch.t === t1, `the tap rewound the stow winch (${t1} -> ${game.latch.t})`);
+        hooks.stepSim(need);
+        expect(game.orbit.includes(moon), 'the stow winch never seated the moon');
+        return `${moon.name || 'moon'} m=${Math.round(moon.mass)} seated after its ${need}s winch, LMB tap survived`;
+      } finally {
+        release(2); release(0);
+        input.mouseDown = false; game.stowEating = false;
+      }
+    });
+
+    // T21c — GUARD: the left button still ends the winch it DOES own. Nothing
+    // is banked for the next press, and no moon arrives late.
+    t('winch: releasing the left button still cancels the BEAM\'s winch', () => {
+      const moon = stageWinch();
+      try {
+        press(0);                              // LMB — the beam's own winch
+        expect(game.latch && !game.latch.stow, 'setup: the left button started no beam winch');
+        expect(game.latch.body === moon, 'setup: the beam winch took the wrong body');
+        hooks.stepSim(0.5);
+        expect(game.latch && game.latch.t > 0.4, 'setup: the beam winch made no progress');
+        freeCursor();
+        release(0);
+        expect(game.latch === null, 'releasing the left button banked the beam winch it owns');
+        expect(game.held === null, 'a cancelled beam winch still handed over the moon');
+        hooks.stepSim(1.5);
+        expect(game.held === null && !game.orbit.includes(moon),
+          'the abandoned beam winch completed itself anyway');
+        return `beam winch on ${moon.name || 'moon'} abandoned on release, nothing banked`;
+      } finally {
+        release(0); input.mouseDown = false; game.stowEating = false;
+      }
+    });
+
+    // T21d — GUARD, the mirror: the RIGHT button's tap must not end the beam's
+    // winch either. `tractor.stowFromCursor` bails on any live `game.latch`, so
+    // the tap must neither steal the latch nor arm the stow sweep on top of it.
+    t('winch: a right-click tap does not cancel the beam\'s winch', () => {
+      const moon = stageWinch();
+      try {
+        press(0);
+        expect(game.latch && !game.latch.stow, 'setup: the left button started no beam winch');
+        const need = game.latch.need;
+        hooks.stepSim(0.5);
+        freeCursor();
+        hooks.stepSim(1 / 60);
+        expect(game.latch && game.latch.t > 0.4, 'setup: the beam winch made no progress');
+        expect(cursorIsFree(moon), 'setup: the cursor is still on the moon');
+        const t1 = game.latch.t;
+        // SAMPLED BETWEEN THE PRESS AND THE RELEASE, because `main.onRmbUp`
+        // clears `game.stowEating` unconditionally and ABOVE its own menu gate:
+        // the same line after the release passes whatever the press did, which
+        // made it the one vacuous assertion in this block (QA #206). What is
+        // under test is the PRESS declining to arm the sweep — `stowFromCursor`
+        // bails on any live `game.latch` — so the press is where it is read.
+        press(2);                              // an RMB tap straight across it
+        expect(!game.stowEating, 'the tap armed the stow sweep on top of a live beam winch');
+        release(2);
+        expect(game.latch && !game.latch.stow, 'a right-click tap destroyed the beam\'s winch');
+        expect(game.latch.t === t1, `the tap rewound the beam winch (${t1} -> ${game.latch.t})`);
+        hooks.stepSim(need);
+        expect(game.held === moon, 'the beam winch never took hold of the moon');
+        expect(!game.orbit.includes(moon), 'the beam winch seated the moon in the ring instead');
+        return `beam winch survived an RMB tap and took ${moon.name || 'moon'} after its ${need}s`;
+      } finally {
+        release(0); release(2);
+        input.mouseDown = false; game.stowEating = false;
+      }
+    });
+
+    // T21e — GUARD, and the other half of the ownership rule: releasing the
+    // RIGHT button still ends the winch IT owns. T21c pins that for the beam;
+    // this is the case most at risk if the narrowing in `main.onFling` is ever
+    // widened, or `onRmbUp`'s clear gated, because the failure is SILENT — a
+    // winch nobody is holding runs to completion and a moon simply appears in
+    // the ring. THE CANCEL IS ONE SUBSTEP LATE BY CONSTRUCTION and that is not a
+    // bug: onRmbUp only drops `game.stowEating`, and `tractor.updateLatch` is
+    // what reads it as the stow winch's `down` and calls cancelLatch.
+    t('winch: releasing the right button still cancels the ring\'s stow winch', () => {
+      const moon = stageWinch();
+      try {
+        press(2);                              // RMB — the ring's stow winch
+        expect(game.latch && game.latch.stow, 'setup: the right button started no stow winch');
+        expect(game.latch.body === moon, 'setup: the stow winch took the wrong body');
+        const need = game.latch.need;
+        hooks.stepSim(0.5);
+        expect(game.latch && game.latch.stow, 'setup: the stow winch died on its own');
+        expect(game.latch.t > 0.4, `setup: the stow winch made no progress (t=${game.latch.t})`);
+        freeCursor();
+        release(2);
+        hooks.stepSim(1 / 60);                 // updateLatch reads stowEating as `down`
+        expect(game.latch === null, 'releasing the right button banked the stow winch it owns');
+        expect(!game.stowEating, 'releasing the right button left the ring\'s sweep armed');
+        // AND NOTHING ARRIVES LATE. The seconds are gone, not banked: stepping
+        // past the full `need` must leave the ring empty and the beam empty too
+        // — an abandoned stow that seats itself is the whole failure mode.
+        hooks.stepSim(need);
+        expect(!game.orbit.includes(moon), 'the abandoned stow winch seated the moon anyway');
+        expect(game.held === null, 'the abandoned stow winch handed the moon to the beam');
+        return `stow winch on ${moon.name || 'moon'} (${need}s) abandoned on release, nothing banked`;
+      } finally {
+        release(2); input.mouseDown = false; game.stowEating = false;
+      }
+    });
+
     // ---- DEFLECTOR AIM (PR #81) --------------------------------------------
     // T22 — the riposte leaves along ship->cursor, not back along the rock's
     // own capture bearing. That direction IS the feature; nothing else asserts it.

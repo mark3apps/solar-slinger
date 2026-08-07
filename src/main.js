@@ -541,7 +541,18 @@ initInput(canvas, {
     // let go of. (The bug was found through the old freezing pick card, which
     // could land mid-winch — game.held is null while a winch runs. Ability
     // picks no longer freeze anything, but every other freeze still can.)
-    cancelLatch(game);
+    //
+    // ...BUT ONLY THE WINCH THIS BUTTON OWNS. There is exactly one `game.latch`
+    // and it now serves two winches — the beam's on the LEFT button and the
+    // ring's on the RIGHT (`L.stow`, ended by onRmbUp/game.stowEating).
+    // `updateLatch` already states that ownership (`L.stow ? stowEating : btn`);
+    // this was the one place it was missing, so a left-click tap two seconds
+    // into a world's 5.8s stow threw the whole haul away. Recovery was accident
+    // only — update()'s sweep re-arms `stowFromCursor` at t=0, and only if the
+    // cursor happens to still be on the target — and the winch deliberately
+    // FREES the cursor so you can aim, so the intended way to play was exactly
+    // the case that could not recover.
+    if (game.latch && !game.latch.stow) cancelLatch(game);
     if (menuBlocking()) return;
     if (game.held) {
       releaseHeld(game, true);
@@ -1379,6 +1390,13 @@ function resetRun(seed, openCard = true) {
   game.ghostPing = null; game.sling = null; game.combo = 0; game.comboT = 0;
   game.predictRef = null; game.lock = null; game.lockTarget = null; game.tooHeavy = null;
   game.latch = null;
+  // ...and the held-button sweeps that drive it. `stowEating` is not just an
+  // input flag any more — updateLatch reads it as the stow winch's `down`, so a
+  // stale `true` carried into a fresh run would drive a winch to completion with
+  // no button held (the exact freeze bug the `btn` argument was added to close,
+  // arriving through the other button).
+  game.stowEating = false; game.stowEatCd = 0;
+  game.ramEating = false; game.ramEatCd = 0;
   game.heldCharged = false; game.heldCharge = 0; game.heldChargeShow = false; game.chargeFlashT = 0;
   game.launchFx.length = 0;
   game.heatT = 0; game.gasDiveT = 0; game.gasEnterT = 0; game.skimT = 0; game.scrapeT = 0;

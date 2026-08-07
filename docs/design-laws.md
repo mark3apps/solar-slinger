@@ -117,7 +117,11 @@ code "works."
   - **The winch seconds carry into the wind-up** (`grabBody(game, b, L.t)`), they are not charged
     twice — from the player's side it was one continuous press, and billing the full `beamGrip` ramp
     on top would put a hard throw on a moon five seconds out from the click. Releasing abandons the
-    winch outright; nothing is banked for the next press.
+    winch outright; nothing is banked for the next press — but **only the button that OWNS it**. Two
+    winches share one `game.latch`, so `main.onFling` (the LEFT button's release) cancels a beam
+    winch only (`!game.latch.stow`) and `updateLatch` reads `game.stowEating` for the ring's;
+    otherwise a left-click tap threw away a right-button haul, and the freed cursor is precisely what
+    made it unrecoverable.
 - **A GAS GIANT CANNOT BE PICKED UP AT ALL** (`config.LIFT_NEVER`), at any tier, with any build. It
   is not a heavier rung you buy your way up to — it is off the ladder, the same fact the ship already
   lives with (`CFG.GAS_*`: no surface, the ship flies straight through the cloud tops). It is what
