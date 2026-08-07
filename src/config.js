@@ -1,11 +1,15 @@
 // SYSTEM SCALE — how far apart the sky is spread. Every sun-anchored radius
 // world.js authors (the layout lanes, the belts, the graveyard, Vesper's
 // ellipse, the dense fields, the landmark lookups, the ship's own spawn) is a
-// SHAPE that gets multiplied by this, and CFG.WORLD_R rides it too so the
-// boundary and the Oort cloud stay in the same relation to the outermost lane.
-// It lives OUTSIDE the CFG literal only because WORLD_R has to be computed
-// from it and an object literal cannot read its own siblings — treat it as a
-// member of the WORLD SCALE family documented at PLANET_R_MUL below.
+// SHAPE that gets multiplied by this.
+// CFG.WORLD_R NO LONGER RIDES IT — it rides BOUND, immediately below, because
+// the lane ladder's length is emergent now and the boundary has to be sized
+// against the ladder rather than against the authored gaps. Reach for SYS to
+// move the SHAPE (and with it the inner system); reach for BOUND to move the
+// boundary and the Oort cloud relative to the outermost lane.
+// Both live OUTSIDE the CFG literal only because WORLD_R has to be computed
+// from one of them and an object literal cannot read its own siblings — treat
+// them as members of the WORLD SCALE family documented at PLANET_R_MUL below.
 //
 // It is a DISTANCE knob, not a speed one: sun-anchored orbital speed is
 // sqrt(G*sunMass/r), so spreading the sky 1.3x without touching the sun's mass
@@ -20,7 +24,58 @@
 // system should get up to 30% larger") — the second growth pass rides the
 // first, so every note written against 1.3 still describes the SHAPE, just
 // spread wider again.
-const SYS = 1.69;
+//
+// 2.6 = 1.69 taken a further ~1.54x (2026-08 user report: "planets can spawn
+// too close to each other"). THE BODIES OUTGREW THE SKY. PLANET_R_MUL and
+// MOON_R_MUL each grew the worlds ~5x while this knob had only spread the sky
+// 1.69x, and the difference came straight out of the gaps: measured over 20
+// seeds at 1.69, PLANET_LANE_GAP was SHRINKING 6.7 of the ~15 worlds per seed
+// below their own PLANET_R_MUL size (worst case 41% off the wanted radius),
+// and the tightest pair in EVERY seed sat at exactly the 400-unit floor —
+// two discs skimming each other at conjunction. At 2.6 that falls to ~0.4
+// clamped worlds per seed and a median surface gap of ~2,700.
+// It buys the moon families room too, but it CANNOT fix their crossing on its
+// own: a Hill radius scales linearly with orbitR, so spreading the sky moves
+// hill and gap together and leaves hill/gap untouched. MOON_LANE_SHARE is the
+// knob that bounds a family; this one is the knob that gives the bound
+// somewhere to stand. They were tuned together — see MOON_LANE_SHARE.
+const SYS = 2.6;
+// ...AND THE BOUNDARY HAS ITS OWN SPREAD NOW. It was SYS: while a lane ladder
+// was nothing but authored gaps, their sum (40,180 of the same authored units)
+// sat a fixed 13% inside WORLD_R's own authored 46,000, so one knob genuinely
+// served both and world.js could pin the ladder cap and the Farshoal's berth
+// to SR(41500) / SR(44300) and know they cleared.
+// buildLayout's need-based spacing (see world.js) makes the ladder's length
+// EMERGENT instead: a gap is opened to whatever the two families sharing it
+// actually reach, and a family's reach comes off PLANET_R_MUL and MOON_R_MUL —
+// NOT off this file's system scale. Measured over 40 seeds the ladder wants an
+// outermost lane of 314k-366k no matter what SYS is, so the boundary is sized
+// against THAT, with the cap's authored 41500/46000 proportion left intact and
+// enough headroom that the squeeze guard stays a guard rather than the thing
+// that decides how many moons a giant keeps.
+// The pairing to remember: SYS spreads the authored SHAPE (and with it the
+// inner system, which need-spacing barely touches — the lava world still sits
+// at ~7,500), this covers the OUTER reach that the giants' families dictate.
+// Grow PLANET_R_MUL / MOON_R_MUL / the layout's moon counts and this has to be
+// re-measured; world.js's LADDER_CAP is what tells you, by starting to bite.
+//
+// SIZE IT TO THE MEDIAN LADDER, NOT THE HOTTEST ONE. The first cut was 9.4 —
+// chosen so the cap cleared even the longest ladder in 40 seeds and the squeeze
+// guard never fired at all. That is the wrong target, and it SHOWS: the ladder
+// is emergent, its median (300k) runs well short of its maximum (328k), and a
+// boundary sized for the maximum left the median seed with 31% of its radius —
+// **52% of its AREA** — as empty space beyond the last world. The old sky ran
+// at 15% / 27%, because its authored ladder summed to within 3% of its own cap
+// and so effectively always reached it.
+// 7.7 puts the median back at 15% / 28%. The cap now BITES on the longest
+// draws, which is correct and is what a guard is for: the squeeze is
+// proportional, it tops out around 3.6%, and the old ladder lived permanently
+// in that regime (its median sat at 97% of its cap). Measured cost across 40
+// seeds: 65.0 -> 64.5 moons, 11.0 -> 11.0 per gas giant, crossings unchanged.
+// Do not chase the band smaller than this — at 7.2 the squeeze starts eating
+// families for real (61.2 moons, 10.6 per giant) and you are paying content
+// for scenery.
+const BOUND = 7.7;
 
 // All gameplay tuning lives here.
 export const CFG = {
@@ -140,12 +195,16 @@ export const CFG = {
   // room is the OUTER BAND: the outer planet lanes (world.js layout, stopping
   // at an authored 40800), the dark star's authored 39500 lane, and the
   // Farshoal dense field riding the frost fringe at an authored 44300.
-  // x SYS multiplies with the lanes so all four of those relationships — and
-  // the Oort warning band the Farshoal deliberately brushes — survive a
-  // change to the system scale. The outermost MOON reach is no longer left to
-  // arithmetic done by hand here: world.moonZone clamps a family by what this
-  // radius actually leaves, which is what makes invariant 6 structural.
-  WORLD_R: 46000 * SYS,
+  // x BOUND, not x SYS — see BOUND's own note. Those authored relationships
+  // (40800 lanes / 39500 dark star / 44300 Farshoal against 46000) are all
+  // still expressed as fractions of THIS radius, so they survive intact; what
+  // changed is that the lane ladder is need-spaced now and is no longer a
+  // fixed multiple of the authored gaps, so the boundary has to be sized
+  // against the ladder rather than against the gap ladder's authored sum.
+  // The outermost MOON reach is no longer left to arithmetic done by hand
+  // here: world.moonZone clamps a family by what this radius actually leaves,
+  // which is what makes invariant 6 structural.
+  WORLD_R: 46000 * BOUND,
   // WORLD SCALE — planets and moons are built at these multiples of the radii
   // authored in world.js (the layout table, and spawnMoon's own 18-34 range).
   // SIZE ONLY: THE MASSES ARE UNTOUCHED, deliberately. Radius is inert to every
@@ -196,6 +255,40 @@ export const CFG = {
   // reach — the two MUST agree or the boundary clamp under-counts the reach it
   // is there to bound.
   MOON_E_MAX: 0.34,
+  // HOW MUCH OF THE GAP BETWEEN TWO WORLDS THEIR TWO MOON FAMILIES MAY OCCUPY
+  // BETWEEN THEM. It is read at BOTH ends of the same rule and must be, which
+  // is why it is one constant: world.buildLayout OPENS every span until the
+  // two families fit inside this fraction of it, and generateWorld's lane pass
+  // then HANDS OUT that fraction, split between the pair in proportion to what
+  // each family reaches (world.familyReach) — so a giant beside a small ice
+  // world keeps its own reach instead of the two of them halving the gap.
+  // world.moonZone is the consumer; addPlanet's count clamp turns any shortfall
+  // into fewer moons, never into a crossing pair.
+  //
+  // THE BOUND MOONZONE WAS MISSING. It clamped a family by the Hill radius, by
+  // CFG.WORLD_R, and by nothing else — and at this sun/planet mass ratio a Hill
+  // radius is ~25% of the orbital radius, so MOON_ZONE_MUL x Hill asks for
+  // ~72% of the orbital radius while the gap to the next lane is ~8% of it.
+  // What actually ended the outer families was therefore the WORLD_R clamp:
+  // the far edge of the map. Measured over 40 seeds before this: 90% of all
+  // moons rode a heliocentric annulus covering ANOTHER planet's lane and 84%
+  // swept clean across another planet's DISC. After: 0%.
+  // Nothing died of it quickly — the railed-conjunction pass-through in
+  // physics.collideBodies catches these at ~10-30 u/s, far under DMG_THRESH,
+  // and 600s and 6,000s soaks lose no moons at all — but a 45,000-second soak
+  // (one full synodic cycle of the crowded outer giants) lost two, one into
+  // the star and one into a gas giant. Geometry law first, slow leak second.
+  //
+  // 1 = the two families may fill the gap exactly, abutting at the boundary
+  // and never overlapping. A corridor between them (0.9, 0.85, 0.8) was
+  // measured and REJECTED: it changes no crossing count — at 1 the authored
+  // gap floor already leaves most spans wider than the two families need — and
+  // it costs 10-18% more sky, which is the expensive axis here. Lower values
+  // are NOT a safety margin, they are a bigger solar system.
+  // DO NOT reach for this to shrink the sky: below ~0.8 the ladder stops
+  // fitting under world.LADDER_CAP and the squeeze guard, not this constant,
+  // starts deciding how many moons a giant keeps.
+  MOON_LANE_SHARE: 1,
   // ...but a lane only holds so much world, which is why the multiplier above
   // is a CEILING ("up to 3x") rather than a flat scale. Two planets on
   // adjacent rails run at different angular speeds and so ALWAYS reach
