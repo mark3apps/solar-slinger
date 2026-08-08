@@ -520,7 +520,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
   ~7, mid-class for the belt rock (6-14) the ram is built from. The floor is the SLAB only —
   `back`/`gap` stay on the true drawn hull, or the ram floats a ship-length out in front.
   `ramFace`/`ramArc` follow it by the mirror rule, so a low-tier ram's protected arc grows with what
-  you can see (tier 0 rank 1: 27deg -> 31deg); absorption is priced on ram MASS so it doesn't move.
+  you can see (tier 0 rank 1: 27deg -> ~30deg); absorption is priced on ram MASS so it doesn't move.
+  The floored basis is bounded at `r * 4.5` — a LOOSE guardrail against a future `RAM_MIN_R` bump,
+  set not to bind above tier 0 and to trim tier 0 by 9%. A TIGHT cap (`r * 2.5`) is the bug that
+  guardrail guards: it put the tier-0 stone back at ~3.5 and drew tiers 0 and 1 identically.
 - **A RAM IS SMASHED TOGETHER, AT THE EXPENSE OF WIDTH** — the slab's thickness sizes the STONE
   (`depth x RAM_STONE`) and `halfW` is DERIVED as whatever `ramPerRow(t)` of them occupy shoulder to
   shoulder at `ramPack(t)` spacing (under 1 at every band, so they always touch — 0.92 jammed at band

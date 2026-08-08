@@ -1366,10 +1366,21 @@ and the stones came out ~3, under the smallest gravel in the sky. Check the STON
 never the slab.
 
 The knock-on is deliberate and follows the mirror rule: `ramFace`/`ramArc` read the same plate, so a
-low-tier ram's contact edge and protected arc grow with what you can see (tier 0 rank 1: 27° → 31°,
+low-tier ram's contact edge and protected arc grow with what you can see (tier 0 rank 1: 27° → ~30°,
 contact edge 15 → 29 units; the top of the ladder goes 36° → 38°). Physics reading an *unfloored*
 slab is exactly the drift the rule exists to forbid. Absorption is unaffected either way: it is
 priced on ram MASS (`CFG.RAM_ABSORB`), which no part of this touches.
+
+**AND THE FLOOR IS CAPPED — LOOSELY, AND THAT IS THE WHOLE POINT.** `ramPlate` bounds the floored
+basis at `r * 4.5`, purely as a guardrail so `RAM_MIN_R` cannot run away if it is ever raised. It is
+set NOT to bind above tier 0 and to trim tier 0 by only 9% (`rs` 26.6 → 24.2, stone 6.3, arc 30.3°
+against the 31° above). A **tight** cap is the bug it guards, and it has been shipped once
+(`r * 2.5`, 2026-08 QA #183/#184, reverted by QA #202): it dragged the tier-0 rank-1 stone to radius
+**3.5** — essentially the ~3 rejected two paragraphs up — and it bound at tier 1 as well
+(`r*2.5` = 26.4 against `hypot` = 28.1), pinning both tiers to exactly `2.5r` so they came out with
+identical proportions. That is precisely the "a hard `max` would draw tiers 0 and 1 identically and
+then jump" failure the soft floor was chosen to avoid. Check the STONE and check TIER 1 when
+retuning this cap.
 
 ### A ram is smashed together, at the expense of width
 
