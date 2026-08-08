@@ -11,7 +11,7 @@ import { updateTractor, updateOrbit, updateTethers, updateLatch, cancelLatch, tr
 import { updateAliens } from './ai.js';
 import { updateGlow } from './glow.js';
 import {
-  newAchState, updateAchievements, bump, best, noteDeath, noteHullGrant, ACH_EVENT_STATS,
+  newAchState, updateAchievements, bump, best, least, noteDeath, noteHullGrant, ACH_EVENT_STATS,
 } from './achievements.js';
 import { initRender, render, setRenderScale } from './render.js';
 import {
@@ -2049,9 +2049,17 @@ function update(dtReal) {
       const sp = Math.hypot(s.vx, s.vy);
       if (inWell) {
         if (!game.sling || game.sling.planet !== inWell) {
-          game.sling = { planet: inWell, entry: sp, thrusted: false };
+          game.sling = { planet: inWell, entry: sp, thrusted: false, minAlt: Infinity };
         }
         if (game.controls.f || game.controls.b) game.sling.thrusted = true;
+        // HOW CLOSE THE PASS SHAVED IT (achievements: `closePass`). Tracked
+        // here rather than in physics because this block already knows which
+        // well the ship is in and whether the pass stayed clean — and because
+        // the number is only banked on a SUCCESSFUL clean sling below, which is
+        // what stops a landing from scoring an altitude of zero. You cannot
+        // touch down and still leave the well faster than you entered it.
+        const alt = Math.hypot(inWell.x - s.x, inWell.y - s.y) - inWell.radius;
+        if (alt < game.sling.minAlt) game.sling.minAlt = alt;
       } else if (game.sling) {
         const gain = Math.round(sp - game.sling.entry);
         // Bar raised from 50 and reward cut from x8: long-arm wells made
@@ -2061,6 +2069,13 @@ function update(dtReal) {
           addXp(game, gain * PROG.XP_SLING);   // clean flying earns XP
           bump(game, 'slings');
           best(game, 'slingBest', gain);
+          // The two feats the assist itself is judged on, banked only on a
+          // clean gaining pass: how FAST it threw you (flow-relative, the same
+          // number the governor and the cockpit gauge read — sky-frame speed
+          // near the sun is mostly the sun's own current, not your flying),
+          // and how CLOSE you were willing to shave it to get there.
+          best(game, 'slingExitSpd', Math.round(game.flowSpd || 0));
+          if (isFinite(game.sling.minAlt)) least(game, 'closePass', Math.round(game.sling.minAlt));
           hud.message(`SLINGSHOT! +${gain} speed — clean flying earns XP.`, 3);
         }
         game.sling = null;

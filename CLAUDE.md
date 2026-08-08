@@ -250,12 +250,42 @@ changing anything it touches.**
     wall by up to 1.4 body radii and the hull bounced in open space.
 
 Also there: **rails** (circular vs elliptical are different objects; never re-rail inside
-`game.viewR`), the ship's flow-relative speed ceiling and its GRAVITY SLING CREDIT (slingshot
-speed banks an extra allowance that decays slowly; thrust overspeed still bleeds fast), LONG ARMS,
-SURFACE WEIGHT (ship-felt pull
-ramps up near a big world's surface, scaled by radius — launching off a giant is meant to be a
-fight), corona/lava heat, gas-giant interiors, the orbit rubber band, fog of war, and the
+`game.viewR`), corona/lava heat, gas-giant interiors, fog of war, and the
 frame-relative trajectory forecast.
+
+Plus **THE SHIP-FELT WORLD WELL** — five ship-only rules that are ONE system and must be tuned
+together (2026-08 pass: "we want to be able to slingshot using a planets gravity and right now we
+can't", and ships "can't just escape especially a large planet by just shooting straight out").
+Every one is mirrored in `predictPaths`, and the shared expressions live in config.js
+(`surfWeight` / `shipBand` / `bandFade` / `wellCapAt` / `launchKick`) precisely so the mirrors
+cannot drift:
+
+- **SURFACE WEIGHT** ramps the pull up toward a big world's surface as a POWER of its radius, not a
+  flat multiplier — that shape is the whole point, since a flat one lifts the curve without making
+  the well steep, which is why a tiny dense lodestar out-gripped the largest gas giant sixfold.
+  Tuned so the five biggest worlds sit OVER tier-0 thrust: you cannot lift off them at all until
+  you tier up. **All moons untouched.**
+- **THE WELL SETS THE LOCAL SPEED LIMIT** (`SHIP_WELL_CAP`): the governor's ceiling near a world is
+  the local circular-orbit speed. Without it a deep well is UNUSABLE, not merely unfelt — the flow
+  the governor measures against is the SUN's, so it would forbid the only speed that survives the
+  well and every close pass would decay into a fall.
+- **LONG ARMS** past the knee, which MUST equal `SHIP_SURF_END`.
+- **The orbit rubber band is a LANDING softener, not an approach brake** — bounded by an absolute
+  altitude and faded out by inbound speed. Its reach is in body radii, so unbounded it ate a giant's
+  entire plunge while leaving a lodestar's alone: that asymmetry, not the gravity, was why planets
+  felt inert.
+- **THE RETRO ASSIST** (`SHIP_BRAKE_*`): falling toward a world AND burning away from it buys extra
+  outward authority worth up to the world's own local pull. **The escape gate cuts both ways** — the
+  same `thrust < g_surface` that stops you taking off stops you arresting a descent, so without this
+  landing on a gated world is not hard, it is impossible. Gated on INWARD motion and faded out as
+  that motion stops, so it can null a descent and **never lift you**; it is strictly dissipative, so
+  it cannot be ridden upward. Not mirrored in `predictPaths` — it exists only under thrust, and the
+  forecast draws a ballistic path.
+- **GRAVITY SLING CREDIT** carries the payoff OUT of the well and decays slowly; thrust overspeed
+  still bleeds fast. **Bounded against the TIER ceiling, never the well-raised one.** It banks on
+  BOTH components of gravity: `g·v̂` along the track (the dive) and `SLING_PERP × |g×v̂|` across it
+  (the whip). The perpendicular term peaks exactly where the along-track one goes to zero — at the
+  periapsis of a pass — because a gravity assist IS the turn.
 
 Plus **SURFACE FRICTION** (`CFG.SURF_FRICTION`): contact with a planet or moon drags the ship toward
 the velocity of the ground under it (`util.surfaceVel` — the world's motion plus its spin's
@@ -436,6 +466,10 @@ Plus the three scaling rules that make a big debris cascade affordable:
 - **LEAVING IS A SEQUENCE** (`CFG.LAUNCH_*`): thrust from a berth doesn't drive the ship, it calls a
   release — clamps swing open, then the engine lights against them, then the pad lets go with
   `LAUNCH_KICK`. Pinned to the pad's velocity throughout, and it commits once started.
+  **ON A HEAVY WORLD THE PAD IS THE WAY OFF IT**: SURFACE WEIGHT puts the five biggest worlds' surface
+  pull over tier-0 thrust, so the kick takes the larger of the flat number and `LAUNCH_ESC_K` × the
+  world's own ship-felt escape velocity (`config.launchKick`). A flat kick would have made a station
+  on a big world a trap rather than an exit.
 - **A FINISHED BERTH IS A VISTA** (`CFG.DOCK_VISTA`): once the station is built the camera slowly
   eases out to a wider view of the neighbourhood — gated on `dockReady` like the shield and repair,
   never during the exposed build — and the launch spool starting hands the zoom back to the normal

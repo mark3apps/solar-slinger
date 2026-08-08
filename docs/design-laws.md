@@ -639,6 +639,21 @@ code "works."
   its own sector's midline at r 110 (☰ at 30px/100px in that 240×240 box, ◎ at 53px/168px). Both
   polygons are generated the same way and BOTH have to be regenerated together — the shared
   properties live in a `#menuBtn, #mapBtn` rule so only the clip-paths and glyph offsets can drift.
+- **A WORLD ON THE DIAL IS DRAWN AT ITS TRUE SIZE, AND IS A REGION ON EVERY TEST THE DIAL MAKES**
+  (2026-08 user call). A flat pip said a 359-unit rock and a 1,935-unit giant were the same object —
+  survivable when a world was a thing you flew past, wrong now that SURFACE WEIGHT keys landing,
+  take-off and the whole slingshot ladder off RADIUS. The sun always drew this way; worlds joined it.
+  Four rules follow, and each was a separate bug when the disc was still treated as a point:
+  **range is to the NEAREST EDGE** (a giant popped out of the dial with a third of it still in
+  range), **the inner/outer band is decided by that edge too**, **the sweep age is taken over the
+  body's whole ARC** (`sweepAgeOf`), and **the scan half is revealed per PIXEL as the beam crosses
+  it** — the sweep carries its own alpha ramp (a conic mask) and the disc's alpha is multiplied by
+  it, so a world 77° wide wipes in rather than blinking. That last one is the dense-field lesson
+  ("one shared age made a pocket this wide strobe as a single slab") applied to a body that is ONE
+  object and so cannot be answered per-rock. **No rim outline on a world or the sun** — an outline
+  is an annotation, and it drew a hard edge exactly where the dial's own limit was already cutting
+  the disc; the wash IS the body, and it fades out near the rim rather than being guillotined by the
+  clip (the no-hard-edges law, read across to the instrument's own range limit).
 - **THE RADAR IS A SCAN; THE CHART IS A CHART, and that difference is why both exist.** The dial is
   ship-centred, forgets the moment the sweep passes, and shows nothing past its rim — out in the
   scan band a contact is a ping and an unswept bearing is empty. `starmap.js`'s **system chart** is
