@@ -3150,21 +3150,32 @@ function seedDenseFields(game, sun, rng, fieldRs, seed) {
       // and SPAWNED, drawing the 2% cache test plus fieldMass's two draws and
       // maybeCore's mass-gated one. Dropping it instead draws none of those, so
       // every draw after this point in seedDenseFields — and seedDebrisBelts,
-      // which runs after it — lands differently: measured on seed 20260721 the
-      // Farshoal's heart moves from (-26202,-51284) to (52454,23774), a whole
-      // shoal on a different bearing.
+      // which runs after it — lands differently: re-measured on seed 20260721
+      // in today's sky, the Farshoal's heart moves from (-58100,336126) to
+      // (-173295,293811), a whole shoal on a different bearing. (The figures
+      // filed with the issue were pre-SYS_R_MUL and no longer reproduce.)
       //
       // NOT re-aligned by drawing-and-discarding here, though that is the
       // project's usual rule. This `!sited` exit is reached by TWO paths — the
       // landmark `clash` path, which already dropped silently and drew nothing
       // before the change, and the gravel-clearance path, which is the only one
       // that used to spawn. Draining draws on both would invent a THIRD stream
-      // that matches neither, and draining only the second means reconstructing
-      // the old bug's exact conditions (run the `bigs` clash loop after a
-      // clearance failure purely to decide how many draws to throw away) —
-      // encoding a deleted bug's draw pattern into the code forever. The layout
-      // for a given seed is therefore different from before this fix, on
-      // purpose. `?seed=` is still reproducible; it just reproduces a new sky.
+      // that matches neither, so a drain has to reconstruct the old bug's exact
+      // conditions: run the `bigs` clash loop after a clearance failure purely
+      // to decide how many draws to throw away, then spend the taper test, the
+      // cache coin, fieldMass's pair and maybeCore's mass-gated one.
+      //
+      // THAT DRAIN WAS BUILT AND MEASURED, AND IT DOES NOT WORK — don't rebuild
+      // it. The escaping pebble was never only a consumer of draws, it was an
+      // OBSTACLE: dropped, it is no longer in `gcells`, so a later pebble it
+      // used to block now clears on an earlier try and spends fewer draws of
+      // its own. Measured, the drain restores seed 20260721 outright but holds
+      // only three shoals of four on 3827467762 — the Farshoal moves anyway. A
+      // determinism promise that keeps on some seeds is not one, and its price
+      // is a permanent mirror of the spawn expression below whose drift nothing
+      // would catch. So the layout for a given seed is different from before
+      // this fix, on purpose. `?seed=` is still reproducible; it just
+      // reproduces a new sky.
       if (!sited) continue;
       const v = orbitVel(sun, x, y, 1);
       // The mass ladder is drawn against where the rock LANDED, not where it
