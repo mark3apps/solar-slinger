@@ -994,10 +994,18 @@ export const CFG = {
   // true drawn hull, so a floored ram is a plough sitting on the nose where it
   // always sat rather than a slab floating a ship-length out in front.
   //
+  // AND IT IS CAPPED, LOOSELY: ramPlate bounds the floored basis at `r * 4.5`
+  // so this constant cannot run away if it is ever raised. That cap is
+  // deliberately set NOT to bind above tier 0 and to trim tier 0 by only 9% —
+  // a tight one (`r * 2.5`, 2026-08 QA #183/#184) put the tier-0 stone straight
+  // back at ~3.5, i.e. the value rejected above, and pinned tiers 0 and 1 to the
+  // same proportions. See ramPlate's note before touching it.
+  //
   // Knock-on, and it is deliberate: ramFace/ramArc read this same plate per the
   // mirror-drift rule, so a low-tier ram's contact edge and protected arc grow
-  // with what you can see — tier 0 rank 1 goes 27deg -> 31deg and its contact
-  // edge 15 -> 29 units, and the top of the ladder 36deg -> 38deg. (The floor
+  // with what you can see — tier 0 rank 1 goes 27deg -> ~30deg (31 before the
+  // r*4.5 cap trims it) and its contact edge 15 -> 29 units, and the top of the
+  // ladder 36deg -> 38deg. (The floor
   // alone put that first number at ~52deg; deriving halfW from the pack instead
   // of ramping it independently is what brought it back down, so measure the arc
   // after BOTH, never after this constant on its own.) The edge you can
@@ -3171,14 +3179,18 @@ export function dockDomeR(st, hostR, groundY) {
 // visibly compresses into that field when it takes a hit or eats a rock. A flat
 // working face across the front, rocky everywhere else, and WIDER THAN THE
 // SHIP at every size — the overhang is the silhouette; a slab narrower than the
-// hull would just read as a bigger nose.
+// hull would just read as a bigger nose. "At every size" is the SHIP SIZE
+// ladder and it means a ram you have actually BUILT: the overhang is earned by
+// the density bands, never bought with a clamp on the width (see halfW below,
+// and 2026-08 QA #201 for what a clamp costs).
 //
 //   back   where the field's hull emitters end and the coupling gap begins —
 //          measured off the DRAWN nose (radius / SHIP_HIT_FRAC), not the
 //          collision circle, or the slab overlaps the art it must stand clear of
 //   gap    the energy gap the beams span (the spring's free length)
 //   depth  the slab's thickness along the nose axis
-//   halfW  half its width across the bow — always past the hull radius
+//   halfW  half its width across the bow — past the hull radius on any built
+//          ram, and DERIVED from the pack, never clamped
 //
 // One definition, shared: render draws this exact slab and hangs the beams in
 // this exact gap, physics takes the front CONTACT EDGE from ramFace and the
@@ -3202,18 +3214,32 @@ export function ramPlate(st, ram) {
   // mounting (`back`, `gap`) stays on `r` — the true drawn hull — and only the
   // slab (`depth`, `halfW`) rides `rs`.
   //
-  // CAPPED AT `r * 2.5` TOO (2026-08 QA #183/#184). Uncapped, `rs` is
-  // dominated by RAM_MIN_R at the smallest hull (T0 brawler: r ~5.4, rs ~26.5
-  // — a 5x gap), and `depth`/`stone` and `halfW` all ride it, so a full War
-  // Rack ran the slab to 17x the hull's own half-width. Capping `rs` itself
-  // (rather than halfW alone) keeps `stone` and `halfW` deriving from the
-  // SAME number, which is load-bearing: render seats `perRow` stones of
-  // radius `stone` shoulder-to-shoulder across `halfW` (below), and a halfW
-  // clamped independently of stone would either bury the pack in overlap or
-  // fence it apart with daylight showing. A tier-0 ram is still built from
-  // rock a full 2.5x its own hull's radius — that is still unmistakably
-  // "recognisable rock", just no longer allowed to dwarf the ship it rides on.
-  const rs = Math.min(Math.hypot(r, CFG.RAM_MIN_R), r * 2.5);
+  // CAPPED TOO, BUT ONLY AS A GUARDRAIL (2026-08 QA #183/#184, retuned by QA
+  // #202). Uncapped, `rs` is dominated by RAM_MIN_R at the smallest hull (T0
+  // brawler: r ~5.4, rs ~26.5 — a 5x gap), and `depth`/`stone` and `halfW` all
+  // ride it, so a maxed War Rack runs the slab to many times the hull's own
+  // half-width. The cap bounds that if RAM_MIN_R is ever raised. Capping `rs`
+  // itself (rather than halfW alone) is the right place for it: it keeps
+  // `stone` and `halfW` deriving from the SAME number, which is load-bearing —
+  // render seats `perRow` stones of radius `stone` shoulder-to-shoulder across
+  // `halfW` (below), and a halfW clamped independently of stone would either
+  // bury the pack in overlap or fence it apart with daylight showing.
+  //
+  // BUT THE CAP MUST NOT BIND AT THE TIERS RAM_MIN_R EXISTS FOR, and at
+  // `r * 2.5` it did, twice over — which is the bug this number guards now:
+  //   - it dragged the T0 rank-1 stone down to radius 3.5, i.e. essentially the
+  //     ~3 that CFG.RAM_MIN_R's own rationale explicitly REJECTED as "under the
+  //     smallest gravel in the sky". The user call the constant exists to answer
+  //     ("at tier 0 they're so tiny it looks ridiculous") was back, at the one
+  //     tier the constant was added for.
+  //   - it bound at T1 as well (r*2.5 = 26.4 against hypot = 28.1), pinning BOTH
+  //     tiers to exactly 2.5r, so tiers 0 and 1 came out with IDENTICAL
+  //     proportions — the "a hard max would draw tiers 0 and 1 identically and
+  //     then jump" failure the SOFT floor was chosen to avoid in the first place.
+  // 4.5 clears T1 entirely and trims T0 by 9% (rs 26.6 -> 24.2, stone 6.3 —
+  // still mid-class belt rock, and still RAM_MIN_R's documented arc to within a
+  // degree: 30.3deg against the 31deg that note quotes).
+  const rs = Math.min(Math.hypot(r, CFG.RAM_MIN_R), r * 4.5);
   // DENSITY IS THE TIER, RANK IS THE CEILING (user design rule). The barrier's
   // visible tier tracks what is IN it right now — how dense the current ram
   // is — walking loose rubble up to a fused wall as you feed it, and back DOWN
@@ -3242,13 +3268,33 @@ export function ramPlate(st, ram) {
   // jammed rather than by how far apart they float.
   const depth = rs * (0.26 + 0.0275 * t + 0.34 * g);
   const stone = depth * RAM_STONE;
-  // THE FLOOR IS THE CLASS'S ONE HARD RULE MADE LITERAL (2026-08 QA #183):
-  // "WIDER THAN THE SHIP at every size". The `rs` cap above pulls T0 back
-  // out of the explosion, but at high tier a few big stones across a short
-  // slab (small `ramPerRow`, near-empty fill) can still solve narrower than
-  // the hull that mounts it — this floor is what the width law actually
-  // demands, not a cosmetic minimum.
-  const halfW = Math.max(stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1)), r * 1.05);
+  // NO FLOOR ON THE WIDTH. IT IS DERIVED, FULL STOP (2026-08 QA #201, undoing
+  // QA #183's `Math.max(..., r * 1.05)`). render seats the outermost stone
+  // centre at `halfW - 0.7 x stone` and spreads the rest evenly, so ANY clamp
+  // that lifts halfW above what the stones actually occupy drives the effective
+  // packing factor over 1 and the stones stop touching — precisely the
+  // fence-not-a-ram bug the law above exists to forbid. Measured with that
+  // floor in: packing factor 5.5 at T5 band 1 (two stones of radius 18.9 seated
+  // 233 apart across a 233-wide slab — 177 units of daylight), over 1 on every
+  // band-1 ram at every tier, and still 1.60 on a rank-1 FULL ram at T5.
+  //
+  // AND THE HULL RULE CANNOT BE BOUGHT BACK THROUGH THE STONE EITHER — the
+  // obvious alternative is to floor `stone` at `r * 1.05 / (0.7 + pack x (n-1))`
+  // and solve the width off that, which does keep the pack tight. It was
+  // measured and rejected: that floor is LARGEST at the emptiest bands (small
+  // `ramPerRow`), so at T5 it puts stones of radius 72 on a band-1 ram against
+  // 42 on a maxed one. The rocks would visibly SHRINK as you fed the thing, and
+  // CFG.RAM_R_POW's whole "the first few rocks have to visibly transform the
+  // slab" feedback inverts.
+  //
+  // So the width law wins, and the overhang stays what it always was — a
+  // property of a ram you have BUILT, earned by the density bands. Measured on
+  // this line: a maxed ram is 10.4x the hull radius at T0 and 2.37x at T5, and a
+  // rank-1 FULL ram is 2.97x / 1.75x / 1.09x at T0/T1/T2. A near-empty or
+  // under-ranked ram on a big hull is small (down to 0.19x at T5 with a few
+  // rocks in it) — that is DENSITY IS THE TIER working, not a defect to clamp
+  // out, and it is the proportion the ladder shipped with before #183.
+  const halfW = stone * (0.7 + ramPack(t) * (ramPerRow(t) - 1));
   return {
     // x st.vis because `back` stands off the DRAWN nose, and the brawler's art
     // is scaled up by its size-match factor — read against the bare footprint
