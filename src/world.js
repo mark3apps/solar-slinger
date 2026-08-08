@@ -3631,7 +3631,39 @@ export function replenishWorld(game, dt) {
       // Override hp (massToHp(140) ≈ 4): a stray pebble must not end the
       // rescue before it starts; a real hit still can.
       pod.hp = pod.maxHp = 60;
-      pod.podT = 90 + rng() * 30;   // the air supply, in seconds
+      // THE AIR SUPPLY IS A TOW BUDGET, AND THE TOW IS SUN-CENTRED — so it is
+      // the same units bug CFG.SKY_K exists to close (#214/#215), one site the
+      // sweep missed. The pod arrives just off the SHIP's shoulder, but the
+      // only things that can accept it are the generated stations (see
+      // updateDeliveries' `st.type === 'station'` filter — a dock you built
+      // yourself does not count), and those ride the lane ladder, capped by
+      // LADDER_CAP() = CFG.WORLD_R * 41500/46000. So the DISTANCE the rescue
+      // asks for scaled x2.96 with the boundary while these seconds did not.
+      // Measured over 8 seeds, 24k uniform points inside that disc: the median
+      // haul to the nearest station is ~106,700u, against 57,300u for a maxed
+      // tier-5 hull's best-case 119s — i.e. 20% of the sky could reach a
+      // station at all, and 7.5% at tier 0, before the tow's own drag or the
+      // pod's 140-200 u/s drift. rescue1/rescue3/rescue6 all ride it.
+      //
+      // SKY_K IS APPLIED TO THE SECONDS, NOT TO A SPEED, because the speed
+      // here is the SHIP's and SKY_K's own carve-out says a speed tuned
+      // against the ship stays absolute. Same conversion, other end: the
+      // authored 90-120s were priced against a 119,600 sky, and x SKY_K is
+      // what hands those authored seconds back at whatever boundary is in
+      // force: 267-355s here, which takes the reachable share of that same
+      // disc to 78% at tier 5 and 46% at tier 0. The draw is untouched — one
+      // rng() call in the same position, so nothing downstream of it re-phases.
+      //
+      // WHAT IT COSTS, MEASURED: a live pod BURNS the next slot (the timer
+      // above resets and the `!game.mayday` gate refuses the spawn), so a
+      // longer air supply could have thinned the event out. It does not, yet —
+      // driving replenishWorld's own block over 4 seeds x 24,000s with the pod
+      // never rescued, the mean cycle moves 480s -> 482s, because even the
+      // longest air (355s) only just reaches into the 320-620s draw. It starts
+      // to bite once the SHORTEST air crosses that 320s low end, i.e. around
+      // SKY_K 3.6, and past SKY_K 6.9 the POD sets the cadence outright. The
+      // lever then is the timer above, never these seconds.
+      pod.podT = (90 + rng() * 30) * CFG.SKY_K;   // the air supply, in seconds
       game.mayday = pod;
       // Bearing shout, computed at spawn (y-down screen space: +y = south)
       const oct = ['east', 'south-east', 'south', 'south-west',
