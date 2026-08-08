@@ -2683,8 +2683,19 @@ export const CFG = {
   // the environmental-hazard convention (never hull-scaled), sitting under the
   // gas cloud tops' 9: crossing the deck is a toll, camping in it is death,
   // and the surface beneath is reachable by anyone willing to punch through.
-  // ATMO_IN clears the tallest dock pad (~44u on a ~500u world = 1.09r), so a
-  // berthed ship always sits in calm air below the deck.
+  // ATMO_IN clears the tallest dock pad on the terran world ITSELF: the tier-5
+  // hull is 66.3u (SHIP_RADIUS[5]), the smallest terran measured over 200 seeds
+  // is r=1062, so that pad's centre sits at 1.057r against this 1.14r floor.
+  // (The note here used to read "~44u on a ~500u world = 1.09r". Both figures
+  // were stale — the ship ladder and the world scale have each moved since —
+  // and the conclusion happened to survive them, which is exactly why it was
+  // worth re-deriving rather than re-quoting.)
+  // IT SAYS NOTHING ABOUT THAT WORLD'S MOONS, and the margin there is thin: a
+  // moon berth's distance from the deck is worldgen's business, and the closest
+  // one over those same 200 seeds (1227 terran moons) is 1.587r against the
+  // deck's 1.5r outer edge. physics.js holds a FINISHED berth calm rather than
+  // banking on that gap — see the burn-deck block's berth note for what a
+  // berth inside the deck costs.
   ATMO_ZONE: 1.5,
   ATMO_IN: 1.14,
   ATMO_MAX_MASS: 1400,
