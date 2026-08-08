@@ -2654,6 +2654,10 @@ export function runMechTest(game, hooks, opts = {}) {
       //     finally: the rebuild lives there, not on the happy path.
       const wasMode = game.mode, wasRules = game.rules;
       const wasColl = game.collisionLog, wasDeath = game.deathLog;
+      // window.soak ZEROES game.nanEvents on entry, so the suite's running
+      // tally has to be carried across by hand — see the finally.
+      const nan0 = game.nanEvents;
+      let soakNan = 0;
       try {
         const seed0 = game.worldSeed;
         // A peaceful sky, built the way world.applyModeRules builds one —
@@ -2675,6 +2679,7 @@ export function runMechTest(game, hooks, opts = {}) {
           `setup: the emulated peaceful sky still has ${nests()} nests / ${forts()} forts / ${brood()} brood`);
 
         const r = window.soak(0.5, { idle: true });
+        soakNan += r.nanEvents || 0;   // banked BEFORE the expects, or a failing one loses it
         expect(game.mode === 'classic',
           `soak left the mode on '${game.mode}' — it soaked a sky with ${nests()} nests, `
           + `${forts()} armed Bastions and ${brood()} brood, and reported the result as normal`);
@@ -2693,6 +2698,7 @@ export function runMechTest(game, hooks, opts = {}) {
         // classic soak too, silently changing the world every existing caller
         // was already measuring — the same class of bug, pointed the other way.
         const r2 = window.soak(0.5, { idle: true });
+        soakNan += r2.nanEvents || 0;
         expect(!('rebuilt' in r2),
           `a soak of an already-classic run rebuilt anyway (${r2.rebuilt}) — every existing `
           + 'caller would lose the run it was measuring');
@@ -2709,12 +2715,24 @@ export function runMechTest(game, hooks, opts = {}) {
         hooks.freshRun(0, seed);
         game.mode = wasMode; game.rules = wasRules;
         game.collisionLog = wasColl; game.deathLog = wasDeath;
-        // game.nanEvents is deliberately NOT restored. Any snapshot of it taken
-        // above would be from BEFORE the soaks, so writing it back would erase a
-        // real NaN raised during this check's own second of simulation — the one
-        // field the project requires to be 0. T21 scrubs its tally too, but only
-        // the DELIBERATE injection it made itself; there is no injection here, so
-        // anything the counter holds now is genuine and must reach the report.
+        // game.nanEvents is REBUILT, not snapshotted and not left alone —
+        // because window.soak ZEROES it on entry (main.js) and reports its own
+        // count in the result. Both simpler options lose real events:
+        //   - a plain snapshot restore (game.nanEvents = nan0) would erase a
+        //     real NaN raised during this check's own second of simulation;
+        //   - leaving it alone erases the RUN-UP instead — the counter the
+        //     suite armed before T0 and every genuine event T0-T26 put in it,
+        //     including whatever T13 deliberately left above its own scrub,
+        //     since soak's zeroing is the last write either soak makes.
+        // So carry BOTH: the pre-case tally plus what each soak reported. Set
+        // AFTER the freshRun above (a reset must not be able to outrank it),
+        // and exception-safe by construction — soakNan only ever grows, so a
+        // throw anywhere in the try leaves the counter at nan0 or higher, never
+        // below the run-up the suite is entitled to report.
+        // (T13 scrubs its own tally too, but only the DELIBERATE injection it
+        // made itself; there is no injection here, so everything counted is
+        // genuine and must reach the report.)
+        game.nanEvents = nan0 + soakNan;
       }
     });
 
