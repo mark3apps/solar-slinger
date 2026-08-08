@@ -6152,13 +6152,39 @@ export function step(game, dt) {
           // the same band profile the rock burn runs, so the hull chars in the
           // deck and flies clean above AND beneath it. Environmental
           // convention: flat, never hull-scaled, under the gas tops' 9 dps.
+          //
+          // A FINISHED BERTH DOESN'T BURN. The deck belongs to the terran
+          // PLANET, and ATMO_IN clears the tallest pad on that planet's own
+          // surface with room to spare (1.057r against the 1.14r floor at the
+          // smallest terran, r=1062 over 200 seeds — see the ATMO_IN note).
+          // Its MOONS get no such promise: how far a moon berth sits from the
+          // deck is worldgen's business, the closest over those same seeds is
+          // 1.587r against the deck's 1.5r outer edge, and a knock or a tow
+          // that brings a moon in by that 0.087r puts a standing station
+          // inside the burn. This is not a margin to bank a home port on — it
+          // was measurably tighter when the deck's own note was written.
+          //
+          // AND WHAT A BERTH IN THE DECK COSTS IS THE WHOLE STATION. The dome
+          // pool NEVER refills (CFG.DOCK_SHIELD), so an unbounded environmental
+          // source berthed inside it empties the pool in finite time and
+          // breakDock takes the structure with it. Measured, with Rilla's moon
+          // Dolm brought in to 1.60r on seed 20529967: the dome ran 2400 -> 0
+          // and the home port was gone inside 2100 seconds with no player input
+          // at all — the pad is surface-local, so the moon's own rotation
+          // carries it back through the deck every turn. A home port lost to
+          // SCENERY is the class of failure the relay fix cured.
+          //
+          // Gated on READY, the same line the dome itself is gated on: the
+          // approach still burns, the ten exposed build seconds still burn, and
+          // a hull merely parked on the ground still burns. Only a finished
+          // harbour is calm.
           const az = b.radius * CFG.ATMO_ZONE, lo = b.radius * CFG.ATMO_IN;
           const dl = Math.hypot(s.x - b.x, s.y - b.y);
           if (dl < az && dl > lo) {
             const u = (dl - lo) / (az - lo);
             const q = 4 * u * (1 - u);
             if (q * 0.55 > game.heatT) game.heatT = q * 0.55;
-            if (s.invuln <= 0) damageShip(game, q * CFG.ATMO_SHIP_DPS * dt, `Burned up over ${b.name || 'a living world'}.`);
+            if (s.invuln <= 0 && !dockReady(game.dock)) damageShip(game, q * CFG.ATMO_SHIP_DPS * dt, `Burned up over ${b.name || 'a living world'}.`);
             if (!game.tut.atmoShip && q > 0.3) game.atmoShipWarn = true;
           }
         } else if (b.ptype === 'ocean' && b.type === 'planet') {
