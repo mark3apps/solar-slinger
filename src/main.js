@@ -149,7 +149,24 @@ const game = {
   parryReadyT: 0,                       // one-shot bloom when the Deflector re-arms (render)
   warpT: 0,                             // Slipstream cooldown (scout)
   cam: { x: 0, y: 0, zoom: 1.15 },
-  zoomCur: 1.15,           // animated camera zoom (no manual control)
+  zoomCur: 1.15,           // animated camera zoom (no manual control) — the DRAWN zoom
+  // THE SIM'S ZOOM. Identical to zoomCur everywhere except at a finished berth:
+  // the berth vista (below) is a COSMETIC widening, and game.viewR is not a
+  // cosmetic number — the awake bubble, both debris leashes, the glow radii,
+  // predictPaths' path length and physics' nearShip exemption all hang off it.
+  // Fed by zoomCur it made parking at a station 1.8x the viewR, i.e. 3.2x the
+  // AWAKE AREA, at exactly the moment the player is idle — and it moved the
+  // "present player" line, so a berth across the system silently froze ambient
+  // weathering for a much wider ring of worlds and started a wounded giant
+  // venting. The vista is a separate FACTOR on top (vistaF, below), so with no
+  // vista in play zoomCur is simZoom x 1 — the same float, and viewR unchanged.
+  // What this costs: render's "a dormant rock can never be on screen" margin
+  // narrows, since the drawn view now reaches DOCK_VISTA (1.8) x viewR while the
+  // wake bubble stays 2.2 x viewR + 600. It still HOLDS — 1.8 < 2.2, and a
+  // dormant rock is field rock, radius ~300 against a margin of 0.4 x viewR +
+  // 600 — but DOCK_VISTA is now bounded by that 2.2 and cannot be raised alone.
+  simZoom: 1.15,
+  vistaF: 1,               // the berth vista as its own factor: zoomCur = simZoom × vistaF
   viewPin: null,           // {vw, vh} a HARNESS may pin the sim's view to (simView) — null in play
   shake: 0,
   predict: true,
@@ -470,6 +487,15 @@ function simView() { return game.viewPin || view.getView(); }
 function applyZoom() {
   const { vw, vh } = simView();
   game.cam.zoom = game.zoomCur * (Math.hypot(vw, vh) / CFG.VIEW_REF_DIAG);
+}
+
+// The world radius of the SIM's view. Deliberately the same expression as
+// applyZoom's, off game.simZoom instead of game.zoomCur, so the hypot still
+// cancels bit-for-bit (see the window-independence note above) — with no berth
+// vista in play simZoom IS zoomCur and this is byte-identical to the old
+// hypot/2/cam.zoom. The one place drawn and simulated are allowed to differ.
+function simViewR(vw, vh) {
+  return Math.hypot(vw, vh) / 2 / (game.simZoom * (Math.hypot(vw, vh) / CFG.VIEW_REF_DIAG));
 }
 applyZoom();
 
@@ -973,7 +999,13 @@ let splashAcc = 0;
 // but a visible pop, and under the splash's blur it read as a glitch. Callers
 // only set zoomCur; frame()'s splash branch runs applyZoom before every render.
 function frameSplash(t) {
-  game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
+  // simZoom rides along and the vista factor is cleared: there is no vista on
+  // the title screen, and the START dive has to leave both zooms at the same
+  // place or the sim's view would keep the establishing shot's width into the
+  // run — and a run backed out of mid-berth would hand the next one a factor
+  // that is not 1.
+  game.vistaF = 1;
+  game.simZoom = game.zoomCur = SPLASH_ZOOM * (1 + 0.05 * Math.sin(t * 0.12));   // gentle breathing
   const a = t * 0.06;                                            // slow orbit of the sun
   game.cam.x = Math.cos(a) * SPLASH_ORBIT;
   game.cam.y = Math.sin(a) * SPLASH_ORBIT;
@@ -987,7 +1019,7 @@ function driftSplash(dt) {
   // through the same accessor (the title screen is not a harness path today —
   // this is here so a pinned run can never end up with a mismatched pair).
   const { vw, vh } = simView();
-  game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
+  game.viewR = simViewR(vw, vh);
   game.ship.invuln = Math.max(game.ship.invuln || 0, 1);
   // The solar wave can't reach the title screen. Backing out to the menu
   // mid-wave leaves game.storm live (replenishWorld doesn't run here, so it
@@ -1835,6 +1867,13 @@ function updatePacing(rawMs) {
   }
 }
 
+// The berth vista's landing rate — /s, the floor under its exponential ease so
+// the factor reaches 1 (and 1/DOCK_VISTA) EXACTLY rather than asymptotically.
+// Lives here rather than in CFG because it is not a feel knob: it is what makes
+// "the drawn zoom IS the sim's zoom off the pad" a float identity instead of an
+// approximation. At 0.02 the vista is home ~7s after the launch spool.
+const VISTA_LAND = 0.02;
+
 function update(dtReal) {
     game.time += dtReal;
 
@@ -1866,9 +1905,31 @@ function update(dtReal) {
     // !game.launch hands the dive back to the normal rate the frame the spool
     // starts, so the zoom-in overlaps the clamps releasing.
     const vista = dockReady(game.dock) && !game.launch;
-    if (vista) zoomTarget /= CFG.DOCK_VISTA;
-    game.zoomCur = lerp(game.zoomCur, zoomTarget,
-      1 - Math.exp(-(vista ? CFG.DOCK_VISTA_K : 0.5) * dtReal));
+    // THE VISTA IS DRAWN, NOT SIMULATED, so it is carried as its own FACTOR on
+    // top of the sim's zoom instead of being folded into it. game.simZoom keeps
+    // easing to the plain tier target — game.viewR comes off it, and with viewR
+    // go the awake bubble, both debris leashes, the glow radii, predictPaths'
+    // path length and physics' nearShip "present player" exemption. Folded in,
+    // the vista made those 1.8x wider at a finished berth (3.2x the awake AREA)
+    // at exactly the moment the player is parked and idle. The drawn zoom is
+    // unchanged: with simZoom steady, simZoom x lerp(vistaF -> 1/DOCK_VISTA) is
+    // the same sequence as the old lerp(zoomCur -> zoomTarget/DOCK_VISTA).
+    game.simZoom = lerp(game.simZoom, zoomTarget, 1 - Math.exp(-0.5 * dtReal));
+    // ...AND THE FACTOR LANDS. An exponential approach never arrives, so a vista
+    // that has eased "all the way" back still leaves the drawn and simulated
+    // zooms as different floats forever — and the two are meant to be the SAME
+    // NUMBER off the pad (mechTest asserts cam.zoom === zoomCur and viewR ===
+    // VIEW_REF_DIAG/2/zoomCur with ===). Hence the floor rate: the ease glides
+    // the last sliver home at VISTA_LAND/s and arrives exactly. It only touches
+    // the tail — under ~6% of the way out — where linear and exponential are
+    // indistinguishable, and 1 x anything is exact, so with no vista in the run
+    // zoomCur is bit-for-bit what it was before this split.
+    const vf = vista ? 1 / CFG.DOCK_VISTA : 1;
+    const gap = vf - game.vistaF;
+    const land = VISTA_LAND * dtReal;
+    game.vistaF = Math.abs(gap) <= land ? vf : game.vistaF + Math.sign(gap) *
+      Math.max(Math.abs(gap) * (1 - Math.exp(-(vista ? CFG.DOCK_VISTA_K : 0.5) * dtReal)), land);
+    game.zoomCur = game.simZoom * game.vistaF;
     applyZoom();
 
     // Roguelite pick: XP crossing a threshold OFFERS a choice on the pilot card
@@ -1912,7 +1973,7 @@ function update(dtReal) {
     game.aim.x = m.x; game.aim.y = m.y;
     // World-space radius of the current view — the local asteroid spawner
     // keeps rocks in a ring just beyond this
-    game.viewR = Math.hypot(vw, vh) / 2 / game.cam.zoom;
+    game.viewR = simViewR(vw, vh);
     // SOLAR WAVE exposure/shelter, resolved before BOTH consumers: updateAliens
     // reads game.stormBlind and the substeps below read game.stormExposed.
     updateStorm(dtReal);
